@@ -73,15 +73,12 @@ fn make_visual(field: &Field, id: NodeId, params: VisualParams) -> NodeVisual {
 
     let is_cluster_core = n.kind == NodeKind::Core;
 
-    // Optional badge count: find the cluster that owns this core, if any.
-    let cluster_member_count = if is_cluster_core {
-        field
-            .cluster_id_for_core_public(id)
-            .and_then(|cid| field.cluster(cid))
-            .map(|c| c.members().len())
-    } else {
-        None
-    };
+    // Badge count used to come from a direct `field.cluster_id_for_core_public()`
+    // + `field.cluster()` lookup. Field is now cluster-blind (step 1a) — once
+    // the World-owned cluster registry exists again (step 1h/3), this needs
+    // to come from a membership lookup passed in from outside, not from Field
+    // itself. Left as `None` until that's wired back up.
+    let cluster_member_count: Option<usize> = None;
 
     // Z ordering:
     // - focused highest
@@ -136,9 +133,6 @@ pub fn build_visuals(field: &Field, _vp: &Viewport, params: VisualParams) -> Vec
     let mut out = Vec::new();
 
     for (&id, _) in field.nodes().iter() {
-        if !field.participates_in_field_view(id) {
-            continue;
-        }
         if !field.is_visible(id) {
             continue;
         }
@@ -163,9 +157,6 @@ pub fn build_visuals_in_view(
     let mut out = Vec::new();
 
     for (&id, _) in field.nodes().iter() {
-        if !field.participates_in_field_view(id) {
-            continue;
-        }
         if !field.is_visible(id) {
             continue;
         }

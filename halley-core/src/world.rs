@@ -127,124 +127,132 @@ impl World {
         true
     }
 
-    /// Move a cluster by its core handle across spaces.
-    /// This moves the core + members as a unit by rehoming all involved nodes.
-    pub fn transfer_cluster_by_core(
-        &mut self,
-        from_space: SpaceId,
-        core: NodeId,
-        dir: PortalDir,
-        from_vp: &Viewport,
-        to_vp: &Viewport,
-    ) -> bool {
-        let to_space = match self.neighbor(from_space, dir) {
-            Some(s) => s,
-            None => return false,
-        };
-
-        // -------- PRE-FLIGHT (NO MUTATION) --------
-        let (cid, members, core_pos) = {
-            let from = match self.space(from_space) {
-                Some(f) => f,
-                None => return false,
-            };
-
-            let cid = match from.cluster_id_for_core_public(core) {
-                Some(cid) => cid,
-                None => return false,
-            };
-
-            let cluster = match from.cluster(cid) {
-                Some(c) => c,
-                None => return false,
-            };
-
-            let core_node = match from.node(core) {
-                Some(n) => n,
-                None => return false,
-            };
-
-            // Movement constraint checks: pinned nodes block transfer.
-            if core_node.pinned {
-                return false;
-            }
-
-            for m in cluster.members() {
-                match from.node(*m) {
-                    Some(n) if !n.pinned => {}
-                    _ => return false,
-                }
-            }
-
-            (cid, cluster.members().to_vec(), core_node.pos)
-        };
-
-        // Compute mapping delta
-        let mapped = map_across_portal(from_vp, to_vp, dir, core_pos);
-        let delta = Vec2 {
-            x: mapped.x - core_pos.x,
-            y: mapped.y - core_pos.y,
-        };
-
-        // -------- REMOVE FROM SOURCE (atomic intent) --------
-        let (cluster_obj, core_payload, member_payloads) = {
-            let from = match self.space_mut(from_space) {
-                Some(f) => f,
-                None => return false,
-            };
-
-            let cluster_obj = match from.remove_cluster(cid) {
-                Some(c) => c,
-                None => return false,
-            };
-
-            let core_node = match from.remove(core) {
-                Some(n) => n,
-                None => {
-                    from.insert_cluster(cluster_obj);
-                    return false;
-                }
-            };
-
-            let mut members_out = Vec::with_capacity(members.len());
-            for m in &members {
-                match from.remove(*m) {
-                    Some(n) => members_out.push(n),
-                    None => {
-                        // rollback
-                        from.insert_existing(core_node);
-                        from.insert_cluster(cluster_obj);
-                        return false;
-                    }
-                }
-            }
-
-            (cluster_obj, core_node, members_out)
-        };
-
-        // -------- INSERT INTO TARGET --------
-        let to = match self.space_mut(to_space) {
-            Some(f) => f,
-            None => return false,
-        };
-
-        // Insert cluster record first
-        to.insert_cluster(cluster_obj);
-
-        // Insert core
-        let mut core_insert = core_payload;
-        core_insert.pos = mapped;
-        to.insert_existing(core_insert);
-
-        // Insert members
-        for mut mp in member_payloads {
-            mp.pos.x += delta.x;
-            mp.pos.y += delta.y;
-            to.insert_existing(mp);
-        }
-
-        true
-    }
+    // TODO: step 1g — transfer_cluster_by_core moves a whole cluster between
+    // spaces via a portal. It's commented out (rather than deleted) because
+    // it depends on Field::cluster_id_for_core_public/cluster()/
+    // remove_cluster()/insert_cluster(), all removed from Field in step 1a.
+    // Step 1g reworks this to operate against the new World-owned cluster
+    // registry instead, moving node payloads with Field::remove/
+    // insert_existing the same way transfer_node (above) already does.
+    //
+    // /// Move a cluster by its core handle across spaces.
+    // /// This moves the core + members as a unit by rehoming all involved nodes.
+    // pub fn transfer_cluster_by_core(
+    //     &mut self,
+    //     from_space: SpaceId,
+    //     core: NodeId,
+    //     dir: PortalDir,
+    //     from_vp: &Viewport,
+    //     to_vp: &Viewport,
+    // ) -> bool {
+    //     let to_space = match self.neighbor(from_space, dir) {
+    //         Some(s) => s,
+    //         None => return false,
+    //     };
+    //
+    //     // -------- PRE-FLIGHT (NO MUTATION) --------
+    //     let (cid, members, core_pos) = {
+    //         let from = match self.space(from_space) {
+    //             Some(f) => f,
+    //             None => return false,
+    //         };
+    //
+    //         let cid = match from.cluster_id_for_core_public(core) {
+    //             Some(cid) => cid,
+    //             None => return false,
+    //         };
+    //
+    //         let cluster = match from.cluster(cid) {
+    //             Some(c) => c,
+    //             None => return false,
+    //         };
+    //
+    //         let core_node = match from.node(core) {
+    //             Some(n) => n,
+    //             None => return false,
+    //         };
+    //
+    //         // Movement constraint checks: pinned nodes block transfer.
+    //         if core_node.pinned {
+    //             return false;
+    //         }
+    //
+    //         for m in cluster.members() {
+    //             match from.node(*m) {
+    //                 Some(n) if !n.pinned => {}
+    //                 _ => return false,
+    //             }
+    //         }
+    //
+    //         (cid, cluster.members().to_vec(), core_node.pos)
+    //     };
+    //
+    //     // Compute mapping delta
+    //     let mapped = map_across_portal(from_vp, to_vp, dir, core_pos);
+    //     let delta = Vec2 {
+    //         x: mapped.x - core_pos.x,
+    //         y: mapped.y - core_pos.y,
+    //     };
+    //
+    //     // -------- REMOVE FROM SOURCE (atomic intent) --------
+    //     let (cluster_obj, core_payload, member_payloads) = {
+    //         let from = match self.space_mut(from_space) {
+    //             Some(f) => f,
+    //             None => return false,
+    //         };
+    //
+    //         let cluster_obj = match from.remove_cluster(cid) {
+    //             Some(c) => c,
+    //             None => return false,
+    //         };
+    //
+    //         let core_node = match from.remove(core) {
+    //             Some(n) => n,
+    //             None => {
+    //                 from.insert_cluster(cluster_obj);
+    //                 return false;
+    //             }
+    //         };
+    //
+    //         let mut members_out = Vec::with_capacity(members.len());
+    //         for m in &members {
+    //             match from.remove(*m) {
+    //                 Some(n) => members_out.push(n),
+    //                 None => {
+    //                     // rollback
+    //                     from.insert_existing(core_node);
+    //                     from.insert_cluster(cluster_obj);
+    //                     return false;
+    //                 }
+    //             }
+    //         }
+    //
+    //         (cluster_obj, core_node, members_out)
+    //     };
+    //
+    //     // -------- INSERT INTO TARGET --------
+    //     let to = match self.space_mut(to_space) {
+    //         Some(f) => f,
+    //         None => return false,
+    //     };
+    //
+    //     // Insert cluster record first
+    //     to.insert_cluster(cluster_obj);
+    //
+    //     // Insert core
+    //     let mut core_insert = core_payload;
+    //     core_insert.pos = mapped;
+    //     to.insert_existing(core_insert);
+    //
+    //     // Insert members
+    //     for mut mp in member_payloads {
+    //         mp.pos.x += delta.x;
+    //         mp.pos.y += delta.y;
+    //         to.insert_existing(mp);
+    //     }
+    //
+    //     true
+    // }
 }
 
 /// Edge-preserving mapping between monitor spaces.
@@ -340,41 +348,44 @@ mod tests {
         assert!(w.space(b).unwrap().node(n).is_some());
     }
 
-    #[test]
-    fn transfer_cluster_moves_cluster_record() {
-        let mut w = World::new();
-
-        let mut fa = Field::new();
-        let fb = Field::new();
-
-        let a = SpaceId::new(1);
-        let b = SpaceId::new(2);
-
-        let n1 = fa.spawn_surface("A", Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 10.0, y: 10.0 });
-        let n2 = fa.spawn_surface("B", Vec2 { x: 10.0, y: 0.0 }, Vec2 { x: 10.0, y: 10.0 });
-
-        let cid = fa.create_cluster(vec![n1, n2]).unwrap();
-        let core = fa.collapse_cluster(cid).unwrap();
-
-        w.add_space(a, fa);
-        w.add_space(b, fb);
-
-        w.set_neighbor(a, PortalDir::E, b);
-        w.set_neighbor(b, PortalDir::W, a);
-
-        let from_vp = Viewport::new(Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 100.0, y: 100.0 });
-        let to_vp = Viewport::new(Vec2 { x: 1000.0, y: 0.0 }, Vec2 { x: 100.0, y: 100.0 });
-
-        assert!(w.transfer_cluster_by_core(a, core, PortalDir::E, &from_vp, &to_vp));
-
-        // Cluster should no longer exist in space A
-        assert!(w.space(a).unwrap().cluster(cid).is_none());
-
-        // Cluster should now exist in space B
-        assert!(w.space(b).unwrap().cluster(cid).is_some());
-
-        // Core lookup should work
-        let dest = w.space(b).unwrap();
-        assert_eq!(dest.cluster_id_for_core_public(core), Some(cid));
-    }
+    // TODO: step 1g — restore this test against the new World-owned
+    // cluster registry, once transfer_cluster_by_core (above) is reworked.
+    //
+    // #[test]
+    // fn transfer_cluster_moves_cluster_record() {
+    //     let mut w = World::new();
+    //
+    //     let mut fa = Field::new();
+    //     let fb = Field::new();
+    //
+    //     let a = SpaceId::new(1);
+    //     let b = SpaceId::new(2);
+    //
+    //     let n1 = fa.spawn_surface("A", Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 10.0, y: 10.0 });
+    //     let n2 = fa.spawn_surface("B", Vec2 { x: 10.0, y: 0.0 }, Vec2 { x: 10.0, y: 10.0 });
+    //
+    //     let cid = fa.create_cluster(vec![n1, n2]).unwrap();
+    //     let core = fa.collapse_cluster(cid).unwrap();
+    //
+    //     w.add_space(a, fa);
+    //     w.add_space(b, fb);
+    //
+    //     w.set_neighbor(a, PortalDir::E, b);
+    //     w.set_neighbor(b, PortalDir::W, a);
+    //
+    //     let from_vp = Viewport::new(Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 100.0, y: 100.0 });
+    //     let to_vp = Viewport::new(Vec2 { x: 1000.0, y: 0.0 }, Vec2 { x: 100.0, y: 100.0 });
+    //
+    //     assert!(w.transfer_cluster_by_core(a, core, PortalDir::E, &from_vp, &to_vp));
+    //
+    //     // Cluster should no longer exist in space A
+    //     assert!(w.space(a).unwrap().cluster(cid).is_none());
+    //
+    //     // Cluster should now exist in space B
+    //     assert!(w.space(b).unwrap().cluster(cid).is_some());
+    //
+    //     // Core lookup should work
+    //     let dest = w.space(b).unwrap();
+    //     assert_eq!(dest.cluster_id_for_core_public(core), Some(cid));
+    // }
 }

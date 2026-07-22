@@ -36,9 +36,12 @@ pub fn tick_decay(field: &mut Field, now_ms: u64, policy: DecayPolicy, focused: 
             continue;
         }
 
-        if field.cluster_id_for_member_public(id).is_some() {
-            continue;
-        }
+        // NOTE: this used to also skip cluster members here via
+        // `field.cluster_id_for_member_public()`. Field is now cluster-blind
+        // (step 1a) — excluding clustered nodes from decay ticking is now
+        // the caller's responsibility (filter `ids` before calling this,
+        // using the World-owned cluster registry), once that exists again
+        // (step 1h).
 
         if Some(id) == focused {
             let _ = field.set_decay_level(id, DecayLevel::Hot);
@@ -107,9 +110,9 @@ pub fn tick_decay_focus_ring(
             continue;
         }
 
-        if field.cluster_id_for_member_public(id).is_some() {
-            continue;
-        }
+        // NOTE: see the comment in `tick_decay` above — cluster-membership
+        // exclusion moves to the caller once the World-owned registry
+        // exists again (step 1h).
 
         if Some(id) == focused {
             let _ = field.set_decay_level(id, DecayLevel::Hot);
@@ -230,40 +233,11 @@ mod tests {
         assert_eq!(f.node(a).unwrap().state, NodeState::Active);
     }
 
-    #[test]
-    fn core_does_not_decay() {
-        let mut f = Field::new();
-        let a = f.spawn_surface("A", Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 10.0, y: 10.0 });
-        let b = f.spawn_surface("B", Vec2 { x: 10.0, y: 0.0 }, Vec2 { x: 10.0, y: 10.0 });
-
-        let cid = f.create_cluster(vec![a, b]).unwrap();
-        let core = f.collapse_cluster(cid).unwrap();
-
-        let policy = DecayPolicy::new(5000);
-        tick_decay(&mut f, 999_999, policy, None);
-
-        let n = f.node(core).unwrap();
-        assert_eq!(n.kind, NodeKind::Core);
-        assert_eq!(n.state, NodeState::Core);
-    }
-
-    #[test]
-    fn clustered_members_do_not_decay() {
-        let mut f = Field::new();
-        let a = f.spawn_surface("A", Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 10.0, y: 10.0 });
-        let b = f.spawn_surface("B", Vec2 { x: 10.0, y: 0.0 }, Vec2 { x: 10.0, y: 10.0 });
-
-        let cid = f.create_cluster(vec![a, b]).unwrap();
-        let _ = f.collapse_cluster(cid);
-
-        let policy = DecayPolicy::new(1);
-        tick_decay(&mut f, 999_999, policy, None);
-
-        assert_eq!(f.node(a).unwrap().state, NodeState::Node);
-        assert_eq!(f.node(b).unwrap().state, NodeState::Node);
-        assert_eq!(f.node(a).unwrap().decay, DecayLevel::Hot);
-        assert_eq!(f.node(b).unwrap().decay, DecayLevel::Hot);
-    }
+    // `core_does_not_decay` and `clustered_members_do_not_decay` were
+    // removed here in step 1a — both depended on `create_cluster`/
+    // `collapse_cluster`, which no longer exist on `Field`. They come back
+    // in step 1h, exercising the caller-side exclusion described above
+    // instead of Field-internal cluster awareness.
 
     #[test]
     fn inside_focus_ring_near_center_stays_hot() {
