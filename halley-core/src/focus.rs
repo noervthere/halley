@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
-use crate::field::{Field, NodeId, NodeState};
+use crate::field::{Field, NodeId, NodeState, Vec2};
+use crate::tiling::Rect;
+use crate::world::PortalDir;
 
 /// Current interaction target (separate from history).
 /// Focus only applies to nodes that are present and experience-visible.
@@ -104,6 +106,111 @@ pub fn focus_cycle_candidates(
     }
 
     candidates
+}
+
+/// World-space (field) rectangle for a node eligible for directional focus:
+/// visible and in the `Active` representation state (matches the old
+/// `kind == NodeKind::Surface && state == NodeState::Active` check, minus
+/// the now-gone `kind` half). Derived from the node's center `pos` and
+/// `intrinsic_size`. Ported from `directional.rs::node_field_rect`.
+pub fn node_field_rect(field: &Field, id: NodeId) -> Option<Rect> {
+    let node = field.node(id)?;
+    if node.state != NodeState::Active || !field.is_visible(id) {
+        return None;
+    }
+    let size = node.intrinsic_size;
+    let w = size.x.max(1.0);
+    let h = size.y.max(1.0);
+    Some(Rect {
+        x: node.pos.x - w * 0.5,
+        y: node.pos.y - h * 0.5,
+        w,
+        h,
+    })
+}
+
+fn rect_center(rect: Rect) -> Vec2 {
+    Vec2 {
+        x: rect.x + rect.w * 0.5,
+        y: rect.y + rect.h * 0.5,
+    }
+}
+
+fn range_gap(a0: f32, a1: f32, b0: f32, b1: f32) -> f32 {
+    if a1 < b0 {
+        b0 - a1
+    } else if b1 < a0 {
+        a0 - b1
+    } else {
+        0.0
+    }
+}
+
+/// Directional-focus neighbor scoring: lower `(orth_gap, main_delta,
+/// dist2, tie_axis)` (compared lexicographically) is a better match.
+/// Returns `None` if `candidate` isn't actually positioned in `direction`
+/// from `current` (`main_delta <= 0.5`).
+///
+/// Ported from `clusters::system::directional_candidate_score` (shared
+/// there by both free-field and tiled-cluster directional focus), swapping
+/// `halley_config::DirectionalAction` - a `wl`/config-crate type this crate
+/// can't depend on - for `world::PortalDir`, which already models the same
+/// four directions (`N`=up, `S`=down, `E`=right, `W`=left).
+pub fn directional_candidate_score(
+    current: Rect,
+    candidate: Rect,
+    direction: PortalDir,
+) -> Option<(f32, f32, f32, f32)> {
+    let current_center = rect_center(current);
+    let candidate_center = rect_center(candidate);
+    let (main_delta, orth_gap, tie_axis) = match direction {
+        PortalDir::W => (
+            current_center.x - candidate_center.x,
+            range_gap(
+                current.y,
+                current.y + current.h,
+                candidate.y,
+                candidate.y + candidate.h,
+            ),
+            candidate_center.y,
+        ),
+        PortalDir::E => (
+            candidate_center.x - current_center.x,
+            range_gap(
+                current.y,
+                current.y + current.h,
+                candidate.y,
+                candidate.y + candidate.h,
+            ),
+            candidate_center.y,
+        ),
+        PortalDir::N => (
+            current_center.y - candidate_center.y,
+            range_gap(
+                current.x,
+                current.x + current.w,
+                candidate.x,
+                candidate.x + candidate.w,
+            ),
+            candidate_center.x,
+        ),
+        PortalDir::S => (
+            candidate_center.y - current_center.y,
+            range_gap(
+                current.x,
+                current.x + current.w,
+                candidate.x,
+                candidate.x + candidate.w,
+            ),
+            candidate_center.x,
+        ),
+    };
+    if main_delta <= 0.5 {
+        return None;
+    }
+    let dx = candidate_center.x - current_center.x;
+    let dy = candidate_center.y - current_center.y;
+    Some((orth_gap, main_delta, dx * dx + dy * dy, tie_axis))
 }
 
 #[cfg(test)]
@@ -225,5 +332,61 @@ mod tests {
         let candidates = focus_cycle_candidates(&field, &last_focus_ms, None);
         // known has a real timestamp and sorts before unknown (defaults to 0).
         assert_eq!(candidates, vec![known, unknown]);
+    }
+
+    #[test]
+    fn node_field_rect_excludes_non_active_and_hidden() {
+        let mut field = Field::new();
+        let active = field.spawn_surface("A", Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 100.0, y: 50.0 });
+        let dot = field.spawn_surface("B", Vec2 { x: 10.0, y: 0.0 }, Vec2 { x: 100.0, y: 50.0 });
+        field.set_state(dot, NodeState::Node);
+        let hidden = field.spawn_surface("C", Vec2 { x: 20.0, y: 0.0 }, Vec2 { x: 100.0, y: 50.0 });
+        field.set_hidden(hidden, true);
+
+        let rect = node_field_rect(&field, active).unwrap();
+        assert_eq!(rect.x, -50.0);
+        assert_eq!(rect.y, -25.0);
+        assert_eq!(rect.w, 100.0);
+        assert_eq!(rect.h, 50.0);
+
+        assert!(node_field_rect(&field, dot).is_none());
+        assert!(node_field_rect(&field, hidden).is_none());
+    }
+
+    fn active_rect(field: &mut Field, x: f32, y: f32) -> Rect {
+        let id = field.spawn_surface("N", Vec2 { x, y }, Vec2 { x: 100.0, y: 100.0 });
+        node_field_rect(field, id).unwrap()
+    }
+
+    #[test]
+    fn directional_score_picks_nearest_neighbor_per_direction() {
+        // Mirrors halley-wl's directional_focus_picks_nearest_neighbor_per_direction.
+        let mut field = Field::new();
+        let center = active_rect(&mut field, 400.0, 300.0);
+        let right = active_rect(&mut field, 700.0, 300.0);
+        let up = active_rect(&mut field, 400.0, 60.0);
+        let overlap = active_rect(&mut field, 460.0, 300.0);
+
+        let best = |current: Rect, candidates: &[Rect], dir: PortalDir| -> Option<Rect> {
+            candidates
+                .iter()
+                .copied()
+                .filter_map(|c| directional_candidate_score(current, c, dir).map(|s| (s, c)))
+                .min_by(|(a, _), (b, _)| a.partial_cmp(b).unwrap())
+                .map(|(_, c)| c)
+        };
+
+        assert_eq!(
+            best(center, &[right, up, overlap], PortalDir::N),
+            Some(up)
+        );
+        // The closely-stacked peer should win over the far-right window.
+        assert_eq!(
+            best(center, &[right, up, overlap], PortalDir::E),
+            Some(overlap)
+        );
+        assert_eq!(best(overlap, &[right, up, center], PortalDir::E), Some(right));
+        // Nothing to the west of center -> no candidate scores at all.
+        assert_eq!(best(center, &[right, up, overlap], PortalDir::W), None);
     }
 }
