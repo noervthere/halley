@@ -153,6 +153,18 @@ pub struct Node {
     pub decay: DecayLevel,
 }
 
+impl Node {
+    /// The footprint a node occupies when shrunk to its "dot with label"
+    /// representation (`NodeState::Node`). Named explicitly rather than
+    /// left as a magic constant inline in `set_state`, so anything that
+    /// needs to know a node's collapsed size (e.g. the cluster module
+    /// laying out collapsed members) can ask for it directly instead of
+    /// duplicating the number.
+    pub fn collapsed_footprint(&self) -> Vec2 {
+        Vec2 { x: 24.0, y: 24.0 }
+    }
+}
+
 /// The infinite 2D space containing all Nodes.
 ///
 /// `Field` is deliberately cluster-blind: it knows nothing about
@@ -391,7 +403,6 @@ impl Field {
     }
 
     pub fn set_state(&mut self, id: NodeId, state: NodeState) -> bool {
-        const DOT: Vec2 = Vec2 { x: 24.0, y: 24.0 };
         const CORE: Vec2 = Vec2 { x: 48.0, y: 48.0 };
 
         let Some(n) = self.node_mut(id) else {
@@ -402,7 +413,7 @@ impl Field {
         n.footprint = match state {
             NodeState::Active => n.resize_footprint.unwrap_or(n.intrinsic_size),
             NodeState::Drifting => n.footprint,
-            NodeState::Node => DOT,
+            NodeState::Node => n.collapsed_footprint(),
             NodeState::Core => CORE,
         };
 
