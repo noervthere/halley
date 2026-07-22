@@ -1,14 +1,18 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+pub mod bearings;
+pub mod cluster;
+pub mod cluster_layout;
+pub mod cluster_policy;
+pub mod decay;
+pub mod field;
+pub mod focus;
+pub mod overlap_physics;
+pub mod stacking;
+pub mod tiling;
+pub mod trail;
+pub mod viewport;
+pub mod visual;
+pub mod world;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+pub use cluster_policy::{ClusterFormationState, ClusterPolicy, tick_cluster_formation};
+pub use decay::{DecayLevel, DecayPolicy, tick_decay};
+pub use visual::{NodeVisual, VisualParams, build_visuals, build_visuals_in_view};
