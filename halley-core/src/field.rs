@@ -98,32 +98,26 @@ impl Visibility {
     }
 }
 
-/// What kind of thing a node represents.
-///
-/// NOTE: temporarily still carries `Core` (the collapsed-cluster handle
-/// marker) — removing it, and the enum entirely, is step 1b. Nothing in
-/// this file constructs `NodeKind::Core` anymore since `collapse_cluster`
-/// was removed in this pass; the variant is inert until step 1b deletes it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum NodeKind {
-    Surface,
-    Core,
-}
-
 /// Representation state.
+///
+/// `Core` (the collapsed-cluster handle representation) is currently dead:
+/// nothing constructs it, since `Field` no longer owns cluster placeholders
+/// at all (see the `Field` doc comment) — the cluster module tracks its own
+/// synthetic core entry externally rather than storing it as a `Node` here.
+/// Left in place rather than removed pre-emptively; revisit once step 1f/1h
+/// land and it's clear whether anything still needs it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NodeState {
     Active,
     Drifting,
     Node, // dot with label
-    Core, // only meaningful for Core kind
+    Core,
 }
 
 /// A Node is the universal "thing" that exists in the Field.
 #[derive(Clone, Debug)]
 pub struct Node {
     pub id: NodeId,
-    pub kind: NodeKind,
     pub state: NodeState,
 
     pub label: String,
@@ -164,7 +158,6 @@ impl Field {
     fn make_surface_node(id: NodeId, label: String, pos: Vec2, size: Vec2) -> Node {
         Node {
             id,
-            kind: NodeKind::Surface,
             state: NodeState::Active,
             label,
             pos,
@@ -343,7 +336,7 @@ impl Field {
         n.decay = DecayLevel::Hot;
 
         // Core is a handle; it doesn't switch representation via touch.
-        if n.kind != NodeKind::Core {
+        if n.state != NodeState::Core {
             n.state = NodeState::Active;
             n.footprint = n.resize_footprint.unwrap_or(n.intrinsic_size);
         }
@@ -358,7 +351,7 @@ impl Field {
         };
 
         // Core is a handle; it doesn't decay away.
-        if n.kind == NodeKind::Core {
+        if n.state == NodeState::Core {
             return true;
         }
 

@@ -1,8 +1,5 @@
-use crate::field::{Field, NodeId, NodeKind, Vec2};
+use crate::field::{Field, NodeId, NodeState, Vec2};
 use crate::viewport::{FocusRing, FocusZone, Viewport};
-
-#[cfg(test)]
-use crate::field::NodeState;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DecayLevel {
@@ -32,7 +29,7 @@ pub fn tick_decay(field: &mut Field, now_ms: u64, policy: DecayPolicy, focused: 
     for id in ids {
         let Some(n) = field.node(id) else { continue };
 
-        if n.kind == NodeKind::Core {
+        if n.state == NodeState::Core {
             continue;
         }
 
@@ -101,12 +98,12 @@ pub fn tick_decay_focus_ring(
     let ids: Vec<NodeId> = field.nodes().keys().copied().collect();
 
     for id in ids {
-        let (kind, pos, active_extent, last_touch_ms) = {
+        let (state, pos, active_extent, last_touch_ms) = {
             let Some(n) = field.node(id) else { continue };
-            (n.kind.clone(), n.pos, n.footprint, n.last_touch_ms)
+            (n.state.clone(), n.pos, n.footprint, n.last_touch_ms)
         };
 
-        if kind == NodeKind::Core {
+        if state == NodeState::Core {
             continue;
         }
 

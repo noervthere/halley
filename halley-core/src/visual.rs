@@ -1,4 +1,4 @@
-use crate::field::{Field, NodeId, NodeKind, NodeState, Rect, Vec2};
+use crate::field::{Field, NodeId, NodeState, Rect, Vec2};
 use crate::viewport::Viewport;
 
 /// Render-facing snapshot of a node.
@@ -12,7 +12,6 @@ pub struct NodeVisual {
     pub size: Vec2,
 
     // Semantics
-    pub kind: NodeKind,
     pub state: NodeState,
 
     /// Back-compat field name: this is "pinned in place" (movement constraint).
@@ -71,7 +70,7 @@ fn make_visual(field: &Field, id: NodeId, params: VisualParams) -> NodeVisual {
     // If zoom=0.5 => scale=2
     let label_scale = (1.0 / zoom).clamp(params.min_label_scale, params.max_label_scale);
 
-    let is_cluster_core = n.kind == NodeKind::Core;
+    let is_cluster_core = n.state == NodeState::Core;
 
     // Badge count used to come from a direct `field.cluster_id_for_core_public()`
     // + `field.cluster()` lookup. Field is now cluster-blind (step 1a) — once
@@ -108,7 +107,6 @@ fn make_visual(field: &Field, id: NodeId, params: VisualParams) -> NodeVisual {
         id,
         pos: n.pos,
         size: n.footprint,
-        kind: n.kind.clone(),
         state: n.state.clone(),
 
         // IMPORTANT: old name, new meaning
