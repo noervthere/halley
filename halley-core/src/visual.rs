@@ -1,3 +1,4 @@
+use crate::cluster::ClusterRegistry;
 use crate::field::{Field, NodeId, NodeState, Rect, Vec2};
 use crate::viewport::Viewport;
 
@@ -58,7 +59,12 @@ impl Default for VisualParams {
     }
 }
 
-fn make_visual(field: &Field, id: NodeId, params: VisualParams) -> NodeVisual {
+fn make_visual(
+    field: &Field,
+    id: NodeId,
+    params: VisualParams,
+    registry: Option<&ClusterRegistry>,
+) -> NodeVisual {
     let n = field
         .node(id)
         .expect("make_visual called with missing node");
@@ -73,11 +79,21 @@ fn make_visual(field: &Field, id: NodeId, params: VisualParams) -> NodeVisual {
     let is_cluster_core = n.state == NodeState::Core;
 
     // Badge count used to come from a direct `field.cluster_id_for_core_public()`
-    // + `field.cluster()` lookup. Field is now cluster-blind (step 1a) — once
-    // the World-owned cluster registry exists again (step 1h/3), this needs
-    // to come from a membership lookup passed in from outside, not from Field
-    // itself. Left as `None` until that's wired back up.
-    let cluster_member_count: Option<usize> = None;
+    // + `field.cluster()` lookup, back when Field owned cluster state. Field
+    // is permanently cluster-blind now - the registry lives on World, one per
+    // space (see cluster.rs/world.rs) - so callers that have it pass it in
+    // here; callers that don't (e.g. Field's own `visuals_visible()`
+    // convenience methods, which only have `&Field`) get `None` and the
+    // badge count is simply omitted.
+    let cluster_member_count = if is_cluster_core {
+        registry.and_then(|r| {
+            r.cluster_id_for_core(id)
+                .and_then(|cid| r.cluster(cid))
+                .map(|c| c.members().len())
+        })
+    } else {
+        None
+    };
 
     // Z ordering:
     // - focused highest
@@ -126,15 +142,22 @@ fn make_visual(field: &Field, id: NodeId, params: VisualParams) -> NodeVisual {
 /// Build a render-friendly list of visuals from the current Field + Viewport.
 /// - Skips nodes that are not experience-visible.
 /// - Emits label scaling that grows as you zoom out.
-/// - Marks Core nodes as cluster cores (badge is optional; uses cluster lookup if available).
-pub fn build_visuals(field: &Field, _vp: &Viewport, params: VisualParams) -> Vec<NodeVisual> {
+/// - Marks Core nodes as cluster cores (badge count needs `registry` - pass
+///   `None` if the caller doesn't have one, e.g. `Field`'s own convenience
+///   wrappers below).
+pub fn build_visuals(
+    field: &Field,
+    _vp: &Viewport,
+    params: VisualParams,
+    registry: Option<&ClusterRegistry>,
+) -> Vec<NodeVisual> {
     let mut out = Vec::new();
 
     for (&id, _) in field.nodes().iter() {
         if !field.is_visible(id) {
             continue;
         }
-        out.push(make_visual(field, id, params));
+        out.push(make_visual(field, id, params, registry));
     }
 
     // Stable draw order: sort by z then id
@@ -151,6 +174,7 @@ pub fn build_visuals_in_view(
     _vp: &Viewport,
     view: Rect,
     params: VisualParams,
+    registry: Option<&ClusterRegistry>,
 ) -> Vec<NodeVisual> {
     let mut out = Vec::new();
 
@@ -159,7 +183,7 @@ pub fn build_visuals_in_view(
             continue;
         }
         if field.bounds(id).is_some_and(|b| b.intersects(view)) {
-            out.push(make_visual(field, id, params));
+            out.push(make_visual(field, id, params, registry));
         }
     }
 
@@ -184,7 +208,7 @@ mod tests {
         assert!(f.set_hidden(b, true));
 
         let vp = Viewport::new(Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 100.0, y: 100.0 });
-        let visuals = build_visuals(&f, &vp, VisualParams::default());
+        let visuals = build_visuals(&f, &vp, VisualParams::default(), None);
 
         assert_eq!(visuals.len(), 1);
         assert_eq!(visuals[0].id, a);
@@ -205,6 +229,7 @@ mod tests {
                 zoom: 1.0,
                 ..Default::default()
             },
+            None,
         );
         let v2 = build_visuals(
             &f,
@@ -213,6 +238,7 @@ mod tests {
                 zoom: 0.5,
                 ..Default::default()
             },
+            None,
         );
 
         assert!(v2[0].label_scale > v1[0].label_scale);
@@ -235,6 +261,7 @@ mod tests {
                 focused: Some(b),
                 ..Default::default()
             },
+            None,
         );
 
         let za = visuals.iter().find(|v| v.id == a).unwrap().z;
@@ -255,8 +282,33 @@ mod tests {
             max: Vec2 { x: 20.0, y: 20.0 },
         };
 
-        let visuals = build_visuals_in_view(&f, &vp, view, VisualParams::default());
+        let visuals = build_visuals_in_view(&f, &vp, view, VisualParams::default(), None);
         assert_eq!(visuals.len(), 1);
         assert_eq!(visuals[0].id, a);
+    }
+
+    #[test]
+    fn cluster_core_badge_uses_registry_when_provided() {
+        let mut f = Field::new();
+        let mut r = crate::cluster::ClusterRegistry::new();
+        let a = f.spawn_surface("A", Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 10.0, y: 10.0 });
+        let b = f.spawn_surface("B", Vec2 { x: 10.0, y: 0.0 }, Vec2 { x: 10.0, y: 10.0 });
+
+        let cid = r.create_cluster(&mut f, vec![a, b]).unwrap();
+        let core = r.collapse_cluster(&mut f, cid).unwrap();
+
+        let vp = Viewport::new(Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 100.0, y: 100.0 });
+
+        // Without a registry, badge count is omitted.
+        let no_registry = build_visuals(&f, &vp, VisualParams::default(), None);
+        let core_visual = no_registry.iter().find(|v| v.id == core).unwrap();
+        assert!(core_visual.is_cluster_core);
+        assert_eq!(core_visual.cluster_member_count, None);
+
+        // With a registry, badge count reflects real membership.
+        let with_registry = build_visuals(&f, &vp, VisualParams::default(), Some(&r));
+        let core_visual = with_registry.iter().find(|v| v.id == core).unwrap();
+        assert!(core_visual.is_cluster_core);
+        assert_eq!(core_visual.cluster_member_count, Some(2));
     }
 }

@@ -444,16 +444,18 @@ impl Field {
         true
     }
 
-    /// Canonical visuals feed: for full behavior, use `build_visuals()` directly.
-    /// These helpers delegate to the same implementation to avoid drift.
+    /// Canonical visuals feed: for full behavior (including cluster-core
+    /// badge counts), call `build_visuals()` directly with a
+    /// `ClusterRegistry` - these convenience wrappers only have `&Field`, so
+    /// they can't provide one and always omit the badge count.
     pub fn visuals_visible(&self) -> Vec<NodeVisual> {
         let vp = Viewport::new(Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 0.0, y: 0.0 });
-        build_visuals(self, &vp, VisualParams::default())
+        build_visuals(self, &vp, VisualParams::default(), None)
     }
 
     pub fn visuals_in_view(&self, view: Rect) -> Vec<NodeVisual> {
         let vp = Viewport::new(Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 0.0, y: 0.0 });
-        build_visuals_in_view(self, &vp, view, VisualParams::default())
+        build_visuals_in_view(self, &vp, view, VisualParams::default(), None)
     }
 
     pub fn insert_existing(&mut self, node: Node) {
