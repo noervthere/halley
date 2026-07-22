@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::cluster::ClusterId;
-use crate::field::{Field, NodeId, NodeKind, Vec2};
+use crate::cluster::{ClusterId, ClusterRegistry};
+use crate::field::{Field, NodeId, NodeState, Vec2};
 
 /// Configuration for auto cluster formation.
 ///
@@ -75,6 +75,7 @@ fn ordered_pair(a: NodeId, b: NodeId) -> (NodeId, NodeId) {
 /// Returns any newly created ClusterIds.
 pub fn tick_cluster_formation(
     field: &mut Field,
+    registry: &mut ClusterRegistry,
     now_ms: u64,
     policy: ClusterPolicy,
     state: &mut ClusterFormationState,
@@ -86,7 +87,7 @@ pub fn tick_cluster_formation(
 
     // Exclude nodes already belonging to any cluster.
     let mut already_clustered: HashSet<NodeId> = HashSet::new();
-    for c in field.clusters_iter() {
+    for c in registry.clusters_iter() {
         for &m in c.members() {
             already_clustered.insert(m);
         }
@@ -95,23 +96,24 @@ pub fn tick_cluster_formation(
         }
     }
 
-    // Candidate nodes: visible, Surface (not Core), not detached/hidden, not already in cluster.
+    // Candidate nodes: visible, not a collapsed-cluster-core representation,
+    // not already in a cluster.
     let mut candidates: Vec<NodeId> = field
         .nodes()
         .keys()
         .copied()
-        .filter(|&id| field.participates_in_field_view(id))
         .filter(|&id| field.is_visible(id))
         .filter(|&id| !already_clustered.contains(&id))
-        .filter(|&id| field.node(id).is_some_and(|n| n.kind == NodeKind::Surface))
+        .filter(|&id| field.node(id).is_some_and(|n| n.state != NodeState::Core))
         .filter(|&id| {
             if policy.include_active {
                 true
             } else {
-                field.node(id).is_some_and(|n| {
-                    n.state != crate::field::NodeState::Active
-                        && n.state != crate::field::NodeState::Core
-                })
+                // Core is already excluded by the filter above; only need
+                // to additionally exclude Active here.
+                field
+                    .node(id)
+                    .is_some_and(|n| n.state != NodeState::Active)
             }
         })
         .filter(|&id| {
@@ -195,7 +197,7 @@ pub fn tick_cluster_formation(
         // Only form a cluster if large enough.
         if comp.len() >= policy.min_members {
             // Attempt to create the cluster.
-            if let Ok(cid) = field.create_cluster(comp.clone()) {
+            if let Ok(cid) = registry.create_cluster(field, comp.clone()) {
                 created.push(cid);
 
                 // Clear any pair timers involving these nodes to avoid instant re-cluster.
@@ -218,6 +220,7 @@ mod tests {
     #[test]
     fn forms_cluster_after_dwell() {
         let mut f = Field::new();
+        let mut r = ClusterRegistry::new();
         let a = f.spawn_surface("A", Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 10.0, y: 10.0 });
         let b = f.spawn_surface("B", Vec2 { x: 50.0, y: 0.0 }, Vec2 { x: 10.0, y: 10.0 });
 
@@ -232,20 +235,20 @@ mod tests {
         };
 
         // t=0: start timer but not mature
-        let c0 = tick_cluster_formation(&mut f, 0, policy, &mut st);
+        let c0 = tick_cluster_formation(&mut f, &mut r, 0, policy, &mut st);
         assert!(c0.is_empty());
 
         // t=999: still not mature
-        let c1 = tick_cluster_formation(&mut f, 999, policy, &mut st);
+        let c1 = tick_cluster_formation(&mut f, &mut r, 999, policy, &mut st);
         assert!(c1.is_empty());
 
         // t=1000: should form
-        let c2 = tick_cluster_formation(&mut f, 1000, policy, &mut st);
+        let c2 = tick_cluster_formation(&mut f, &mut r, 1000, policy, &mut st);
         assert_eq!(c2.len(), 1);
 
         // nodes should now be in a cluster
         let cid = c2[0];
-        let cl = f.cluster(cid).unwrap();
+        let cl = r.cluster(cid).unwrap();
         assert!(cl.contains(a));
         assert!(cl.contains(b));
     }
@@ -253,6 +256,7 @@ mod tests {
     #[test]
     fn disabled_clears_state_and_does_nothing() {
         let mut f = Field::new();
+        let mut r = ClusterRegistry::new();
         let _a = f.spawn_surface("A", Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 10.0, y: 10.0 });
         let _b = f.spawn_surface("B", Vec2 { x: 50.0, y: 0.0 }, Vec2 { x: 10.0, y: 10.0 });
 
@@ -263,7 +267,7 @@ mod tests {
             enabled: false,
             ..Default::default()
         };
-        let out = tick_cluster_formation(&mut f, 1234, policy, &mut st);
+        let out = tick_cluster_formation(&mut f, &mut r, 1234, policy, &mut st);
         assert!(out.is_empty());
         assert!(st.near_since.is_empty());
     }
@@ -271,6 +275,7 @@ mod tests {
     #[test]
     fn moving_apart_resets_dwell_timer() {
         let mut f = Field::new();
+        let mut r = ClusterRegistry::new();
         let a = f.spawn_surface("A", Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 10.0, y: 10.0 });
         let b = f.spawn_surface("B", Vec2 { x: 50.0, y: 0.0 }, Vec2 { x: 10.0, y: 10.0 });
 
@@ -285,7 +290,7 @@ mod tests {
         };
 
         // Start near
-        assert!(tick_cluster_formation(&mut f, 0, policy, &mut st).is_empty());
+        assert!(tick_cluster_formation(&mut f, &mut r, 0, policy, &mut st).is_empty());
 
         // Move far away before dwell
         assert!(f.carry(
@@ -295,20 +300,20 @@ mod tests {
                 y: 0.0
             }
         ));
-        assert!(tick_cluster_formation(&mut f, 500, policy, &mut st).is_empty());
+        assert!(tick_cluster_formation(&mut f, &mut r, 500, policy, &mut st).is_empty());
 
         // Move back near; timer should restart
         assert!(f.carry(b, Vec2 { x: 50.0, y: 0.0 }));
-        assert!(tick_cluster_formation(&mut f, 800, policy, &mut st).is_empty());
+        assert!(tick_cluster_formation(&mut f, &mut r, 800, policy, &mut st).is_empty());
 
         // Not enough time since "back near" (800 -> 1700 is 900)
-        assert!(tick_cluster_formation(&mut f, 1700, policy, &mut st).is_empty());
+        assert!(tick_cluster_formation(&mut f, &mut r, 1700, policy, &mut st).is_empty());
 
         // Now enough since restarted (800 -> 1800 is 1000)
-        let out = tick_cluster_formation(&mut f, 1800, policy, &mut st);
+        let out = tick_cluster_formation(&mut f, &mut r, 1800, policy, &mut st);
         assert_eq!(out.len(), 1);
         let cid = out[0];
-        let cl = f.cluster(cid).unwrap();
+        let cl = r.cluster(cid).unwrap();
         assert!(cl.contains(a));
         assert!(cl.contains(b));
     }

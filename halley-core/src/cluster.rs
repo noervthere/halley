@@ -1,4 +1,5 @@
-use crate::field::{Node, NodeId};
+use crate::decay::DecayLevel;
+use crate::field::{Field, Node, NodeId, NodeState, Vec2, Visibility};
 use crate::tiling::{MasterStackLayout, Rect, layout_master_stack};
 use std::collections::HashMap;
 
@@ -27,17 +28,43 @@ pub enum ClusterRemoveMemberOutcome {
     RequiresDissolve,
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct ActiveWorkspace {
-    pub nodes: HashMap<NodeId, Node>,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClusterCreateError {
+    TooFewMembers,
+    DuplicateMember,
+    MissingNode(NodeId),
+    AlreadyClustered(NodeId),
 }
 
-/// A cluster is a group of window nodes (members).
-/// When collapsed, a Core node represents the cluster as the handle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClusterAddMemberError {
+    MissingCluster,
+    MissingNode(NodeId),
+    AlreadyClustered(NodeId),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClusterReorderError {
+    MissingCluster,
+    InvalidMembers,
+    UnknownMember(NodeId),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RemoveNodeClusterEffect {
+    RemovedMember(ClusterId),
+    DissolvedCluster(ClusterId),
+    RemovedCore(ClusterId),
+}
+
+/// A cluster is a group of window nodes (members). Member nodes always live
+/// in `Field.nodes`, in every mode - this record only tracks grouping/mode/
+/// core bookkeeping, never node payloads. When collapsed, a `NodeState::Core`
+/// `Field` node represents the cluster as a handle.
 #[derive(Clone, Debug)]
 pub struct Cluster {
     pub id: ClusterId,
-    pub(crate) members: Vec<NodeId>,
+    members: Vec<NodeId>,
 
     /// When collapsed, which Core node represents this cluster.
     pub core: Option<NodeId>,
@@ -45,11 +72,10 @@ pub struct Cluster {
     pub pinned: bool,
 
     pub mode: ClusterMode,
-    pub active_workspace: Option<ActiveWorkspace>,
 }
 
 impl Cluster {
-    pub fn new(id: ClusterId, members: Vec<NodeId>) -> Option<Self> {
+    fn new(id: ClusterId, members: Vec<NodeId>) -> Option<Self> {
         if members.is_empty() {
             return None;
         }
@@ -62,7 +88,6 @@ impl Cluster {
             core: None,
             pinned: false,
             mode: ClusterMode::Expanded,
-            active_workspace: None,
         })
     }
 
@@ -125,22 +150,19 @@ impl Cluster {
         };
     }
 
-    pub fn enter_active(&mut self) {
+    fn enter_active(&mut self) {
         self.mode = ClusterMode::Active;
-        self.active_workspace
-            .get_or_insert_with(ActiveWorkspace::default);
     }
 
-    pub fn exit_active(&mut self) {
+    fn exit_active(&mut self) {
         self.mode = ClusterMode::Expanded;
-        self.active_workspace = None;
     }
 
     pub fn workspace_layout(&self, bounds: Rect, max_stack: usize) -> MasterStackLayout {
         layout_master_stack(bounds, self.visible_members(max_stack))
     }
 
-    pub(crate) fn add_member(&mut self, member: NodeId) -> bool {
+    fn add_member(&mut self, member: NodeId) -> bool {
         if self.members.contains(&member) {
             return false;
         }
@@ -148,7 +170,7 @@ impl Cluster {
         true
     }
 
-    pub(crate) fn add_member_front(&mut self, member: NodeId) -> bool {
+    fn add_member_front(&mut self, member: NodeId) -> bool {
         if self.members.contains(&member) {
             return false;
         }
@@ -156,45 +178,24 @@ impl Cluster {
         true
     }
 
-    pub fn workspace_member(&self, id: NodeId) -> Option<&Node> {
-        self.active_workspace.as_ref()?.nodes.get(&id)
-    }
-
-    pub fn workspace_member_mut(&mut self, id: NodeId) -> Option<&mut Node> {
-        self.active_workspace.as_mut()?.nodes.get_mut(&id)
-    }
-
-    pub(crate) fn insert_workspace_member(&mut self, node: Node) -> bool {
-        let Some(active_workspace) = self.active_workspace.as_mut() else {
-            return false;
-        };
-        active_workspace.nodes.insert(node.id, node);
-        true
-    }
-
-    pub(crate) fn remove_workspace_member(&mut self, id: NodeId) -> Option<Node> {
-        self.active_workspace.as_mut()?.nodes.remove(&id)
-    }
-
-    pub(crate) fn remove_member(&mut self, member: NodeId) -> Option<ClusterRemoveMemberOutcome> {
+    fn remove_member(&mut self, member: NodeId) -> Option<ClusterRemoveMemberOutcome> {
         if !self.members.contains(&member) {
             return None;
         }
         if self.members.len() <= 1 {
             return Some(ClusterRemoveMemberOutcome::RequiresDissolve);
         }
-
         self.members.retain(|&id| id != member);
         Some(ClusterRemoveMemberOutcome::Removed)
     }
 
-    pub(crate) fn remove_member_for_node_removal(&mut self, member: NodeId) -> bool {
+    fn remove_member_for_node_removal(&mut self, member: NodeId) -> bool {
         let before = self.members.len();
         self.members.retain(|&id| id != member);
         self.members.len() != before
     }
 
-    pub(crate) fn reorder_members(&mut self, ordered_members: Vec<NodeId>) -> bool {
+    fn reorder_members(&mut self, ordered_members: Vec<NodeId>) -> bool {
         if ordered_members.len() != self.members.len() || has_duplicates(&ordered_members) {
             return false;
         }
@@ -211,7 +212,7 @@ impl Cluster {
         true
     }
 
-    pub(crate) fn promote_member_to_master(&mut self, member: NodeId) -> bool {
+    fn promote_member_to_master(&mut self, member: NodeId) -> bool {
         let Some(index) = self.members.iter().position(|&id| id == member) else {
             return false;
         };
@@ -223,7 +224,7 @@ impl Cluster {
         true
     }
 
-    pub(crate) fn swap_overflow_member_with_visible(
+    fn swap_overflow_member_with_visible(
         &mut self,
         overflow_member: NodeId,
         visible_member: NodeId,
@@ -250,7 +251,7 @@ impl Cluster {
         true
     }
 
-    pub(crate) fn reorder_overflow_member(
+    fn reorder_overflow_member(
         &mut self,
         member: NodeId,
         target_overflow_index: usize,
@@ -288,6 +289,506 @@ fn has_duplicates(members: &[NodeId]) -> bool {
         }
     }
     false
+}
+
+fn find_duplicate_member(members: &[NodeId]) -> Option<NodeId> {
+    let mut seen = std::collections::HashSet::new();
+    for member in members {
+        if !seen.insert(*member) {
+            return Some(*member);
+        }
+    }
+    None
+}
+
+/// Owns all cluster bookkeeping for a single space. `World` holds one
+/// `ClusterRegistry` per `SpaceId`, mirroring its one-`Field`-per-`SpaceId`
+/// layout (see `world.rs`) - `NodeId`/`ClusterId` are only unique within a
+/// single space, so a single flat registry spanning every space would risk
+/// silently conflating ids across spaces.
+///
+/// `Field` itself has zero cluster awareness. This registry reads/mutates
+/// node data through `Field`'s ordinary public API only (`node`, `node_mut`,
+/// `set_state`, `spawn_surface`, `remove`, `carry`, ...) - the same way any
+/// external consumer would, never through anything Field-internal.
+#[derive(Debug, Default)]
+pub struct ClusterRegistry {
+    next_cluster: u64,
+    clusters: HashMap<ClusterId, Cluster>,
+    membership: HashMap<NodeId, ClusterId>,
+}
+
+impl ClusterRegistry {
+    pub fn new() -> Self {
+        Self {
+            next_cluster: 1,
+            clusters: HashMap::new(),
+            membership: HashMap::new(),
+        }
+    }
+
+    pub fn cluster(&self, id: ClusterId) -> Option<&Cluster> {
+        self.clusters.get(&id)
+    }
+
+    pub fn cluster_mut(&mut self, id: ClusterId) -> Option<&mut Cluster> {
+        self.clusters.get_mut(&id)
+    }
+
+    pub fn cluster_ids(&self) -> Vec<ClusterId> {
+        let mut ids: Vec<_> = self.clusters.keys().copied().collect();
+        ids.sort_by_key(|id| id.as_u64());
+        ids
+    }
+
+    pub fn clusters_iter(&self) -> impl Iterator<Item = &Cluster> {
+        self.clusters.values()
+    }
+
+    /// O(1) via the membership index (the old `Field`-owned version
+    /// linear-scanned every cluster's member list for this).
+    pub fn cluster_id_for_member(&self, member: NodeId) -> Option<ClusterId> {
+        self.membership.get(&member).copied()
+    }
+
+    pub fn cluster_id_for_core(&self, core: NodeId) -> Option<ClusterId> {
+        self.clusters
+            .iter()
+            .find_map(|(&cid, c)| (c.core == Some(core)).then_some(cid))
+    }
+
+    pub fn is_cluster_member(&self, id: NodeId) -> bool {
+        self.membership.contains_key(&id)
+    }
+
+    pub fn is_active_cluster_member(&self, id: NodeId) -> bool {
+        self.cluster_id_for_member(id)
+            .is_some_and(|cid| self.clusters.get(&cid).is_some_and(|c| c.is_active()))
+    }
+
+    /// Remove a cluster record wholesale (needed for cross-space transfer -
+    /// see `World::transfer_cluster_by_core`). Does not touch `Field`.
+    pub fn remove_cluster_record(&mut self, id: ClusterId) -> Option<Cluster> {
+        if let Some(cluster) = self.clusters.get(&id) {
+            for &m in cluster.members() {
+                self.membership.remove(&m);
+            }
+        }
+        self.clusters.remove(&id)
+    }
+
+    /// Insert an existing cluster record wholesale (needed for cross-space
+    /// transfer). Does not touch `Field`.
+    pub fn insert_cluster_record(&mut self, cluster: Cluster) {
+        self.next_cluster = self.next_cluster.max(cluster.id.as_u64() + 1);
+        for &m in cluster.members() {
+            self.membership.insert(m, cluster.id);
+        }
+        self.clusters.insert(cluster.id, cluster);
+    }
+
+    pub fn create_cluster(
+        &mut self,
+        field: &mut Field,
+        members: Vec<NodeId>,
+    ) -> Result<ClusterId, ClusterCreateError> {
+        if members.is_empty() {
+            return Err(ClusterCreateError::TooFewMembers);
+        }
+        if find_duplicate_member(&members).is_some() {
+            return Err(ClusterCreateError::DuplicateMember);
+        }
+
+        for &member in &members {
+            if field.node(member).is_none() {
+                return Err(ClusterCreateError::MissingNode(member));
+            }
+            if self.cluster_id_for_member(member).is_some() {
+                return Err(ClusterCreateError::AlreadyClustered(member));
+            }
+        }
+
+        let id = ClusterId::new(self.next_cluster);
+        self.next_cluster += 1;
+
+        let mut any_member_pinned = false;
+        for &member in &members {
+            if field.node(member).is_some_and(|n| n.pinned) {
+                any_member_pinned = true;
+                let _ = field.set_pinned(member, false);
+            }
+        }
+
+        let mut cluster =
+            Cluster::new(id, members.clone()).ok_or(ClusterCreateError::TooFewMembers)?;
+        cluster.pinned = any_member_pinned;
+        self.clusters.insert(id, cluster);
+        for member in members {
+            self.membership.insert(member, id);
+        }
+        Ok(id)
+    }
+
+    pub fn add_member_to_cluster(
+        &mut self,
+        field: &mut Field,
+        id: ClusterId,
+        member: NodeId,
+    ) -> Result<(), ClusterAddMemberError> {
+        if field.node(member).is_none() {
+            return Err(ClusterAddMemberError::MissingNode(member));
+        }
+        if self.cluster_id_for_member(member).is_some() {
+            return Err(ClusterAddMemberError::AlreadyClustered(member));
+        }
+        let is_pinned = field.node(member).is_some_and(|n| n.pinned);
+        if is_pinned {
+            let _ = field.set_pinned(member, false);
+        }
+
+        let Some(cluster) = self.clusters.get_mut(&id) else {
+            return Err(ClusterAddMemberError::MissingCluster);
+        };
+        if !cluster.add_member(member) {
+            return Err(ClusterAddMemberError::AlreadyClustered(member));
+        }
+        if is_pinned {
+            cluster.pinned = true;
+        }
+        self.membership.insert(member, id);
+        Ok(())
+    }
+
+    pub fn add_member_to_cluster_front(
+        &mut self,
+        field: &mut Field,
+        id: ClusterId,
+        member: NodeId,
+    ) -> Result<(), ClusterAddMemberError> {
+        if field.node(member).is_none() {
+            return Err(ClusterAddMemberError::MissingNode(member));
+        }
+        if self.cluster_id_for_member(member).is_some() {
+            return Err(ClusterAddMemberError::AlreadyClustered(member));
+        }
+        let is_pinned = field.node(member).is_some_and(|n| n.pinned);
+        if is_pinned {
+            let _ = field.set_pinned(member, false);
+        }
+
+        let Some(cluster) = self.clusters.get_mut(&id) else {
+            return Err(ClusterAddMemberError::MissingCluster);
+        };
+        if !cluster.add_member_front(member) {
+            return Err(ClusterAddMemberError::AlreadyClustered(member));
+        }
+        if is_pinned {
+            cluster.pinned = true;
+        }
+        self.membership.insert(member, id);
+        Ok(())
+    }
+
+    pub fn remove_member_from_cluster(
+        &mut self,
+        id: ClusterId,
+        member: NodeId,
+    ) -> Option<ClusterRemoveMemberOutcome> {
+        let cluster = self.clusters.get_mut(&id)?;
+        let outcome = cluster.remove_member(member)?;
+        if matches!(outcome, ClusterRemoveMemberOutcome::Removed) {
+            self.membership.remove(&member);
+        }
+        Some(outcome)
+    }
+
+    pub fn reorder_cluster_members(
+        &mut self,
+        id: ClusterId,
+        ordered_members: Vec<NodeId>,
+    ) -> Result<(), ClusterReorderError> {
+        let Some(cluster) = self.clusters.get_mut(&id) else {
+            return Err(ClusterReorderError::MissingCluster);
+        };
+        for &member in &ordered_members {
+            if !cluster.contains(member) {
+                return Err(ClusterReorderError::UnknownMember(member));
+            }
+        }
+        if !cluster.reorder_members(ordered_members) {
+            return Err(ClusterReorderError::InvalidMembers);
+        }
+        Ok(())
+    }
+
+    pub fn promote_cluster_member_to_master(
+        &mut self,
+        id: ClusterId,
+        member: NodeId,
+    ) -> Result<(), ClusterReorderError> {
+        let Some(cluster) = self.clusters.get_mut(&id) else {
+            return Err(ClusterReorderError::MissingCluster);
+        };
+        if !cluster.contains(member) {
+            return Err(ClusterReorderError::UnknownMember(member));
+        }
+        if !cluster.promote_member_to_master(member) {
+            return Err(ClusterReorderError::InvalidMembers);
+        }
+        Ok(())
+    }
+
+    pub fn swap_cluster_overflow_member_with_visible(
+        &mut self,
+        id: ClusterId,
+        overflow_member: NodeId,
+        visible_member: NodeId,
+        max_stack: usize,
+    ) -> bool {
+        let Some(cluster) = self.clusters.get_mut(&id) else {
+            return false;
+        };
+        cluster.swap_overflow_member_with_visible(overflow_member, visible_member, max_stack)
+    }
+
+    pub fn reorder_cluster_overflow_member(
+        &mut self,
+        id: ClusterId,
+        member: NodeId,
+        target_overflow_index: usize,
+        max_stack: usize,
+    ) -> bool {
+        let Some(cluster) = self.clusters.get_mut(&id) else {
+            return false;
+        };
+        cluster.reorder_overflow_member(member, target_overflow_index, max_stack)
+    }
+
+    pub fn cycle_cluster_stacking_members(
+        &mut self,
+        id: ClusterId,
+        direction: crate::cluster_layout::ClusterCycleDirection,
+    ) -> Option<NodeId> {
+        let cluster = self.clusters.get_mut(&id)?;
+        crate::stacking::cycle_stacking_members(&mut cluster.members, direction)
+    }
+
+    pub fn dissolve_cluster(&mut self, field: &mut Field, id: ClusterId) -> bool {
+        self.finish_dissolve_cluster(field, id)
+    }
+
+    /// "Active" cluster mode is purely a mode marker here - unlike the old
+    /// design, members never physically relocate on activate/deactivate,
+    /// so there's no node bookkeeping to do beyond the mode transition.
+    pub fn activate_cluster_workspace(&mut self, id: ClusterId) -> bool {
+        let Some(cluster) = self.clusters.get_mut(&id) else {
+            return false;
+        };
+        if cluster.is_active() {
+            return true;
+        }
+        cluster.enter_active();
+        true
+    }
+
+    pub fn deactivate_cluster_workspace(&mut self, id: ClusterId) -> bool {
+        let Some(cluster) = self.clusters.get_mut(&id) else {
+            return false;
+        };
+        if !cluster.is_active() {
+            return true;
+        }
+        cluster.exit_active();
+        true
+    }
+
+    /// Drag the cluster by its core handle.
+    pub fn carry_cluster_by_core(&mut self, field: &mut Field, core: NodeId, to: Vec2) -> bool {
+        if self.cluster_id_for_core(core).is_none() {
+            return false;
+        }
+        field.carry(core, to)
+    }
+
+    /// Collapse the cluster into a Core node.
+    pub fn collapse_cluster(&mut self, field: &mut Field, id: ClusterId) -> Option<NodeId> {
+        let (members, already_collapsed, existing_core, was_active) = {
+            let c = self.clusters.get(&id)?;
+            (c.members().to_vec(), c.is_collapsed(), c.core, c.is_active())
+        };
+
+        if already_collapsed {
+            return existing_core;
+        }
+        if was_active {
+            self.deactivate_cluster_workspace(id);
+        }
+
+        for &m in &members {
+            field.set_state(m, NodeState::Node);
+            if let Some(n) = field.node_mut(m) {
+                n.visibility.set(Visibility::HIDDEN_BY_CLUSTER, true);
+            }
+        }
+
+        let mut sum = Vec2 { x: 0.0, y: 0.0 };
+        for &m in &members {
+            let n = field.node(m)?;
+            sum.x += n.pos.x;
+            sum.y += n.pos.y;
+        }
+        let k = members.len() as f32;
+        let core_pos = Vec2 {
+            x: sum.x / k,
+            y: sum.y / k,
+        };
+
+        const CORE_SIZE: Vec2 = Vec2 { x: 48.0, y: 48.0 };
+
+        // Reuse the existing core NodeId if the cluster had one and its
+        // Field node is still present; recreate it at the same id if it was
+        // somehow removed without going through this registry (defensive -
+        // mirrors the old code's `entry().or_insert_with()`); otherwise
+        // spawn a fresh node through Field's ordinary public API.
+        let core_id = match existing_core {
+            Some(cid) if field.node(cid).is_some() => cid,
+            Some(cid) => {
+                field.insert_existing(Node {
+                    id: cid,
+                    state: NodeState::Core,
+                    label: format!("Cluster {}", id.as_u64()),
+                    pos: core_pos,
+                    intrinsic_size: CORE_SIZE,
+                    footprint: CORE_SIZE,
+                    resize_footprint: None,
+                    pinned: false,
+                    anchor: false,
+                    is_landmark: false,
+                    visibility: Visibility::NONE,
+                    last_touch_ms: 0,
+                    decay: DecayLevel::Hot,
+                });
+                cid
+            }
+            None => {
+                let new_id =
+                    field.spawn_surface(format!("Cluster {}", id.as_u64()), core_pos, CORE_SIZE);
+                field.set_state(new_id, NodeState::Core);
+                new_id
+            }
+        };
+
+        if let Some(n) = field.node_mut(core_id) {
+            n.pos = core_pos;
+            n.state = NodeState::Core;
+            n.footprint = CORE_SIZE;
+            n.intrinsic_size = CORE_SIZE;
+            n.visibility.clear(Visibility::HIDDEN_BY_CLUSTER);
+            n.visibility.clear(Visibility::DETACHED);
+        }
+
+        let c = self.clusters.get_mut(&id)?;
+        let pinned = c.pinned;
+        c.set_collapsed(true);
+        c.core = Some(core_id);
+
+        if let Some(n) = field.node_mut(core_id) {
+            n.pinned = pinned;
+        }
+
+        Some(core_id)
+    }
+
+    /// Expand the cluster. Note: this does not remove the core node (it
+    /// never did, in the old design either) - callers that need the core
+    /// gone after expanding are responsible for that themselves, same as
+    /// before. In practice nothing in halley-wl calls this today; it's
+    /// exercised only by this crate's own tests.
+    pub fn expand_cluster(&mut self, field: &mut Field, id: ClusterId) -> bool {
+        if self.cluster(id).is_some_and(|c| c.is_active()) {
+            return true;
+        }
+        let members = {
+            let c = match self.clusters.get(&id) {
+                Some(c) => c,
+                None => return false,
+            };
+            if !c.is_collapsed() {
+                return true;
+            }
+            c.members().to_vec()
+        };
+
+        for m in members {
+            field.set_state(m, NodeState::Active);
+            if let Some(n) = field.node_mut(m) {
+                n.visibility.set(Visibility::HIDDEN_BY_CLUSTER, false);
+            }
+        }
+
+        if let Some(c) = self.clusters.get_mut(&id) {
+            c.set_collapsed(false);
+        }
+        true
+    }
+
+    pub fn remove_node_cluster_safe(
+        &mut self,
+        field: &mut Field,
+        id: NodeId,
+    ) -> Option<(Node, Option<RemoveNodeClusterEffect>)> {
+        if let Some(cid) = self.cluster_id_for_member(id) {
+            let cluster_len = self.cluster(cid)?.members().len();
+            let removed = field.remove(id)?;
+            self.membership.remove(&id);
+            if cluster_len <= 1 {
+                self.finish_dissolve_cluster(field, cid);
+                return Some((
+                    removed,
+                    Some(RemoveNodeClusterEffect::DissolvedCluster(cid)),
+                ));
+            }
+            let cluster = self.clusters.get_mut(&cid)?;
+            cluster.remove_member_for_node_removal(id);
+            return Some((removed, Some(RemoveNodeClusterEffect::RemovedMember(cid))));
+        }
+
+        if let Some(cid) = self.cluster_id_for_core(id) {
+            let removed = field.remove(id)?;
+            let was_collapsed = self.cluster(cid).is_some_and(|c| c.is_collapsed());
+            if was_collapsed {
+                let _ = self.expand_cluster(field, cid);
+            }
+            if let Some(cluster) = self.clusters.get_mut(&cid) {
+                cluster.core = None;
+                cluster.set_collapsed(false);
+            }
+            return Some((removed, Some(RemoveNodeClusterEffect::RemovedCore(cid))));
+        }
+
+        field.remove(id).map(|node| (node, None))
+    }
+
+    fn finish_dissolve_cluster(&mut self, field: &mut Field, id: ClusterId) -> bool {
+        let Some(cluster) = self.clusters.remove(&id) else {
+            return false;
+        };
+
+        for &member in cluster.members() {
+            self.membership.remove(&member);
+            let _ = field.set_state(member, NodeState::Active);
+            if let Some(node) = field.node_mut(member) {
+                node.visibility.clear(Visibility::HIDDEN_BY_CLUSTER);
+                node.visibility.clear(Visibility::DETACHED);
+            }
+        }
+
+        if let Some(core_id) = cluster.core {
+            let _ = field.remove(core_id);
+        }
+
+        true
+    }
 }
 
 #[cfg(test)]
@@ -328,5 +829,298 @@ mod tests {
 
         assert_eq!(cluster.visible_members(5).len(), 3);
         assert_eq!(cluster.overflow_members(5).len(), 0);
+    }
+
+    // --- ClusterRegistry tests (ported/adapted from the old field.rs
+    // cluster tests, now written against ClusterRegistry + Field directly
+    // instead of Field owning cluster state itself) ---
+
+    #[test]
+    fn cluster_create_rejects_empty_members() {
+        let mut f = Field::new();
+        let mut r = ClusterRegistry::new();
+
+        assert_eq!(
+            r.create_cluster(&mut f, Vec::new()),
+            Err(ClusterCreateError::TooFewMembers)
+        );
+    }
+
+    #[test]
+    fn cluster_create_rejects_missing_nodes() {
+        let mut f = Field::new();
+        let mut r = ClusterRegistry::new();
+        let missing = NodeId::new(999);
+
+        assert_eq!(
+            r.create_cluster(&mut f, vec![missing]),
+            Err(ClusterCreateError::MissingNode(missing))
+        );
+    }
+
+    #[test]
+    fn cluster_create_allows_singletons() {
+        let mut f = Field::new();
+        let mut r = ClusterRegistry::new();
+        let a = f.spawn_surface("A", Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 10.0, y: 10.0 });
+
+        let cid = r.create_cluster(&mut f, vec![a]).unwrap();
+        assert_eq!(r.cluster(cid).unwrap().members(), &[a]);
+    }
+
+    #[test]
+    fn cluster_create_rejects_duplicate_members() {
+        let mut f = Field::new();
+        let mut r = ClusterRegistry::new();
+        let a = f.spawn_surface("A", Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 10.0, y: 10.0 });
+        let b = f.spawn_surface("B", Vec2 { x: 10.0, y: 0.0 }, Vec2 { x: 10.0, y: 10.0 });
+
+        assert_eq!(
+            r.create_cluster(&mut f, vec![a, a, b]),
+            Err(ClusterCreateError::DuplicateMember)
+        );
+    }
+
+    #[test]
+    fn collapse_cluster_creates_core_and_shrinks_members() {
+        let mut f = Field::new();
+        let mut r = ClusterRegistry::new();
+        let a = f.spawn_surface("A", Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 100.0, y: 50.0 });
+        let b = f.spawn_surface("B", Vec2 { x: 10.0, y: 0.0 }, Vec2 { x: 100.0, y: 50.0 });
+
+        let cid = r.create_cluster(&mut f, vec![a, b]).unwrap();
+        let core = r.collapse_cluster(&mut f, cid).unwrap();
+
+        assert_eq!(f.node(a).unwrap().state, NodeState::Node);
+        assert_eq!(f.node(b).unwrap().state, NodeState::Node);
+        assert_eq!(f.node(a).unwrap().footprint, Vec2 { x: 24.0, y: 24.0 });
+
+        assert!(f.node(a).unwrap().visibility.has(Visibility::HIDDEN_BY_CLUSTER));
+        assert!(f.node(b).unwrap().visibility.has(Visibility::HIDDEN_BY_CLUSTER));
+        assert!(!f.is_visible(a));
+        assert!(!f.is_visible(b));
+
+        let cn = f.node(core).unwrap();
+        assert_eq!(cn.state, NodeState::Core);
+        assert_eq!(cn.footprint, Vec2 { x: 48.0, y: 48.0 });
+        assert!(f.is_visible(core));
+
+        let c = r.cluster(cid).unwrap();
+        assert!(c.is_collapsed());
+        assert_eq!(c.core, Some(core));
+    }
+
+    #[test]
+    fn expand_cluster_restores_members_active_and_visible() {
+        let mut f = Field::new();
+        let mut r = ClusterRegistry::new();
+        let a = f.spawn_surface("A", Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 100.0, y: 50.0 });
+        let b = f.spawn_surface("B", Vec2 { x: 10.0, y: 0.0 }, Vec2 { x: 100.0, y: 50.0 });
+
+        let cid = r.create_cluster(&mut f, vec![a, b]).unwrap();
+        r.collapse_cluster(&mut f, cid).unwrap();
+
+        assert!(r.expand_cluster(&mut f, cid));
+
+        assert_eq!(f.node(a).unwrap().state, NodeState::Active);
+        assert_eq!(f.node(b).unwrap().state, NodeState::Active);
+        assert_eq!(f.node(a).unwrap().footprint, Vec2 { x: 100.0, y: 50.0 });
+
+        assert!(!f.node(a).unwrap().visibility.has(Visibility::HIDDEN_BY_CLUSTER));
+        assert!(f.is_visible(a));
+
+        let c = r.cluster(cid).unwrap();
+        assert!(!c.is_collapsed());
+    }
+
+    #[test]
+    fn collapsing_twice_returns_same_core_without_duplicating() {
+        let mut f = Field::new();
+        let mut r = ClusterRegistry::new();
+        let a = f.spawn_surface("A", Vec2 { x: -20.0, y: 0.0 }, Vec2 { x: 100.0, y: 50.0 });
+        let b = f.spawn_surface("B", Vec2 { x: 20.0, y: 0.0 }, Vec2 { x: 100.0, y: 50.0 });
+
+        let cid = r.create_cluster(&mut f, vec![a, b]).unwrap();
+        let first_core = r.collapse_cluster(&mut f, cid).unwrap();
+        let second_core = r.collapse_cluster(&mut f, cid).unwrap();
+
+        assert_eq!(first_core, second_core);
+        assert!(f.node(first_core).is_some());
+    }
+
+    #[test]
+    fn active_cluster_members_stay_in_field() {
+        let mut f = Field::new();
+        let mut r = ClusterRegistry::new();
+        let a = f.spawn_surface("A", Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 10.0, y: 10.0 });
+        let b = f.spawn_surface("B", Vec2 { x: 10.0, y: 0.0 }, Vec2 { x: 10.0, y: 10.0 });
+
+        let cid = r.create_cluster(&mut f, vec![a, b]).unwrap();
+        assert!(r.activate_cluster_workspace(cid));
+
+        // Unlike the old ActiveWorkspace design, active members are still
+        // ordinary, visible Field nodes - nothing physically relocates.
+        assert!(f.nodes().contains_key(&a));
+        assert!(f.nodes().contains_key(&b));
+        assert!(f.is_visible(a));
+        assert!(f.is_visible(b));
+        assert!(r.is_active_cluster_member(a));
+        assert!(r.cluster(cid).unwrap().is_active());
+
+        assert!(r.deactivate_cluster_workspace(cid));
+        assert!(!r.cluster(cid).unwrap().is_active());
+    }
+
+    #[test]
+    fn carry_respects_pinned() {
+        let mut f = Field::new();
+        let mut r = ClusterRegistry::new();
+        let a = f.spawn_surface("A", Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 10.0, y: 10.0 });
+        let b = f.spawn_surface("B", Vec2 { x: 10.0, y: 0.0 }, Vec2 { x: 10.0, y: 10.0 });
+
+        let cid = r.create_cluster(&mut f, vec![a, b]).unwrap();
+        let core = r.collapse_cluster(&mut f, cid).unwrap();
+
+        assert!(f.set_pinned(core, true));
+        assert!(!r.carry_cluster_by_core(&mut f, core, Vec2 { x: 999.0, y: 999.0 }));
+    }
+
+    #[test]
+    fn remove_member_allows_two_member_cluster_to_become_singleton() {
+        let mut f = Field::new();
+        let mut r = ClusterRegistry::new();
+        let a = f.spawn_surface("A", Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 10.0, y: 10.0 });
+        let b = f.spawn_surface("B", Vec2 { x: 10.0, y: 0.0 }, Vec2 { x: 10.0, y: 10.0 });
+
+        let cid = r.create_cluster(&mut f, vec![a, b]).unwrap();
+
+        assert_eq!(
+            r.remove_member_from_cluster(cid, a),
+            Some(ClusterRemoveMemberOutcome::Removed)
+        );
+        let cluster = r.cluster(cid).unwrap();
+        assert_eq!(cluster.members(), &[b]);
+        assert_eq!(cluster.master(), b);
+        assert!(!r.is_cluster_member(a));
+    }
+
+    #[test]
+    fn raw_member_removal_keeps_two_member_cluster_as_singleton() {
+        let mut f = Field::new();
+        let mut r = ClusterRegistry::new();
+        let a = f.spawn_surface("A", Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 10.0, y: 10.0 });
+        let b = f.spawn_surface("B", Vec2 { x: 10.0, y: 0.0 }, Vec2 { x: 10.0, y: 10.0 });
+
+        let cid = r.create_cluster(&mut f, vec![a, b]).unwrap();
+        let core = r.collapse_cluster(&mut f, cid).unwrap();
+
+        let (_, effect) = r.remove_node_cluster_safe(&mut f, a).unwrap();
+
+        assert_eq!(effect, Some(RemoveNodeClusterEffect::RemovedMember(cid)));
+        assert_eq!(r.cluster(cid).unwrap().members(), &[b]);
+        assert!(f.node(core).is_some());
+        assert!(f.node(a).is_none());
+        assert!(f.node(b).is_some());
+        assert!(!f.is_visible(b));
+    }
+
+    #[test]
+    fn removing_last_member_dissolves_cluster() {
+        let mut f = Field::new();
+        let mut r = ClusterRegistry::new();
+        let a = f.spawn_surface("A", Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 10.0, y: 10.0 });
+        let b = f.spawn_surface("B", Vec2 { x: 10.0, y: 0.0 }, Vec2 { x: 10.0, y: 10.0 });
+
+        let cid = r.create_cluster(&mut f, vec![a, b]).unwrap();
+        let core = r.collapse_cluster(&mut f, cid).unwrap();
+
+        let (_, effect_a) = r.remove_node_cluster_safe(&mut f, a).unwrap();
+        assert_eq!(effect_a, Some(RemoveNodeClusterEffect::RemovedMember(cid)));
+
+        let (_, effect_b) = r.remove_node_cluster_safe(&mut f, b).unwrap();
+        assert_eq!(effect_b, Some(RemoveNodeClusterEffect::DissolvedCluster(cid)));
+
+        assert!(r.cluster(cid).is_none());
+        assert!(f.node(core).is_none());
+    }
+
+    #[test]
+    fn removing_core_expands_and_clears_core_reference() {
+        let mut f = Field::new();
+        let mut r = ClusterRegistry::new();
+        let a = f.spawn_surface("A", Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 10.0, y: 10.0 });
+        let b = f.spawn_surface("B", Vec2 { x: 10.0, y: 0.0 }, Vec2 { x: 10.0, y: 10.0 });
+
+        let cid = r.create_cluster(&mut f, vec![a, b]).unwrap();
+        let core = r.collapse_cluster(&mut f, cid).unwrap();
+
+        let (_, effect) = r.remove_node_cluster_safe(&mut f, core).unwrap();
+        assert_eq!(effect, Some(RemoveNodeClusterEffect::RemovedCore(cid)));
+
+        assert!(f.node(core).is_none());
+        assert!(r.cluster(cid).is_some());
+        assert_eq!(r.cluster(cid).unwrap().core, None);
+        assert!(!r.cluster(cid).unwrap().is_collapsed());
+        assert_eq!(f.node(a).unwrap().state, NodeState::Active);
+        assert_eq!(f.node(b).unwrap().state, NodeState::Active);
+    }
+
+    #[test]
+    fn promote_and_reorder_preserve_explicit_master_contract() {
+        let mut f = Field::new();
+        let mut r = ClusterRegistry::new();
+        let a = f.spawn_surface("A", Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 10.0, y: 10.0 });
+        let b = f.spawn_surface("B", Vec2 { x: 10.0, y: 0.0 }, Vec2 { x: 10.0, y: 10.0 });
+        let c = f.spawn_surface("C", Vec2 { x: 20.0, y: 0.0 }, Vec2 { x: 10.0, y: 10.0 });
+
+        let cid = r.create_cluster(&mut f, vec![a, b, c]).unwrap();
+        r.promote_cluster_member_to_master(cid, c).unwrap();
+        assert_eq!(r.cluster(cid).unwrap().members(), &[c, a, b]);
+        assert_eq!(r.cluster(cid).unwrap().master(), c);
+
+        r.reorder_cluster_members(cid, vec![b, c, a]).unwrap();
+        assert_eq!(r.cluster(cid).unwrap().members(), &[b, c, a]);
+        assert_eq!(r.cluster(cid).unwrap().master(), b);
+        assert_eq!(r.cluster(cid).unwrap().secondaries(), &[c, a]);
+    }
+
+    #[test]
+    fn cluster_workspace_layout_only_tiles_first_four_members() {
+        let mut f = Field::new();
+        let mut r = ClusterRegistry::new();
+        let members = (0..6)
+            .map(|index| {
+                f.spawn_surface(
+                    format!("N{}", index),
+                    Vec2 {
+                        x: index as f32 * 10.0,
+                        y: 0.0,
+                    },
+                    Vec2 { x: 10.0, y: 10.0 },
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let cid = r.create_cluster(&mut f, members.clone()).unwrap();
+        let cluster = r.cluster(cid).unwrap();
+        let layout = cluster.workspace_layout(
+            crate::tiling::Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 1000.0,
+                h: 600.0,
+            },
+            3,
+        );
+
+        assert_eq!(cluster.visible_members(3), &members[..4]);
+        assert_eq!(cluster.overflow_members(3), &members[4..]);
+        assert_eq!(layout.tiles.len(), 4);
+        assert!(
+            layout
+                .tiles
+                .iter()
+                .all(|tile| members[..4].contains(&tile.id))
+        );
     }
 }
