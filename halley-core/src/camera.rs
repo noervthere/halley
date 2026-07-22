@@ -52,11 +52,80 @@ impl Camera {
     pub fn viewport(&self) -> Viewport {
         Viewport::new(self.center, self.view_size)
     }
+
+    /// Clamp a candidate view size to the zoom bounds, relative to this
+    /// camera's `base_size` (was `clamp_camera_view_size`, which reached
+    /// into `st.model.viewport.size` for the same purpose).
+    pub fn clamp_view_size(&self, size: Vec2, zoom_min: f32, zoom_max: f32) -> Vec2 {
+        let (min_zoom, max_zoom) = zoom_scale_bounds(zoom_min, zoom_max);
+        Vec2 {
+            x: size.x.clamp(self.base_size.x / max_zoom, self.base_size.x / min_zoom),
+            y: size.y.clamp(self.base_size.y / max_zoom, self.base_size.y / min_zoom),
+        }
+    }
+}
+
+/// Clamp a configured zoom-per-step factor to a sane minimum (must be > 1.0
+/// to mean anything as a multiplicative step).
+pub fn zoom_step(step: f32) -> f32 {
+    step.max(1.001)
+}
+
+/// Clamp configured zoom min/max into a sane, ordered range.
+pub fn zoom_scale_bounds(zoom_min: f32, zoom_max: f32) -> (f32, f32) {
+    let min = zoom_min.clamp(0.05, 1.0);
+    let max = zoom_max.max(min).clamp(1.0, 16.0);
+    (min, max)
+}
+
+/// Clamp a configured zoom smoothing rate to a sane range.
+pub fn zoom_smooth_rate(rate: f32) -> f32 {
+    rate.clamp(0.1, 120.0)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zoom_step_has_a_floor() {
+        assert_eq!(zoom_step(0.5), 1.001);
+        assert_eq!(zoom_step(2.0), 2.0);
+    }
+
+    #[test]
+    fn zoom_scale_bounds_orders_and_clamps() {
+        // max below min gets pulled up to min.
+        assert_eq!(zoom_scale_bounds(0.5, 0.1), (0.5, 1.0));
+        // out-of-range values get clamped into the sane window.
+        assert_eq!(zoom_scale_bounds(0.0, 100.0), (0.05, 16.0));
+        // ordinary values pass through.
+        assert_eq!(zoom_scale_bounds(0.5, 2.0), (0.5, 2.0));
+    }
+
+    #[test]
+    fn zoom_smooth_rate_clamps_to_sane_range() {
+        assert_eq!(zoom_smooth_rate(0.0), 0.1);
+        assert_eq!(zoom_smooth_rate(1000.0), 120.0);
+        assert_eq!(zoom_smooth_rate(10.0), 10.0);
+    }
+
+    #[test]
+    fn clamp_view_size_respects_base_size_and_bounds() {
+        let cam = Camera::new(Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 800.0, y: 600.0 });
+
+        // Zoomed in too far (size too small) clamps to base/max_zoom.
+        let too_small = cam.clamp_view_size(Vec2 { x: 1.0, y: 1.0 }, 0.5, 2.0);
+        assert_eq!(too_small, Vec2 { x: 400.0, y: 300.0 });
+
+        // Zoomed out too far (size too large) clamps to base/min_zoom.
+        let too_large = cam.clamp_view_size(Vec2 { x: 100_000.0, y: 100_000.0 }, 0.5, 2.0);
+        assert_eq!(too_large, Vec2 { x: 1600.0, y: 1200.0 });
+
+        // Within bounds passes through unchanged.
+        let within = cam.clamp_view_size(Vec2 { x: 900.0, y: 700.0 }, 0.5, 2.0);
+        assert_eq!(within, Vec2 { x: 900.0, y: 700.0 });
+    }
 
     #[test]
     fn new_camera_starts_at_rest_with_targets_matching_live() {
