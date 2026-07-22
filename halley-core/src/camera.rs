@@ -151,6 +151,150 @@ impl Camera {
         self.zoom_log_vel = 0.0;
         self.target_view_size = self.base_size;
     }
+
+    /// Advance the camera one tick toward its targets. `dt` is the elapsed
+    /// time in seconds (the caller computes this from its own clock - was
+    /// `now: Instant` read against `st.ui.render_state.render_last_tick()`,
+    /// a `wl`-side concern). Returns whether anything moved, so the caller
+    /// can decide whether to keep repainting.
+    ///
+    /// Ported from `tick_camera_smoothing_inner`. That function took an
+    /// extra `passive: bool` distinguishing the actively-interacted-with
+    /// monitor from a background one - but every place it changed behavior
+    /// (an interaction-state snap check, mirroring into external tuning, a
+    /// pan-viewport-change notification) was a `wl`-side side effect around
+    /// this call, not part of the numeric integration itself. So there's no
+    /// `passive` parameter here; both of the old wl-side wrapper functions
+    /// become thin callers of this same method.
+    pub fn tick(&mut self, dt: f32, tuning: CameraTickTuning) -> bool {
+        if !tuning.physics_enabled {
+            let changed =
+                self.center != self.target_center || self.view_size != self.target_view_size;
+            self.center = self.target_center;
+            self.view_size = self.target_view_size;
+            self.zoom_log_vel = 0.0;
+            self.pan_vel = Vec2 { x: 0.0, y: 0.0 };
+            return changed;
+        }
+
+        if !tuning.zoom_enabled {
+            self.target_view_size = self.base_size;
+            self.zoom_log_vel = 0.0;
+        }
+
+        let smooth_rate = zoom_smooth_rate(tuning.smooth_rate);
+        let alpha = if tuning.zoom_smooth {
+            (dt * smooth_rate).clamp(0.08, 0.60)
+        } else {
+            1.0
+        };
+
+        let mut changed = false;
+
+        // Inertial pan: coast the target center by velocity with friction so
+        // a flick glides to a smooth stop. (Reaching this point already
+        // implies physics_enabled, per the early return above, so unlike
+        // the old code this doesn't re-check it.)
+        if self.pan_vel.x.abs() > Self::PAN_VEL_EPS || self.pan_vel.y.abs() > Self::PAN_VEL_EPS {
+            let friction = pan_decay_rate(tuning.pan_decay_rate);
+            self.target_center.x += self.pan_vel.x * dt;
+            self.target_center.y += self.pan_vel.y * dt;
+            let decay = (-friction * dt).exp();
+            self.pan_vel.x *= decay;
+            self.pan_vel.y *= decay;
+            if self.pan_vel.x.hypot(self.pan_vel.y) <= Self::PAN_VEL_EPS {
+                self.pan_vel = Vec2 { x: 0.0, y: 0.0 };
+            }
+            changed = true;
+        } else {
+            self.pan_vel = Vec2 { x: 0.0, y: 0.0 };
+        }
+
+        let next_center = Vec2 {
+            x: self.center.x + (self.target_center.x - self.center.x) * alpha,
+            y: self.center.y + (self.target_center.y - self.center.y) * alpha,
+        };
+        if (self.target_center.x - next_center.x).abs() < 0.15 {
+            self.center.x = self.target_center.x;
+        } else {
+            self.center.x = next_center.x;
+            changed = true;
+        }
+        if (self.target_center.y - next_center.y).abs() < 0.15 {
+            self.center.y = self.target_center.y;
+        } else {
+            self.center.y = next_center.y;
+            changed = true;
+        }
+
+        if tuning.zoom_smooth && self.zoom_log_vel.abs() > Self::ZOOM_VEL_EPS {
+            // Inertial zoom: integrate log-space velocity with friction so a
+            // sweep accelerates as input stacks and then coasts to a smooth
+            // stop, like a powered lens. Working in log space keeps the
+            // perceptual zoom rate even.
+            let friction = smooth_rate;
+            let factor = (self.zoom_log_vel * dt).exp();
+            let raw = Vec2 {
+                x: self.view_size.x * factor,
+                y: self.view_size.y * factor,
+            };
+            let clamped = self.clamp_view_size(raw, tuning.zoom_min, tuning.zoom_max);
+            let hit_bound = clamped.x != raw.x || clamped.y != raw.y;
+            self.view_size = clamped;
+            self.zoom_log_vel *= (-friction * dt).exp();
+            if hit_bound || self.zoom_log_vel.abs() <= Self::ZOOM_VEL_EPS {
+                self.zoom_log_vel = 0.0;
+            }
+            // Pin the target to where we coasted so the ease path stays
+            // consistent.
+            self.target_view_size = clamped;
+            changed = true;
+        } else {
+            self.zoom_log_vel = 0.0;
+            let next_size = Vec2 {
+                x: self.view_size.x + (self.target_view_size.x - self.view_size.x) * alpha,
+                y: self.view_size.y + (self.target_view_size.y - self.view_size.y) * alpha,
+            };
+            if (self.target_view_size.x - next_size.x).abs() < 0.2 {
+                self.view_size.x = self.target_view_size.x;
+            } else {
+                self.view_size.x = next_size.x;
+                changed = true;
+            }
+            if (self.target_view_size.y - next_size.y).abs() < 0.2 {
+                self.view_size.y = self.target_view_size.y;
+            } else {
+                self.view_size.y = next_size.y;
+                changed = true;
+            }
+        }
+
+        changed
+    }
+}
+
+/// Tuning knobs `Camera::tick` reads. Mirrors the `DecayPolicy`/
+/// `FocusRingDecayPolicy` pattern already used in this crate: a small,
+/// explicit params struct instead of the method reaching into external
+/// config directly.
+#[derive(Clone, Copy, Debug)]
+pub struct CameraTickTuning {
+    pub physics_enabled: bool,
+    pub zoom_enabled: bool,
+    pub zoom_smooth: bool,
+    /// Raw configured zoom smoothing rate - `tick` clamps it internally via
+    /// `zoom_smooth_rate`.
+    pub smooth_rate: f32,
+    /// Raw configured pan friction - `tick` clamps it internally via
+    /// `pan_decay_rate`.
+    pub pan_decay_rate: f32,
+    pub zoom_min: f32,
+    pub zoom_max: f32,
+}
+
+/// Clamp a configured pan-friction rate to a sane range.
+pub fn pan_decay_rate(rate: f32) -> f32 {
+    rate.clamp(0.5, 30.0)
 }
 
 /// Clamp a configured zoom-per-step factor to a sane minimum (must be > 1.0
@@ -282,6 +426,109 @@ mod tests {
         cam.reset_zoom_target();
         assert_eq!(cam.target_view_size, cam.base_size);
         assert_eq!(cam.zoom_log_vel, 0.0);
+    }
+
+    fn default_tick_tuning() -> CameraTickTuning {
+        CameraTickTuning {
+            physics_enabled: true,
+            zoom_enabled: true,
+            zoom_smooth: true,
+            smooth_rate: 10.0,
+            pan_decay_rate: 8.0,
+            zoom_min: 0.1,
+            zoom_max: 4.0,
+        }
+    }
+
+    #[test]
+    fn tick_with_physics_disabled_snaps_instantly() {
+        let mut cam = Camera::new(Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 800.0, y: 600.0 });
+        cam.target_center = Vec2 { x: 100.0, y: 50.0 };
+        cam.target_view_size = Vec2 { x: 400.0, y: 300.0 };
+        cam.pan_vel = Vec2 { x: 999.0, y: 999.0 };
+        cam.zoom_log_vel = 5.0;
+
+        let mut tuning = default_tick_tuning();
+        tuning.physics_enabled = false;
+
+        let changed = cam.tick(1.0 / 60.0, tuning);
+
+        assert!(changed);
+        assert_eq!(cam.center, cam.target_center);
+        assert_eq!(cam.view_size, cam.target_view_size);
+        assert_eq!(cam.pan_vel, Vec2 { x: 0.0, y: 0.0 });
+        assert_eq!(cam.zoom_log_vel, 0.0);
+
+        // Already at rest at the target: no further change.
+        assert!(!cam.tick(1.0 / 60.0, tuning));
+    }
+
+    #[test]
+    fn tick_eases_center_toward_target_without_overshoot() {
+        let mut cam = Camera::new(Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 800.0, y: 600.0 });
+        cam.target_center = Vec2 { x: 100.0, y: 0.0 };
+
+        let tuning = default_tick_tuning();
+        let mut steps = 0;
+        while cam.center != cam.target_center && steps < 10_000 {
+            cam.tick(1.0 / 60.0, tuning);
+            steps += 1;
+        }
+
+        assert_eq!(cam.center, cam.target_center);
+        assert!(steps > 1, "expected easing to take more than one tick");
+    }
+
+    #[test]
+    fn tick_decays_pan_velocity_toward_rest() {
+        let mut cam = Camera::new(Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 800.0, y: 600.0 });
+        cam.fling_pan(Vec2 { x: 500.0, y: 0.0 });
+
+        let tuning = default_tick_tuning();
+        for _ in 0..600 {
+            cam.tick(1.0 / 60.0, tuning);
+            if cam.pan_vel == (Vec2 { x: 0.0, y: 0.0 }) {
+                break;
+            }
+        }
+
+        assert_eq!(cam.pan_vel, Vec2 { x: 0.0, y: 0.0 });
+        // The fling should have actually moved the camera before settling.
+        assert!(cam.center.x > 0.0);
+    }
+
+    #[test]
+    fn tick_zoom_disabled_eases_view_size_back_to_base() {
+        let mut cam = Camera::new(Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 800.0, y: 600.0 });
+        cam.view_size = Vec2 { x: 200.0, y: 150.0 };
+        cam.target_view_size = Vec2 { x: 200.0, y: 150.0 };
+
+        let mut tuning = default_tick_tuning();
+        tuning.zoom_enabled = false;
+
+        for _ in 0..1000 {
+            cam.tick(1.0 / 60.0, tuning);
+        }
+
+        assert_eq!(cam.view_size, cam.base_size);
+    }
+
+    #[test]
+    fn tick_zoom_velocity_respects_clamp_and_settles() {
+        let mut cam = Camera::new(Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 800.0, y: 600.0 });
+        let tuning = default_tick_tuning();
+
+        cam.zoom_inject_velocity(4.0, 1.1, tuning.smooth_rate);
+        assert_ne!(cam.zoom_log_vel, 0.0);
+
+        for _ in 0..2000 {
+            cam.tick(1.0 / 60.0, tuning);
+        }
+
+        assert_eq!(cam.zoom_log_vel, 0.0);
+        let (min_zoom, max_zoom) = zoom_scale_bounds(tuning.zoom_min, tuning.zoom_max);
+        assert!(cam.view_size.x >= cam.base_size.x / max_zoom - 0.01);
+        assert!(cam.view_size.x <= cam.base_size.x / min_zoom + 0.01);
     }
 
     #[test]
