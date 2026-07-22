@@ -1,4 +1,5 @@
 pub mod bearings;
+pub mod camera;
 pub mod cluster;
 pub mod cluster_layout;
 pub mod cluster_policy;
