@@ -126,6 +126,52 @@ impl FocusRing {
 
         nx * nx + ny * ny
     }
+
+    /// Area-sampling variant of `zone()`: classifies which zone a whole
+    /// footprint rect (not just a single point) dominantly falls in, by
+    /// sampling a 5x5 grid across it and taking a majority vote. Moved here
+    /// from `decay.rs` (as `dominant_focus_zone`) - it's geometry/focus-ring
+    /// classification, not decay policy; decay just happened to be the only
+    /// consumer.
+    pub fn dominant_zone(&self, vp_center: Vec2, pos: Vec2, footprint: Vec2) -> FocusZone {
+        let w = footprint.x.abs();
+        let h = footprint.y.abs();
+
+        if w < 1.0 || h < 1.0 {
+            return self.zone(vp_center, pos);
+        }
+
+        let sx = 5usize;
+        let sy = 5usize;
+        let mut inside = 0usize;
+
+        let min_x = pos.x - w * 0.5;
+        let min_y = pos.y - h * 0.5;
+
+        for iy in 0..sy {
+            for ix in 0..sx {
+                let tx = (ix as f32 + 0.5) / sx as f32;
+                let ty = (iy as f32 + 0.5) / sy as f32;
+                let p = Vec2 {
+                    x: min_x + tx * w,
+                    y: min_y + ty * h,
+                };
+
+                if self.zone(vp_center, p) == FocusZone::Inside {
+                    inside += 1;
+                }
+            }
+        }
+
+        let total = (sx * sy) as f32;
+        let frac_inside = inside as f32 / total;
+
+        if frac_inside > 0.5 {
+            FocusZone::Inside
+        } else {
+            FocusZone::Outside
+        }
+    }
 }
 
 #[cfg(test)]
@@ -186,5 +232,29 @@ mod tests {
 
         assert_eq!(ring.zone(c, Vec2 { x: 0.0, y: 0.0 }), FocusZone::Inside);
         assert_eq!(ring.zone(c, Vec2 { x: 20.0, y: 0.0 }), FocusZone::Outside);
+    }
+
+    #[test]
+    fn dominant_zone_majority_votes_across_footprint() {
+        let ring = FocusRing::new(50.0, 30.0, 0.0, 0.0);
+        let c = Vec2 { x: 0.0, y: 0.0 };
+
+        // Small footprint centered inside the ring: dominant zone is Inside.
+        assert_eq!(
+            ring.dominant_zone(c, Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 10.0, y: 10.0 }),
+            FocusZone::Inside
+        );
+
+        // Small footprint far outside the ring: dominant zone is Outside.
+        assert_eq!(
+            ring.dominant_zone(c, Vec2 { x: 500.0, y: 0.0 }, Vec2 { x: 10.0, y: 10.0 }),
+            FocusZone::Outside
+        );
+
+        // A sub-1px-wide/tall footprint falls back to a plain point check.
+        assert_eq!(
+            ring.dominant_zone(c, Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 0.0, y: 0.0 }),
+            FocusZone::Inside
+        );
     }
 }

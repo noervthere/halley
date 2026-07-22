@@ -1,4 +1,4 @@
-use crate::field::{Field, NodeId, NodeState, Vec2};
+use crate::field::{Field, NodeId, NodeState};
 use crate::viewport::{FocusRing, FocusZone, Viewport};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -34,11 +34,10 @@ pub fn tick_decay(field: &mut Field, now_ms: u64, policy: DecayPolicy, focused: 
         }
 
         // NOTE: this used to also skip cluster members here via
-        // `field.cluster_id_for_member_public()`. Field is now cluster-blind
-        // (step 1a) — excluding clustered nodes from decay ticking is now
-        // the caller's responsibility (filter `ids` before calling this,
-        // using the World-owned cluster registry), once that exists again
-        // (step 1h).
+        // `field.cluster_id_for_member_public()`. `Field` is permanently
+        // cluster-blind now, so that exclusion is the caller's job: filter
+        // `ids` before calling this, using `World`'s per-space
+        // `ClusterRegistry` (see `cluster.rs`/`world.rs`).
 
         if Some(id) == focused {
             let _ = field.set_decay_level(id, DecayLevel::Hot);
@@ -108,15 +107,14 @@ pub fn tick_decay_focus_ring(
         }
 
         // NOTE: see the comment in `tick_decay` above — cluster-membership
-        // exclusion moves to the caller once the World-owned registry
-        // exists again (step 1h).
+        // exclusion is the caller's job now, via `World`'s `ClusterRegistry`.
 
         if Some(id) == focused {
             let _ = field.set_decay_level(id, DecayLevel::Hot);
             continue;
         }
 
-        let zone = dominant_focus_zone(focus_ring, vp.center, pos, active_extent);
+        let zone = focus_ring.dominant_zone(vp.center, pos, active_extent);
 
         match zone {
             FocusZone::Inside => {
@@ -140,51 +138,6 @@ pub fn tick_decay_focus_ring(
                 }
             }
         }
-    }
-}
-
-fn dominant_focus_zone(
-    focus_ring: FocusRing,
-    vp_center: Vec2,
-    pos: Vec2,
-    footprint: Vec2,
-) -> FocusZone {
-    let w = footprint.x.abs();
-    let h = footprint.y.abs();
-
-    if w < 1.0 || h < 1.0 {
-        return focus_ring.zone(vp_center, pos);
-    }
-
-    let sx = 5usize;
-    let sy = 5usize;
-    let mut inside = 0usize;
-
-    let min_x = pos.x - w * 0.5;
-    let min_y = pos.y - h * 0.5;
-
-    for iy in 0..sy {
-        for ix in 0..sx {
-            let tx = (ix as f32 + 0.5) / sx as f32;
-            let ty = (iy as f32 + 0.5) / sy as f32;
-            let p = Vec2 {
-                x: min_x + tx * w,
-                y: min_y + ty * h,
-            };
-
-            if focus_ring.zone(vp_center, p) == FocusZone::Inside {
-                inside += 1;
-            }
-        }
-    }
-
-    let total = (sx * sy) as f32;
-    let frac_inside = inside as f32 / total;
-
-    if frac_inside > 0.5 {
-        FocusZone::Inside
-    } else {
-        FocusZone::Outside
     }
 }
 
@@ -230,11 +183,14 @@ mod tests {
         assert_eq!(f.node(a).unwrap().state, NodeState::Active);
     }
 
-    // `core_does_not_decay` and `clustered_members_do_not_decay` were
-    // removed here in step 1a — both depended on `create_cluster`/
-    // `collapse_cluster`, which no longer exist on `Field`. They come back
-    // in step 1h, exercising the caller-side exclusion described above
-    // instead of Field-internal cluster awareness.
+    // `core_does_not_decay` and `clustered_members_do_not_decay` used to
+    // live here, exercising `Field`'s old built-in cluster awareness
+    // (`create_cluster`/`collapse_cluster`). That awareness is gone for
+    // good - `Field` no longer has any cluster concept at all - so those
+    // scenarios don't belong in this file anymore; equivalent coverage now
+    // lives in `cluster.rs`'s own tests (e.g. `collapse_cluster_creates_
+    // core_and_shrinks_members`), and cluster-membership exclusion from
+    // decay ticking is exercised wherever the caller does that filtering.
 
     #[test]
     fn inside_focus_ring_near_center_stays_hot() {
