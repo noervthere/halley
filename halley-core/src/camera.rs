@@ -63,6 +63,94 @@ impl Camera {
             y: size.y.clamp(self.base_size.y / max_zoom, self.base_size.y / min_zoom),
         }
     }
+
+    /// Caps how much quick repeated zooming can pile up (the accel ceiling).
+    pub const ZOOM_VEL_STACK_MAX: f32 = 6.0;
+    /// Zoom velocity (log-space) below which the glide snaps to rest.
+    pub const ZOOM_VEL_EPS: f32 = 0.02;
+    /// Pan velocity below which a coasting flick snaps to rest.
+    pub const PAN_VEL_EPS: f32 = 4.0;
+    /// Caps how fast a flick can launch the viewport (world units/sec).
+    pub const PAN_VEL_MAX: f32 = 12000.0;
+
+    /// Offset the pan target by `delta` (was `pan_camera_target`, minus the
+    /// `request_maintenance()` scheduling call, which is a `wl`-side concern).
+    pub fn pan_target(&mut self, delta: Vec2) {
+        self.target_center.x += delta.x;
+        self.target_center.y += delta.y;
+    }
+
+    /// Set the target view size, clamped to the zoom bounds (was
+    /// `set_camera_target_view_size`).
+    pub fn set_target_view_size(&mut self, size: Vec2, zoom_min: f32, zoom_max: f32) {
+        self.target_view_size = self.clamp_view_size(size, zoom_min, zoom_max);
+    }
+
+    /// Snap both targets to the current live values - used when an external
+    /// animation (e.g. a deliberate pan-to) is about to take over, so the
+    /// easing doesn't fight it (was `snap_camera_targets_to_live`).
+    pub fn snap_targets_to_live(&mut self) {
+        self.target_center = self.center;
+        self.target_view_size = self.view_size;
+    }
+
+    /// Seed inertial pan with a release velocity (world units/sec), clamped
+    /// to `PAN_VEL_MAX`. A subsequent `tick` coasts the target and decays
+    /// the velocity with friction.
+    pub fn fling_pan(&mut self, vel: Vec2) {
+        let speed = vel.x.hypot(vel.y);
+        self.pan_vel = if speed > Self::PAN_VEL_MAX {
+            Vec2 {
+                x: vel.x / speed * Self::PAN_VEL_MAX,
+                y: vel.y / speed * Self::PAN_VEL_MAX,
+            }
+        } else {
+            vel
+        };
+    }
+
+    /// Instant (non-inertial) zoom: jump the target size directly by
+    /// `steps` multiplicative zoom-steps, no velocity involved (the
+    /// non-smooth branch of the old `zoom_by_steps`).
+    pub fn zoom_instant_by_steps(&mut self, steps: f32, zoom_step_cfg: f32, zoom_min: f32, zoom_max: f32) {
+        let steps = steps.clamp(-4.0, 4.0);
+        if steps.abs() < f32::EPSILON {
+            return;
+        }
+        let factor = zoom_step(zoom_step_cfg).powf(steps);
+        let new_size = Vec2 {
+            x: self.target_view_size.x / factor,
+            y: self.target_view_size.y / factor,
+        };
+        self.set_target_view_size(new_size, zoom_min, zoom_max);
+    }
+
+    /// Inertial/lens zoom: inject velocity in log space (the smooth branch
+    /// of the old `zoom_by_steps`). Repeating in the same direction stacks
+    /// velocity (an accelerating ramp); the opposite direction bleeds it off
+    /// or reverses.
+    pub fn zoom_inject_velocity(&mut self, steps: f32, zoom_step_cfg: f32, smooth_rate_cfg: f32) {
+        let steps = steps.clamp(-4.0, 4.0);
+        if steps.abs() < f32::EPSILON {
+            return;
+        }
+        let friction = zoom_smooth_rate(smooth_rate_cfg);
+        let step_impulse = friction * zoom_step(zoom_step_cfg).ln();
+        let cap = step_impulse * Self::ZOOM_VEL_STACK_MAX;
+        // zoom-in (+steps) shrinks the view -> negative log velocity.
+        self.zoom_log_vel = (self.zoom_log_vel - steps * step_impulse).clamp(-cap, cap);
+    }
+
+    /// Reset the zoom target back to `base_size` and clear zoom velocity
+    /// (was the guard-free tail of `reset_zoom`). Setting directly to
+    /// `base_size` rather than going through `set_target_view_size` is
+    /// deliberate: `base_size` is always within the zoom bounds by
+    /// construction (`zoom_scale_bounds` guarantees min <= 1.0 <= max), so
+    /// the clamp would always be a no-op anyway.
+    pub fn reset_zoom_target(&mut self) {
+        self.zoom_log_vel = 0.0;
+        self.target_view_size = self.base_size;
+    }
 }
 
 /// Clamp a configured zoom-per-step factor to a sane minimum (must be > 1.0
@@ -125,6 +213,75 @@ mod tests {
         // Within bounds passes through unchanged.
         let within = cam.clamp_view_size(Vec2 { x: 900.0, y: 700.0 }, 0.5, 2.0);
         assert_eq!(within, Vec2 { x: 900.0, y: 700.0 });
+    }
+
+    #[test]
+    fn pan_target_offsets_target_center_only() {
+        let mut cam = Camera::new(Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 800.0, y: 600.0 });
+        cam.pan_target(Vec2 { x: 10.0, y: -5.0 });
+        assert_eq!(cam.target_center, Vec2 { x: 10.0, y: -5.0 });
+        // Live center is untouched - that's tick()'s job.
+        assert_eq!(cam.center, Vec2 { x: 0.0, y: 0.0 });
+    }
+
+    #[test]
+    fn snap_targets_to_live_matches_current_live_values() {
+        let mut cam = Camera::new(Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 800.0, y: 600.0 });
+        cam.target_center = Vec2 { x: 999.0, y: 999.0 };
+        cam.target_view_size = Vec2 { x: 1.0, y: 1.0 };
+        cam.snap_targets_to_live();
+        assert_eq!(cam.target_center, cam.center);
+        assert_eq!(cam.target_view_size, cam.view_size);
+    }
+
+    #[test]
+    fn fling_pan_caps_speed_at_max() {
+        let mut cam = Camera::new(Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 800.0, y: 600.0 });
+        cam.fling_pan(Vec2 {
+            x: Camera::PAN_VEL_MAX * 10.0,
+            y: 0.0,
+        });
+        assert_eq!(cam.pan_vel.x, Camera::PAN_VEL_MAX);
+
+        cam.fling_pan(Vec2 { x: 50.0, y: 0.0 });
+        assert_eq!(cam.pan_vel, Vec2 { x: 50.0, y: 0.0 });
+    }
+
+    #[test]
+    fn zoom_instant_by_steps_shrinks_target_when_zooming_in() {
+        let mut cam = Camera::new(Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 800.0, y: 600.0 });
+        cam.zoom_instant_by_steps(1.0, 1.1, 0.1, 4.0);
+        assert!(cam.target_view_size.x < 800.0);
+        assert!(cam.target_view_size.y < 600.0);
+    }
+
+    #[test]
+    fn zoom_instant_by_steps_ignores_near_zero_steps() {
+        let mut cam = Camera::new(Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 800.0, y: 600.0 });
+        cam.zoom_instant_by_steps(0.0, 1.1, 0.1, 4.0);
+        assert_eq!(cam.target_view_size, Vec2 { x: 800.0, y: 600.0 });
+    }
+
+    #[test]
+    fn zoom_inject_velocity_stacks_in_same_direction() {
+        let mut cam = Camera::new(Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 800.0, y: 600.0 });
+        cam.zoom_inject_velocity(1.0, 1.1, 8.0);
+        let after_one = cam.zoom_log_vel;
+        assert_ne!(after_one, 0.0);
+
+        cam.zoom_inject_velocity(1.0, 1.1, 8.0);
+        // Repeating in the same direction stacks (grows) the velocity magnitude.
+        assert!(cam.zoom_log_vel.abs() > after_one.abs());
+    }
+
+    #[test]
+    fn reset_zoom_target_returns_to_base_size_and_clears_velocity() {
+        let mut cam = Camera::new(Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 800.0, y: 600.0 });
+        cam.target_view_size = Vec2 { x: 1234.0, y: 1234.0 };
+        cam.zoom_log_vel = 42.0;
+        cam.reset_zoom_target();
+        assert_eq!(cam.target_view_size, cam.base_size);
+        assert_eq!(cam.zoom_log_vel, 0.0);
     }
 
     #[test]
