@@ -136,6 +136,16 @@ pub struct Node {
     /// (Bearings/Lift). Does NOT bypass visibility rules.
     pub anchor: bool,
 
+    /// Explicit "treat this node as a fixed obstacle other nodes must avoid"
+    /// marker, read by the overlap-avoidance engine. This used to be inferred
+    /// from `NodeState` (`NodeState::Node | Core` implied landmark) — that
+    /// conflated representation state with placement-engine semantics, so
+    /// it's now its own field, set independently by whichever policy (decay
+    /// going Cold, a collapsed cluster core, ...) decides a node should
+    /// behave this way. Nothing sets it yet; wiring it up is later work
+    /// (steps 1f/1h), this step only introduces the representation.
+    pub is_landmark: bool,
+
     /// Semantic visibility / participation flags.
     pub visibility: Visibility,
 
@@ -166,6 +176,7 @@ impl Field {
             resize_footprint: None,
             pinned: false,
             anchor: false,
+            is_landmark: false,
             visibility: Visibility::NONE,
             last_touch_ms: 0,
             decay: DecayLevel::Hot,
@@ -237,6 +248,19 @@ impl Field {
 
     pub fn is_anchor(&self, id: NodeId) -> bool {
         self.node(id).is_some_and(|n| n.anchor)
+    }
+
+    /// Set/unset the landmark marker (see `Node::is_landmark`'s doc comment).
+    pub fn set_landmark(&mut self, id: NodeId, on: bool) -> bool {
+        let Some(n) = self.node_mut(id) else {
+            return false;
+        };
+        n.is_landmark = on;
+        true
+    }
+
+    pub fn is_landmark(&self, id: NodeId) -> bool {
+        self.node(id).is_some_and(|n| n.is_landmark)
     }
 
     /// Return all experience-visible anchors (stable order).
@@ -442,6 +466,22 @@ mod tests {
     // were removed here in step 1a, since `Field` no longer knows about
     // clusters at all. They come back, redesigned against the new
     // `World`-owned cluster registry, in step 1h.
+
+    #[test]
+    fn landmark_marker_is_independent_of_state_and_defaults_off() {
+        let mut f = Field::new();
+        let id = f.spawn_surface("A", Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 10.0, y: 10.0 });
+
+        assert!(!f.is_landmark(id));
+
+        assert!(f.set_landmark(id, true));
+        assert!(f.is_landmark(id));
+        // Setting the landmark marker doesn't touch representation state.
+        assert_eq!(f.node(id).unwrap().state, NodeState::Active);
+
+        assert!(f.set_landmark(id, false));
+        assert!(!f.is_landmark(id));
+    }
 
     #[test]
     fn carry_respects_pinned() {
