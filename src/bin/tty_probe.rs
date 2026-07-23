@@ -39,9 +39,22 @@ fn main() {
 
     event_loop
         .handle()
-        .insert_source(session_notifier, |event, _, _| match event {
-            SessionEvent::PauseSession => println!("session event: pause (pause()/resume() wiring is step 15)"),
-            SessionEvent::ActivateSession => println!("session event: activate (pause()/resume() wiring is step 15)"),
+        .insert_source(session_notifier, |event, _, backend| match event {
+            SessionEvent::PauseSession => {
+                println!("session event: pause");
+                backend.pause();
+            }
+            SessionEvent::ActivateSession => {
+                println!("session event: activate");
+                match backend.resume() {
+                    Ok(()) => {
+                        if let Err(err) = backend.render(CLEAR_COLOR) {
+                            println!("post-resume render failed: {err}");
+                        }
+                    }
+                    Err(err) => println!("resume failed: {err}"),
+                }
+            }
         })
         .expect("failed to insert session notifier");
 
