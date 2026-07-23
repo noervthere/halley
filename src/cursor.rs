@@ -30,9 +30,16 @@ impl CursorImage {
         let data = std::fs::read(path).ok()?;
         let image = xcursor::parser::parse_xcursor(&data)?.into_iter().next()?;
 
+        // xcursor's `pixels_argb` field is misleadingly named: its actual
+        // in-memory byte order is [A, R, G, B] (confirmed against xcursor's
+        // own test fixtures), not the little-endian [B, G, R, A] layout DRM's
+        // Fourcc::Argb8888 expects - pairing them scrambles channels (alpha
+        // leaks into blue, etc). `pixels_rgba` ([R, G, B, A]) paired with
+        // Fourcc::Abgr8888 (DRM's little-endian [R, G, B, A] format) is the
+        // combination that's actually byte-order-correct.
         Some(MemoryRenderBuffer::from_slice(
-            &image.pixels_argb,
-            Fourcc::Argb8888,
+            &image.pixels_rgba,
+            Fourcc::Abgr8888,
             (image.width as i32, image.height as i32),
             1,
             Transform::Normal,
