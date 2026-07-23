@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use calloop::EventLoop;
 use smithay::backend::drm::DrmEvent;
 use smithay::backend::renderer::Color32F;
@@ -19,43 +17,54 @@ use backend::tty::TtyBackend;
 const CLEAR_COLOR: Color32F = Color32F::new(0.04, 0.05, 0.06, 1.0);
 
 fn main() {
-    match TtyBackend::new() {
-        Ok((mut backend, session_notifier, drm_notifier)) => {
-            println!("TtyBackend constructed successfully");
-
-            match backend.render(CLEAR_COLOR) {
-                Ok(()) => println!("render() succeeded"),
-                Err(err) => println!("render() failed (same caveat as initialize_output): {err}"),
-            }
-
-            let mut event_loop: EventLoop<()> =
-                EventLoop::try_new().expect("failed to create event loop");
-
-            event_loop
-                .handle()
-                .insert_source(session_notifier, |event, _, _| match event {
-                    SessionEvent::PauseSession => println!("session event: pause"),
-                    SessionEvent::ActivateSession => println!("session event: activate"),
-                })
-                .expect("failed to insert session notifier");
-
-            event_loop
-                .handle()
-                .insert_source(drm_notifier, |event, _, _| match event {
-                    DrmEvent::VBlank(crtc) => println!("drm event: vblank on {crtc:?}"),
-                    DrmEvent::Error(err) => println!("drm event: error {err:?}"),
-                })
-                .expect("failed to insert drm notifier");
-
-            println!("dispatching for 2 seconds...");
-            event_loop
-                .dispatch(Some(Duration::from_secs(2)), &mut ())
-                .expect("event loop dispatch failed");
-            println!("done");
-        }
+    let (mut backend, session_notifier, drm_notifier) = match TtyBackend::new() {
+        Ok(parts) => parts,
         // Expected nested under a host compositor (niri already holds
         // exclusive session control) - confirmed since step 3. Real success
         // needs a free VT.
-        Err(err) => println!("TtyBackend::new() failed: {err}"),
+        Err(err) => {
+            println!("TtyBackend::new() failed: {err}");
+            return;
+        }
+    };
+    println!("TtyBackend constructed successfully");
+
+    match backend.render(CLEAR_COLOR) {
+        Ok(()) => println!("first render() succeeded"),
+        Err(err) => println!("first render() failed (same caveat as initialize_output): {err}"),
+    }
+
+    let mut event_loop: EventLoop<TtyBackend> =
+        EventLoop::try_new().expect("failed to create event loop");
+
+    event_loop
+        .handle()
+        .insert_source(session_notifier, |event, _, _| match event {
+            SessionEvent::PauseSession => println!("session event: pause (pause()/resume() wiring is step 15)"),
+            SessionEvent::ActivateSession => println!("session event: activate (pause()/resume() wiring is step 15)"),
+        })
+        .expect("failed to insert session notifier");
+
+    event_loop
+        .handle()
+        .insert_source(drm_notifier, |event, _, backend| match event {
+            DrmEvent::VBlank(_crtc) => {
+                if let Err(err) = backend.frame_submitted() {
+                    println!("frame_submitted failed: {err}");
+                    return;
+                }
+                if let Err(err) = backend.render(CLEAR_COLOR) {
+                    println!("render failed: {err}");
+                }
+            }
+            DrmEvent::Error(err) => println!("drm event: error {err:?}"),
+        })
+        .expect("failed to insert drm notifier");
+
+    println!("dispatching until Ctrl-C - switch to this VT to see a solid color fill the screen");
+    loop {
+        event_loop
+            .dispatch(None, &mut backend)
+            .expect("event loop dispatch failed");
     }
 }

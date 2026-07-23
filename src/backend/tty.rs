@@ -142,6 +142,14 @@ impl TtyBackend {
     pub fn pause(&mut self) {
         self.drm_output_manager.pause();
     }
+
+    /// Acknowledge a page-flip completion, called from the `DrmEvent::VBlank`
+    /// handler - the DRM-path equivalent of `WinitBackend::request_redraw()`.
+    /// Must be followed by a fresh `render()` call to queue the next frame.
+    pub fn frame_submitted(&mut self) -> Result<(), Box<dyn Error>> {
+        self.drm_output.frame_submitted()?;
+        Ok(())
+    }
 }
 
 impl Renderable for TtyBackend {
