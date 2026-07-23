@@ -1,6 +1,3 @@
-// Not called from anywhere yet - wired up once Keyboard::new() lands.
-#![allow(dead_code)]
-
 use halley_config::{Action, Keybinds, ModifierKey, Modifiers};
 use smithay::input::keyboard::{Keysym, xkb};
 
@@ -9,6 +6,7 @@ use smithay::input::keyboard::{Keysym, xkb};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BackendKind {
     Winit,
+    #[allow(dead_code)] // constructed once tty_probe.rs wires up its own Keyboard
     Tty,
 }
 

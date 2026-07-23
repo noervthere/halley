@@ -1,6 +1,3 @@
-// Not called from anywhere yet - wired up into main.rs/tty_probe.rs next.
-#![allow(dead_code)]
-
 pub mod keybinds;
 
 use std::error::Error;

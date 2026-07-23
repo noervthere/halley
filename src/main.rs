@@ -9,12 +9,16 @@ use smithay::reexports::winit::window::Window as WinitWindow;
 
 use backend::Renderable;
 use backend::winit::WinitBackend;
+use input::Keyboard;
+use input::keybinds::BackendKind;
 
-/// Everything this milestone needs: a backend to render into, and whether
-/// we should stop. Deliberately not the old `Halley` mega-struct - grows
-/// exactly when a real feature (xdg-shell, input, ...) needs it to.
+/// Everything this milestone needs: a backend to render into, a way to match
+/// keypresses against configured actions, and whether we should stop.
+/// Deliberately not the old `Halley` mega-struct - grows exactly when a real
+/// feature (xdg-shell, input, ...) needs it to.
 struct App {
     backend: WinitBackend,
+    keyboard: Keyboard,
     exit: bool,
 }
 
@@ -35,6 +39,7 @@ fn main() {
 
     let mut app = App {
         backend: WinitBackend::new(backend),
+        keyboard: Keyboard::new(BackendKind::Winit).expect("failed to set up keyboard input"),
         exit: false,
     };
 
@@ -55,6 +60,11 @@ fn main() {
                 // already resizes the EGL surface internally when it
                 // differs from the last bound size. Just need a new frame.
                 app.backend.request_redraw();
+            }
+            WinitEvent::Input(event) => {
+                if let Some(halley_config::Action::Quit) = app.keyboard.process_input_event(event) {
+                    app.exit = true;
+                }
             }
             _ => {}
         })
