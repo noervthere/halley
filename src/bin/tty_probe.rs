@@ -22,6 +22,11 @@ use cursor::CursorImage;
 use input::Keyboard;
 use input::keybinds::BackendKind;
 
+/// Placeholder until step 4 wires a real `input::Pointer` here - keeps
+/// behavior identical to before the `Renderable::render` signature grew a
+/// cursor-position parameter.
+const FIXED_CURSOR_POSITION: (f64, f64) = (100.0, 100.0);
+
 /// Mirrors main.rs's `App` shape (backend + keyboard + cursor + exit flag).
 /// Still a separate struct in a separate binary; full winit/tty unification
 /// is later, explicitly-deferred work.
@@ -60,7 +65,7 @@ fn main() {
         exit: false,
     };
 
-    match app.backend.render(CLEAR_COLOR, &app.cursor) {
+    match app.backend.render(CLEAR_COLOR, &app.cursor, FIXED_CURSOR_POSITION) {
         Ok(()) => println!("first render() succeeded"),
         Err(err) => println!("first render() failed (same caveat as initialize_output): {err}"),
     }
@@ -87,7 +92,9 @@ fn main() {
                 println!("session event: activate");
                 match app.backend.resume() {
                     Ok(()) => {
-                        if let Err(err) = app.backend.render(CLEAR_COLOR, &app.cursor) {
+                        if let Err(err) =
+                            app.backend.render(CLEAR_COLOR, &app.cursor, FIXED_CURSOR_POSITION)
+                        {
                             println!("post-resume render failed: {err}");
                         }
                     }
@@ -105,7 +112,7 @@ fn main() {
                     println!("frame_submitted failed for {crtc:?}: {err}");
                     return;
                 }
-                if let Err(err) = app.backend.render(CLEAR_COLOR, &app.cursor) {
+                if let Err(err) = app.backend.render(CLEAR_COLOR, &app.cursor, FIXED_CURSOR_POSITION) {
                     println!("render failed: {err}");
                 }
             }

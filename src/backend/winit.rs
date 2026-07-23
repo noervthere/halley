@@ -6,14 +6,10 @@ use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::renderer::utils::draw_render_elements;
 use smithay::backend::renderer::{Color32F, Frame, Renderer};
 use smithay::backend::winit::WinitGraphicsBackend;
-use smithay::utils::{Physical, Point, Rectangle, Transform};
+use smithay::utils::{Physical, Point, Rectangle, Size, Transform};
 
 use super::Renderable;
 use crate::cursor::CursorImage;
-
-/// Fixed test position for the cursor - no real pointer tracking exists yet
-/// (see `cursor.rs`'s doc comment).
-const CURSOR_LOCATION: (f64, f64) = (100.0, 100.0);
 
 /// The winit (nested) backend - a real window on the host's desktop,
 /// standing in for real hardware output. Used for dev/testing; the tty
@@ -36,10 +32,21 @@ impl WinitBackend {
     pub fn request_redraw(&self) {
         self.backend.window().request_redraw();
     }
+
+    /// The window's current size - used by callers to convert absolute
+    /// pointer positions into this output's coordinate space.
+    pub fn window_size(&self) -> Size<i32, Physical> {
+        self.backend.window_size()
+    }
 }
 
 impl Renderable for WinitBackend {
-    fn render(&mut self, clear: Color32F, cursor: &CursorImage) -> Result<(), Box<dyn Error>> {
+    fn render(
+        &mut self,
+        clear: Color32F,
+        cursor: &CursorImage,
+        cursor_position: (f64, f64),
+    ) -> Result<(), Box<dyn Error>> {
         let size = self.backend.window_size();
         let damage = Rectangle::from_size(size);
 
@@ -53,7 +60,7 @@ impl Renderable for WinitBackend {
             // from_buffer() only needs it transiently to import the texture.
             let cursor_element = MemoryRenderBufferRenderElement::from_buffer(
                 renderer,
-                Point::<f64, Physical>::from(CURSOR_LOCATION),
+                Point::<f64, Physical>::from(cursor_position),
                 &cursor.buffer,
                 None,
                 None,

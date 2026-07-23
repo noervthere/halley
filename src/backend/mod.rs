@@ -22,5 +22,10 @@ pub const CLEAR_COLOR: Color32F = Color32F::new(0.58, 0.64, 0.72, 1.0);
 /// frame concretely needs it drawn now), not the bloat this doc comment
 /// warns against.
 pub trait Renderable {
-    fn render(&mut self, clear: Color32F, cursor: &CursorImage) -> Result<(), Box<dyn std::error::Error>>;
+    fn render(
+        &mut self,
+        clear: Color32F,
+        cursor: &CursorImage,
+        cursor_position: (f64, f64),
+    ) -> Result<(), Box<dyn std::error::Error>>;
 }

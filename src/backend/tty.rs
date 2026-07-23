@@ -24,10 +24,6 @@ use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
 use super::Renderable;
 use crate::cursor::CursorImage;
 
-/// Fixed test position for the cursor - matches `WinitBackend`'s, no real
-/// pointer tracking exists yet (see `cursor.rs`'s doc comment).
-const CURSOR_LOCATION: (f64, f64) = (100.0, 100.0);
-
 type TtyDrmOutputManager =
     DrmOutputManager<GbmAllocator<DrmDeviceFd>, GbmFramebufferExporter<DrmDeviceFd>, (), DrmDeviceFd>;
 
@@ -202,7 +198,12 @@ impl TtyBackend {
 }
 
 impl Renderable for TtyBackend {
-    fn render(&mut self, clear: Color32F, cursor: &CursorImage) -> Result<(), Box<dyn Error>> {
+    fn render(
+        &mut self,
+        clear: Color32F,
+        cursor: &CursorImage,
+        cursor_position: (f64, f64),
+    ) -> Result<(), Box<dyn Error>> {
         // A single bad output shouldn't hide a working one - failures are
         // logged per-output, and only surfaced to the caller if literally
         // every output failed.
@@ -214,7 +215,7 @@ impl Renderable for TtyBackend {
             // from_buffer() only needs it transiently to import the texture.
             let cursor_element = match MemoryRenderBufferRenderElement::from_buffer(
                 &mut self.renderer,
-                Point::<f64, Physical>::from(CURSOR_LOCATION),
+                Point::<f64, Physical>::from(cursor_position),
                 &cursor.buffer,
                 None,
                 None,
