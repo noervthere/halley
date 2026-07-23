@@ -61,9 +61,9 @@ fn main() {
     event_loop
         .handle()
         .insert_source(drm_notifier, |event, _, backend| match event {
-            DrmEvent::VBlank(_crtc) => {
-                if let Err(err) = backend.frame_submitted() {
-                    println!("frame_submitted failed: {err}");
+            DrmEvent::VBlank(crtc) => {
+                if let Err(err) = backend.frame_submitted(crtc) {
+                    println!("frame_submitted failed for {crtc:?}: {err}");
                     return;
                 }
                 if let Err(err) = backend.render(CLEAR_COLOR) {

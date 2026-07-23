@@ -28,8 +28,13 @@ type TtyDrmOutput =
     DrmOutput<GbmAllocator<DrmDeviceFd>, GbmFramebufferExporter<DrmDeviceFd>, (), DrmDeviceFd>;
 
 /// The tty (DRM/KMS) backend - real hardware output, no host compositor
-/// involved. Wraps exactly what one-output rendering needs, mirroring how
+/// involved. Wraps exactly what rendering needs, mirroring how
 /// `WinitBackend` wraps exactly `WinitGraphicsBackend<GlesRenderer>`.
+///
+/// One entry per connected connector at startup (no hotplug) - every
+/// connected output must be initialized, not just the first, or its CRTC is
+/// left in stale, un-negotiated state during another CRTC's atomic modeset
+/// commit, which caused a real system freeze on this project's AMD hardware.
 ///
 /// `session` is kept only for later VT-switch handling (`pause`/`resume`) -
 /// `render()` never reaches into it, matching `Renderable`'s narrow contract.
@@ -37,7 +42,7 @@ pub struct TtyBackend {
     session: LibSeatSession,
     renderer: GlesRenderer,
     drm_output_manager: TtyDrmOutputManager,
-    drm_output: TtyDrmOutput,
+    drm_outputs: Vec<(crtc::Handle, TtyDrmOutput)>,
 }
 
 impl TtyBackend {
@@ -76,9 +81,9 @@ impl TtyBackend {
                 }
             }
         }
-        let (connector, crtc, mode) = *connected
-            .first()
-            .ok_or("no connected connector/CRTC/mode found")?;
+        if connected.is_empty() {
+            return Err("no connected connector/CRTC/mode found".into());
+        }
 
         let gbm = GbmDevice::new(drm_fd)?;
         let allocator = GbmAllocator::new(
@@ -106,30 +111,46 @@ impl TtyBackend {
             renderer_formats,
         );
 
-        let (width, height) = mode.size();
-        let output_mode_source = OutputModeSource::Static {
-            size: Size::from((width as i32, height as i32)),
-            scale: Scale::from(1.0),
-            transform: Transform::Normal,
-        };
+        // Initialize every connected connector, not just one - a connector
+        // whose output fails to initialize is logged and skipped rather than
+        // failing the whole backend, so a working primary still comes up
+        // even if a secondary monitor can't be driven for some reason.
+        let mut drm_outputs = Vec::new();
+        for (connector, crtc, mode) in connected {
+            let (width, height) = mode.size();
+            let output_mode_source = OutputModeSource::Static {
+                size: Size::from((width as i32, height as i32)),
+                scale: Scale::from(1.0),
+                transform: Transform::Normal,
+            };
 
-        let drm_output = drm_output_manager
-            .lock()
-            .initialize_output::<GlesRenderer, SolidColorRenderElement>(
-                crtc,
-                mode,
-                &[connector],
-                output_mode_source,
-                None,
-                &mut renderer,
-                &DrmOutputRenderElements::default(),
-            )?;
+            let result = drm_output_manager
+                .lock()
+                .initialize_output::<GlesRenderer, SolidColorRenderElement>(
+                    crtc,
+                    mode,
+                    &[connector],
+                    output_mode_source,
+                    None,
+                    &mut renderer,
+                    &DrmOutputRenderElements::default(),
+                );
+
+            match result {
+                Ok(drm_output) => drm_outputs.push((crtc, drm_output)),
+                Err(err) => eprintln!("failed to initialize output for {connector:?}: {err}"),
+            }
+        }
+
+        if drm_outputs.is_empty() {
+            return Err("no output could be initialized".into());
+        }
 
         let backend = TtyBackend {
             session,
             renderer,
             drm_output_manager,
-            drm_output,
+            drm_outputs,
         };
 
         Ok((backend, session_notifier, drm_notifier))
@@ -151,26 +172,53 @@ impl TtyBackend {
         self.drm_output_manager.pause();
     }
 
-    /// Acknowledge a page-flip completion, called from the `DrmEvent::VBlank`
-    /// handler - the DRM-path equivalent of `WinitBackend::request_redraw()`.
-    /// Must be followed by a fresh `render()` call to queue the next frame.
-    pub fn frame_submitted(&mut self) -> Result<(), Box<dyn Error>> {
-        self.drm_output.frame_submitted()?;
+    /// Acknowledge a page-flip completion for one output, called from the
+    /// `DrmEvent::VBlank(crtc)` handler - the DRM-path equivalent of
+    /// `WinitBackend::request_redraw()`. Takes a `crtc::Handle` since with
+    /// multiple outputs "which one flipped" is no longer implicit. Must be
+    /// followed by a fresh `render()` call to queue that output's next frame.
+    pub fn frame_submitted(&mut self, crtc: crtc::Handle) -> Result<(), Box<dyn Error>> {
+        if let Some((_, drm_output)) = self.drm_outputs.iter_mut().find(|(c, _)| *c == crtc) {
+            drm_output.frame_submitted()?;
+        }
         Ok(())
     }
 }
 
 impl Renderable for TtyBackend {
     fn render(&mut self, clear: Color32F) -> Result<(), Box<dyn Error>> {
-        let result = self.drm_output.render_frame::<_, SolidColorRenderElement>(
-            &mut self.renderer,
-            &[],
-            clear,
-            FrameFlags::empty(),
-        )?;
+        // A single bad output shouldn't hide a working one - failures are
+        // logged per-output, and only surfaced to the caller if literally
+        // every output failed.
+        let mut ok_count = 0;
+        let mut last_err: Option<Box<dyn Error>> = None;
 
-        if !result.is_empty {
-            self.drm_output.queue_frame(())?;
+        for (crtc, drm_output) in &mut self.drm_outputs {
+            match drm_output.render_frame::<_, SolidColorRenderElement>(
+                &mut self.renderer,
+                &[],
+                clear,
+                FrameFlags::empty(),
+            ) {
+                Ok(result) => {
+                    ok_count += 1;
+                    if !result.is_empty {
+                        if let Err(err) = drm_output.queue_frame(()) {
+                            eprintln!("queue_frame failed for {crtc:?}: {err}");
+                        }
+                    }
+                }
+                Err(err) => {
+                    eprintln!("render_frame failed for {crtc:?}: {err}");
+                    last_err = Some(Box::new(err));
+                }
+            }
+        }
+
+        if ok_count == 0 {
+            if let Some(err) = last_err {
+                return Err(err);
+            }
         }
 
         Ok(())
