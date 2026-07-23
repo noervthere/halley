@@ -60,17 +60,25 @@ impl TtyBackend {
 
         let (drm, drm_notifier) = DrmDevice::new(drm_fd.clone(), false)?;
 
+        // Every connected connector is collected here (not just the first) -
+        // leaving a second monitor's CRTC untouched while committing an
+        // atomic modeset on another CRTC of the same AMD GPU is what caused
+        // a real system freeze during testing (see the plan for the full
+        // diagnosis). Matches anvil's and niri's own connector-handling
+        // pattern, both confirmed via source to loop over every connector.
         let mut scanner: DrmScanner = DrmScanner::new();
         let scan = scanner.scan_connectors(&drm)?;
-        let mut first_connected: Option<(connector::Handle, crtc::Handle, Mode)> = None;
+        let mut connected: Vec<(connector::Handle, crtc::Handle, Mode)> = Vec::new();
         for event in scan {
             if let DrmScanEvent::Connected { connector, crtc } = event {
                 if let (Some(crtc), Some(mode)) = (crtc, connector.modes().first().copied()) {
-                    first_connected.get_or_insert((connector.handle(), crtc, mode));
+                    connected.push((connector.handle(), crtc, mode));
                 }
             }
         }
-        let (connector, crtc, mode) = first_connected.ok_or("no connected connector/CRTC/mode found")?;
+        let (connector, crtc, mode) = *connected
+            .first()
+            .ok_or("no connected connector/CRTC/mode found")?;
 
         let gbm = GbmDevice::new(drm_fd)?;
         let allocator = GbmAllocator::new(

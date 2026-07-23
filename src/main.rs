@@ -35,8 +35,7 @@ fn main() {
     // request one explicitly so the first frame doesn't depend on that.
     backend.window().request_redraw();
 
-    let mut event_loop: EventLoop<App> =
-        EventLoop::try_new().expect("failed to create event loop");
+    let mut event_loop: EventLoop<App> = EventLoop::try_new().expect("failed to create event loop");
 
     let mut app = App {
         backend: WinitBackend::new(backend),
