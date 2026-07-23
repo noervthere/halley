@@ -1,17 +1,103 @@
+use std::error::Error;
+use std::path::Path;
 use std::time::Duration;
 
 use calloop::EventLoop;
 use smithay::backend::allocator::gbm::{GbmAllocator, GbmBufferFlags, GbmDevice};
-use smithay::backend::drm::{DrmDevice, DrmDeviceFd, DrmEvent};
+use smithay::backend::allocator::{Format, Fourcc};
+use smithay::backend::drm::exporter::gbm::GbmFramebufferExporter;
+use smithay::backend::drm::exporter::gbm::NodeFilter;
+use smithay::backend::drm::output::DrmOutputManager;
+use smithay::backend::drm::{DrmDevice, DrmDeviceFd, DrmDeviceNotifier, DrmEvent};
 use smithay::backend::egl::{EGLContext, EGLDisplay};
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::session::Event as SessionEvent;
 use smithay::backend::session::Session;
 use smithay::backend::session::libseat::LibSeatSession;
 use smithay::backend::udev;
+use smithay::reexports::drm::control::connector;
+use smithay::reexports::drm::control::crtc;
 use smithay::reexports::rustix::fs::OFlags;
 use smithay::utils::DeviceFd;
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
+
+type ProbeDrmOutputManager = DrmOutputManager<
+    GbmAllocator<DrmDeviceFd>,
+    GbmFramebufferExporter<DrmDeviceFd>,
+    (),
+    DrmDeviceFd,
+>;
+
+/// Everything steps 6-10 build: open the DRM device, scan for a connected
+/// connector/CRTC/mode, set up GBM+EGL+GlesRenderer, and construct (but don't
+/// yet initialize) a `DrmOutputManager`. Written with `?` rather than nested
+/// matches purely for readability - this is still the throwaway probe binary,
+/// consolidated into the real `TtyBackend` in step 12.
+fn probe_drm(
+    session: &mut LibSeatSession,
+    gpu_path: &Path,
+) -> Result<(DrmDeviceNotifier, ProbeDrmOutputManager, Option<(connector::Handle, crtc::Handle)>), Box<dyn Error>>
+{
+    let flags = OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOCTTY | OFlags::NONBLOCK;
+    let fd = session.open(gpu_path, flags)?;
+    let drm_fd = DrmDeviceFd::new(DeviceFd::from(fd));
+
+    let (drm, drm_notifier) = DrmDevice::new(drm_fd.clone(), false)?;
+    println!("opened DRM device on {gpu_path:?}, {} crtcs", drm.crtcs().len());
+
+    let mut scanner: DrmScanner = DrmScanner::new();
+    let scan = scanner.scan_connectors(&drm)?;
+    let mut first_connected = None;
+    for event in scan {
+        if let DrmScanEvent::Connected { connector, crtc } = event {
+            let mode = connector.modes().first().copied();
+            println!(
+                "connector {:?} ({:?}), crtc: {:?}, first mode: {:?}",
+                connector.interface(),
+                connector.state(),
+                crtc,
+                mode
+            );
+            if let (Some(crtc), Some(_)) = (crtc, mode) {
+                first_connected.get_or_insert((connector.handle(), crtc));
+            }
+        }
+    }
+
+    let gbm = GbmDevice::new(drm_fd)?;
+    let allocator = GbmAllocator::new(
+        gbm.clone(),
+        GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT,
+    );
+    println!("gbm device + allocator constructed");
+
+    let egl_display = unsafe { EGLDisplay::new(gbm.clone())? };
+    let egl_context = EGLContext::new(&egl_display)?;
+    let renderer = unsafe { GlesRenderer::new(egl_context)? };
+    let renderer_formats: Vec<Format> = renderer
+        .egl_context()
+        .dmabuf_render_formats()
+        .iter()
+        .copied()
+        .collect();
+    println!(
+        "gles renderer constructed, {} dmabuf formats",
+        renderer_formats.len()
+    );
+
+    let exporter = GbmFramebufferExporter::new(gbm.clone(), NodeFilter::All);
+    let mgr: ProbeDrmOutputManager = DrmOutputManager::new(
+        drm,
+        allocator,
+        exporter,
+        Some(gbm),
+        [Fourcc::Argb8888],
+        renderer_formats,
+    );
+    println!("DrmOutputManager constructed");
+
+    Ok((drm_notifier, mgr, first_connected))
+}
 
 fn main() {
     // Session creation needs exclusive control of the seat via logind/seatd -
@@ -60,71 +146,17 @@ fn main() {
         return;
     };
 
-    let flags = OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOCTTY | OFlags::NONBLOCK;
-    match session.open(gpu_path, flags) {
-        Ok(fd) => {
-            let drm_fd = DrmDeviceFd::new(DeviceFd::from(fd));
-            match DrmDevice::new(drm_fd.clone(), false) {
-                Ok((drm, drm_notifier)) => {
-                    println!("opened DRM device on {gpu_path:?}, {} crtcs", drm.crtcs().len());
-
-                    event_loop
-                        .handle()
-                        .insert_source(drm_notifier, |event, _, _| match event {
-                            DrmEvent::VBlank(crtc) => println!("drm event: vblank on {crtc:?}"),
-                            DrmEvent::Error(err) => println!("drm event: error {err:?}"),
-                        })
-                        .expect("failed to insert drm notifier");
-
-                    let mut scanner: DrmScanner = DrmScanner::new();
-                    match scanner.scan_connectors(&drm) {
-                        Ok(scan) => {
-                            for event in scan {
-                                if let DrmScanEvent::Connected { connector, crtc } = event {
-                                    let mode = connector.modes().first();
-                                    println!(
-                                        "connector {:?} ({:?}), crtc: {:?}, first mode: {:?}",
-                                        connector.interface(),
-                                        connector.state(),
-                                        crtc,
-                                        mode
-                                    );
-                                }
-                            }
-                        }
-                        Err(err) => println!("scan_connectors failed: {err}"),
-                    }
-
-                    match GbmDevice::new(drm_fd.clone()) {
-                        Ok(gbm) => {
-                            let _allocator = GbmAllocator::new(
-                                gbm.clone(),
-                                GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT,
-                            );
-                            println!("gbm device + allocator constructed");
-
-                            match unsafe { EGLDisplay::new(gbm) } {
-                                Ok(egl_display) => match EGLContext::new(&egl_display) {
-                                    Ok(egl_context) => match unsafe { GlesRenderer::new(egl_context) } {
-                                        Ok(renderer) => {
-                                            let formats =
-                                                renderer.egl_context().dmabuf_render_formats().iter().count();
-                                            println!("gles renderer constructed, {formats} dmabuf formats");
-                                        }
-                                        Err(err) => println!("GlesRenderer::new failed: {err}"),
-                                    },
-                                    Err(err) => println!("EGLContext::new failed: {err}"),
-                                },
-                                Err(err) => println!("EGLDisplay::new failed: {err}"),
-                            }
-                        }
-                        Err(err) => println!("GbmDevice::new failed: {err}"),
-                    }
-                }
-                Err(err) => println!("DrmDevice::new failed: {err}"),
-            }
+    match probe_drm(&mut session, gpu_path) {
+        Ok((drm_notifier, _mgr, _first_connected)) => {
+            event_loop
+                .handle()
+                .insert_source(drm_notifier, |event, _, _| match event {
+                    DrmEvent::VBlank(crtc) => println!("drm event: vblank on {crtc:?}"),
+                    DrmEvent::Error(err) => println!("drm event: error {err:?}"),
+                })
+                .expect("failed to insert drm notifier");
         }
-        Err(err) => println!("session.open({gpu_path:?}) failed: {err}"),
+        Err(err) => println!("probe_drm failed: {err}"),
     }
 
     println!("dispatching for 2 seconds (no session/drm events expected nested)...");
