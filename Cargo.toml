@@ -19,6 +19,7 @@ smithay = { version = "0.7.0", git = "https://github.com/Smithay/smithay.git", r
   "backend_udev",
   "backend_libinput",
   "wayland_frontend",
+  "desktop",
 ] }
 smithay-drm-extras = { git = "https://github.com/Smithay/smithay.git", rev = "ff5fa7df392cecfba049ffed55cdaa4e98a8e7ef" }
 calloop = "0.14.4"
