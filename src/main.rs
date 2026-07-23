@@ -1,4 +1,5 @@
 mod backend;
+mod input;
 
 use calloop::EventLoop;
 use smithay::backend::renderer::gles::GlesRenderer;
