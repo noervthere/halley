@@ -1,6 +1,7 @@
 mod backend;
 mod cursor;
 mod input;
+mod wayland;
 
 use calloop::EventLoop;
 use smithay::backend::renderer::gles::GlesRenderer;
