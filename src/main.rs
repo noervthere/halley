@@ -1,18 +1,23 @@
 mod backend;
 
 use calloop::EventLoop;
+use smithay::backend::renderer::Color32F;
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::winit::{self as smithay_winit, WinitEvent};
 use smithay::reexports::winit::dpi::LogicalSize;
 use smithay::reexports::winit::window::Window as WinitWindow;
 
+use backend::Renderable;
 use backend::winit::WinitBackend;
+
+/// Background color for the very first render: not final art direction,
+/// just "provably not the platform's default/undefined pre-swap contents."
+const CLEAR_COLOR: Color32F = Color32F::new(0.04, 0.05, 0.06, 1.0);
 
 /// Everything this milestone needs: a backend to render into, and whether
 /// we should stop. Deliberately not the old `Halley` mega-struct - grows
 /// exactly when a real feature (xdg-shell, input, ...) needs it to.
 struct App {
-    #[allow(dead_code)] // read starting next commit, when Redraw actually renders
     backend: WinitBackend,
     exit: bool,
 }
@@ -25,6 +30,10 @@ fn main() {
     let (backend, winit_source) =
         smithay_winit::init_from_attributes::<GlesRenderer>(window_attributes)
             .expect("failed to initialize winit backend");
+
+    // Winit only guarantees an initial RedrawRequested on some platforms -
+    // request one explicitly so the first frame doesn't depend on that.
+    backend.window().request_redraw();
 
     let mut event_loop: EventLoop<App> =
         EventLoop::try_new().expect("failed to create event loop");
@@ -41,10 +50,12 @@ fn main() {
                 app.exit = true;
             }
             WinitEvent::Redraw => {
-                // TODO: render (next commit).
+                if let Err(err) = app.backend.render(CLEAR_COLOR) {
+                    eprintln!("render failed: {err}");
+                }
             }
             WinitEvent::Resized { .. } => {
-                // TODO: track new size and request a redraw (later commit).
+                // TODO: track new size and request a redraw (next commit).
             }
             _ => {}
         })
