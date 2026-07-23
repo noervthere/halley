@@ -155,7 +155,14 @@ impl Keyboard {
                 if state != KeyState::Pressed {
                     return FilterResult::Forward;
                 }
-                let keysym = handle.modified_sym();
+                // Binds are matched against the unshifted, layout-agnostic
+                // symbol (mirroring niri's find_configured_bind) - Shift is
+                // one of the modifiers compared separately below, so using
+                // modified_sym() here would apply it twice and never match
+                // any bind that includes Shift (e.g. mod+shift+e).
+                let Some(keysym) = handle.raw_latin_sym_or_raw_current_sym() else {
+                    return FilterResult::Forward;
+                };
                 match binds
                     .iter()
                     .find(|bind| bind.keysym == keysym && modifiers_match(mods, bind.modifiers))
