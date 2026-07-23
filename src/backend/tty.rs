@@ -2,24 +2,31 @@ use std::error::Error;
 
 use smithay::backend::allocator::gbm::{GbmAllocator, GbmBufferFlags, GbmDevice};
 use smithay::backend::allocator::{Format, Fourcc};
+use smithay::backend::drm::compositor::FrameFlags;
 use smithay::backend::drm::exporter::gbm::{GbmFramebufferExporter, NodeFilter};
 use smithay::backend::drm::output::{DrmOutput, DrmOutputManager, DrmOutputRenderElements};
 use smithay::backend::drm::{DrmDevice, DrmDeviceFd, DrmDeviceNotifier};
 use smithay::backend::egl::{EGLContext, EGLDisplay};
+use smithay::backend::renderer::Color32F;
+use smithay::backend::renderer::element::Kind;
+use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
 use smithay::backend::renderer::element::solid::SolidColorRenderElement;
 use smithay::backend::renderer::gles::GlesRenderer;
-use smithay::backend::drm::compositor::FrameFlags;
-use smithay::backend::renderer::Color32F;
 use smithay::backend::session::Session;
 use smithay::backend::session::libseat::{LibSeatSession, LibSeatSessionNotifier};
 use smithay::backend::udev;
 use smithay::output::OutputModeSource;
-use smithay::reexports::drm::control::{connector, crtc, Mode};
+use smithay::reexports::drm::control::{Mode, connector, crtc};
 use smithay::reexports::rustix::fs::OFlags;
-use smithay::utils::{DeviceFd, Scale, Size, Transform};
+use smithay::utils::{DeviceFd, Physical, Point, Scale, Size, Transform};
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
 
 use super::Renderable;
+use crate::cursor::CursorImage;
+
+/// Fixed test position for the cursor - matches `WinitBackend`'s, no real
+/// pointer tracking exists yet (see `cursor.rs`'s doc comment).
+const CURSOR_LOCATION: (f64, f64) = (100.0, 100.0);
 
 type TtyDrmOutputManager =
     DrmOutputManager<GbmAllocator<DrmDeviceFd>, GbmFramebufferExporter<DrmDeviceFd>, (), DrmDeviceFd>;
@@ -195,9 +202,7 @@ impl TtyBackend {
 }
 
 impl Renderable for TtyBackend {
-    // TODO(cursor): draws the empty-elements clear only for now - cursor
-    // element wiring lands in the next commit, mirroring winit's.
-    fn render(&mut self, clear: Color32F, _cursor: &crate::cursor::CursorImage) -> Result<(), Box<dyn Error>> {
+    fn render(&mut self, clear: Color32F, cursor: &CursorImage) -> Result<(), Box<dyn Error>> {
         // A single bad output shouldn't hide a working one - failures are
         // logged per-output, and only surfaced to the caller if literally
         // every output failed.
@@ -205,9 +210,28 @@ impl Renderable for TtyBackend {
         let mut last_err: Option<Box<dyn Error>> = None;
 
         for (crtc, drm_output) in &mut self.drm_outputs {
-            match drm_output.render_frame::<_, SolidColorRenderElement>(
+            // Built before render_frame() borrows the renderer again -
+            // from_buffer() only needs it transiently to import the texture.
+            let cursor_element = match MemoryRenderBufferRenderElement::from_buffer(
                 &mut self.renderer,
-                &[],
+                Point::<f64, Physical>::from(CURSOR_LOCATION),
+                &cursor.buffer,
+                None,
+                None,
+                None,
+                Kind::Cursor,
+            ) {
+                Ok(element) => element,
+                Err(err) => {
+                    eprintln!("failed to build cursor element for {crtc:?}: {err}");
+                    last_err = Some(Box::new(err));
+                    continue;
+                }
+            };
+
+            match drm_output.render_frame::<_, MemoryRenderBufferRenderElement<GlesRenderer>>(
+                &mut self.renderer,
+                &[cursor_element],
                 clear,
                 FrameFlags::empty(),
             ) {
