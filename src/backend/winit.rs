@@ -11,13 +11,12 @@ use super::Renderable;
 /// backend (real hardware, a separate later plan) will be a sibling module
 /// implementing the same `Renderable` trait, not sharing state with this
 /// one.
-#[allow(dead_code)] // constructed in the next commit, once main.rs opens a window
 pub struct WinitBackend {
+    #[allow(dead_code)] // read starting next commit, when render() is filled in
     backend: WinitGraphicsBackend<GlesRenderer>,
 }
 
 impl WinitBackend {
-    #[allow(dead_code)]
     pub fn new(backend: WinitGraphicsBackend<GlesRenderer>) -> Self {
         Self { backend }
     }
@@ -25,8 +24,7 @@ impl WinitBackend {
 
 impl Renderable for WinitBackend {
     fn render(&mut self, _clear: Color32F) -> Result<(), Box<dyn Error>> {
-        // TODO: bind -> render -> clear -> finish -> submit. Filled in once
-        // a window actually exists to render into (next step).
+        // TODO: bind -> render -> clear -> finish -> submit (next commit).
         Ok(())
     }
 }
