@@ -1,7 +1,6 @@
 mod backend;
 
 use calloop::EventLoop;
-use smithay::backend::renderer::Color32F;
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::winit::{self as smithay_winit, WinitEvent};
 use smithay::reexports::winit::dpi::LogicalSize;
@@ -9,10 +8,6 @@ use smithay::reexports::winit::window::Window as WinitWindow;
 
 use backend::Renderable;
 use backend::winit::WinitBackend;
-
-/// Background color for the very first render: not final art direction,
-/// just "provably not the platform's default/undefined pre-swap contents."
-const CLEAR_COLOR: Color32F = Color32F::new(0.04, 0.05, 0.06, 1.0);
 
 /// Everything this milestone needs: a backend to render into, and whether
 /// we should stop. Deliberately not the old `Halley` mega-struct - grows
@@ -49,7 +44,7 @@ fn main() {
                 app.exit = true;
             }
             WinitEvent::Redraw => {
-                if let Err(err) = app.backend.render(CLEAR_COLOR) {
+                if let Err(err) = app.backend.render(backend::CLEAR_COLOR) {
                     eprintln!("render failed: {err}");
                 }
             }

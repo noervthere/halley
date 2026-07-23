@@ -3,6 +3,11 @@ pub mod winit;
 
 use smithay::backend::renderer::Color32F;
 
+/// Cool, slightly-blue-leaning light gray - visible without being stark.
+/// Shared by both backends' drivers (main.rs, tty_probe.rs) so there's one
+/// definition instead of two independently-maintained literals.
+pub const CLEAR_COLOR: Color32F = Color32F::new(0.58, 0.64, 0.72, 1.0);
+
 /// A backend that can render a single frame.
 ///
 /// Deliberately narrow: takes only the clear color it needs, nothing else.
