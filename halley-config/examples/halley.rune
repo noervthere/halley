@@ -1,0 +1,20 @@
+# Halley compositor config - first slice: keybinds only.
+# Everything else (outputs, appearance, gestures, ...) comes later,
+# in its own section, once it actually exists.
+
+keybinds:
+  mod "super"
+
+  # Exit the compositor. No confirmation dialog - straight quit.
+  "$var.mod+shift+e" "quit"
+
+  # Close the focused window.
+  "$var.mod+c" "close-focused"
+
+  # Open a terminal. "auto" detects an installed terminal from a priority
+  # list (alacritty, kitty, ghostty, wezterm, ...); set an explicit command
+  # here instead to skip detection.
+  "$var.mod+t" "open-terminal"
+
+  default-terminal "auto"
+end
