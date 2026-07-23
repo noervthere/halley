@@ -75,10 +75,10 @@ impl TtyBackend {
         let scan = scanner.scan_connectors(&drm)?;
         let mut connected: Vec<(connector::Handle, crtc::Handle, Mode)> = Vec::new();
         for event in scan {
-            if let DrmScanEvent::Connected { connector, crtc } = event {
-                if let (Some(crtc), Some(mode)) = (crtc, connector.modes().first().copied()) {
-                    connected.push((connector.handle(), crtc, mode));
-                }
+            if let DrmScanEvent::Connected { connector, crtc } = event
+                && let (Some(crtc), Some(mode)) = (crtc, connector.modes().first().copied())
+            {
+                connected.push((connector.handle(), crtc, mode));
             }
         }
         if connected.is_empty() {
@@ -202,10 +202,10 @@ impl Renderable for TtyBackend {
             ) {
                 Ok(result) => {
                     ok_count += 1;
-                    if !result.is_empty {
-                        if let Err(err) = drm_output.queue_frame(()) {
-                            eprintln!("queue_frame failed for {crtc:?}: {err}");
-                        }
+                    if !result.is_empty
+                        && let Err(err) = drm_output.queue_frame(())
+                    {
+                        eprintln!("queue_frame failed for {crtc:?}: {err}");
                     }
                 }
                 Err(err) => {
@@ -215,10 +215,10 @@ impl Renderable for TtyBackend {
             }
         }
 
-        if ok_count == 0 {
-            if let Some(err) = last_err {
-                return Err(err);
-            }
+        if ok_count == 0
+            && let Some(err) = last_err
+        {
+            return Err(err);
         }
 
         Ok(())
