@@ -1,4 +1,5 @@
 pub mod keybinds;
+pub mod pointer;
 
 use std::error::Error;
 
