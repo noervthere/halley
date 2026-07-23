@@ -10,21 +10,25 @@ use smithay::reexports::input::Libinput;
 // touching main.rs (out of scope for this plan) to share it.
 #[path = "../backend/mod.rs"]
 mod backend;
+#[path = "../cursor.rs"]
+mod cursor;
 #[path = "../input/mod.rs"]
 mod input;
 
 use backend::CLEAR_COLOR;
 use backend::Renderable;
 use backend::tty::TtyBackend;
+use cursor::CursorImage;
 use input::Keyboard;
 use input::keybinds::BackendKind;
 
-/// Mirrors main.rs's `App` shape (backend + keyboard + exit flag). Still a
-/// separate struct in a separate binary; full winit/tty unification is
-/// later, explicitly-deferred work.
+/// Mirrors main.rs's `App` shape (backend + keyboard + cursor + exit flag).
+/// Still a separate struct in a separate binary; full winit/tty unification
+/// is later, explicitly-deferred work.
 struct TtyApp {
     backend: TtyBackend,
     keyboard: Keyboard,
+    cursor: CursorImage,
     exit: bool,
 }
 
@@ -52,10 +56,11 @@ fn main() {
     let mut app = TtyApp {
         backend,
         keyboard: Keyboard::new(BackendKind::Tty).expect("failed to set up keyboard input"),
+        cursor: CursorImage::load(),
         exit: false,
     };
 
-    match app.backend.render(CLEAR_COLOR) {
+    match app.backend.render(CLEAR_COLOR, &app.cursor) {
         Ok(()) => println!("first render() succeeded"),
         Err(err) => println!("first render() failed (same caveat as initialize_output): {err}"),
     }
@@ -82,7 +87,7 @@ fn main() {
                 println!("session event: activate");
                 match app.backend.resume() {
                     Ok(()) => {
-                        if let Err(err) = app.backend.render(CLEAR_COLOR) {
+                        if let Err(err) = app.backend.render(CLEAR_COLOR, &app.cursor) {
                             println!("post-resume render failed: {err}");
                         }
                     }
@@ -100,7 +105,7 @@ fn main() {
                     println!("frame_submitted failed for {crtc:?}: {err}");
                     return;
                 }
-                if let Err(err) = app.backend.render(CLEAR_COLOR) {
+                if let Err(err) = app.backend.render(CLEAR_COLOR, &app.cursor) {
                     println!("render failed: {err}");
                 }
             }

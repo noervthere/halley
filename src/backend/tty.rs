@@ -195,7 +195,9 @@ impl TtyBackend {
 }
 
 impl Renderable for TtyBackend {
-    fn render(&mut self, clear: Color32F) -> Result<(), Box<dyn Error>> {
+    // TODO(cursor): draws the empty-elements clear only for now - cursor
+    // element wiring lands in the next commit, mirroring winit's.
+    fn render(&mut self, clear: Color32F, _cursor: &crate::cursor::CursorImage) -> Result<(), Box<dyn Error>> {
         // A single bad output shouldn't hide a working one - failures are
         // logged per-output, and only surfaced to the caller if literally
         // every output failed.
