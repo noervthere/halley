@@ -103,7 +103,7 @@ pub fn parse_keybinds(config: &RuneConfig) -> Result<Keybinds, ParseError> {
         .collect();
     // HashMap iteration order isn't stable - sort so parsing the same file
     // always produces binds in the same order.
-    entries.sort_by(|(a, _), (b, _)| a.cmp(b));
+    entries.sort_by_key(|(k, _)| *k);
 
     let mut binds = Vec::with_capacity(entries.len());
     for (chord_key, action_str) in entries {
