@@ -1,3 +1,6 @@
+pub mod compositor;
+pub mod xdg_shell;
+
 use std::collections::HashMap;
 
 use smithay::desktop::{Space, Window};
