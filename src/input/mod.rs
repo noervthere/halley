@@ -1,7 +1,15 @@
+// Not called from anywhere yet - wired up into main.rs/tty_probe.rs next.
+#![allow(dead_code)]
+
 pub mod keybinds;
 
-use smithay::backend::input::KeyState;
-use smithay::input::keyboard::{KeyboardTarget, KeysymHandle, ModifiersState};
+use std::error::Error;
+
+use halley_config::{Action, Modifiers};
+use smithay::backend::input::{Event, InputBackend, InputEvent, KeyState, KeyboardKeyEvent};
+use smithay::input::keyboard::{
+    FilterResult, KeyboardHandle, KeyboardTarget, KeysymHandle, ModifiersState, XkbConfig,
+};
 use smithay::input::pointer::{
     AxisFrame, ButtonEvent, GestureHoldBeginEvent, GestureHoldEndEvent, GesturePinchBeginEvent,
     GesturePinchEndEvent, GesturePinchUpdateEvent, GestureSwipeBeginEvent, GestureSwipeEndEvent,
@@ -11,14 +19,15 @@ use smithay::input::touch::{
     DownEvent, MotionEvent as TouchMotionEvent, OrientationEvent, ShapeEvent, TouchTarget, UpEvent,
 };
 use smithay::input::{Seat, SeatHandler, SeatState};
-use smithay::utils::{IsAlive, Serial};
+use smithay::utils::{IsAlive, SERIAL_COUNTER, Serial};
+
+use keybinds::{BackendKind, ResolvedBind};
 
 /// Exists only to satisfy Smithay's `Seat<D: SeatHandler>` generic - nothing
 /// outside this module ever constructs or reasons about it. Real, unavoidable
 /// ceremony to unlock Seat/KeyboardHandle this early (no wl_display, no real
 /// clients yet), not something to pretend away by shoving Seat plumbing into
 /// `App`/`TtyBackend`, which have nothing to do with it.
-#[allow(dead_code)] // constructed once Keyboard::new() lands
 pub struct SeatData {
     seat_state: SeatState<SeatData>,
 }
@@ -36,7 +45,6 @@ impl SeatHandler for SeatData {
 /// A placeholder focus target - no real client/surface concept exists yet.
 /// Every trait method is a no-op: there is nothing to notify, since focus is
 /// never actually assigned to anything this round.
-#[allow(dead_code)] // used as SeatData's focus type once Keyboard::new() lands
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FocusTarget;
 
@@ -88,4 +96,77 @@ impl TouchTarget<SeatData> for FocusTarget {
     fn cancel(&self, _: &Seat<SeatData>, _: &mut SeatData, _: Serial) {}
     fn shape(&self, _: &Seat<SeatData>, _: &mut SeatData, _: &ShapeEvent, _: Serial) {}
     fn orientation(&self, _: &Seat<SeatData>, _: &mut SeatData, _: &OrientationEvent, _: Serial) {}
+}
+
+fn modifiers_match(state: &ModifiersState, expected: Modifiers) -> bool {
+    state.ctrl == expected.ctrl
+        && state.alt == expected.alt
+        && state.shift == expected.shift
+        && state.logo == expected.super_key
+}
+
+/// Owns the Seat/KeyboardHandle machinery and a resolved bind table, and
+/// turns raw input events into `Option<Action>` - nothing more. The matcher's
+/// job ends at "this action was triggered"; it never decides what quitting
+/// (or anything else) actually means for the caller's event loop, matching
+/// the same narrow-signature discipline as `Renderable::render`.
+pub struct Keyboard {
+    seat_data: SeatData,
+    keyboard: KeyboardHandle<SeatData>,
+    binds: Vec<ResolvedBind>,
+}
+
+impl Keyboard {
+    pub fn new(backend: BackendKind) -> Result<Self, Box<dyn Error>> {
+        let mut seat_state = SeatState::new();
+        let mut seat: Seat<SeatData> = seat_state.new_seat("seat-0");
+        let seat_data = SeatData { seat_state };
+
+        let keyboard = seat.add_keyboard(XkbConfig::default(), 200, 25)?;
+
+        let keybinds = keybinds::load_keybinds();
+        let binds = keybinds::resolve_binds(&keybinds, backend);
+
+        Ok(Self {
+            seat_data,
+            keyboard,
+            binds,
+        })
+    }
+
+    /// Matches only `InputEvent::Keyboard` - no pointer/touch capability is
+    /// added this round, so every other variant is ignored. Intercepts only
+    /// on `KeyState::Pressed`, so a chord fires once per press, not again on
+    /// release.
+    pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) -> Option<Action> {
+        let InputEvent::Keyboard { event } = event else {
+            return None;
+        };
+
+        let keycode = event.key_code();
+        let state = event.state();
+        let time = event.time_msec();
+        let binds = &self.binds;
+
+        self.keyboard.input::<Action, _>(
+            &mut self.seat_data,
+            keycode,
+            state,
+            SERIAL_COUNTER.next_serial(),
+            time,
+            |_, mods, handle| {
+                if state != KeyState::Pressed {
+                    return FilterResult::Forward;
+                }
+                let keysym = handle.modified_sym();
+                match binds
+                    .iter()
+                    .find(|bind| bind.keysym == keysym && modifiers_match(mods, bind.modifiers))
+                {
+                    Some(bind) => FilterResult::Intercept(bind.action),
+                    None => FilterResult::Forward,
+                }
+            },
+        )
+    }
 }
