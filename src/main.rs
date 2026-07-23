@@ -1,4 +1,5 @@
 mod backend;
+mod cursor;
 mod input;
 
 use calloop::EventLoop;

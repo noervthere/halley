@@ -682,6 +682,7 @@ dependencies = [
  "rune-cfg",
  "smithay",
  "smithay-drm-extras",
+ "xcursor",
 ]
 
 [[package]]
