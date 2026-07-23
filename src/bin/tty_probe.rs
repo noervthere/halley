@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use calloop::EventLoop;
 use smithay::backend::drm::DrmEvent;
+use smithay::backend::renderer::Color32F;
 use smithay::backend::session::Event as SessionEvent;
 
 // src/bin/*.rs binaries are separate crates from main.rs and can't import
@@ -10,12 +11,22 @@ use smithay::backend::session::Event as SessionEvent;
 #[path = "../backend/mod.rs"]
 mod backend;
 
+use backend::Renderable;
 use backend::tty::TtyBackend;
+
+// Matches main.rs's CLEAR_COLOR - same call shape used for WinitBackend,
+// proving the Renderable trait abstraction works identically across backends.
+const CLEAR_COLOR: Color32F = Color32F::new(0.04, 0.05, 0.06, 1.0);
 
 fn main() {
     match TtyBackend::new() {
-        Ok((_backend, session_notifier, drm_notifier)) => {
+        Ok((mut backend, session_notifier, drm_notifier)) => {
             println!("TtyBackend constructed successfully");
+
+            match backend.render(CLEAR_COLOR) {
+                Ok(()) => println!("render() succeeded"),
+                Err(err) => println!("render() failed (same caveat as initialize_output): {err}"),
+            }
 
             let mut event_loop: EventLoop<()> =
                 EventLoop::try_new().expect("failed to create event loop");
