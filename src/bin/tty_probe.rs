@@ -7,18 +7,21 @@ use smithay::backend::allocator::gbm::{GbmAllocator, GbmBufferFlags, GbmDevice};
 use smithay::backend::allocator::{Format, Fourcc};
 use smithay::backend::drm::exporter::gbm::GbmFramebufferExporter;
 use smithay::backend::drm::exporter::gbm::NodeFilter;
-use smithay::backend::drm::output::DrmOutputManager;
+use smithay::backend::drm::output::{DrmOutput, DrmOutputManager, DrmOutputRenderElements};
 use smithay::backend::drm::{DrmDevice, DrmDeviceFd, DrmDeviceNotifier, DrmEvent};
 use smithay::backend::egl::{EGLContext, EGLDisplay};
+use smithay::backend::renderer::element::solid::SolidColorRenderElement;
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::session::Event as SessionEvent;
 use smithay::backend::session::Session;
 use smithay::backend::session::libseat::LibSeatSession;
 use smithay::backend::udev;
+use smithay::output::OutputModeSource;
+use smithay::reexports::drm::control::Mode;
 use smithay::reexports::drm::control::connector;
 use smithay::reexports::drm::control::crtc;
 use smithay::reexports::rustix::fs::OFlags;
-use smithay::utils::DeviceFd;
+use smithay::utils::{DeviceFd, Scale, Size, Transform};
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
 
 type ProbeDrmOutputManager = DrmOutputManager<
@@ -28,16 +31,19 @@ type ProbeDrmOutputManager = DrmOutputManager<
     DrmDeviceFd,
 >;
 
-/// Everything steps 6-10 build: open the DRM device, scan for a connected
-/// connector/CRTC/mode, set up GBM+EGL+GlesRenderer, and construct (but don't
-/// yet initialize) a `DrmOutputManager`. Written with `?` rather than nested
-/// matches purely for readability - this is still the throwaway probe binary,
+type ProbeDrmOutput =
+    DrmOutput<GbmAllocator<DrmDeviceFd>, GbmFramebufferExporter<DrmDeviceFd>, (), DrmDeviceFd>;
+
+/// Everything steps 6-11 build: open the DRM device, scan for a connected
+/// connector/CRTC/mode, set up GBM+EGL+GlesRenderer, construct a
+/// `DrmOutputManager`, and initialize a `DrmOutput` for the first connected
+/// connector/CRTC/mode found. Written with `?` rather than nested matches
+/// purely for readability - this is still the throwaway probe binary,
 /// consolidated into the real `TtyBackend` in step 12.
 fn probe_drm(
     session: &mut LibSeatSession,
     gpu_path: &Path,
-) -> Result<(DrmDeviceNotifier, ProbeDrmOutputManager, Option<(connector::Handle, crtc::Handle)>), Box<dyn Error>>
-{
+) -> Result<(DrmDeviceNotifier, Option<(GlesRenderer, ProbeDrmOutput)>), Box<dyn Error>> {
     let flags = OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOCTTY | OFlags::NONBLOCK;
     let fd = session.open(gpu_path, flags)?;
     let drm_fd = DrmDeviceFd::new(DeviceFd::from(fd));
@@ -47,7 +53,7 @@ fn probe_drm(
 
     let mut scanner: DrmScanner = DrmScanner::new();
     let scan = scanner.scan_connectors(&drm)?;
-    let mut first_connected = None;
+    let mut first_connected: Option<(connector::Handle, crtc::Handle, Mode)> = None;
     for event in scan {
         if let DrmScanEvent::Connected { connector, crtc } = event {
             let mode = connector.modes().first().copied();
@@ -58,8 +64,8 @@ fn probe_drm(
                 crtc,
                 mode
             );
-            if let (Some(crtc), Some(_)) = (crtc, mode) {
-                first_connected.get_or_insert((connector.handle(), crtc));
+            if let (Some(crtc), Some(mode)) = (crtc, mode) {
+                first_connected.get_or_insert((connector.handle(), crtc, mode));
             }
         }
     }
@@ -73,7 +79,7 @@ fn probe_drm(
 
     let egl_display = unsafe { EGLDisplay::new(gbm.clone())? };
     let egl_context = EGLContext::new(&egl_display)?;
-    let renderer = unsafe { GlesRenderer::new(egl_context)? };
+    let mut renderer = unsafe { GlesRenderer::new(egl_context)? };
     let renderer_formats: Vec<Format> = renderer
         .egl_context()
         .dmabuf_render_formats()
@@ -86,7 +92,7 @@ fn probe_drm(
     );
 
     let exporter = GbmFramebufferExporter::new(gbm.clone(), NodeFilter::All);
-    let mgr: ProbeDrmOutputManager = DrmOutputManager::new(
+    let mut mgr: ProbeDrmOutputManager = DrmOutputManager::new(
         drm,
         allocator,
         exporter,
@@ -96,7 +102,42 @@ fn probe_drm(
     );
     println!("DrmOutputManager constructed");
 
-    Ok((drm_notifier, mgr, first_connected))
+    let Some((connector, crtc, mode)) = first_connected else {
+        println!("no connected connector/CRTC/mode found - skipping initialize_output");
+        return Ok((drm_notifier, None));
+    };
+
+    let (width, height) = mode.size();
+    let output_mode_source = OutputModeSource::Static {
+        size: Size::from((width as i32, height as i32)),
+        scale: Scale::from(1.0),
+        transform: Transform::Normal,
+    };
+
+    // Uncertain nested: this is the first call that may need DRM master via
+    // an atomic TEST_ONLY commit. A clean typed Err here (rather than a
+    // panic) is an acceptable, expected outcome nested - only a real free VT
+    // confirms Ok.
+    let result = mgr.lock().initialize_output::<GlesRenderer, SolidColorRenderElement>(
+        crtc,
+        mode,
+        &[connector],
+        output_mode_source,
+        None,
+        &mut renderer,
+        &DrmOutputRenderElements::default(),
+    );
+
+    match result {
+        Ok(drm_output) => {
+            println!("initialize_output succeeded");
+            Ok((drm_notifier, Some((renderer, drm_output))))
+        }
+        Err(err) => {
+            println!("initialize_output failed (expected nested under a host compositor): {err}");
+            Ok((drm_notifier, None))
+        }
+    }
 }
 
 fn main() {
@@ -147,7 +188,7 @@ fn main() {
     };
 
     match probe_drm(&mut session, gpu_path) {
-        Ok((drm_notifier, _mgr, _first_connected)) => {
+        Ok((drm_notifier, output)) => {
             event_loop
                 .handle()
                 .insert_source(drm_notifier, |event, _, _| match event {
@@ -155,6 +196,10 @@ fn main() {
                     DrmEvent::Error(err) => println!("drm event: error {err:?}"),
                 })
                 .expect("failed to insert drm notifier");
+
+            if output.is_some() {
+                println!("drm output ready (renderer + DrmOutput constructed)");
+            }
         }
         Err(err) => println!("probe_drm failed: {err}"),
     }
