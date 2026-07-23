@@ -1,6 +1,9 @@
 use calloop::EventLoop;
 use smithay::backend::drm::DrmEvent;
+use smithay::backend::libinput::{LibinputInputBackend, LibinputSessionInterface};
 use smithay::backend::session::Event as SessionEvent;
+use smithay::backend::session::Session;
+use smithay::reexports::input::Libinput;
 
 // src/bin/*.rs binaries are separate crates from main.rs and can't import
 // its modules directly - reuse the same source tree via #[path] rather than
@@ -13,12 +16,15 @@ mod input;
 use backend::CLEAR_COLOR;
 use backend::Renderable;
 use backend::tty::TtyBackend;
+use input::Keyboard;
+use input::keybinds::BackendKind;
 
-/// Mirrors main.rs's `App` shape (backend + exit flag) - a keyboard field
-/// joins it in the next step. Still a separate struct in a separate binary;
-/// full winit/tty unification is later, explicitly-deferred work.
+/// Mirrors main.rs's `App` shape (backend + keyboard + exit flag). Still a
+/// separate struct in a separate binary; full winit/tty unification is
+/// later, explicitly-deferred work.
 struct TtyApp {
     backend: TtyBackend,
+    keyboard: Keyboard,
     exit: bool,
 }
 
@@ -35,7 +41,19 @@ fn main() {
     };
     println!("TtyBackend constructed successfully");
 
-    let mut app = TtyApp { backend, exit: false };
+    let mut libinput_context = Libinput::new_with_udev::<LibinputSessionInterface<_>>(
+        backend.session().into(),
+    );
+    libinput_context
+        .udev_assign_seat(&backend.session().seat())
+        .expect("failed to assign udev seat for libinput");
+    let libinput_backend = LibinputInputBackend::new(libinput_context);
+
+    let mut app = TtyApp {
+        backend,
+        keyboard: Keyboard::new(BackendKind::Tty).expect("failed to set up keyboard input"),
+        exit: false,
+    };
 
     match app.backend.render(CLEAR_COLOR) {
         Ok(()) => println!("first render() succeeded"),
@@ -43,6 +61,15 @@ fn main() {
     }
 
     let mut event_loop: EventLoop<TtyApp> = EventLoop::try_new().expect("failed to create event loop");
+
+    event_loop
+        .handle()
+        .insert_source(libinput_backend, |event, _, app| {
+            if let Some(halley_config::Action::Quit) = app.keyboard.process_input_event(event) {
+                app.exit = true;
+            }
+        })
+        .expect("failed to insert libinput source");
 
     event_loop
         .handle()
@@ -81,10 +108,11 @@ fn main() {
         })
         .expect("failed to insert drm notifier");
 
-    println!("dispatching until Ctrl-C - switch to this VT to see a solid color fill the screen");
-    loop {
+    println!("dispatching - switch to this VT to see a solid color fill the screen, press the Quit chord to exit");
+    while !app.exit {
         event_loop
             .dispatch(None, &mut app)
             .expect("event loop dispatch failed");
     }
+    println!("quit requested, exiting cleanly");
 }

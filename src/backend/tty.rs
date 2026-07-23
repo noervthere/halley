@@ -172,6 +172,15 @@ impl TtyBackend {
         self.drm_output_manager.pause();
     }
 
+    /// A cheap clone of the session, for building a libinput context
+    /// externally - matches the existing "notifiers aren't owned by the
+    /// backend, whatever drives the loop inserts them" pattern, extended to
+    /// input. `LibSeatSession` is `Clone` (internally `Weak`-based), so this
+    /// isn't a real second session.
+    pub fn session(&self) -> LibSeatSession {
+        self.session.clone()
+    }
+
     /// Acknowledge a page-flip completion for one output, called from the
     /// `DrmEvent::VBlank(crtc)` handler - the DRM-path equivalent of
     /// `WinitBackend::request_redraw()`. Takes a `crtc::Handle` since with

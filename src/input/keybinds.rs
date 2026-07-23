@@ -3,10 +3,15 @@ use smithay::input::keyboard::{Keysym, xkb};
 
 /// Which backend a bind table is being resolved for - drives the
 /// Alt-vs-Super mod-key convention (design decision 4).
+// main.rs only ever constructs Winit, tty_probe.rs only ever constructs Tty -
+// each binary's compilation only sees one variant built, so the other always
+// looks dead-code from that binary's perspective. Both are genuinely used,
+// just never in the same binary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BackendKind {
+    #[allow(dead_code)]
     Winit,
-    #[allow(dead_code)] // constructed once tty_probe.rs wires up its own Keyboard
+    #[allow(dead_code)]
     Tty,
 }
 
