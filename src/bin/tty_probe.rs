@@ -1,7 +1,8 @@
 use std::time::Duration;
 
 use calloop::EventLoop;
-use smithay::backend::drm::{DrmDevice, DrmEvent};
+use smithay::backend::allocator::gbm::{GbmAllocator, GbmBufferFlags, GbmDevice};
+use smithay::backend::drm::{DrmDevice, DrmDeviceFd, DrmEvent};
 use smithay::backend::session::Event as SessionEvent;
 use smithay::backend::session::Session;
 use smithay::backend::session::libseat::LibSeatSession;
@@ -60,8 +61,8 @@ fn main() {
     let flags = OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOCTTY | OFlags::NONBLOCK;
     match session.open(gpu_path, flags) {
         Ok(fd) => {
-            let fd = DeviceFd::from(fd);
-            match DrmDevice::new(smithay::backend::drm::DrmDeviceFd::new(fd), false) {
+            let drm_fd = DrmDeviceFd::new(DeviceFd::from(fd));
+            match DrmDevice::new(drm_fd.clone(), false) {
                 Ok((drm, drm_notifier)) => {
                     println!("opened DRM device on {gpu_path:?}, {} crtcs", drm.crtcs().len());
 
@@ -90,6 +91,17 @@ fn main() {
                             }
                         }
                         Err(err) => println!("scan_connectors failed: {err}"),
+                    }
+
+                    match GbmDevice::new(drm_fd.clone()) {
+                        Ok(gbm) => {
+                            let _allocator = GbmAllocator::new(
+                                gbm,
+                                GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT,
+                            );
+                            println!("gbm device + allocator constructed");
+                        }
+                        Err(err) => println!("GbmDevice::new failed: {err}"),
                     }
                 }
                 Err(err) => println!("DrmDevice::new failed: {err}"),
