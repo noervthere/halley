@@ -8,6 +8,7 @@ use smithay::backend::session::libseat::LibSeatSession;
 use smithay::backend::udev;
 use smithay::reexports::rustix::fs::OFlags;
 use smithay::utils::DeviceFd;
+use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
 
 fn main() {
     // Session creation needs exclusive control of the seat via logind/seatd -
@@ -71,6 +72,25 @@ fn main() {
                             DrmEvent::Error(err) => println!("drm event: error {err:?}"),
                         })
                         .expect("failed to insert drm notifier");
+
+                    let mut scanner: DrmScanner = DrmScanner::new();
+                    match scanner.scan_connectors(&drm) {
+                        Ok(scan) => {
+                            for event in scan {
+                                if let DrmScanEvent::Connected { connector, crtc } = event {
+                                    let mode = connector.modes().first();
+                                    println!(
+                                        "connector {:?} ({:?}), crtc: {:?}, first mode: {:?}",
+                                        connector.interface(),
+                                        connector.state(),
+                                        crtc,
+                                        mode
+                                    );
+                                }
+                            }
+                        }
+                        Err(err) => println!("scan_connectors failed: {err}"),
+                    }
                 }
                 Err(err) => println!("DrmDevice::new failed: {err}"),
             }
