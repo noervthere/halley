@@ -46,6 +46,12 @@ pub struct TtyBackend {
     renderer: GlesRenderer,
     drm_output_manager: TtyDrmOutputManager,
     drm_outputs: Vec<(crtc::Handle, TtyDrmOutput)>,
+    /// The first successfully initialized output's size - used only to
+    /// clamp the single shared pointer position (see `Pointer`'s doc
+    /// comment on the multi-output simplification). Not per-output layout;
+    /// real per-output pointer coordinate spaces are future multi-monitor
+    /// work.
+    output_size: Size<i32, Physical>,
 }
 
 impl TtyBackend {
@@ -119,10 +125,12 @@ impl TtyBackend {
         // failing the whole backend, so a working primary still comes up
         // even if a secondary monitor can't be driven for some reason.
         let mut drm_outputs = Vec::new();
+        let mut output_size = None;
         for (connector, crtc, mode) in connected {
             let (width, height) = mode.size();
+            let size = Size::from((width as i32, height as i32));
             let output_mode_source = OutputModeSource::Static {
-                size: Size::from((width as i32, height as i32)),
+                size,
                 scale: Scale::from(1.0),
                 transform: Transform::Normal,
             };
@@ -140,23 +148,33 @@ impl TtyBackend {
                 );
 
             match result {
-                Ok(drm_output) => drm_outputs.push((crtc, drm_output)),
+                Ok(drm_output) => {
+                    output_size.get_or_insert(size);
+                    drm_outputs.push((crtc, drm_output));
+                }
                 Err(err) => eprintln!("failed to initialize output for {connector:?}: {err}"),
             }
         }
 
-        if drm_outputs.is_empty() {
+        let Some(output_size) = output_size else {
             return Err("no output could be initialized".into());
-        }
+        };
 
         let backend = TtyBackend {
             session,
             renderer,
             drm_output_manager,
             drm_outputs,
+            output_size,
         };
 
         Ok((backend, session_notifier, drm_notifier))
+    }
+
+    /// The size used to clamp the shared pointer position - see the
+    /// `output_size` field's doc comment for the multi-output caveat.
+    pub fn output_size(&self) -> Size<i32, Physical> {
+        self.output_size
     }
 
     /// Reacquire DRM master and resync KMS state after a VT switch back.

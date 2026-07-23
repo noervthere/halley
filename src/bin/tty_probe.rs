@@ -21,18 +21,15 @@ use backend::tty::TtyBackend;
 use cursor::CursorImage;
 use input::Keyboard;
 use input::keybinds::BackendKind;
+use input::pointer::Pointer;
 
-/// Placeholder until step 4 wires a real `input::Pointer` here - keeps
-/// behavior identical to before the `Renderable::render` signature grew a
-/// cursor-position parameter.
-const FIXED_CURSOR_POSITION: (f64, f64) = (100.0, 100.0);
-
-/// Mirrors main.rs's `App` shape (backend + keyboard + cursor + exit flag).
-/// Still a separate struct in a separate binary; full winit/tty unification
-/// is later, explicitly-deferred work.
+/// Mirrors main.rs's `App` shape (backend + keyboard + pointer + cursor +
+/// exit flag). Still a separate struct in a separate binary; full winit/tty
+/// unification is later, explicitly-deferred work.
 struct TtyApp {
     backend: TtyBackend,
     keyboard: Keyboard,
+    pointer: Pointer,
     cursor: CursorImage,
     exit: bool,
 }
@@ -61,11 +58,13 @@ fn main() {
     let mut app = TtyApp {
         backend,
         keyboard: Keyboard::new(BackendKind::Tty).expect("failed to set up keyboard input"),
+        pointer: Pointer::new((100.0, 100.0)),
         cursor: CursorImage::load(),
         exit: false,
     };
 
-    match app.backend.render(CLEAR_COLOR, &app.cursor, FIXED_CURSOR_POSITION) {
+    let cursor_position = app.pointer.position();
+    match app.backend.render(CLEAR_COLOR, &app.cursor, cursor_position) {
         Ok(()) => println!("first render() succeeded"),
         Err(err) => println!("first render() failed (same caveat as initialize_output): {err}"),
     }
@@ -75,6 +74,8 @@ fn main() {
     event_loop
         .handle()
         .insert_source(libinput_backend, |event, _, app| {
+            let output_size = app.backend.output_size().to_logical(1);
+            app.pointer.process_input_event(&event, output_size);
             if let Some(halley_config::Action::Quit) = app.keyboard.process_input_event(event) {
                 app.exit = true;
             }
@@ -92,8 +93,8 @@ fn main() {
                 println!("session event: activate");
                 match app.backend.resume() {
                     Ok(()) => {
-                        if let Err(err) =
-                            app.backend.render(CLEAR_COLOR, &app.cursor, FIXED_CURSOR_POSITION)
+                        let cursor_position = app.pointer.position();
+                        if let Err(err) = app.backend.render(CLEAR_COLOR, &app.cursor, cursor_position)
                         {
                             println!("post-resume render failed: {err}");
                         }
@@ -112,7 +113,8 @@ fn main() {
                     println!("frame_submitted failed for {crtc:?}: {err}");
                     return;
                 }
-                if let Err(err) = app.backend.render(CLEAR_COLOR, &app.cursor, FIXED_CURSOR_POSITION) {
+                let cursor_position = app.pointer.position();
+                if let Err(err) = app.backend.render(CLEAR_COLOR, &app.cursor, cursor_position) {
                     println!("render failed: {err}");
                 }
             }
