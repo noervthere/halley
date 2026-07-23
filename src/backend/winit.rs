@@ -20,6 +20,14 @@ impl WinitBackend {
     pub fn new(backend: WinitGraphicsBackend<GlesRenderer>) -> Self {
         Self { backend }
     }
+
+    /// Ask the window for another `Redraw` event. Winit-specific (not part
+    /// of `Renderable`) since the tty backend's equivalent is triggered by
+    /// vblank/page-flip events, not a request call like this - there's no
+    /// shared shape between the two worth forcing into one trait method.
+    pub fn request_redraw(&self) {
+        self.backend.window().request_redraw();
+    }
 }
 
 impl Renderable for WinitBackend {

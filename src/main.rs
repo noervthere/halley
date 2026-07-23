@@ -55,7 +55,11 @@ fn main() {
                 }
             }
             WinitEvent::Resized { .. } => {
-                // TODO: track new size and request a redraw (next commit).
+                // No separate size-tracking needed: render() re-queries
+                // window_size() every call, and WinitGraphicsBackend::bind()
+                // already resizes the EGL surface internally when it
+                // differs from the last bound size. Just need a new frame.
+                app.backend.request_redraw();
             }
             _ => {}
         })
