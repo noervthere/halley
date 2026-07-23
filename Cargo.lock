@@ -679,6 +679,7 @@ version = "0.1.0"
 dependencies = [
  "calloop 0.14.4",
  "halley-config",
+ "rune-cfg",
  "smithay",
  "smithay-drm-extras",
 ]

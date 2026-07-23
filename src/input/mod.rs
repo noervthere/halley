@@ -1,3 +1,5 @@
+pub mod keybinds;
+
 use smithay::backend::input::KeyState;
 use smithay::input::keyboard::{KeyboardTarget, KeysymHandle, ModifiersState};
 use smithay::input::pointer::{

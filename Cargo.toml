@@ -23,3 +23,4 @@ smithay = { version = "0.7.0", git = "https://github.com/Smithay/smithay.git", r
 smithay-drm-extras = { git = "https://github.com/Smithay/smithay.git", rev = "ff5fa7df392cecfba049ffed55cdaa4e98a8e7ef" }
 calloop = "0.14.4"
 halley-config = { path = "halley-config" }
+rune-cfg = "0.6.1"
