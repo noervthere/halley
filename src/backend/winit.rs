@@ -6,6 +6,7 @@ use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::renderer::utils::draw_render_elements;
 use smithay::backend::renderer::{Color32F, Frame, Renderer};
 use smithay::backend::winit::WinitGraphicsBackend;
+use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
 use smithay::utils::{Physical, Point, Rectangle, Size, Transform};
 
 use super::Renderable;
@@ -18,11 +19,43 @@ use crate::cursor::CursorImage;
 /// one.
 pub struct WinitBackend {
     backend: WinitGraphicsBackend<GlesRenderer>,
+    /// The wl_output clients see for this window. A plain geometry/mode
+    /// object - constructing it needs no `DisplayHandle`, so this backend
+    /// still never touches Wayland protocol state directly; the driving
+    /// code (main.rs) is what registers the actual global and maps it into
+    /// a `Space`.
+    output: Output,
+}
+
+fn output_mode(size: Size<i32, Physical>) -> Mode {
+    Mode {
+        size,
+        refresh: 60_000,
+    }
 }
 
 impl WinitBackend {
     pub fn new(backend: WinitGraphicsBackend<GlesRenderer>) -> Self {
-        Self { backend }
+        let mode = output_mode(backend.window_size());
+        let output = Output::new(
+            "winit".to_string(),
+            PhysicalProperties {
+                size: (0, 0).into(),
+                subpixel: Subpixel::Unknown,
+                make: "halley-next".into(),
+                model: "winit".into(),
+                serial_number: "unknown".into(),
+            },
+        );
+        output.change_current_state(
+            Some(mode),
+            Some(Transform::Flipped180),
+            None,
+            Some((0, 0).into()),
+        );
+        output.set_preferred(mode);
+
+        Self { backend, output }
     }
 
     /// Ask the window for another `Redraw` event. Winit-specific (not part
@@ -37,6 +70,18 @@ impl WinitBackend {
     /// pointer positions into this output's coordinate space.
     pub fn window_size(&self) -> Size<i32, Physical> {
         self.backend.window_size()
+    }
+
+    pub fn output(&self) -> &Output {
+        &self.output
+    }
+
+    /// Keeps the advertised wl_output mode in sync with the real window
+    /// size after a resize - stale output geometry would mislead clients
+    /// about how large they're allowed to be.
+    pub fn update_output_mode(&self) {
+        self.output
+            .change_current_state(Some(output_mode(self.backend.window_size())), None, None, None);
     }
 }
 
