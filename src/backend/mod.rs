@@ -2,6 +2,7 @@ pub mod tty;
 pub mod winit;
 
 use smithay::backend::renderer::Color32F;
+use smithay::desktop::{Space, Window};
 
 use crate::cursor::CursorImage;
 
@@ -27,5 +28,6 @@ pub trait Renderable {
         clear: Color32F,
         cursor: &CursorImage,
         cursor_position: (f64, f64),
+        space: &Space<Window>,
     ) -> Result<(), Box<dyn std::error::Error>>;
 }

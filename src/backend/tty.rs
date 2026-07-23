@@ -7,15 +7,17 @@ use smithay::backend::drm::exporter::gbm::{GbmFramebufferExporter, NodeFilter};
 use smithay::backend::drm::output::{DrmOutput, DrmOutputManager, DrmOutputRenderElements};
 use smithay::backend::drm::{DrmDevice, DrmDeviceFd, DrmDeviceNotifier};
 use smithay::backend::egl::{EGLContext, EGLDisplay};
-use smithay::backend::renderer::Color32F;
-use smithay::backend::renderer::element::Kind;
 use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
 use smithay::backend::renderer::element::solid::SolidColorRenderElement;
+use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
+use smithay::backend::renderer::element::{AsRenderElements, Kind, render_elements};
 use smithay::backend::renderer::gles::GlesRenderer;
+use smithay::backend::renderer::{Color32F, ImportAll, ImportMem};
 use smithay::backend::session::Session;
 use smithay::backend::session::libseat::{LibSeatSession, LibSeatSessionNotifier};
 use smithay::backend::udev;
-use smithay::output::OutputModeSource;
+use smithay::desktop::{Space, Window};
+use smithay::output::{Mode as OutputMode, Output, OutputModeSource, PhysicalProperties, Subpixel};
 use smithay::reexports::drm::control::{Mode, connector, crtc};
 use smithay::reexports::rustix::fs::OFlags;
 use smithay::utils::{DeviceFd, Physical, Point, Scale, Size, Transform};
@@ -29,6 +31,16 @@ type TtyDrmOutputManager =
 
 type TtyDrmOutput =
     DrmOutput<GbmAllocator<DrmDeviceFd>, GbmFramebufferExporter<DrmDeviceFd>, (), DrmDeviceFd>;
+
+render_elements! {
+    /// Combines mapped-window and cursor elements into one homogeneous list -
+    /// `DrmOutput::render_frame` takes a single element type per call, unlike
+    /// the winit backend's `Frame`, which can be drawn into with several
+    /// separate calls.
+    TtyRenderElement<R> where R: ImportAll + ImportMem;
+    Surface=WaylandSurfaceRenderElement<R>,
+    Cursor=MemoryRenderBufferRenderElement<R>,
+}
 
 /// The tty (DRM/KMS) backend - real hardware output, no host compositor
 /// involved. Wraps exactly what rendering needs, mirroring how
@@ -58,6 +70,11 @@ pub struct TtyBackend {
     /// meaningfully placed on every monitor at once; showing it on all of
     /// them made it look duplicated rather than tracking one pointer.
     primary_crtc: crtc::Handle,
+    /// The `wl_output` for the primary output - client windows are only
+    /// ever drawn there this round (see `render()`), matching the same
+    /// "first output" simplification `output_size`/`primary_crtc` already
+    /// establish rather than inventing a new one.
+    primary_output: Output,
 }
 
 impl TtyBackend {
@@ -133,6 +150,7 @@ impl TtyBackend {
         let mut drm_outputs = Vec::new();
         let mut output_size = None;
         let mut primary_crtc = None;
+        let mut primary_output: Option<Output> = None;
         for (connector, crtc, mode) in connected {
             let (width, height) = mode.size();
             let size = Size::from((width as i32, height as i32));
@@ -158,6 +176,30 @@ impl TtyBackend {
                 Ok(drm_output) => {
                     output_size.get_or_insert(size);
                     primary_crtc.get_or_insert(crtc);
+                    primary_output.get_or_insert_with(|| {
+                        let output = Output::new(
+                            "tty0".to_string(),
+                            PhysicalProperties {
+                                size: (0, 0).into(),
+                                subpixel: Subpixel::Unknown,
+                                make: "halley-next".into(),
+                                model: "tty".into(),
+                                serial_number: "unknown".into(),
+                            },
+                        );
+                        let output_mode = OutputMode {
+                            size,
+                            refresh: (mode.vrefresh() * 1000) as i32,
+                        };
+                        output.change_current_state(
+                            Some(output_mode),
+                            Some(Transform::Normal),
+                            None,
+                            Some((0, 0).into()),
+                        );
+                        output.set_preferred(output_mode);
+                        output
+                    });
                     drm_outputs.push((crtc, drm_output));
                 }
                 Err(err) => eprintln!("failed to initialize output for {connector:?}: {err}"),
@@ -168,6 +210,7 @@ impl TtyBackend {
             return Err("no output could be initialized".into());
         };
         let primary_crtc = primary_crtc.expect("set alongside output_size above");
+        let primary_output = primary_output.expect("set alongside output_size above");
 
         let backend = TtyBackend {
             session,
@@ -176,6 +219,7 @@ impl TtyBackend {
             drm_outputs,
             output_size,
             primary_crtc,
+            primary_output,
         };
 
         Ok((backend, session_notifier, drm_notifier))
@@ -185,6 +229,13 @@ impl TtyBackend {
     /// `output_size` field's doc comment for the multi-output caveat.
     pub fn output_size(&self) -> Size<i32, Physical> {
         self.output_size
+    }
+
+    /// The `wl_output` driving code registers as a global and maps into a
+    /// `Space` - see `primary_output`'s doc comment for the single-output
+    /// caveat this shares with `output_size`/`primary_crtc`.
+    pub fn primary_output(&self) -> &Output {
+        &self.primary_output
     }
 
     /// Reacquire DRM master and resync KMS state after a VT switch back.
@@ -231,6 +282,7 @@ impl Renderable for TtyBackend {
         clear: Color32F,
         cursor: &CursorImage,
         cursor_position: (f64, f64),
+        space: &Space<Window>,
     ) -> Result<(), Box<dyn Error>> {
         // A single bad output shouldn't hide a working one - failures are
         // logged per-output, and only surfaced to the caller if literally
@@ -239,12 +291,31 @@ impl Renderable for TtyBackend {
         let mut last_err: Option<Box<dyn Error>> = None;
 
         for (crtc, drm_output) in &mut self.drm_outputs {
-            // Only the primary output draws the cursor - there's no
-            // per-output coordinate layout yet (see `primary_crtc`'s doc
-            // comment), so drawing the single shared position on every
-            // monitor just duplicated it instead of tracking one pointer.
-            let mut elements = Vec::new();
+            // Only the primary output draws windows and the cursor - there's
+            // no per-output coordinate/layout system yet (see
+            // `primary_crtc`'s doc comment), so a single shared pointer
+            // position and one `Space` can't be meaningfully split across
+            // monitors. Secondary outputs keep rendering clear-color only.
+            let mut elements: Vec<TtyRenderElement<GlesRenderer>> = Vec::new();
             if *crtc == self.primary_crtc {
+                // Built directly per mapped window rather than via
+                // `space_render_elements` - nesting `SpaceRenderElements`
+                // inside this file's own combined element enum runs into an
+                // internal bound mismatch in the render_elements! macro
+                // (SpaceRenderElements's own generated impl wants
+                // `ImportMemWl`/`ImportDmaWl`, which its own declared
+                // `where` clause doesn't actually list); going straight to
+                // `Window`'s `AsRenderElements` avoids nesting the macro
+                // output of one render_elements! invocation inside another.
+                for window in space.elements() {
+                    let Some(location) = space.element_location(window) else {
+                        continue;
+                    };
+                    let surface_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = window
+                        .render_elements(&mut self.renderer, location.to_physical(1), Scale::from(1.0), 1.0);
+                    elements.extend(surface_elements.into_iter().map(TtyRenderElement::Surface));
+                }
+
                 // Built before render_frame() borrows the renderer again -
                 // from_buffer() only needs it transiently to import the texture.
                 match MemoryRenderBufferRenderElement::from_buffer(
@@ -256,7 +327,7 @@ impl Renderable for TtyBackend {
                     None,
                     Kind::Cursor,
                 ) {
-                    Ok(element) => elements.push(element),
+                    Ok(element) => elements.push(TtyRenderElement::Cursor(element)),
                     Err(err) => {
                         eprintln!("failed to build cursor element for {crtc:?}: {err}");
                         last_err = Some(Box::new(err));
@@ -265,7 +336,7 @@ impl Renderable for TtyBackend {
                 }
             }
 
-            match drm_output.render_frame::<_, MemoryRenderBufferRenderElement<GlesRenderer>>(
+            match drm_output.render_frame::<_, TtyRenderElement<GlesRenderer>>(
                 &mut self.renderer,
                 &elements,
                 clear,

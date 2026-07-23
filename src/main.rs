@@ -125,7 +125,12 @@ fn main() {
             }
             WinitEvent::Redraw => {
                 let position = app.pointer.position();
-                if let Err(err) = app.backend.render(backend::CLEAR_COLOR, &app.cursor, position) {
+                if let Err(err) = app.backend.render(
+                    backend::CLEAR_COLOR,
+                    &app.cursor,
+                    position,
+                    &app.wayland.space,
+                ) {
                     eprintln!("render failed: {err}");
                 }
 

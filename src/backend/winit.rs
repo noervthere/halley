@@ -6,6 +6,8 @@ use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::renderer::utils::draw_render_elements;
 use smithay::backend::renderer::{Color32F, Frame, Renderer};
 use smithay::backend::winit::WinitGraphicsBackend;
+use smithay::desktop::{Space, Window};
+use smithay::desktop::space::space_render_elements;
 use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
 use smithay::utils::{Physical, Point, Rectangle, Size, Transform};
 
@@ -91,6 +93,7 @@ impl Renderable for WinitBackend {
         clear: Color32F,
         cursor: &CursorImage,
         cursor_position: (f64, f64),
+        space: &Space<Window>,
     ) -> Result<(), Box<dyn Error>> {
         let size = self.backend.window_size();
         let damage = Rectangle::from_size(size);
@@ -101,8 +104,9 @@ impl Renderable for WinitBackend {
         {
             let (renderer, mut framebuffer) = self.backend.bind()?;
 
-            // Built before renderer.render() borrows renderer for the frame -
-            // from_buffer() only needs it transiently to import the texture.
+            // Both built before renderer.render() borrows renderer for the
+            // frame - neither needs it beyond this transient import step.
+            let space_elements = space_render_elements::<_, Window, _>(renderer, [space], &self.output, 1.0)?;
             let cursor_element = MemoryRenderBufferRenderElement::from_buffer(
                 renderer,
                 Point::<f64, Physical>::from(cursor_position),
@@ -115,6 +119,8 @@ impl Renderable for WinitBackend {
 
             let mut frame = renderer.render(&mut framebuffer, size, Transform::Flipped180)?;
             frame.clear(clear, &[damage])?;
+            // Windows first, cursor last - the cursor composites on top.
+            draw_render_elements(&mut frame, 1.0, &space_elements, &[damage])?;
             draw_render_elements(&mut frame, 1.0, &[cursor_element], &[damage])?;
             // No cross-GPU/import synchronization needed for a plain clear -
             // discarding the fence is fine at this stage.
