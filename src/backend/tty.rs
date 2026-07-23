@@ -52,6 +52,12 @@ pub struct TtyBackend {
     /// real per-output pointer coordinate spaces are future multi-monitor
     /// work.
     output_size: Size<i32, Physical>,
+    /// The CRTC of the first successfully initialized output - the only one
+    /// the cursor is drawn on. There's no per-output coordinate layout yet
+    /// (see `output_size`), so a single shared cursor position can't be
+    /// meaningfully placed on every monitor at once; showing it on all of
+    /// them made it look duplicated rather than tracking one pointer.
+    primary_crtc: crtc::Handle,
 }
 
 impl TtyBackend {
@@ -126,6 +132,7 @@ impl TtyBackend {
         // even if a secondary monitor can't be driven for some reason.
         let mut drm_outputs = Vec::new();
         let mut output_size = None;
+        let mut primary_crtc = None;
         for (connector, crtc, mode) in connected {
             let (width, height) = mode.size();
             let size = Size::from((width as i32, height as i32));
@@ -150,6 +157,7 @@ impl TtyBackend {
             match result {
                 Ok(drm_output) => {
                     output_size.get_or_insert(size);
+                    primary_crtc.get_or_insert(crtc);
                     drm_outputs.push((crtc, drm_output));
                 }
                 Err(err) => eprintln!("failed to initialize output for {connector:?}: {err}"),
@@ -159,6 +167,7 @@ impl TtyBackend {
         let Some(output_size) = output_size else {
             return Err("no output could be initialized".into());
         };
+        let primary_crtc = primary_crtc.expect("set alongside output_size above");
 
         let backend = TtyBackend {
             session,
@@ -166,6 +175,7 @@ impl TtyBackend {
             drm_output_manager,
             drm_outputs,
             output_size,
+            primary_crtc,
         };
 
         Ok((backend, session_notifier, drm_notifier))
@@ -229,28 +239,35 @@ impl Renderable for TtyBackend {
         let mut last_err: Option<Box<dyn Error>> = None;
 
         for (crtc, drm_output) in &mut self.drm_outputs {
-            // Built before render_frame() borrows the renderer again -
-            // from_buffer() only needs it transiently to import the texture.
-            let cursor_element = match MemoryRenderBufferRenderElement::from_buffer(
-                &mut self.renderer,
-                Point::<f64, Physical>::from(cursor_position),
-                &cursor.buffer,
-                None,
-                None,
-                None,
-                Kind::Cursor,
-            ) {
-                Ok(element) => element,
-                Err(err) => {
-                    eprintln!("failed to build cursor element for {crtc:?}: {err}");
-                    last_err = Some(Box::new(err));
-                    continue;
+            // Only the primary output draws the cursor - there's no
+            // per-output coordinate layout yet (see `primary_crtc`'s doc
+            // comment), so drawing the single shared position on every
+            // monitor just duplicated it instead of tracking one pointer.
+            let mut elements = Vec::new();
+            if *crtc == self.primary_crtc {
+                // Built before render_frame() borrows the renderer again -
+                // from_buffer() only needs it transiently to import the texture.
+                match MemoryRenderBufferRenderElement::from_buffer(
+                    &mut self.renderer,
+                    Point::<f64, Physical>::from(cursor_position),
+                    &cursor.buffer,
+                    None,
+                    None,
+                    None,
+                    Kind::Cursor,
+                ) {
+                    Ok(element) => elements.push(element),
+                    Err(err) => {
+                        eprintln!("failed to build cursor element for {crtc:?}: {err}");
+                        last_err = Some(Box::new(err));
+                        continue;
+                    }
                 }
-            };
+            }
 
             match drm_output.render_frame::<_, MemoryRenderBufferRenderElement<GlesRenderer>>(
                 &mut self.renderer,
-                &[cursor_element],
+                &elements,
                 clear,
                 FrameFlags::empty(),
             ) {
