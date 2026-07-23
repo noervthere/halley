@@ -1,3 +1,4 @@
+pub mod tty;
 pub mod winit;
 
 use smithay::backend::renderer::Color32F;
