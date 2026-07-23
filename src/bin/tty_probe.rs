@@ -3,6 +3,8 @@ use std::time::Duration;
 use calloop::EventLoop;
 use smithay::backend::allocator::gbm::{GbmAllocator, GbmBufferFlags, GbmDevice};
 use smithay::backend::drm::{DrmDevice, DrmDeviceFd, DrmEvent};
+use smithay::backend::egl::{EGLContext, EGLDisplay};
+use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::session::Event as SessionEvent;
 use smithay::backend::session::Session;
 use smithay::backend::session::libseat::LibSeatSession;
@@ -96,10 +98,25 @@ fn main() {
                     match GbmDevice::new(drm_fd.clone()) {
                         Ok(gbm) => {
                             let _allocator = GbmAllocator::new(
-                                gbm,
+                                gbm.clone(),
                                 GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT,
                             );
                             println!("gbm device + allocator constructed");
+
+                            match unsafe { EGLDisplay::new(gbm) } {
+                                Ok(egl_display) => match EGLContext::new(&egl_display) {
+                                    Ok(egl_context) => match unsafe { GlesRenderer::new(egl_context) } {
+                                        Ok(renderer) => {
+                                            let formats =
+                                                renderer.egl_context().dmabuf_render_formats().iter().count();
+                                            println!("gles renderer constructed, {formats} dmabuf formats");
+                                        }
+                                        Err(err) => println!("GlesRenderer::new failed: {err}"),
+                                    },
+                                    Err(err) => println!("EGLContext::new failed: {err}"),
+                                },
+                                Err(err) => println!("EGLDisplay::new failed: {err}"),
+                            }
                         }
                         Err(err) => println!("GbmDevice::new failed: {err}"),
                     }
