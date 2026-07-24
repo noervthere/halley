@@ -32,6 +32,20 @@ type TtyDrmOutputManager =
 type TtyDrmOutput =
     DrmOutput<GbmAllocator<DrmDeviceFd>, GbmFramebufferExporter<DrmDeviceFd>, (), DrmDeviceFd>;
 
+/// One connected output plus whether it currently has a frame queued and
+/// awaiting its VBlank. DRM only produces a VBlank in response to a page
+/// flip it was actually asked to do - a scene that settles into "nothing
+/// changed" naturally queues no further frame and so never gets another
+/// VBlank at all, which was the only thing driving redraws. `pending` lets
+/// `render()` be called eagerly (e.g. on every input event, not just on
+/// VBlank) without ever double-submitting a commit for an output that's
+/// still waiting on its last one.
+struct DrmOutputEntry {
+    crtc: crtc::Handle,
+    drm_output: TtyDrmOutput,
+    pending: bool,
+}
+
 render_elements! {
     /// Combines mapped-window and cursor elements into one homogeneous list -
     /// `DrmOutput::render_frame` takes a single element type per call, unlike
@@ -57,7 +71,7 @@ pub struct TtyBackend {
     session: LibSeatSession,
     renderer: GlesRenderer,
     drm_output_manager: TtyDrmOutputManager,
-    drm_outputs: Vec<(crtc::Handle, TtyDrmOutput)>,
+    drm_outputs: Vec<DrmOutputEntry>,
     /// The first successfully initialized output's size - used only to
     /// clamp the single shared pointer position (see `Pointer`'s doc
     /// comment on the multi-output simplification). Not per-output layout;
@@ -200,7 +214,11 @@ impl TtyBackend {
                         output.set_preferred(output_mode);
                         output
                     });
-                    drm_outputs.push((crtc, drm_output));
+                    drm_outputs.push(DrmOutputEntry {
+                        crtc,
+                        drm_output,
+                        pending: false,
+                    });
                 }
                 Err(err) => eprintln!("failed to initialize output for {connector:?}: {err}"),
             }
@@ -246,6 +264,12 @@ impl TtyBackend {
     /// `apply_tty_reload(..., st: &mut Halley, ...)` had).
     pub fn resume(&mut self) -> Result<(), Box<dyn Error>> {
         self.drm_output_manager.lock().activate(false)?;
+        // Any frame that was in flight before the VT switch away is gone -
+        // without this, a stale `pending` would permanently block that
+        // output from rendering again (its VBlank is never coming).
+        for entry in &mut self.drm_outputs {
+            entry.pending = false;
+        }
         Ok(())
     }
 
@@ -269,8 +293,9 @@ impl TtyBackend {
     /// multiple outputs "which one flipped" is no longer implicit. Must be
     /// followed by a fresh `render()` call to queue that output's next frame.
     pub fn frame_submitted(&mut self, crtc: crtc::Handle) -> Result<(), Box<dyn Error>> {
-        if let Some((_, drm_output)) = self.drm_outputs.iter_mut().find(|(c, _)| *c == crtc) {
-            drm_output.frame_submitted()?;
+        if let Some(entry) = self.drm_outputs.iter_mut().find(|e| e.crtc == crtc) {
+            entry.drm_output.frame_submitted()?;
+            entry.pending = false;
         }
         Ok(())
     }
@@ -290,14 +315,25 @@ impl Renderable for TtyBackend {
         let mut ok_count = 0;
         let mut last_err: Option<Box<dyn Error>> = None;
 
-        for (crtc, drm_output) in &mut self.drm_outputs {
+        for entry in &mut self.drm_outputs {
+            // A page flip is already queued for this output and hasn't
+            // landed yet - DRM won't accept a second commit before that
+            // happens. Nothing is lost: `frame_submitted()` clears `pending`
+            // on the next VBlank, and the driving code always re-renders
+            // right after, picking up whatever changed in the meantime.
+            if entry.pending {
+                continue;
+            }
+            let crtc = entry.crtc;
+            let drm_output = &mut entry.drm_output;
+
             // Only the primary output draws windows and the cursor - there's
             // no per-output coordinate/layout system yet (see
             // `primary_crtc`'s doc comment), so a single shared pointer
             // position and one `Space` can't be meaningfully split across
             // monitors. Secondary outputs keep rendering clear-color only.
             let mut elements: Vec<TtyRenderElement<GlesRenderer>> = Vec::new();
-            if *crtc == self.primary_crtc {
+            if crtc == self.primary_crtc {
                 // Built directly per mapped window rather than via
                 // `space_render_elements` - nesting `SpaceRenderElements`
                 // inside this file's own combined element enum runs into an
@@ -344,10 +380,11 @@ impl Renderable for TtyBackend {
             ) {
                 Ok(result) => {
                     ok_count += 1;
-                    if !result.is_empty
-                        && let Err(err) = drm_output.queue_frame(())
-                    {
-                        eprintln!("queue_frame failed for {crtc:?}: {err}");
+                    if !result.is_empty {
+                        match drm_output.queue_frame(()) {
+                            Ok(()) => entry.pending = true,
+                            Err(err) => eprintln!("queue_frame failed for {crtc:?}: {err}"),
+                        }
                     }
                 }
                 Err(err) => {

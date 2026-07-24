@@ -140,6 +140,21 @@ fn main() {
         .insert_source(libinput_backend, |event, _, app| {
             let output_size = app.backend.output_size().to_logical(1);
             app.pointer.process_input_event(&event, output_size);
+
+            // Motion alone doesn't trigger the next VBlank - once a scene
+            // has zero damage, nothing gets queued and no further VBlank
+            // ever arrives on its own (see TtyBackend::render's `pending`
+            // doc comment). Render eagerly here so movement actually
+            // reaches the screen instead of only updating on whatever
+            // redraw happens to already be in flight for another reason.
+            let cursor_position = app.pointer.position();
+            if let Err(err) =
+                app.backend
+                    .render(CLEAR_COLOR, &app.cursor, cursor_position, &app.wayland.space)
+            {
+                println!("render failed: {err}");
+            }
+
             if let Some(halley_config::Action::Quit) = app.keyboard.process_input_event(event) {
                 app.exit = true;
             }
