@@ -77,9 +77,14 @@ impl Element for RescaledElement {
         self.inner.kind()
     }
 
-    // `damage_since`/`opaque_regions` use `Element`'s default impls, which
-    // derive from `geometry()` - already correct once `geometry()` is
-    // overridden above, no need to duplicate that logic.
+    // `damage_since` uses `Element`'s default impl, which derives from
+    // `geometry()` - already correct once `geometry()` is overridden above.
+    // `opaque_regions`' default reports *none*, deliberately left as-is: the
+    // inner element's own regions are in unscaled surface coordinates, so
+    // forwarding them would over-report coverage whenever `zoom_scale < 1.0`
+    // and let `draw_render_elements` cull windows that are actually visible.
+    // Reporting none only costs some overdraw, which neither backend
+    // optimizes for anyway (both clear + redraw the full output every frame).
 }
 
 impl RenderElement<GlesRenderer> for RescaledElement {

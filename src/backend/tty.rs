@@ -534,7 +534,17 @@ impl Renderable for TtyBackend {
                 // `where` clause doesn't actually list); going straight to
                 // `Window`'s `AsRenderElements` avoids nesting the macro
                 // output of one render_elements! invocation inside another.
-                for window in space.elements() {
+                //
+                // `.rev()` is load-bearing: `Space::elements()` iterates
+                // z-order *back to front* (bottom-most first), but a render
+                // element list is front-to-back by convention -
+                // `draw_render_elements` reverses whatever it's given before
+                // drawing, so feeding it bottom-to-front order inverts
+                // z-order on screen and raising a window would push it
+                // visually to the back. Smithay's own
+                // `Space::render_elements_for_region` calls `.rev()` here for
+                // exactly this reason.
+                for window in space.elements().rev() {
                     let Some(geometry) = space.element_geometry(window) else {
                         continue;
                     };
@@ -580,7 +590,12 @@ impl Renderable for TtyBackend {
                     None,
                     Kind::Cursor,
                 ) {
-                    Ok(element) => elements.push(TtyRenderElement::Cursor(element)),
+                    // Inserted at the *front*, not pushed: this list is
+                    // front-to-back, so index 0 is the topmost element. The
+                    // cursor has to composite over every window, and unlike
+                    // the winit backend there's no second draw call to put it
+                    // in - `DrmOutput::render_frame` takes one list.
+                    Ok(element) => elements.insert(0, TtyRenderElement::Cursor(element)),
                     Err(err) => {
                         eprintln!("failed to build cursor element for {crtc:?}: {err}");
                         last_err = Some(Box::new(err));

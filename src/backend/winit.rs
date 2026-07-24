@@ -1,8 +1,9 @@
 use std::error::Error;
 
 use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
+use smithay::backend::renderer::element::solid::SolidColorRenderElement;
 use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
-use smithay::backend::renderer::element::{AsRenderElements, Element, Kind};
+use smithay::backend::renderer::element::{AsRenderElements, Element, Kind, render_elements};
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::renderer::utils::draw_render_elements;
 use smithay::backend::renderer::{Color32F, Frame, Renderer};
@@ -28,6 +29,18 @@ pub struct WinitBackend {
     /// code (main.rs) is what registers the actual global and maps it into
     /// a `Space`.
     output: Output,
+}
+
+render_elements! {
+    /// Window content and border strips in one homogeneous list, so a
+    /// window's border can sit at that window's own depth in the stack.
+    /// Drawing borders in a second `draw_render_elements` pass instead - as
+    /// this backend used to - composites *every* border over *every* window
+    /// regardless of z-order, so a buried window's border bleeds across
+    /// whatever is stacked on top of it.
+    WinitRenderElement<=GlesRenderer>;
+    Rescaled=super::rescale::RescaledElement,
+    Border=SolidColorRenderElement,
 }
 
 fn output_mode(size: Size<i32, Physical>) -> Mode {
@@ -134,9 +147,16 @@ impl Renderable for WinitBackend {
             // destination - see its doc comment for why passing `zoom_scale`
             // straight into `render_elements` doesn't actually resize
             // anything.
-            let mut window_elements: Vec<super::rescale::RescaledElement> = Vec::new();
-            let mut border_elements = Vec::new();
-            for window in space.elements() {
+            let mut window_elements: Vec<WinitRenderElement> = Vec::new();
+            // `.rev()` is load-bearing: `Space::elements()` iterates z-order
+            // *back to front* (bottom-most first), but a render element list
+            // is front-to-back by convention - `draw_render_elements`
+            // reverses whatever it's given before drawing, so feeding it
+            // bottom-to-front order inverts z-order on screen and raising a
+            // window would push it visually to the back. Smithay's own
+            // `Space::render_elements_for_region` calls `.rev()` here for
+            // exactly this reason.
+            for window in space.elements().rev() {
                 let Some(geometry) = space.element_geometry(window) else {
                     continue;
                 };
@@ -147,7 +167,7 @@ impl Renderable for WinitBackend {
                 window_elements.extend(surface_elements.into_iter().map(|surface_element| {
                     let native_geo = surface_element.geometry(Scale::from(1.0));
                     let dst = super::camera_rect(native_geo, camera_center, size, zoom_scale);
-                    super::rescale::RescaledElement::new(surface_element, dst)
+                    WinitRenderElement::Rescaled(super::rescale::RescaledElement::new(surface_element, dst))
                 }));
 
                 let is_focused = window
@@ -155,7 +175,16 @@ impl Renderable for WinitBackend {
                     .is_some_and(|t| Some(t.wl_surface()) == focused);
                 let color = super::window_border_color(decorations, is_focused);
                 let border_width = ((decorations.border_width_px as f32 * zoom_scale).round() as i32).max(1);
-                border_elements.extend(super::border_strips(scaled_bbox, border_width, color));
+                // Pushed alongside this window's own content rather than into
+                // a separate list, so it stays at this window's depth (see
+                // `WinitRenderElement`). Relative order against this window's
+                // own content doesn't matter - `border_strips` builds strips
+                // that sit entirely outside the window's bbox.
+                window_elements.extend(
+                    super::border_strips(scaled_bbox, border_width, color)
+                        .into_iter()
+                        .map(WinitRenderElement::Border),
+                );
             }
 
             // Built before renderer.render() borrows renderer for the frame -
@@ -172,11 +201,10 @@ impl Renderable for WinitBackend {
 
             let mut frame = renderer.render(&mut framebuffer, size, Transform::Flipped180)?;
             frame.clear(clear, &[damage])?;
-            // Windows, then borders, then the cursor last (composites on
-            // top) - border/window draw order doesn't matter since borders
-            // never overlap window content by construction.
+            // Windows (borders included, interleaved at their own window's
+            // depth), then the cursor in its own later pass so it always
+            // composites on top of everything.
             draw_render_elements(&mut frame, 1.0, &window_elements, &[damage])?;
-            draw_render_elements::<GlesRenderer, _, _>(&mut frame, 1.0, &border_elements, &[damage])?;
             draw_render_elements(&mut frame, 1.0, &[cursor_element], &[damage])?;
             // No cross-GPU/import synchronization needed for a plain clear -
             // discarding the fence is fine at this stage.
