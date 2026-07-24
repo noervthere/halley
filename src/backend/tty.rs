@@ -267,7 +267,7 @@ impl TtyBackend {
 
     /// Whether the primary output currently has a frame queued and awaiting
     /// its VBlank - lets driving code's redraw scheduling (see
-    /// `halley-tty.rs`'s `RedrawState`) tell whether the last `render()` call
+    /// `main.rs`'s `RedrawState`) tell whether the last `render()` call
     /// actually submitted anything to DRM, or produced no damage.
     pub fn primary_frame_in_flight(&self) -> bool {
         self.drm_outputs
@@ -277,7 +277,7 @@ impl TtyBackend {
     }
 
     /// The primary output's refresh interval, used to time the estimated-
-    /// VBlank fallback timer (see `halley-tty.rs`) - falls back to 60Hz if
+    /// VBlank fallback timer (see `main.rs`) - falls back to 60Hz if
     /// the mode's refresh rate is somehow unset.
     pub fn refresh_interval(&self) -> Duration {
         let refresh_mhz = self
