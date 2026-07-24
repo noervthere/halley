@@ -56,12 +56,9 @@ struct App {
     exit: bool,
     wayland: WaylandState,
     seat_state: SeatState<App>,
-    /// A second, unrelated `Seat` from the one `Keyboard` already owns
-    /// internally - that one turns key events into `Action`s and has no
-    /// relationship to any `Display`. This one exists purely to advertise
-    /// `wl_seat` capabilities to clients; nothing feeds it real events yet.
     seat: Seat<App>,
     start_time: Instant,
+    decorations: halley_config::Decorations,
 }
 
 /// Runs the nested (winit) session - a real window on the host desktop,
@@ -121,6 +118,7 @@ pub fn run() {
         seat_state,
         seat,
         start_time: Instant::now(),
+        decorations: halley_config::load_decorations(),
     };
     app.wayland.space.map_output(app.backend.output(), (0, 0));
 
@@ -140,6 +138,8 @@ pub fn run() {
                     &app.cursor,
                     position,
                     &app.wayland.space,
+                    app.wayland.focused.as_ref(),
+                    &app.decorations,
                 ) {
                     eprintln!("render failed: {err}");
                 }

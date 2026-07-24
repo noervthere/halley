@@ -9,6 +9,7 @@ use smithay::backend::winit::WinitGraphicsBackend;
 use smithay::desktop::{Space, Window};
 use smithay::desktop::space::space_render_elements;
 use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
+use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Physical, Point, Rectangle, Size, Transform};
 
 use super::Renderable;
@@ -94,9 +95,23 @@ impl Renderable for WinitBackend {
         cursor: &CursorImage,
         cursor_position: (f64, f64),
         space: &Space<Window>,
+        focused: Option<&WlSurface>,
+        decorations: &halley_config::Decorations,
     ) -> Result<(), Box<dyn Error>> {
         let size = self.backend.window_size();
         let damage = Rectangle::from_size(size);
+
+        let border_elements: Vec<_> = space
+            .elements()
+            .filter_map(|window| Some((window, space.element_geometry(window)?)))
+            .flat_map(|(window, geometry)| {
+                let is_focused = window
+                    .toplevel()
+                    .is_some_and(|t| Some(t.wl_surface()) == focused);
+                let color = super::window_border_color(decorations, is_focused);
+                super::border_strips(geometry.to_physical(1), decorations.border_width_px, color)
+            })
+            .collect();
 
         // Scoped so `renderer`/`framebuffer` (both borrowed from
         // `self.backend`) are dropped before `submit()` needs its own
@@ -119,8 +134,11 @@ impl Renderable for WinitBackend {
 
             let mut frame = renderer.render(&mut framebuffer, size, Transform::Flipped180)?;
             frame.clear(clear, &[damage])?;
-            // Windows first, cursor last - the cursor composites on top.
+            // Windows, then borders, then the cursor last (composites on
+            // top) - border/window draw order doesn't matter since borders
+            // never overlap window content by construction.
             draw_render_elements(&mut frame, 1.0, &space_elements, &[damage])?;
+            draw_render_elements::<GlesRenderer, _, _>(&mut frame, 1.0, &border_elements, &[damage])?;
             draw_render_elements(&mut frame, 1.0, &[cursor_element], &[damage])?;
             // No cross-GPU/import synchronization needed for a plain clear -
             // discarding the fence is fine at this stage.

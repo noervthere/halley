@@ -21,6 +21,7 @@ use smithay::desktop::{Space, Window};
 use smithay::output::{Mode as OutputMode, Output, OutputModeSource, PhysicalProperties, Subpixel};
 use smithay::reexports::drm::control::{Mode, connector, crtc};
 use smithay::reexports::rustix::fs::OFlags;
+use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{DeviceFd, Physical, Point, Scale, Size, Transform};
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
 
@@ -54,6 +55,7 @@ render_elements! {
     /// separate calls.
     TtyRenderElement<R> where R: ImportAll + ImportMem;
     Surface=WaylandSurfaceRenderElement<R>,
+    Border=SolidColorRenderElement,
     Cursor=MemoryRenderBufferRenderElement<R>,
 }
 
@@ -341,6 +343,8 @@ impl Renderable for TtyBackend {
         cursor: &CursorImage,
         cursor_position: (f64, f64),
         space: &Space<Window>,
+        focused: Option<&WlSurface>,
+        decorations: &halley_config::Decorations,
     ) -> Result<(), Box<dyn Error>> {
         // A single bad output shouldn't hide a working one - failures are
         // logged per-output, and only surfaced to the caller if literally
@@ -383,6 +387,19 @@ impl Renderable for TtyBackend {
                     let surface_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = window
                         .render_elements(&mut self.renderer, location.to_physical(1), Scale::from(1.0), 1.0);
                     elements.extend(surface_elements.into_iter().map(TtyRenderElement::Surface));
+
+                    if let Some(geometry) = space.element_geometry(window) {
+                        let is_focused = window
+                            .toplevel()
+                            .is_some_and(|t| Some(t.wl_surface()) == focused);
+                        let color = super::window_border_color(decorations, is_focused);
+                        let bbox = geometry.to_physical(1);
+                        elements.extend(
+                            super::border_strips(bbox, decorations.border_width_px, color)
+                                .into_iter()
+                                .map(TtyRenderElement::Border),
+                        );
+                    }
                 }
 
                 // Built before render_frame() borrows the renderer again -

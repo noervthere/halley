@@ -104,6 +104,7 @@ struct TtyApp {
     seat_state: SeatState<TtyApp>,
     seat: Seat<TtyApp>,
     start_time: Instant,
+    decorations: halley_config::Decorations,
     redraw_state: RedrawState,
     /// Whether a VT switch away is currently in effect - `redraw()` must
     /// not attempt to render while DRM master is dropped.
@@ -170,6 +171,7 @@ pub fn run() {
         seat_state,
         seat,
         start_time: Instant::now(),
+        decorations: halley_config::load_decorations(),
         redraw_state: RedrawState::default(),
         paused: false,
     };
@@ -344,10 +346,14 @@ fn queue_redraw(app: &mut TtyApp) {
 /// session happens, including the very first one.
 fn redraw(app: &mut TtyApp, loop_handle: &LoopHandle<'_, TtyApp>) {
     let cursor_position = app.pointer.position();
-    if let Err(err) = app
-        .backend
-        .render(CLEAR_COLOR, &app.cursor, cursor_position, &app.wayland.space)
-    {
+    if let Err(err) = app.backend.render(
+        CLEAR_COLOR,
+        &app.cursor,
+        cursor_position,
+        &app.wayland.space,
+        app.wayland.focused.as_ref(),
+        &app.decorations,
+    ) {
         println!("render failed: {err}");
     }
 
