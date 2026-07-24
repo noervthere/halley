@@ -7,7 +7,7 @@ use smithay::desktop::{Space, Window};
 use crate::cursor::CursorImage;
 
 /// Cool, slightly-blue-leaning light gray - visible without being stark.
-/// Shared by both backends' drivers (main.rs, bin/halley-winit.rs) so there's one
+/// Shared by both backends' drivers (session::tty, session::winit) so there's one
 /// definition instead of two independently-maintained literals.
 pub const CLEAR_COLOR: Color32F = Color32F::new(0.58, 0.64, 0.72, 1.0);
 

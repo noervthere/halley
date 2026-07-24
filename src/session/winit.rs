@@ -1,17 +1,3 @@
-// src/bin/*.rs binaries are separate crates from main.rs and can't import
-// its modules directly - reuse the same source tree via #[path] rather than
-// duplicating it.
-#[path = "../backend/mod.rs"]
-mod backend;
-#[path = "../cursor.rs"]
-mod cursor;
-#[path = "../input/mod.rs"]
-mod input;
-#[path = "../terminal.rs"]
-mod terminal;
-#[path = "../wayland/mod.rs"]
-mod wayland;
-
 use std::ffi::OsString;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -43,13 +29,14 @@ use smithay::{
     delegate_xdg_shell,
 };
 
-use backend::Renderable;
-use backend::winit::WinitBackend;
-use cursor::CursorImage;
-use input::Keyboard;
-use input::keybinds::BackendKind;
-use input::pointer::Pointer;
-use wayland::{ClientState, WaylandState};
+use crate::backend::winit::WinitBackend;
+use crate::backend::{self, Renderable};
+use crate::cursor::CursorImage;
+use crate::input::Keyboard;
+use crate::input::keybinds::BackendKind;
+use crate::input::pointer::Pointer;
+use crate::terminal;
+use crate::wayland::{self, ClientState, WaylandState};
 
 /// Everything this milestone needs: a backend to render into, a way to match
 /// keypresses against configured actions, a cursor image to draw plus where
@@ -74,7 +61,11 @@ struct App {
     start_time: Instant,
 }
 
-fn main() {
+/// Runs the nested (winit) session - a real window on the host desktop,
+/// standing in for real hardware output. Used when we're not the ones
+/// actually driving a display (see `detect_nested_session` in `main.rs`) or
+/// when `--winit` is passed explicitly.
+pub fn run() {
     let window_attributes = WinitWindow::default_attributes()
         .with_inner_size(LogicalSize::new(1280.0, 800.0))
         .with_title("halley");
@@ -131,7 +122,7 @@ fn main() {
     app.wayland.space.map_output(app.backend.output(), (0, 0));
 
     let socket_name = init_wayland_listener(display, &mut event_loop);
-    println!("halley starting, WAYLAND_DISPLAY={socket_name:?}");
+    println!("halley (winit) starting, WAYLAND_DISPLAY={socket_name:?}");
 
     event_loop
         .handle()
