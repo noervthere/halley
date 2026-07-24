@@ -1,7 +1,7 @@
 use halley_core::camera::Camera;
 use halley_core::field::Vec2;
 use smithay::desktop::{Space, Window};
-use smithay::utils::{Physical, Point, Size};
+use smithay::utils::{Logical, Physical, Point, Rectangle, Size};
 
 /// What's currently being dragged with the left mouse button held, if
 /// anything - `None` the rest of the time. Lives on `App`/`TtyApp` next to
@@ -17,6 +17,154 @@ pub enum Grab {
     /// Left-click-drag on empty desktop. No extra state needed - panning
     /// just feeds `Camera::pan_target` directly each motion event.
     Pan,
+    /// Mod+right-click-drag on a window.
+    ResizeWindow(ResizeState),
+}
+
+/// Which edges a resize drag moves. The opposite edges stay anchored, so
+/// dragging the left edge grows the window leftward rather than sliding it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ResizeHandle {
+    Left,
+    Right,
+    Top,
+    Bottom,
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+}
+
+impl ResizeHandle {
+    pub fn moves_left(self) -> bool {
+        matches!(self, Self::Left | Self::TopLeft | Self::BottomLeft)
+    }
+
+    pub fn moves_right(self) -> bool {
+        matches!(self, Self::Right | Self::TopRight | Self::BottomRight)
+    }
+
+    pub fn moves_top(self) -> bool {
+        matches!(self, Self::Top | Self::TopLeft | Self::TopRight)
+    }
+
+    pub fn moves_bottom(self) -> bool {
+        matches!(self, Self::Bottom | Self::BottomLeft | Self::BottomRight)
+    }
+}
+
+/// Everything a resize drag needs, captured once at grab-start. Both the
+/// rect and the cursor are in world coordinates, so the math below stays
+/// independent of pan and zoom.
+pub struct ResizeState {
+    pub window: Window,
+    pub handle: ResizeHandle,
+    pub start_rect: Rectangle<i32, Logical>,
+    pub start_cursor: Vec2,
+}
+
+/// Floor on interactive resize, matching old halley's own `.max(96.0)` /
+/// `.max(72.0)` clamps. A client is free to commit something larger (a
+/// terminal quantizing to whole cells, say) - nothing here fights it, since
+/// this only bounds what gets *requested*.
+pub const MIN_RESIZE_W: i32 = 96;
+pub const MIN_RESIZE_H: i32 = 72;
+
+/// Picks which edge or corner a press grabs, by which cell of a 3x3 grid
+/// over the window it landed in: corners grab that corner, edge strips grab
+/// that edge, and a press in the dead center falls back to the single
+/// nearest edge. Ported from old halley's `handle_from_press_position`
+/// (`halley-wl/src/input/pointer/resize/handles.rs`) so mod+right-drag picks
+/// the same handle there and here.
+pub fn handle_from_press_position(rect: Rectangle<i32, Logical>, point: Vec2) -> ResizeHandle {
+    let left = rect.loc.x as f32;
+    let top = rect.loc.y as f32;
+    let width = (rect.size.w as f32).max(1.0);
+    let height = (rect.size.h as f32).max(1.0);
+    let fx = ((point.x - left) / width).clamp(0.0, 1.0);
+    let fy = ((point.y - top) / height).clamp(0.0, 1.0);
+
+    let near = |f: f32| f < 1.0 / 3.0;
+    let far = |f: f32| f >= 2.0 / 3.0;
+
+    match (near(fx), far(fx), near(fy), far(fy)) {
+        (true, _, true, _) => ResizeHandle::TopLeft,
+        (_, true, true, _) => ResizeHandle::TopRight,
+        (true, _, _, true) => ResizeHandle::BottomLeft,
+        (_, true, _, true) => ResizeHandle::BottomRight,
+        (_, _, true, _) => ResizeHandle::Top,
+        (_, _, _, true) => ResizeHandle::Bottom,
+        (true, _, _, _) => ResizeHandle::Left,
+        (_, true, _, _) => ResizeHandle::Right,
+        // Dead center - no zone won, so resize whichever edge is closest.
+        _ => {
+            let to_left = point.x - left;
+            let to_right = left + width - point.x;
+            let to_top = point.y - top;
+            let to_bottom = top + height - point.y;
+            let min = to_left.min(to_right).min(to_top).min(to_bottom);
+            if min == to_left {
+                ResizeHandle::Left
+            } else if min == to_right {
+                ResizeHandle::Right
+            } else if min == to_top {
+                ResizeHandle::Top
+            } else {
+                ResizeHandle::Bottom
+            }
+        }
+    }
+}
+
+/// The size to request, given where the cursor has been dragged to. Measured
+/// against the grab-start rect rather than accumulated per event, so the
+/// window can't drift away from the cursor over a long drag.
+pub fn resize_target_size(
+    handle: ResizeHandle,
+    start_rect: Rectangle<i32, Logical>,
+    start_cursor: Vec2,
+    world_cursor: Vec2,
+) -> Size<i32, Logical> {
+    let dx = (world_cursor.x - start_cursor.x).round() as i32;
+    let dy = (world_cursor.y - start_cursor.y).round() as i32;
+
+    let mut width = start_rect.size.w;
+    let mut height = start_rect.size.h;
+    if handle.moves_left() {
+        width -= dx;
+    }
+    if handle.moves_right() {
+        width += dx;
+    }
+    if handle.moves_top() {
+        height -= dy;
+    }
+    if handle.moves_bottom() {
+        height += dy;
+    }
+
+    Size::from((width.max(MIN_RESIZE_W), height.max(MIN_RESIZE_H)))
+}
+
+/// Where the window has to sit for `size` to leave the un-dragged edges
+/// where they started. Only left/top drags move the window at all - pulling
+/// the right or bottom edge grows it in place.
+pub fn resize_anchored_location(
+    handle: ResizeHandle,
+    start_rect: Rectangle<i32, Logical>,
+    size: Size<i32, Logical>,
+) -> Point<i32, Logical> {
+    let x = if handle.moves_left() {
+        start_rect.loc.x + start_rect.size.w - size.w
+    } else {
+        start_rect.loc.x
+    };
+    let y = if handle.moves_top() {
+        start_rect.loc.y + start_rect.size.h - size.h
+    } else {
+        start_rect.loc.y
+    };
+    Point::from((x, y))
 }
 
 /// Converts a screen-space (physical-pixel) position into world (`Space`)
@@ -98,6 +246,80 @@ mod tests {
         // At 0.5x scale, a 100px screen offset is a 200px world offset.
         let world = screen_to_world((740.0, 400.0), &camera, output_size);
         assert_eq!(world, Vec2 { x: 840.0, y: 400.0 });
+    }
+
+    fn resize_rect() -> Rectangle<i32, Logical> {
+        Rectangle::new((100, 100).into(), (300, 300).into())
+    }
+
+    #[test]
+    fn press_position_picks_the_grabbed_corner() {
+        let rect = resize_rect();
+        // 3x3 grid over (100,100)-(400,400): thirds fall at 200 and 300.
+        assert_eq!(
+            handle_from_press_position(rect, Vec2 { x: 120.0, y: 120.0 }),
+            ResizeHandle::TopLeft
+        );
+        assert_eq!(
+            handle_from_press_position(rect, Vec2 { x: 380.0, y: 380.0 }),
+            ResizeHandle::BottomRight
+        );
+        assert_eq!(
+            handle_from_press_position(rect, Vec2 { x: 380.0, y: 120.0 }),
+            ResizeHandle::TopRight
+        );
+        // Middle column, top row -> the top edge, not a corner.
+        assert_eq!(
+            handle_from_press_position(rect, Vec2 { x: 250.0, y: 120.0 }),
+            ResizeHandle::Top
+        );
+    }
+
+    #[test]
+    fn dead_center_press_falls_back_to_the_nearest_edge() {
+        // Exact center of a square window is equidistant - resolves to the
+        // first edge checked rather than panicking or picking a corner.
+        let handle = handle_from_press_position(resize_rect(), Vec2 { x: 250.0, y: 250.0 });
+        assert_eq!(handle, ResizeHandle::Left);
+    }
+
+    #[test]
+    fn dragging_bottom_right_grows_without_moving_the_window() {
+        let rect = resize_rect();
+        let start = Vec2 { x: 400.0, y: 400.0 };
+        let size = resize_target_size(ResizeHandle::BottomRight, rect, start, Vec2 { x: 450.0, y: 430.0 });
+        assert_eq!(size, Size::from((350, 330)));
+        // Right/bottom drags anchor the top-left, so the window stays put.
+        assert_eq!(
+            resize_anchored_location(ResizeHandle::BottomRight, rect, size),
+            Point::from((100, 100))
+        );
+    }
+
+    #[test]
+    fn dragging_top_left_moves_the_window_to_keep_the_far_corner_fixed() {
+        let rect = resize_rect();
+        let start = Vec2 { x: 100.0, y: 100.0 };
+        // Drag the top-left corner up and left by 50 - the window grows by
+        // 50 in each axis and its origin moves back by the same amount, so
+        // the bottom-right corner stays at (400, 400).
+        let size = resize_target_size(ResizeHandle::TopLeft, rect, start, Vec2 { x: 50.0, y: 50.0 });
+        assert_eq!(size, Size::from((350, 350)));
+        let loc = resize_anchored_location(ResizeHandle::TopLeft, rect, size);
+        assert_eq!(loc, Point::from((50, 50)));
+        assert_eq!((loc.x + size.w, loc.y + size.h), (400, 400));
+    }
+
+    #[test]
+    fn resize_clamps_to_the_minimum_and_stops_anchoring_past_it() {
+        let rect = resize_rect();
+        let start = Vec2 { x: 100.0, y: 100.0 };
+        // Drag far past the opposite corner - size floors instead of going
+        // negative or inverting the rect, and the anchored corner holds.
+        let size = resize_target_size(ResizeHandle::TopLeft, rect, start, Vec2 { x: 9000.0, y: 9000.0 });
+        assert_eq!(size, Size::from((MIN_RESIZE_W, MIN_RESIZE_H)));
+        let loc = resize_anchored_location(ResizeHandle::TopLeft, rect, size);
+        assert_eq!((loc.x + size.w, loc.y + size.h), (400, 400));
     }
 
     #[test]

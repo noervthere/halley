@@ -57,6 +57,8 @@ use crate::wayland::{self, ClientState, WaylandState};
 /// using the same raw-code comparison in both backends keeps them
 /// consistent rather than relying on which one wins per backend.
 const BTN_LEFT: u32 = 0x110;
+/// The right mouse button, same source and same reasoning as `BTN_LEFT`.
+const BTN_RIGHT: u32 = 0x111;
 
 /// Everything this milestone needs: a backend to render into, a way to match
 /// keypresses against configured actions, a cursor image to draw plus where
@@ -271,7 +273,71 @@ pub fn run() {
                         // drag"), matching old halley's own pan convention.
                         app.camera.pan_target(halley_core::field::Vec2 { x: -delta.x, y: -delta.y });
                     }
+                    crate::input::grab::Grab::ResizeWindow(state) => {
+                        let world =
+                            crate::input::grab::screen_to_world(position_after, &app.camera, output_size_physical);
+                        let size = crate::input::grab::resize_target_size(
+                            state.handle,
+                            state.start_rect,
+                            state.start_cursor,
+                            world,
+                        );
+                        let location =
+                            crate::input::grab::resize_anchored_location(state.handle, state.start_rect, size);
+                        if let Some(toplevel) = state.window.toplevel() {
+                            toplevel.with_pending_state(|pending| pending.size = Some(size));
+                            // No-ops unless the pending state actually
+                            // changed, so this is safe to call per motion
+                            // event rather than rate-limiting it here.
+                            toplevel.send_pending_configure();
+                        }
+                        app.wayland.space.map_element(state.window.clone(), location, false);
+                    }
                     crate::input::grab::Grab::None => {}
+                }
+
+                if let InputEvent::PointerButton { event: button_event } = &event
+                    && button_event.button_code() == BTN_RIGHT
+                {
+                    match button_event.state() {
+                        ButtonState::Pressed => {
+                            let mods = app
+                                .seat
+                                .get_keyboard()
+                                .expect("keyboard capability added at seat setup")
+                                .modifier_state();
+                            // Resize is mod-only: a bare right-click has to
+                            // stay available to clients (context menus).
+                            if crate::input::mod_key_held(&mods, app.keyboard.effective_mod) {
+                                let world = crate::input::grab::screen_to_world(
+                                    position_after,
+                                    &app.camera,
+                                    output_size_physical,
+                                );
+                                if let Some((window, _)) =
+                                    crate::input::grab::window_under(&app.wayland.space, world)
+                                    && let Some(start_rect) = app.wayland.space.element_geometry(&window)
+                                {
+                                    let handle =
+                                        crate::input::grab::handle_from_press_position(start_rect, world);
+                                    wayland::xdg_shell::focus_and_raise(&mut app.wayland, &window);
+                                    app.grab = crate::input::grab::Grab::ResizeWindow(
+                                        crate::input::grab::ResizeState {
+                                            window,
+                                            handle,
+                                            start_rect,
+                                            start_cursor: world,
+                                        },
+                                    );
+                                }
+                            }
+                        }
+                        ButtonState::Released => {
+                            if matches!(app.grab, crate::input::grab::Grab::ResizeWindow(_)) {
+                                app.grab = crate::input::grab::Grab::None;
+                            }
+                        }
+                    }
                 }
 
                 if let InputEvent::PointerButton { event: button_event } = &event
