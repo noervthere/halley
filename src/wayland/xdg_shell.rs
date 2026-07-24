@@ -20,9 +20,14 @@ pub fn new_toplevel(wayland: &mut WaylandState, surface: ToplevelSurface) {
 
 /// A toplevel was destroyed - only needs handling if it never made it past
 /// `unmapped`. Once a window is in `space`, `Space::refresh()` (called every
-/// redraw) prunes it automatically.
+/// redraw) prunes it automatically. If the destroyed window was the focused
+/// one, focus just clears to `None` - no fallback-refocus-another-window
+/// logic this round.
 pub fn toplevel_destroyed(wayland: &mut WaylandState, surface: &ToplevelSurface) {
     wayland.unmapped.remove(surface.wl_surface());
+    if wayland.focused.as_ref() == Some(surface.wl_surface()) {
+        wayland.focused = None;
+    }
 }
 
 /// The commit-path half of the unmapped -> mapped transition: sends the
@@ -51,6 +56,9 @@ pub fn handle_commit(wayland: &mut WaylandState, surface: &WlSurface) {
         let window = wayland.unmapped.remove(surface).expect("checked above");
         let location = centered_location(wayland, &window);
         wayland.space.map_element(window, location, false);
+        // New windows steal focus - there's no click-to-focus yet to do it
+        // any other way, and it matches most WMs' default behavior.
+        wayland.focused = Some(surface.clone());
     }
 }
 

@@ -15,10 +15,10 @@ use smithay::wayland::shell::xdg::decoration::XdgDecorationState;
 use smithay::wayland::shm::ShmState;
 
 /// Wayland protocol state shared by every top-level app struct (`App`,
-/// `TtyApp`) - narrow on purpose: only what advertising the core globals and
-/// tracking windows actually needs, nothing about input focus or backend
-/// rendering. Old halley put all of this directly on its `Halley` god
-/// object; here it's one field (`wayland: WaylandState`) each app struct
+/// `TtyApp`) - narrow on purpose: only what advertising the core globals,
+/// tracking windows, and which one is focused actually needs, nothing about
+/// backend rendering. Old halley put all of this directly on its `Halley`
+/// god object; here it's one field (`wayland: WaylandState`) each app struct
 /// owns, matching how `cursor`/`keyboard`/`pointer` were each added for one
 /// concrete reason.
 pub struct WaylandState {
@@ -38,6 +38,14 @@ pub struct WaylandState {
     /// to show, without niri's window-rules/credentials/placement-policy
     /// weight this milestone doesn't need.
     pub unmapped: HashMap<WlSurface, Window>,
+    /// The surface that should have keyboard focus - `None` if nothing is
+    /// mapped. Set by `xdg_shell::handle_commit` (new windows steal focus on
+    /// map) and cleared by `xdg_shell::toplevel_destroyed` if the destroyed
+    /// window was the focused one. Driving code re-asserts this onto the
+    /// real seat every commit (see `session::tty`/`session::winit`); this
+    /// field is just the source of truth, not the actual Wayland-facing
+    /// focus state.
+    pub focused: Option<WlSurface>,
 }
 
 impl WaylandState {
@@ -58,6 +66,7 @@ impl WaylandState {
             output_manager_state,
             space: Space::default(),
             unmapped: HashMap::new(),
+            focused: None,
         }
     }
 }

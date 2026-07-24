@@ -6,16 +6,18 @@ use calloop::generic::Generic;
 use calloop::timer::{TimeoutAction, Timer};
 use calloop::{EventLoop, Interest, LoopHandle, LoopSignal, Mode as CalloopMode, PostAction, RegistrationToken};
 use smithay::backend::drm::DrmEvent;
+use smithay::backend::input::{Event, InputEvent, KeyState, KeyboardKeyEvent};
 use smithay::backend::libinput::{LibinputInputBackend, LibinputSessionInterface};
 use smithay::backend::session::Event as SessionEvent;
 use smithay::backend::session::Session;
+use smithay::input::keyboard::FilterResult;
 use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::reexports::input::Libinput;
 use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
 use smithay::reexports::wayland_server::protocol::wl_seat::WlSeat;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{Client, Display};
-use smithay::utils::Serial;
+use smithay::utils::{SERIAL_COUNTER, Serial};
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::{CompositorClientState, CompositorHandler, CompositorState};
 use smithay::wayland::output::{OutputHandler, OutputManagerState};
@@ -36,6 +38,7 @@ use crate::backend::{CLEAR_COLOR, Renderable};
 use crate::cursor::CursorImage;
 use crate::input::Keyboard;
 use crate::input::keybinds::BackendKind;
+use crate::input::match_bind;
 use crate::input::pointer::Pointer;
 use crate::terminal;
 use crate::wayland::{self, ClientState, WaylandState};
@@ -152,7 +155,7 @@ pub fn run() {
 
     let mut app = TtyApp {
         backend,
-        keyboard: Keyboard::new(BackendKind::Tty).expect("failed to set up keyboard input"),
+        keyboard: Keyboard::new(BackendKind::Tty),
         pointer: Pointer::new((100.0, 100.0)),
         cursor: CursorImage::load(),
         loop_signal,
@@ -190,13 +193,47 @@ pub fn run() {
             app.pointer.process_input_event(&event, output_size);
             queue_redraw(app);
 
-            match app.keyboard.process_input_event(event) {
-                Some(halley_config::Action::Quit) => app.loop_signal.stop(),
-                Some(halley_config::Action::OpenTerminal) => match app.keyboard.terminal_command() {
-                    Some(command) => terminal::spawn_detached(command, &socket_name),
-                    None => println!("mod+t: no terminal configured or found on PATH"),
-                },
-                _ => {}
+            // Drives the real seat directly (rather than a separate fake
+            // one) so that whatever isn't intercepted as a configured bind
+            // (`FilterResult::Forward`) actually reaches the focused client
+            // - Smithay's own `KeyboardTarget<D> for WlSurface` impl handles
+            // that forwarding for free once `App::KeyboardFocus = WlSurface`.
+            if let InputEvent::Keyboard { event: key_event } = event {
+                let keycode = key_event.key_code();
+                let state = key_event.state();
+                let time = key_event.time_msec();
+                let keyboard = app
+                    .seat
+                    .get_keyboard()
+                    .expect("keyboard capability added at seat setup");
+                let action = keyboard.input::<halley_config::Action, _>(
+                    app,
+                    keycode,
+                    state,
+                    SERIAL_COUNTER.next_serial(),
+                    time,
+                    |data, mods, handle| {
+                        if state != KeyState::Pressed {
+                            return FilterResult::Forward;
+                        }
+                        let Some(keysym) = handle.raw_latin_sym_or_raw_current_sym() else {
+                            return FilterResult::Forward;
+                        };
+                        match match_bind(&data.keyboard.binds, mods, keysym) {
+                            Some(action) => FilterResult::Intercept(action),
+                            None => FilterResult::Forward,
+                        }
+                    },
+                );
+
+                match action {
+                    Some(halley_config::Action::Quit) => app.loop_signal.stop(),
+                    Some(halley_config::Action::OpenTerminal) => match app.keyboard.terminal_command() {
+                        Some(command) => terminal::spawn_detached(command, &socket_name),
+                        None => println!("mod+t: no terminal configured or found on PATH"),
+                    },
+                    _ => {}
+                }
             }
         })
         .expect("failed to insert libinput source");
@@ -439,6 +476,17 @@ impl CompositorHandler for TtyApp {
 
     fn commit(&mut self, surface: &WlSurface) {
         wayland::compositor::commit::<Self>(&mut self.wayland, surface);
+
+        // Re-asserted every commit rather than only when it changes -
+        // `set_focus` no-ops internally when the focus is already what's
+        // requested, so this is cheap and avoids needing separate
+        // change-tracking on top of `wayland.focused`.
+        let focused = self.wayland.focused.clone();
+        let keyboard = self
+            .seat
+            .get_keyboard()
+            .expect("keyboard capability added at seat setup");
+        keyboard.set_focus(self, focused, SERIAL_COUNTER.next_serial());
     }
 }
 
