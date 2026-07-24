@@ -69,7 +69,7 @@ struct App {
 fn main() {
     let window_attributes = WinitWindow::default_attributes()
         .with_inner_size(LogicalSize::new(1280.0, 800.0))
-        .with_title("halley-wl");
+        .with_title("halley");
 
     let (backend, winit_source) =
         smithay_winit::init_from_attributes::<GlesRenderer>(window_attributes)
@@ -123,7 +123,7 @@ fn main() {
     app.wayland.space.map_output(app.backend.output(), (0, 0));
 
     let socket_name = init_wayland_listener(display, &mut event_loop);
-    println!("halley-wl starting, WAYLAND_DISPLAY={socket_name:?}");
+    println!("halley starting, WAYLAND_DISPLAY={socket_name:?}");
 
     event_loop
         .handle()

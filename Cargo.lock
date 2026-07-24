@@ -663,18 +663,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "halley-config"
-version = "0.1.0"
-dependencies = [
- "rune-cfg",
-]
-
-[[package]]
-name = "halley-core"
-version = "0.1.0"
-
-[[package]]
-name = "halley-wl"
+name = "halley"
 version = "0.1.0"
 dependencies = [
  "calloop 0.14.4",
@@ -685,6 +674,17 @@ dependencies = [
  "smithay-drm-extras",
  "xcursor",
 ]
+
+[[package]]
+name = "halley-config"
+version = "0.1.0"
+dependencies = [
+ "rune-cfg",
+]
+
+[[package]]
+name = "halley-core"
+version = "0.1.0"
 
 [[package]]
 name = "hashbrown"
