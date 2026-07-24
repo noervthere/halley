@@ -1,6 +1,7 @@
 mod backend;
 mod cursor;
 mod input;
+mod terminal;
 mod wayland;
 
 use std::ffi::OsString;
@@ -164,8 +165,13 @@ fn main() {
                 // cursor visibly follows the mouse instead of only moving on
                 // the next unrelated redraw.
                 app.backend.request_redraw();
-                if let Some(halley_config::Action::Quit) = app.keyboard.process_input_event(event) {
-                    app.exit = true;
+                match app.keyboard.process_input_event(event) {
+                    Some(halley_config::Action::Quit) => app.exit = true,
+                    Some(halley_config::Action::OpenTerminal) => match app.keyboard.terminal_command() {
+                        Some(command) => terminal::spawn_detached(command, &socket_name),
+                        None => eprintln!("mod+t: no terminal configured or found on PATH"),
+                    },
+                    _ => {}
                 }
             }
             _ => {}

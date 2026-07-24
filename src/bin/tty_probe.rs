@@ -35,6 +35,8 @@ mod backend;
 mod cursor;
 #[path = "../input/mod.rs"]
 mod input;
+#[path = "../terminal.rs"]
+mod terminal;
 #[path = "../wayland/mod.rs"]
 mod wayland;
 
@@ -188,13 +190,18 @@ fn main() {
 
     event_loop
         .handle()
-        .insert_source(libinput_backend, |event, _, app| {
+        .insert_source(libinput_backend, move |event, _, app| {
             let output_size = app.backend.output_size().to_logical(1);
             app.pointer.process_input_event(&event, output_size);
             queue_redraw(app);
 
-            if let Some(halley_config::Action::Quit) = app.keyboard.process_input_event(event) {
-                app.loop_signal.stop();
+            match app.keyboard.process_input_event(event) {
+                Some(halley_config::Action::Quit) => app.loop_signal.stop(),
+                Some(halley_config::Action::OpenTerminal) => match app.keyboard.terminal_command() {
+                    Some(command) => terminal::spawn_detached(command, &socket_name),
+                    None => println!("mod+t: no terminal configured or found on PATH"),
+                },
+                _ => {}
             }
         })
         .expect("failed to insert libinput source");

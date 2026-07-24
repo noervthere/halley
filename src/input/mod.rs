@@ -112,6 +112,12 @@ pub struct Keyboard {
     seat_data: SeatData,
     keyboard: KeyboardHandle<SeatData>,
     binds: Vec<ResolvedBind>,
+    /// Resolved once at startup from the user's config - `None` if nothing
+    /// was configured and nothing from `TERMINAL_PRIORITY` was found on
+    /// `PATH`. `Action::OpenTerminal`'s dispatch (driving code) needs this,
+    /// but resolving *what* to launch is keybind-config concern, not
+    /// something the caller should redo itself.
+    terminal_command: Option<String>,
 }
 
 impl Keyboard {
@@ -124,12 +130,21 @@ impl Keyboard {
 
         let keybinds = keybinds::load_keybinds();
         let binds = keybinds::resolve_binds(&keybinds, backend);
+        let terminal_command = halley_config::resolve_default_terminal_from_path(&keybinds.default_terminal);
 
         Ok(Self {
             seat_data,
             keyboard,
             binds,
+            terminal_command,
         })
+    }
+
+    /// The command `Action::OpenTerminal` should launch - `None` if nothing
+    /// was configured and nothing from the priority list was found on
+    /// `PATH`.
+    pub fn terminal_command(&self) -> Option<&str> {
+        self.terminal_command.as_deref()
     }
 
     /// Matches only `InputEvent::Keyboard` - no pointer/touch capability is

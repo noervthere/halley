@@ -97,9 +97,9 @@ pub fn remap_mod_bit(modifiers: Modifiers, from: ModifierKey, to: ModifierKey) -
 
 /// A keybind fully resolved for matching against live input: modifiers
 /// already remapped for this backend, key name already resolved to a
-/// `Keysym`. Only `Action::Quit` is resolved this round - `CloseFocusedWindow`
-/// and `OpenTerminal` are filtered out, not dispatched (no window/client
-/// concept, and no Wayland protocol support, exist yet).
+/// `Keysym`. `Quit` and `OpenTerminal` are resolved; `CloseFocusedWindow`
+/// is still filtered out, not dispatched - there's no window-focus concept
+/// yet for it to act on.
 #[derive(Clone, Copy, Debug)]
 pub struct ResolvedBind {
     pub modifiers: Modifiers,
@@ -113,7 +113,7 @@ pub fn resolve_binds(keybinds: &Keybinds, backend: BackendKind) -> Vec<ResolvedB
     keybinds
         .binds
         .iter()
-        .filter(|bind| bind.action == Action::Quit)
+        .filter(|bind| matches!(bind.action, Action::Quit | Action::OpenTerminal))
         .filter_map(|bind| {
             let keysym = xkb::keysym_from_name(&bind.key, xkb::KEYSYM_NO_FLAGS);
             if keysym == Keysym::NoSymbol {
@@ -177,9 +177,8 @@ mod tests {
         let keybinds = Keybinds::default();
         let resolved = resolve_binds(&keybinds, BackendKind::Winit);
 
-        assert_eq!(resolved.len(), 1);
-        let quit = &resolved[0];
-        assert_eq!(quit.action, Action::Quit);
+        assert_eq!(resolved.len(), 2);
+        let quit = resolved.iter().find(|bind| bind.action == Action::Quit).unwrap();
         assert!(quit.modifiers.alt);
         assert!(!quit.modifiers.super_key);
         assert!(quit.modifiers.shift);
@@ -191,17 +190,37 @@ mod tests {
         let keybinds = Keybinds::default();
         let resolved = resolve_binds(&keybinds, BackendKind::Tty);
 
-        assert_eq!(resolved.len(), 1);
-        let quit = &resolved[0];
+        assert_eq!(resolved.len(), 2);
+        let quit = resolved.iter().find(|bind| bind.action == Action::Quit).unwrap();
         assert!(quit.modifiers.super_key);
         assert!(!quit.modifiers.alt);
         assert!(quit.modifiers.shift);
     }
 
     #[test]
-    fn only_quit_is_resolved_this_round() {
+    fn default_config_open_terminal_resolves_to_mod_t() {
         let keybinds = Keybinds::default();
         let resolved = resolve_binds(&keybinds, BackendKind::Tty);
-        assert!(resolved.iter().all(|bind| bind.action == Action::Quit));
+
+        let open_terminal = resolved
+            .iter()
+            .find(|bind| bind.action == Action::OpenTerminal)
+            .unwrap();
+        assert!(open_terminal.modifiers.super_key);
+        assert!(!open_terminal.modifiers.shift);
+        assert_eq!(open_terminal.keysym, xkb::keysym_from_name("t", xkb::KEYSYM_NO_FLAGS));
+    }
+
+    #[test]
+    fn quit_and_open_terminal_are_resolved_but_not_close_focused_window() {
+        let keybinds = Keybinds::default();
+        let resolved = resolve_binds(&keybinds, BackendKind::Tty);
+        assert!(
+            resolved
+                .iter()
+                .all(|bind| matches!(bind.action, Action::Quit | Action::OpenTerminal))
+        );
+        assert!(resolved.iter().any(|bind| bind.action == Action::Quit));
+        assert!(resolved.iter().any(|bind| bind.action == Action::OpenTerminal));
     }
 }
