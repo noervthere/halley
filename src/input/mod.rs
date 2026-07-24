@@ -183,7 +183,14 @@ impl Keyboard {
                     .iter()
                     .find(|bind| bind.keysym == keysym && modifiers_match(mods, bind.modifiers))
                 {
-                    Some(bind) => FilterResult::Intercept(bind.action),
+                    Some(bind) => {
+                        // Low-frequency (only fires on an actual match, not
+                        // every keystroke) and genuinely useful - confirms
+                        // which action a chord resolved to without needing
+                        // to reason about it from config alone.
+                        eprintln!("keybinds: {keysym:?} + {mods:?} -> {:?}", bind.action);
+                        FilterResult::Intercept(bind.action)
+                    }
                     None => FilterResult::Forward,
                 }
             },

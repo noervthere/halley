@@ -43,8 +43,11 @@ pub fn spawn_detached(command: &str, wayland_display: &OsStr) {
             // The immediate child (whose PID this `Child` refers to) exits
             // right after its own fork() above - this reaps *that*, not the
             // real target process, which is already independent by now.
-            if let Err(err) = child.wait() {
-                eprintln!("terminal: failed to reap intermediate process: {err}");
+            match child.wait() {
+                Ok(_) => eprintln!(
+                    "terminal: spawned {command:?} (WAYLAND_DISPLAY={wayland_display:?})"
+                ),
+                Err(err) => eprintln!("terminal: failed to reap intermediate process: {err}"),
             }
         }
         Err(err) => eprintln!("terminal: failed to spawn {command:?}: {err}"),
