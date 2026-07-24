@@ -55,10 +55,45 @@ pub fn handle_commit(wayland: &mut WaylandState, surface: &WlSurface) {
     if has_buffer {
         let window = wayland.unmapped.remove(surface).expect("checked above");
         let location = centered_location(wayland, &window);
-        wayland.space.map_element(window, location, false);
-        // New windows steal focus - there's no click-to-focus yet to do it
-        // any other way, and it matches most WMs' default behavior.
-        wayland.focused = Some(surface.clone());
+        wayland.space.map_element(window.clone(), location, false);
+        // New windows steal focus - matches most WMs' default behavior.
+        // Also raises+activates via `focus_and_raise`, same as clicking a
+        // window now does.
+        focus_and_raise(wayland, &window);
+    }
+}
+
+/// Marks `window` as focused, raises it to the top of the stack, and sets
+/// Smithay's own "activated" xdg-toplevel state on it (clearing that state
+/// from every other window) - shared by the new-window-steals-focus path
+/// above and `input::grab`'s click-to-focus/grab-start paths. `window` must
+/// already be mapped into `wayland.space`.
+pub fn focus_and_raise(wayland: &mut WaylandState, window: &Window) {
+    if let Some(location) = wayland.space.element_location(window) {
+        wayland.space.map_element(window.clone(), location, true);
+    }
+    if let Some(toplevel) = window.toplevel() {
+        wayland.focused = Some(toplevel.wl_surface().clone());
+    }
+}
+
+/// Sends a close request to the focused window's toplevel, if any - the
+/// client decides whether/how to actually close (an unsaved-changes prompt,
+/// etc.), matching every other close keybind/button on any desktop. A no-op
+/// if nothing is focused or the focused surface somehow isn't in `space`.
+pub fn close_focused(wayland: &WaylandState) {
+    let Some(focused) = wayland.focused.as_ref() else {
+        return;
+    };
+    let Some(window) = wayland
+        .space
+        .elements()
+        .find(|window| window.toplevel().is_some_and(|t| t.wl_surface() == focused))
+    else {
+        return;
+    };
+    if let Some(toplevel) = window.toplevel() {
+        toplevel.send_close();
     }
 }
 

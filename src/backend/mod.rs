@@ -1,3 +1,4 @@
+pub mod rescale;
 pub mod tty;
 pub mod winit;
 
@@ -8,7 +9,7 @@ use smithay::backend::renderer::element::{Id, Kind};
 use smithay::backend::renderer::utils::CommitCounter;
 use smithay::desktop::{Space, Window};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::utils::{Physical, Rectangle};
+use smithay::utils::{Physical, Point, Rectangle, Size};
 
 use crate::cursor::CursorImage;
 
@@ -25,10 +26,15 @@ pub const CLEAR_COLOR: Color32F = Color32F::new(0.58, 0.64, 0.72, 1.0);
 /// the trait signature itself - a real flaw, confirmed by reading
 /// `backend/interface.rs` in the old code. This doesn't repeat that: the
 /// trait grows exactly the parameters a render call actually needs, never
-/// "the whole state, just in case" - `cursor`, `focused`, and `decorations`
-/// are each a legitimate growth (every frame concretely needs to know what
-/// to draw and how), not the bloat this doc comment warns against.
+/// "the whole state, just in case" - `cursor`, `focused`, `decorations`, and
+/// `zoom_scale` are each a legitimate growth (every frame concretely needs
+/// to know what to draw and how), not the bloat this doc comment warns
+/// against.
 pub trait Renderable {
+    // Every parameter here is a distinct, legitimate per-frame need (see the
+    // doc comment above) rather than incidental bloat - grouping them into a
+    // struct wouldn't reduce what's actually threaded through, just hide it.
+    #[allow(clippy::too_many_arguments)]
     fn render(
         &mut self,
         clear: Color32F,
@@ -37,6 +43,8 @@ pub trait Renderable {
         space: &Space<Window>,
         focused: Option<&WlSurface>,
         decorations: &Decorations,
+        camera_center: Point<f32, Physical>,
+        zoom_scale: f32,
     ) -> Result<(), Box<dyn std::error::Error>>;
 }
 
@@ -85,4 +93,80 @@ pub fn border_strips(
         (width, bbox.size.h).into(),
     );
     [make(top), make(bottom), make(left), make(right)]
+}
+
+/// Maps a physical-pixel rect from world (`Space`) coordinates to screen
+/// coordinates, given the camera's live center (a world point) and zoom
+/// scale - `screen = output_center + (world - camera_center) * scale`,
+/// matching old halley's own `world_to_screen`. `scale` is always <= 1.0
+/// (the camera driving it hardcodes its upper bound to 1.0, so there's no
+/// zoom-in). At rest (`camera_center == output_center`, `scale == 1.0`,
+/// i.e. no pan and no zoom) this is the identity transform - which is
+/// exactly what this function used to assume unconditionally, back when
+/// nothing could ever move the camera off-center.
+pub fn camera_rect(
+    rect: Rectangle<i32, Physical>,
+    camera_center: Point<f32, Physical>,
+    output_size: Size<i32, Physical>,
+    scale: f32,
+) -> Rectangle<i32, Physical> {
+    let output_center = Point::<f32, Physical>::from((output_size.w as f32 / 2.0, output_size.h as f32 / 2.0));
+    let rect_center = Point::<f32, Physical>::from((
+        rect.loc.x as f32 + rect.size.w as f32 / 2.0,
+        rect.loc.y as f32 + rect.size.h as f32 / 2.0,
+    ));
+
+    let scaled_size = Size::<i32, Physical>::from((
+        (rect.size.w as f32 * scale).round() as i32,
+        (rect.size.h as f32 * scale).round() as i32,
+    ));
+    let scaled_center = Point::<i32, Physical>::from((
+        (output_center.x + (rect_center.x - camera_center.x) * scale).round() as i32,
+        (output_center.y + (rect_center.y - camera_center.y) * scale).round() as i32,
+    ));
+
+    Rectangle::new(
+        (scaled_center.x - scaled_size.w / 2, scaled_center.y - scaled_size.h / 2).into(),
+        scaled_size,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn output_center(output_size: Size<i32, Physical>) -> Point<f32, Physical> {
+        Point::from((output_size.w as f32 / 2.0, output_size.h as f32 / 2.0))
+    }
+
+    #[test]
+    fn at_rest_is_the_identity_transform() {
+        let output_size = Size::<i32, Physical>::from((1280, 800));
+        let rect = Rectangle::<i32, Physical>::new((320, 160).into(), (640, 480).into());
+        let result = camera_rect(rect, output_center(output_size), output_size, 1.0);
+        assert_eq!(result, rect);
+    }
+
+    #[test]
+    fn zoom_out_shrinks_toward_output_center_when_camera_is_unpanned() {
+        let output_size = Size::<i32, Physical>::from((1280, 800));
+        // Exactly centered on the output - shrinking around center should
+        // leave it centered, only smaller.
+        let rect = Rectangle::<i32, Physical>::new((320, 160).into(), (640, 480).into());
+        let result = camera_rect(rect, output_center(output_size), output_size, 0.5);
+        assert_eq!(result.size, Size::from((320, 240)));
+        assert_eq!(result.loc, (480, 280).into());
+    }
+
+    #[test]
+    fn pan_shifts_everything_opposite_the_camera_offset_at_scale_one() {
+        let output_size = Size::<i32, Physical>::from((1280, 800));
+        let rect = Rectangle::<i32, Physical>::new((320, 160).into(), (640, 480).into());
+        // Camera panned 100px right/50px down from the output's own center -
+        // content should appear shifted 100px left/50px up on screen.
+        let panned_center = output_center(output_size) + Point::from((100.0, 50.0));
+        let result = camera_rect(rect, panned_center, output_size, 1.0);
+        assert_eq!(result.loc, (220, 110).into());
+        assert_eq!(result.size, rect.size);
+    }
 }

@@ -11,15 +11,15 @@ use smithay::backend::egl::{EGLContext, EGLDisplay};
 use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
 use smithay::backend::renderer::element::solid::SolidColorRenderElement;
 use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
-use smithay::backend::renderer::element::{AsRenderElements, Kind, render_elements};
+use smithay::backend::renderer::element::{AsRenderElements, Element, Kind, render_elements};
 use smithay::backend::renderer::gles::GlesRenderer;
-use smithay::backend::renderer::{Color32F, ImportAll, ImportMem};
+use smithay::backend::renderer::Color32F;
 use smithay::backend::session::Session;
 use smithay::backend::session::libseat::{LibSeatSession, LibSeatSessionNotifier};
 use smithay::backend::udev;
 use smithay::desktop::{Space, Window};
 use smithay::output::{Mode as OutputMode, Output, OutputModeSource, PhysicalProperties, Subpixel};
-use smithay::reexports::drm::control::{Mode, connector, crtc};
+use smithay::reexports::drm::control::{Mode, ModeTypeFlags, connector, crtc};
 use smithay::reexports::rustix::fs::OFlags;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{DeviceFd, Physical, Point, Scale, Size, Transform};
@@ -52,11 +52,14 @@ render_elements! {
     /// Combines mapped-window and cursor elements into one homogeneous list -
     /// `DrmOutput::render_frame` takes a single element type per call, unlike
     /// the winit backend's `Frame`, which can be drawn into with several
-    /// separate calls.
-    TtyRenderElement<R> where R: ImportAll + ImportMem;
-    Surface=WaylandSurfaceRenderElement<R>,
+    /// separate calls. Concrete over `GlesRenderer` (not generic over `R`) -
+    /// this codebase only ever has one renderer, and `RescaledElement`
+    /// itself is only implemented for `GlesRenderer`, so the old `<R>`
+    /// generic bought nothing.
+    TtyRenderElement<=GlesRenderer>;
+    Rescaled=super::rescale::RescaledElement,
     Border=SolidColorRenderElement,
-    Cursor=MemoryRenderBufferRenderElement<R>,
+    Cursor=MemoryRenderBufferRenderElement<GlesRenderer>,
 }
 
 /// The tty (DRM/KMS) backend - real hardware output, no host compositor
@@ -92,6 +95,112 @@ pub struct TtyBackend {
     /// "first output" simplification `output_size`/`primary_crtc` already
     /// establish rather than inventing a new one.
     primary_output: Output,
+    /// Every successfully initialized output, in connector-scan order - each
+    /// one now gets its own real name, configured mode/position/transform
+    /// (see `TtyBackend::new`'s per-connector loop). Purely informational
+    /// until multi-output window placement exists (`halleyctl outputs` and
+    /// future per-output work read this); rendering still only ever targets
+    /// `primary_output`.
+    outputs: Vec<TtyOutput>,
+}
+
+/// One fully-initialized output's live handle plus the VRR mode it was
+/// configured with. `Output` itself has no VRR concept, and real VRR
+/// toggling isn't wired yet (see `TtyBackend::new`'s doc comment on why) -
+/// this is tracked separately purely so IPC can report what was requested.
+pub struct TtyOutput {
+    pub output: Output,
+    pub vrr: halley_config::Vrr,
+}
+
+/// `{interface}-{interface_id}`, e.g. "DP-1" - the standard connector-name
+/// convention (matches sway/niri/wlroots), used to match a connector against
+/// a configured `output:` block by its `name` field.
+fn connector_name(connector: &connector::Info) -> String {
+    format!("{}-{}", connector.interface().as_str(), connector.interface_id())
+}
+
+/// The real, precise refresh rate of a mode - `Mode::vrefresh()` only
+/// returns the kernel's rounded integer Hz (e.g. `60`), not a value with
+/// enough precision to exactly match a configured rate like `179.998`. This
+/// is the same clock/htotal/vtotal calculation niri and wlroots use.
+/// Doesn't special-case interlaced modes (a rare edge case, not worth the
+/// complexity here).
+fn exact_refresh_hz(mode: &Mode) -> f64 {
+    let (_, _, htotal) = mode.hsync();
+    let (_, _, vtotal) = mode.vsync();
+    let htotal = (htotal.max(1)) as f64;
+    let vtotal = (vtotal.max(1)) as f64;
+    (mode.clock() as f64 * 1000.0) / (htotal * vtotal)
+}
+
+/// This connector's preferred mode, or its first mode if none is flagged
+/// preferred - used both as the fallback when no `output:` block configures
+/// this connector, and when one does but no mode matches it exactly.
+fn default_mode(connector: &connector::Info) -> Mode {
+    connector
+        .modes()
+        .iter()
+        .find(|mode| mode.mode_type().contains(ModeTypeFlags::PREFERRED))
+        .or_else(|| connector.modes().first())
+        .copied()
+        .expect("connector has at least one mode - checked when building `connected`")
+}
+
+/// Picks which mode to actually use for this connector: if a matching
+/// `output:` block exists, its `width`/`height` (and `rate`, if set) must
+/// match one of the connector's real modes *exactly* - no closest/fuzzy
+/// rate matching, unlike old halley's `<2.0`Hz tolerance window. A
+/// configured-but-unmatched output falls back to `default_mode` with a
+/// clear error listing what's actually available, rather than silently
+/// accepting a different rate or refusing to start.
+fn select_mode(connector: &connector::Info, configured: Option<&halley_config::OutputConfig>) -> Mode {
+    let name = connector_name(connector);
+    let Some(cfg) = configured else {
+        return default_mode(connector);
+    };
+
+    let matched = connector.modes().iter().find(|mode| {
+        let (w, h) = mode.size();
+        w as i32 == cfg.width
+            && h as i32 == cfg.height
+            && cfg.rate.is_none_or(|hz| (exact_refresh_hz(mode) - hz).abs() < 0.001)
+    });
+
+    match matched {
+        Some(mode) => *mode,
+        None => {
+            let available = connector
+                .modes()
+                .iter()
+                .map(|mode| {
+                    let (w, h) = mode.size();
+                    format!("{w}x{h}@{:.3}", exact_refresh_hz(mode))
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            eprintln!(
+                "output {name:?}: configured {}x{}{} not found on this connector; available modes: {available}",
+                cfg.width,
+                cfg.height,
+                cfg.rate.map(|hz| format!(" @ {hz}Hz")).unwrap_or_default(),
+            );
+            default_mode(connector)
+        }
+    }
+}
+
+/// Only rotation is representable (matches old halley's own `transform`
+/// mapping) - any other value already falls back to `0` during config
+/// parsing (`halley_config::output::parse_one_output`), so this only ever
+/// sees 0/90/180/270.
+fn transform_from_degrees(degrees: u16) -> Transform {
+    match degrees {
+        90 => Transform::_90,
+        180 => Transform::_180,
+        270 => Transform::_270,
+        _ => Transform::Normal,
+    }
 }
 
 impl TtyBackend {
@@ -120,19 +229,25 @@ impl TtyBackend {
         // a real system freeze during testing (see the plan for the full
         // diagnosis). Matches anvil's and niri's own connector-handling
         // pattern, both confirmed via source to loop over every connector.
+        // Mode selection happens later, per-connector, once config is
+        // loaded (see `select_mode`) - not here, so it can take a
+        // configured `output:` block into account.
         let mut scanner: DrmScanner = DrmScanner::new();
         let scan = scanner.scan_connectors(&drm)?;
-        let mut connected: Vec<(connector::Handle, crtc::Handle, Mode)> = Vec::new();
+        let mut connected: Vec<(connector::Info, crtc::Handle)> = Vec::new();
         for event in scan {
             if let DrmScanEvent::Connected { connector, crtc } = event
-                && let (Some(crtc), Some(mode)) = (crtc, connector.modes().first().copied())
+                && let Some(crtc) = crtc
+                && !connector.modes().is_empty()
             {
-                connected.push((connector.handle(), crtc, mode));
+                connected.push((connector, crtc));
             }
         }
         if connected.is_empty() {
             return Err("no connected connector/CRTC/mode found".into());
         }
+
+        let outputs_config = halley_config::load_outputs();
 
         let gbm = GbmDevice::new(drm_fd)?;
         let allocator = GbmAllocator::new(
@@ -168,9 +283,20 @@ impl TtyBackend {
         let mut output_size = None;
         let mut primary_crtc = None;
         let mut primary_output: Option<Output> = None;
-        for (connector, crtc, mode) in connected {
+        let mut outputs = Vec::new();
+        for (connector, crtc) in connected {
+            let name = connector_name(&connector);
+            let configured = outputs_config.iter().find(|cfg| cfg.name == name);
+            let mode = select_mode(&connector, configured);
             let (width, height) = mode.size();
             let size = Size::from((width as i32, height as i32));
+            // DRM scanout stays `Transform::Normal` regardless of a
+            // configured `transform` - real hardware-plane rotation is a
+            // separate, much larger undertaking (GPU/plane-dependent); only
+            // the wl_output-facing transform below reflects config, matching
+            // old halley's own actual behavior (confirmed by reading its
+            // `backend/tty/drm.rs` - it has this exact same split, not a
+            // regression introduced here).
             let output_mode_source = OutputModeSource::Static {
                 size,
                 scale: Scale::from(1.0),
@@ -182,7 +308,7 @@ impl TtyBackend {
                 .initialize_output::<GlesRenderer, SolidColorRenderElement>(
                     crtc,
                     mode,
-                    &[connector],
+                    &[connector.handle()],
                     output_mode_source,
                     None,
                     &mut renderer,
@@ -193,37 +319,43 @@ impl TtyBackend {
                 Ok(drm_output) => {
                     output_size.get_or_insert(size);
                     primary_crtc.get_or_insert(crtc);
-                    primary_output.get_or_insert_with(|| {
-                        let output = Output::new(
-                            "tty0".to_string(),
-                            PhysicalProperties {
-                                size: (0, 0).into(),
-                                subpixel: Subpixel::Unknown,
-                                make: "halley-next".into(),
-                                model: "tty".into(),
-                                serial_number: "unknown".into(),
-                            },
+
+                    let offset = configured.map_or((0, 0), |cfg| (cfg.offset_x, cfg.offset_y));
+                    let transform = configured.map_or(Transform::Normal, |cfg| transform_from_degrees(cfg.transform));
+                    let vrr = configured.map(|cfg| cfg.vrr).unwrap_or_default();
+                    if vrr == halley_config::Vrr::On {
+                        eprintln!(
+                            "output {name:?}: vrr \"on\" is configured but not wired to real hardware VRR yet \
+                             (needs lower-level DRM compositor access this backend doesn't have) - ignored for now"
                         );
-                        let output_mode = OutputMode {
-                            size,
-                            refresh: (mode.vrefresh() * 1000) as i32,
-                        };
-                        output.change_current_state(
-                            Some(output_mode),
-                            Some(Transform::Normal),
-                            None,
-                            Some((0, 0).into()),
-                        );
-                        output.set_preferred(output_mode);
-                        output
-                    });
+                    }
+
+                    let output = Output::new(
+                        name.clone(),
+                        PhysicalProperties {
+                            size: (0, 0).into(),
+                            subpixel: Subpixel::Unknown,
+                            make: "halley-next".into(),
+                            model: "tty".into(),
+                            serial_number: "unknown".into(),
+                        },
+                    );
+                    let output_mode = OutputMode {
+                        size,
+                        refresh: (exact_refresh_hz(&mode) * 1000.0).round() as i32,
+                    };
+                    output.change_current_state(Some(output_mode), Some(transform), None, Some(offset.into()));
+                    output.set_preferred(output_mode);
+
+                    primary_output.get_or_insert_with(|| output.clone());
+                    outputs.push(TtyOutput { output, vrr });
                     drm_outputs.push(DrmOutputEntry {
                         crtc,
                         drm_output,
                         pending: false,
                     });
                 }
-                Err(err) => eprintln!("failed to initialize output for {connector:?}: {err}"),
+                Err(err) => eprintln!("failed to initialize output {name:?}: {err}"),
             }
         }
 
@@ -241,6 +373,7 @@ impl TtyBackend {
             output_size,
             primary_crtc,
             primary_output,
+            outputs,
         };
 
         Ok((backend, session_notifier, drm_notifier))
@@ -336,6 +469,24 @@ impl TtyBackend {
     }
 }
 
+impl crate::ipc::OutputInfoSource for TtyBackend {
+    fn output_info(&self) -> Vec<halley_ipc::OutputInfo> {
+        self.outputs
+            .iter()
+            .map(|entry| {
+                let location = entry.output.current_location();
+                halley_ipc::OutputInfo {
+                    name: entry.output.name(),
+                    current_mode: crate::ipc::mode_info(entry.output.current_mode()),
+                    offset_x: location.x,
+                    offset_y: location.y,
+                    vrr: crate::ipc::vrr_str(entry.vrr).to_string(),
+                }
+            })
+            .collect()
+    }
+}
+
 impl Renderable for TtyBackend {
     fn render(
         &mut self,
@@ -345,12 +496,15 @@ impl Renderable for TtyBackend {
         space: &Space<Window>,
         focused: Option<&WlSurface>,
         decorations: &halley_config::Decorations,
+        camera_center: Point<f32, Physical>,
+        zoom_scale: f32,
     ) -> Result<(), Box<dyn Error>> {
         // A single bad output shouldn't hide a working one - failures are
         // logged per-output, and only surfaced to the caller if literally
         // every output failed.
         let mut ok_count = 0;
         let mut last_err: Option<Box<dyn Error>> = None;
+        let output_size = self.output_size();
 
         for entry in &mut self.drm_outputs {
             // A page flip is already queued for this output and hasn't
@@ -369,7 +523,7 @@ impl Renderable for TtyBackend {
             // `primary_crtc`'s doc comment), so a single shared pointer
             // position and one `Space` can't be meaningfully split across
             // monitors. Secondary outputs keep rendering clear-color only.
-            let mut elements: Vec<TtyRenderElement<GlesRenderer>> = Vec::new();
+            let mut elements: Vec<TtyRenderElement> = Vec::new();
             if crtc == self.primary_crtc {
                 // Built directly per mapped window rather than via
                 // `space_render_elements` - nesting `SpaceRenderElements`
@@ -381,25 +535,38 @@ impl Renderable for TtyBackend {
                 // `Window`'s `AsRenderElements` avoids nesting the macro
                 // output of one render_elements! invocation inside another.
                 for window in space.elements() {
-                    let Some(location) = space.element_location(window) else {
+                    let Some(geometry) = space.element_geometry(window) else {
                         continue;
                     };
-                    let surface_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = window
-                        .render_elements(&mut self.renderer, location.to_physical(1), Scale::from(1.0), 1.0);
-                    elements.extend(surface_elements.into_iter().map(TtyRenderElement::Surface));
+                    let scaled_bbox =
+                        super::camera_rect(geometry.to_physical(1), camera_center, output_size, zoom_scale);
 
-                    if let Some(geometry) = space.element_geometry(window) {
-                        let is_focused = window
-                            .toplevel()
-                            .is_some_and(|t| Some(t.wl_surface()) == focused);
-                        let color = super::window_border_color(decorations, is_focused);
-                        let bbox = geometry.to_physical(1);
-                        elements.extend(
-                            super::border_strips(bbox, decorations.border_width_px, color)
-                                .into_iter()
-                                .map(TtyRenderElement::Border),
-                        );
-                    }
+                    // Rendered at native scale/position first, then each
+                    // returned element is individually wrapped to draw into
+                    // a `camera_rect`-scaled destination - see `RescaledElement`'s
+                    // doc comment for why passing `zoom_scale` directly here
+                    // doesn't work (it did move the anchor point, which is
+                    // what looked like "drift": a full-size texture anchored
+                    // at a shrinking point looks like it's sliding toward a
+                    // corner instead of shrinking in place).
+                    let surface_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = window
+                        .render_elements(&mut self.renderer, geometry.to_physical(1).loc, Scale::from(1.0), 1.0);
+                    elements.extend(surface_elements.into_iter().map(|surface_element| {
+                        let native_geo = surface_element.geometry(Scale::from(1.0));
+                        let dst = super::camera_rect(native_geo, camera_center, output_size, zoom_scale);
+                        TtyRenderElement::Rescaled(super::rescale::RescaledElement::new(surface_element, dst))
+                    }));
+
+                    let is_focused = window
+                        .toplevel()
+                        .is_some_and(|t| Some(t.wl_surface()) == focused);
+                    let color = super::window_border_color(decorations, is_focused);
+                    let border_width = ((decorations.border_width_px as f32 * zoom_scale).round() as i32).max(1);
+                    elements.extend(
+                        super::border_strips(scaled_bbox, border_width, color)
+                            .into_iter()
+                            .map(TtyRenderElement::Border),
+                    );
                 }
 
                 // Built before render_frame() borrows the renderer again -
@@ -422,7 +589,7 @@ impl Renderable for TtyBackend {
                 }
             }
 
-            match drm_output.render_frame::<_, TtyRenderElement<GlesRenderer>>(
+            match drm_output.render_frame::<_, TtyRenderElement>(
                 &mut self.renderer,
                 &elements,
                 clear,
@@ -451,5 +618,21 @@ impl Renderable for TtyBackend {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transform_from_degrees_maps_known_values_and_falls_back_to_normal() {
+        assert_eq!(transform_from_degrees(0), Transform::Normal);
+        assert_eq!(transform_from_degrees(90), Transform::_90);
+        assert_eq!(transform_from_degrees(180), Transform::_180);
+        assert_eq!(transform_from_degrees(270), Transform::_270);
+        // parse_one_output already clamps anything else to 0, but this
+        // function stays defensive on its own rather than trusting that.
+        assert_eq!(transform_from_degrees(45), Transform::Normal);
     }
 }

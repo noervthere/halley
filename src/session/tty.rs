@@ -6,7 +6,7 @@ use calloop::generic::Generic;
 use calloop::timer::{TimeoutAction, Timer};
 use calloop::{EventLoop, Interest, LoopHandle, LoopSignal, Mode as CalloopMode, PostAction, RegistrationToken};
 use smithay::backend::drm::DrmEvent;
-use smithay::backend::input::{Event, InputEvent, KeyState, KeyboardKeyEvent};
+use smithay::backend::input::{ButtonState, Event, InputEvent, KeyState, KeyboardKeyEvent, PointerButtonEvent};
 use smithay::backend::libinput::{LibinputInputBackend, LibinputSessionInterface};
 use smithay::backend::session::Event as SessionEvent;
 use smithay::backend::session::Session;
@@ -17,7 +17,7 @@ use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
 use smithay::reexports::wayland_server::protocol::wl_seat::WlSeat;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{Client, Display};
-use smithay::utils::{SERIAL_COUNTER, Serial};
+use smithay::utils::{Logical, Physical, Point, SERIAL_COUNTER, Serial};
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::{CompositorClientState, CompositorHandler, CompositorState};
 use smithay::wayland::output::{OutputHandler, OutputManagerState};
@@ -40,8 +40,15 @@ use crate::input::Keyboard;
 use crate::input::keybinds::BackendKind;
 use crate::input::match_bind;
 use crate::input::pointer::Pointer;
+use crate::ipc::OutputInfoSource;
 use crate::terminal;
 use crate::wayland::{self, ClientState, WaylandState};
+
+/// From `<linux/input-event-codes.h>` - the left mouse button's raw code,
+/// used instead of `PointerButtonEvent::button()`'s `MouseButton` enum
+/// because libinput's own event type has an inherent `button()` returning a
+/// raw `u32` that shadows the trait method of the same name.
+const BTN_LEFT: u32 = 0x110;
 
 /// Mirrors niri's `RedrawState` (`niri/src/niri.rs`) - structurally the same
 /// machine old halley's `TtyRedrawState` also independently arrived at,
@@ -109,6 +116,10 @@ struct TtyApp {
     /// Whether a VT switch away is currently in effect - `redraw()` must
     /// not attempt to render while DRM master is dropped.
     paused: bool,
+    camera: halley_core::camera::Camera,
+    zoom: halley_config::Zoom,
+    last_camera_tick: Instant,
+    grab: crate::input::grab::Grab,
 }
 
 /// Runs the real-hardware (DRM/KMS) session - takes over the seat and a
@@ -154,6 +165,21 @@ pub fn run() {
 
     let _output_global = backend.primary_output().create_global::<TtyApp>(&dh);
 
+    let output_size = backend.output_size();
+    let camera = halley_core::camera::Camera::new(
+        // Starts centered on the output - the baseline pan offsets are
+        // measured from, and exactly where a never-panned camera needs to
+        // sit so rendering/hit-testing reduce to "no pan" correctly.
+        halley_core::field::Vec2 {
+            x: output_size.w as f32 / 2.0,
+            y: output_size.h as f32 / 2.0,
+        },
+        halley_core::field::Vec2 {
+            x: output_size.w as f32,
+            y: output_size.h as f32,
+        },
+    );
+
     let mut app = TtyApp {
         backend,
         keyboard: Keyboard::new(BackendKind::Tty),
@@ -174,6 +200,10 @@ pub fn run() {
         decorations: halley_config::load_decorations(),
         redraw_state: RedrawState::default(),
         paused: false,
+        camera,
+        zoom: halley_config::load_zoom(),
+        last_camera_tick: Instant::now(),
+        grab: crate::input::grab::Grab::None,
     };
     app.wayland
         .space
@@ -181,6 +211,10 @@ pub fn run() {
 
     let socket_name = init_wayland_listener(display, &mut event_loop);
     println!("wayland socket ready, WAYLAND_DISPLAY={socket_name:?}");
+
+    if let Err(err) = crate::ipc::init_ipc_listener(&event_loop.handle(), |app: &TtyApp| app.backend.output_info()) {
+        eprintln!("ipc: failed to start listener: {err}");
+    }
 
     // First frame: queue then perform directly, matching redraw()'s own
     // invariant (only ever called on Queued/WaitingForEstimatedVBlankAndQueued)
@@ -192,15 +226,78 @@ pub fn run() {
         .handle()
         .insert_source(libinput_backend, move |event, _, app| {
             let output_size = app.backend.output_size().to_logical(1);
+            let output_size_physical = app.backend.output_size();
+            let position_before = app.pointer.position();
             app.pointer.process_input_event(&event, output_size);
+            let position_after = app.pointer.position();
             queue_redraw(app);
+
+            // Apply whatever's being dragged, if anything - reuses the
+            // delta `Pointer` already computed (handles relative and
+            // absolute motion, and clamping, uniformly) rather than
+            // re-deriving it from the raw event per grab kind.
+            match &app.grab {
+                crate::input::grab::Grab::MoveWindow { window, offset } => {
+                    let world = crate::input::grab::screen_to_world(position_after, &app.camera, output_size_physical);
+                    let new_location = Point::<i32, Logical>::from((
+                        (world.x + offset.x).round() as i32,
+                        (world.y + offset.y).round() as i32,
+                    ));
+                    app.wayland.space.map_element(window.clone(), new_location, false);
+                }
+                crate::input::grab::Grab::Pan => {
+                    let dx = position_after.0 - position_before.0;
+                    let dy = position_after.1 - position_before.1;
+                    let delta = crate::input::grab::screen_delta_to_world(dx, dy, &app.camera);
+                    // Negated - content follows the cursor ("natural drag"),
+                    // matching old halley's own pan convention.
+                    app.camera.pan_target(halley_core::field::Vec2 { x: -delta.x, y: -delta.y });
+                }
+                crate::input::grab::Grab::None => {}
+            }
+
+            if let InputEvent::PointerButton { event: button_event } = &event
+                && button_event.button_code() == BTN_LEFT
+            {
+                match button_event.state() {
+                    ButtonState::Pressed => {
+                        let mods = app
+                            .seat
+                            .get_keyboard()
+                            .expect("keyboard capability added at seat setup")
+                            .modifier_state();
+                        let mod_held = crate::input::mod_key_held(&mods, app.keyboard.effective_mod);
+                        let world =
+                            crate::input::grab::screen_to_world(position_after, &app.camera, output_size_physical);
+                        match crate::input::grab::window_under(&app.wayland.space, world) {
+                            Some((window, window_loc)) if mod_held => {
+                                let offset = halley_core::field::Vec2 {
+                                    x: window_loc.x as f32 - world.x,
+                                    y: window_loc.y as f32 - world.y,
+                                };
+                                wayland::xdg_shell::focus_and_raise(&mut app.wayland, &window);
+                                app.grab = crate::input::grab::Grab::MoveWindow { window, offset };
+                            }
+                            Some((window, _)) => {
+                                wayland::xdg_shell::focus_and_raise(&mut app.wayland, &window);
+                            }
+                            None => {
+                                app.grab = crate::input::grab::Grab::Pan;
+                            }
+                        }
+                    }
+                    ButtonState::Released => {
+                        app.grab = crate::input::grab::Grab::None;
+                    }
+                }
+            }
 
             // Drives the real seat directly (rather than a separate fake
             // one) so that whatever isn't intercepted as a configured bind
             // (`FilterResult::Forward`) actually reaches the focused client
             // - Smithay's own `KeyboardTarget<D> for WlSurface` impl handles
             // that forwarding for free once `App::KeyboardFocus = WlSurface`.
-            if let InputEvent::Keyboard { event: key_event } = event {
+            if let InputEvent::Keyboard { event: key_event } = &event {
                 let keycode = key_event.key_code();
                 let state = key_event.state();
                 let time = key_event.time_msec();
@@ -230,10 +327,20 @@ pub fn run() {
 
                 match action {
                     Some(halley_config::Action::Quit) => app.loop_signal.stop(),
+                    Some(halley_config::Action::CloseFocusedWindow) => {
+                        wayland::xdg_shell::close_focused(&app.wayland);
+                    }
                     Some(halley_config::Action::OpenTerminal) => match app.keyboard.terminal_command() {
                         Some(command) => terminal::spawn_detached(command, &socket_name),
                         None => println!("mod+t: no terminal configured or found on PATH"),
                     },
+                    Some(halley_config::Action::ZoomOut) => {
+                        crate::input::zoom::zoom_out(&mut app.camera, &app.zoom);
+                    }
+                    Some(halley_config::Action::ZoomIn) => {
+                        crate::input::zoom::zoom_in(&mut app.camera, &app.zoom);
+                    }
+                    Some(halley_config::Action::ZoomReset) => app.camera.reset_zoom_target(),
                     _ => {}
                 }
             }
@@ -345,6 +452,12 @@ fn queue_redraw(app: &mut TtyApp) {
 /// invariant) - `queue_redraw` followed by this is how every redraw in this
 /// session happens, including the very first one.
 fn redraw(app: &mut TtyApp, loop_handle: &LoopHandle<'_, TtyApp>) {
+    let now = Instant::now();
+    let dt = now.duration_since(app.last_camera_tick).as_secs_f32();
+    app.last_camera_tick = now;
+    let (zoom_scale, animating) = crate::input::zoom::tick(&mut app.camera, &app.zoom, dt);
+    let camera_center = Point::<f32, Physical>::from((app.camera.center.x, app.camera.center.y));
+
     let cursor_position = app.pointer.position();
     if let Err(err) = app.backend.render(
         CLEAR_COLOR,
@@ -353,6 +466,8 @@ fn redraw(app: &mut TtyApp, loop_handle: &LoopHandle<'_, TtyApp>) {
         &app.wayland.space,
         app.wayland.focused.as_ref(),
         &app.decorations,
+        camera_center,
+        zoom_scale,
     ) {
         println!("render failed: {err}");
     }
@@ -367,7 +482,11 @@ fn redraw(app: &mut TtyApp, loop_handle: &LoopHandle<'_, TtyApp>) {
             loop_handle.remove(token);
         }
         app.redraw_state = RedrawState::WaitingForVBlank {
-            redraw_needed: false,
+            // While the zoom camera is still easing toward its target,
+            // request another redraw once this frame's VBlank lands -
+            // otherwise the damage-driven scheduler stops redrawing after a
+            // single frame and the animation freezes mid-ease.
+            redraw_needed: animating,
         };
         return;
     }

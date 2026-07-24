@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use calloop::generic::Generic;
 use calloop::{EventLoop, Interest, Mode as CalloopMode, PostAction};
-use smithay::backend::input::{Event, InputEvent, KeyState, KeyboardKeyEvent};
+use smithay::backend::input::{ButtonState, Event, InputEvent, KeyState, KeyboardKeyEvent, PointerButtonEvent};
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::winit::{self as smithay_winit, WinitEvent};
 use smithay::input::keyboard::FilterResult;
@@ -16,7 +16,7 @@ use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{Client, Display};
 use smithay::reexports::winit::dpi::LogicalSize;
 use smithay::reexports::winit::window::Window as WinitWindow;
-use smithay::utils::{SERIAL_COUNTER, Serial};
+use smithay::utils::{Logical, Physical, Point, SERIAL_COUNTER, Serial};
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::{CompositorClientState, CompositorHandler, CompositorState};
 use smithay::wayland::output::{OutputHandler, OutputManagerState};
@@ -38,8 +38,18 @@ use crate::input::Keyboard;
 use crate::input::keybinds::BackendKind;
 use crate::input::match_bind;
 use crate::input::pointer::Pointer;
+use crate::ipc::OutputInfoSource;
 use crate::terminal;
 use crate::wayland::{self, ClientState, WaylandState};
+
+/// From `<linux/input-event-codes.h>` - the left mouse button's raw code.
+/// Compared against `button_code()` rather than using
+/// `PointerButtonEvent::button()`'s `MouseButton` enum, since the tty
+/// backend's underlying libinput event type has an inherent `button()`
+/// returning a raw `u32` that shadows the trait method of the same name -
+/// using the same raw-code comparison in both backends keeps them
+/// consistent rather than relying on which one wins per backend.
+const BTN_LEFT: u32 = 0x110;
 
 /// Everything this milestone needs: a backend to render into, a way to match
 /// keypresses against configured actions, a cursor image to draw plus where
@@ -59,6 +69,10 @@ struct App {
     seat: Seat<App>,
     start_time: Instant,
     decorations: halley_config::Decorations,
+    camera: halley_core::camera::Camera,
+    zoom: halley_config::Zoom,
+    last_camera_tick: Instant,
+    grab: crate::input::grab::Grab,
 }
 
 /// Runs the nested (winit) session - a real window on the host desktop,
@@ -101,6 +115,21 @@ pub fn run() {
     let winit_backend = WinitBackend::new(backend);
     let _output_global = winit_backend.output().create_global::<App>(&dh);
 
+    let output_size = winit_backend.window_size();
+    let camera = halley_core::camera::Camera::new(
+        // Starts centered on the output - the baseline pan offsets are
+        // measured from, and exactly where a never-panned camera needs to
+        // sit so rendering/hit-testing reduce to "no pan" correctly.
+        halley_core::field::Vec2 {
+            x: output_size.w as f32 / 2.0,
+            y: output_size.h as f32 / 2.0,
+        },
+        halley_core::field::Vec2 {
+            x: output_size.w as f32,
+            y: output_size.h as f32,
+        },
+    );
+
     let mut app = App {
         backend: winit_backend,
         keyboard: Keyboard::new(BackendKind::Winit),
@@ -119,11 +148,19 @@ pub fn run() {
         seat,
         start_time: Instant::now(),
         decorations: halley_config::load_decorations(),
+        camera,
+        zoom: halley_config::load_zoom(),
+        last_camera_tick: Instant::now(),
+        grab: crate::input::grab::Grab::None,
     };
     app.wayland.space.map_output(app.backend.output(), (0, 0));
 
     let socket_name = init_wayland_listener(display, &mut event_loop);
     println!("halley (winit) starting, WAYLAND_DISPLAY={socket_name:?}");
+
+    if let Err(err) = crate::ipc::init_ipc_listener(&event_loop.handle(), |app: &App| app.backend.output_info()) {
+        eprintln!("ipc: failed to start listener: {err}");
+    }
 
     event_loop
         .handle()
@@ -132,6 +169,12 @@ pub fn run() {
                 app.exit = true;
             }
             WinitEvent::Redraw => {
+                let now = Instant::now();
+                let dt = now.duration_since(app.last_camera_tick).as_secs_f32();
+                app.last_camera_tick = now;
+                let (zoom_scale, _animating) = crate::input::zoom::tick(&mut app.camera, &app.zoom, dt);
+                let camera_center = Point::<f32, Physical>::from((app.camera.center.x, app.camera.center.y));
+
                 let position = app.pointer.position();
                 if let Err(err) = app.backend.render(
                     backend::CLEAR_COLOR,
@@ -140,6 +183,8 @@ pub fn run() {
                     &app.wayland.space,
                     app.wayland.focused.as_ref(),
                     &app.decorations,
+                    camera_center,
+                    zoom_scale,
                 ) {
                     eprintln!("render failed: {err}");
                 }
@@ -165,15 +210,97 @@ pub fn run() {
                 // differs from the last bound size. Just need a new frame,
                 // plus the advertised wl_output mode kept in sync.
                 app.backend.update_output_mode();
+                // Simplification: snap zoom and pan back to rest at the new
+                // size rather than preserving the current state across a
+                // resize - resizing mid-zoom/pan is a rare dev-only edge
+                // case, not worth the extra math.
+                let output_size = app.backend.window_size();
+                app.camera = halley_core::camera::Camera::new(
+                    halley_core::field::Vec2 {
+                        x: output_size.w as f32 / 2.0,
+                        y: output_size.h as f32 / 2.0,
+                    },
+                    halley_core::field::Vec2 {
+                        x: output_size.w as f32,
+                        y: output_size.h as f32,
+                    },
+                );
                 app.backend.request_redraw();
             }
             WinitEvent::Input(event) => {
                 let output_size = app.backend.window_size().to_logical(1);
+                let output_size_physical = app.backend.window_size();
+                let position_before = app.pointer.position();
                 app.pointer.process_input_event(&event, output_size);
+                let position_after = app.pointer.position();
                 // Motion alone doesn't trigger a Redraw - request one so the
                 // cursor visibly follows the mouse instead of only moving on
                 // the next unrelated redraw.
                 app.backend.request_redraw();
+
+                // Apply whatever's being dragged, if anything - reuses the
+                // delta `Pointer` already computed (handles relative and
+                // absolute motion, and clamping, uniformly) rather than
+                // re-deriving it from the raw event per grab kind.
+                match &app.grab {
+                    crate::input::grab::Grab::MoveWindow { window, offset } => {
+                        let world =
+                            crate::input::grab::screen_to_world(position_after, &app.camera, output_size_physical);
+                        let new_location = Point::<i32, Logical>::from((
+                            (world.x + offset.x).round() as i32,
+                            (world.y + offset.y).round() as i32,
+                        ));
+                        app.wayland.space.map_element(window.clone(), new_location, false);
+                    }
+                    crate::input::grab::Grab::Pan => {
+                        let dx = position_after.0 - position_before.0;
+                        let dy = position_after.1 - position_before.1;
+                        let delta = crate::input::grab::screen_delta_to_world(dx, dy, &app.camera);
+                        // Negated - content follows the cursor ("natural
+                        // drag"), matching old halley's own pan convention.
+                        app.camera.pan_target(halley_core::field::Vec2 { x: -delta.x, y: -delta.y });
+                    }
+                    crate::input::grab::Grab::None => {}
+                }
+
+                if let InputEvent::PointerButton { event: button_event } = &event
+                    && button_event.button_code() == BTN_LEFT
+                {
+                    match button_event.state() {
+                        ButtonState::Pressed => {
+                            let mods = app
+                                .seat
+                                .get_keyboard()
+                                .expect("keyboard capability added at seat setup")
+                                .modifier_state();
+                            let mod_held = crate::input::mod_key_held(&mods, app.keyboard.effective_mod);
+                            let world = crate::input::grab::screen_to_world(
+                                position_after,
+                                &app.camera,
+                                output_size_physical,
+                            );
+                            match crate::input::grab::window_under(&app.wayland.space, world) {
+                                Some((window, window_loc)) if mod_held => {
+                                    let offset = halley_core::field::Vec2 {
+                                        x: window_loc.x as f32 - world.x,
+                                        y: window_loc.y as f32 - world.y,
+                                    };
+                                    wayland::xdg_shell::focus_and_raise(&mut app.wayland, &window);
+                                    app.grab = crate::input::grab::Grab::MoveWindow { window, offset };
+                                }
+                                Some((window, _)) => {
+                                    wayland::xdg_shell::focus_and_raise(&mut app.wayland, &window);
+                                }
+                                None => {
+                                    app.grab = crate::input::grab::Grab::Pan;
+                                }
+                            }
+                        }
+                        ButtonState::Released => {
+                            app.grab = crate::input::grab::Grab::None;
+                        }
+                    }
+                }
 
                 // Drives the real seat directly (rather than a separate fake
                 // one) so that whatever isn't intercepted as a configured
@@ -181,7 +308,7 @@ pub fn run() {
                 // focused client - Smithay's own `KeyboardTarget<D> for
                 // WlSurface` impl handles that forwarding for free once
                 // `App::KeyboardFocus = WlSurface`.
-                if let InputEvent::Keyboard { event: key_event } = event {
+                if let InputEvent::Keyboard { event: key_event } = &event {
                     let keycode = key_event.key_code();
                     let state = key_event.state();
                     let time = key_event.time_msec();
@@ -211,10 +338,20 @@ pub fn run() {
 
                     match action {
                         Some(halley_config::Action::Quit) => app.exit = true,
+                        Some(halley_config::Action::CloseFocusedWindow) => {
+                            wayland::xdg_shell::close_focused(&app.wayland);
+                        }
                         Some(halley_config::Action::OpenTerminal) => match app.keyboard.terminal_command() {
                             Some(command) => terminal::spawn_detached(command, &socket_name),
                             None => eprintln!("mod+t: no terminal configured or found on PATH"),
                         },
+                        Some(halley_config::Action::ZoomOut) => {
+                            crate::input::zoom::zoom_out(&mut app.camera, &app.zoom);
+                        }
+                        Some(halley_config::Action::ZoomIn) => {
+                            crate::input::zoom::zoom_in(&mut app.camera, &app.zoom);
+                        }
+                        Some(halley_config::Action::ZoomReset) => app.camera.reset_zoom_target(),
                         _ => {}
                     }
                 }

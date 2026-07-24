@@ -1,16 +1,16 @@
 use std::error::Error;
 
-use smithay::backend::renderer::element::Kind;
 use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
+use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
+use smithay::backend::renderer::element::{AsRenderElements, Element, Kind};
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::renderer::utils::draw_render_elements;
 use smithay::backend::renderer::{Color32F, Frame, Renderer};
 use smithay::backend::winit::WinitGraphicsBackend;
 use smithay::desktop::{Space, Window};
-use smithay::desktop::space::space_render_elements;
 use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::utils::{Physical, Point, Rectangle, Size, Transform};
+use smithay::utils::{Physical, Point, Rectangle, Scale, Size, Transform};
 
 use super::Renderable;
 use crate::cursor::CursorImage;
@@ -88,6 +88,22 @@ impl WinitBackend {
     }
 }
 
+impl crate::ipc::OutputInfoSource for WinitBackend {
+    fn output_info(&self) -> Vec<halley_ipc::OutputInfo> {
+        let location = self.output.current_location();
+        vec![halley_ipc::OutputInfo {
+            name: self.output.name(),
+            current_mode: crate::ipc::mode_info(self.output.current_mode()),
+            offset_x: location.x,
+            offset_y: location.y,
+            // The dev-mode nested backend has no real VRR/hardware concept
+            // at all - config-driven output selection doesn't apply to it
+            // either (see `WinitBackend`'s own doc comment).
+            vrr: "off".to_string(),
+        }]
+    }
+}
+
 impl Renderable for WinitBackend {
     fn render(
         &mut self,
@@ -97,21 +113,11 @@ impl Renderable for WinitBackend {
         space: &Space<Window>,
         focused: Option<&WlSurface>,
         decorations: &halley_config::Decorations,
+        camera_center: Point<f32, Physical>,
+        zoom_scale: f32,
     ) -> Result<(), Box<dyn Error>> {
         let size = self.backend.window_size();
         let damage = Rectangle::from_size(size);
-
-        let border_elements: Vec<_> = space
-            .elements()
-            .filter_map(|window| Some((window, space.element_geometry(window)?)))
-            .flat_map(|(window, geometry)| {
-                let is_focused = window
-                    .toplevel()
-                    .is_some_and(|t| Some(t.wl_surface()) == focused);
-                let color = super::window_border_color(decorations, is_focused);
-                super::border_strips(geometry.to_physical(1), decorations.border_width_px, color)
-            })
-            .collect();
 
         // Scoped so `renderer`/`framebuffer` (both borrowed from
         // `self.backend`) are dropped before `submit()` needs its own
@@ -119,9 +125,41 @@ impl Renderable for WinitBackend {
         {
             let (renderer, mut framebuffer) = self.backend.bind()?;
 
-            // Both built before renderer.render() borrows renderer for the
-            // frame - neither needs it beyond this transient import step.
-            let space_elements = space_render_elements::<_, Window, _>(renderer, [space], &self.output, 1.0)?;
+            // Built directly per mapped window (not via `space_render_elements`)
+            // so a live `zoom_scale` can be applied per window - mirrors
+            // `TtyBackend::render`'s own manual loop, keeping both backends'
+            // zoom behavior identical and equally testable. Each window is
+            // rendered at native scale/position first, then wrapped in
+            // `RescaledElement` to draw into a `camera_rect`-scaled
+            // destination - see its doc comment for why passing `zoom_scale`
+            // straight into `render_elements` doesn't actually resize
+            // anything.
+            let mut window_elements: Vec<super::rescale::RescaledElement> = Vec::new();
+            let mut border_elements = Vec::new();
+            for window in space.elements() {
+                let Some(geometry) = space.element_geometry(window) else {
+                    continue;
+                };
+                let scaled_bbox = super::camera_rect(geometry.to_physical(1), camera_center, size, zoom_scale);
+
+                let surface_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
+                    window.render_elements(renderer, geometry.to_physical(1).loc, Scale::from(1.0), 1.0);
+                window_elements.extend(surface_elements.into_iter().map(|surface_element| {
+                    let native_geo = surface_element.geometry(Scale::from(1.0));
+                    let dst = super::camera_rect(native_geo, camera_center, size, zoom_scale);
+                    super::rescale::RescaledElement::new(surface_element, dst)
+                }));
+
+                let is_focused = window
+                    .toplevel()
+                    .is_some_and(|t| Some(t.wl_surface()) == focused);
+                let color = super::window_border_color(decorations, is_focused);
+                let border_width = ((decorations.border_width_px as f32 * zoom_scale).round() as i32).max(1);
+                border_elements.extend(super::border_strips(scaled_bbox, border_width, color));
+            }
+
+            // Built before renderer.render() borrows renderer for the frame -
+            // doesn't need it beyond this transient import step.
             let cursor_element = MemoryRenderBufferRenderElement::from_buffer(
                 renderer,
                 Point::<f64, Physical>::from(cursor_position),
@@ -137,7 +175,7 @@ impl Renderable for WinitBackend {
             // Windows, then borders, then the cursor last (composites on
             // top) - border/window draw order doesn't matter since borders
             // never overlap window content by construction.
-            draw_render_elements(&mut frame, 1.0, &space_elements, &[damage])?;
+            draw_render_elements(&mut frame, 1.0, &window_elements, &[damage])?;
             draw_render_elements::<GlesRenderer, _, _>(&mut frame, 1.0, &border_elements, &[damage])?;
             draw_render_elements(&mut frame, 1.0, &[cursor_element], &[damage])?;
             // No cross-GPU/import synchronization needed for a plain clear -
