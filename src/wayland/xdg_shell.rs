@@ -1,6 +1,7 @@
 use smithay::backend::renderer::utils::with_renderer_surface_state;
 use smithay::desktop::Window;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+use smithay::utils::{Logical, Point};
 use smithay::wayland::shell::xdg::ToplevelSurface;
 
 use super::WaylandState;
@@ -48,6 +49,23 @@ pub fn handle_commit(wayland: &mut WaylandState, surface: &WlSurface) {
         with_renderer_surface_state(surface, |state| state.buffer().is_some()).unwrap_or(false);
     if has_buffer {
         let window = wayland.unmapped.remove(surface).expect("checked above");
-        wayland.space.map_element(window, (0, 0), false);
+        let location = centered_location(wayland, &window);
+        wayland.space.map_element(window, location, false);
     }
+}
+
+/// Where a newly-mapped window should land: centered on the output, rather
+/// than always `(0, 0)`. Both binaries map exactly one output into `space`
+/// before any client can connect, so `outputs().next()` is always the right
+/// one - falls back to `(0, 0)` only in the unreachable case where somehow
+/// none is mapped yet, rather than panicking.
+fn centered_location(wayland: &WaylandState, window: &Window) -> Point<i32, Logical> {
+    let Some(output) = wayland.space.outputs().next() else {
+        return (0, 0).into();
+    };
+    let Some(output_geo) = wayland.space.output_geometry(output) else {
+        return (0, 0).into();
+    };
+    let offset = (output_geo.size - window.geometry().size) / 2;
+    output_geo.loc + offset
 }
