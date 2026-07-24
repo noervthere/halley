@@ -56,6 +56,9 @@ fn parse_action(s: &str) -> Option<Action> {
             Some(Action::CloseFocusedWindow)
         }
         "open-terminal" | "open_terminal" => Some(Action::OpenTerminal),
+        "zoom-in" | "zoom_in" => Some(Action::ZoomIn),
+        "zoom-out" | "zoom_out" => Some(Action::ZoomOut),
+        "zoom-reset" | "zoom_reset" => Some(Action::ZoomReset),
         _ => None,
     }
 }
@@ -182,6 +185,30 @@ end
         assert_eq!(close.key, "q");
         assert!(close.modifiers.alt);
         assert!(!close.modifiers.super_key);
+    }
+
+    #[test]
+    fn accepts_zoom_in_zoom_out_and_zoom_reset_actions() {
+        let kb = parse(
+            r#"
+keybinds:
+  mod "super"
+  "$var.mod+equal" "zoom-in"
+  "$var.mod+minus" "zoom-out"
+  "$var.mod+0" "zoom_reset"
+end
+"#,
+        );
+        let zoom_in = kb.binds.iter().find(|b| b.action == Action::ZoomIn).unwrap();
+        assert_eq!(zoom_in.key, "equal");
+        let zoom_out = kb.binds.iter().find(|b| b.action == Action::ZoomOut).unwrap();
+        assert_eq!(zoom_out.key, "minus");
+        let zoom_reset = kb
+            .binds
+            .iter()
+            .find(|b| b.action == Action::ZoomReset)
+            .unwrap();
+        assert_eq!(zoom_reset.key, "0");
     }
 
     #[test]

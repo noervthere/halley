@@ -26,13 +26,21 @@ pub struct Modifiers {
     pub super_key: bool,
 }
 
-/// What a keybind does. Just the three actions this crate's first slice
-/// needs - grows alongside whatever `halley-wl` actually wires up next.
+/// What a keybind does. Grows alongside whatever `halley-wl` actually wires
+/// up next. `ZoomIn` exists to walk back a `ZoomOut` one step at a time, but
+/// it's not a general "magnify past 1.0x" action - the 1.0x ceiling is
+/// enforced independently of this enum (`Camera::clamp_view_size`, called
+/// with a hardcoded `zoom_max` of `1.0` at every call site in
+/// `src/input/zoom.rs`), so `ZoomIn` can never push past it no matter how
+/// many times it's pressed. At 1.0x it's simply a no-op.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
     Quit,
     CloseFocusedWindow,
     OpenTerminal,
+    ZoomIn,
+    ZoomOut,
+    ZoomReset,
 }
 
 /// A single parsed keybind: the modifier combination, the key name (as
@@ -96,6 +104,36 @@ impl Default for Keybinds {
                     key: "t".to_string(),
                     action: Action::OpenTerminal,
                 },
+                Keybind {
+                    modifiers: Modifiers {
+                        super_key: true,
+                        ..Modifiers::default()
+                    },
+                    key: "minus".to_string(),
+                    action: Action::ZoomOut,
+                },
+                // Bound to the unshifted "=" key (same physical key "+"
+                // lives on), not literal shift+plus - matches "minus"'s own
+                // no-shift ergonomics and the common Ctrl+=/Ctrl+- app
+                // convention for zoom. A chord requiring shift would need
+                // `shift: true` here too, since the produced keysym would be
+                // "plus" only while shift is actually held.
+                Keybind {
+                    modifiers: Modifiers {
+                        super_key: true,
+                        ..Modifiers::default()
+                    },
+                    key: "equal".to_string(),
+                    action: Action::ZoomIn,
+                },
+                Keybind {
+                    modifiers: Modifiers {
+                        super_key: true,
+                        ..Modifiers::default()
+                    },
+                    key: "0".to_string(),
+                    action: Action::ZoomReset,
+                },
             ],
         }
     }
@@ -106,11 +144,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_has_the_three_starting_binds() {
+    fn default_has_the_six_starting_binds() {
         let kb = Keybinds::default();
         assert_eq!(kb.modifier, ModifierKey::Super);
         assert_eq!(kb.default_terminal, DefaultTerminal::Auto);
-        assert_eq!(kb.binds.len(), 3);
+        assert_eq!(kb.binds.len(), 6);
 
         let quit = kb.binds.iter().find(|b| b.action == Action::Quit).unwrap();
         assert!(quit.modifiers.super_key);
@@ -133,5 +171,25 @@ mod tests {
             .unwrap();
         assert!(term.modifiers.super_key);
         assert_eq!(term.key, "t");
+
+        let zoom_out = kb
+            .binds
+            .iter()
+            .find(|b| b.action == Action::ZoomOut)
+            .unwrap();
+        assert!(zoom_out.modifiers.super_key);
+        assert_eq!(zoom_out.key, "minus");
+
+        let zoom_in = kb.binds.iter().find(|b| b.action == Action::ZoomIn).unwrap();
+        assert!(zoom_in.modifiers.super_key);
+        assert_eq!(zoom_in.key, "equal");
+
+        let zoom_reset = kb
+            .binds
+            .iter()
+            .find(|b| b.action == Action::ZoomReset)
+            .unwrap();
+        assert!(zoom_reset.modifiers.super_key);
+        assert_eq!(zoom_reset.key, "0");
     }
 }
