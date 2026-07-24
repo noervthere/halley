@@ -19,12 +19,17 @@ use smithay::utils::Serial;
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::{CompositorClientState, CompositorHandler, CompositorState};
 use smithay::wayland::output::{OutputHandler, OutputManagerState};
+use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode;
+use smithay::wayland::shell::xdg::decoration::{XdgDecorationHandler, XdgDecorationState};
 use smithay::wayland::shell::xdg::{
     PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
 };
 use smithay::wayland::shm::{ShmHandler, ShmState};
 use smithay::wayland::socket::ListeningSocketSource;
-use smithay::{delegate_compositor, delegate_output, delegate_seat, delegate_shm, delegate_xdg_shell};
+use smithay::{
+    delegate_compositor, delegate_output, delegate_seat, delegate_shm, delegate_xdg_decoration,
+    delegate_xdg_shell,
+};
 
 // src/bin/*.rs binaries are separate crates from main.rs and can't import
 // its modules directly - reuse the same source tree via #[path] rather than
@@ -145,6 +150,7 @@ fn main() {
 
     let compositor_state = CompositorState::new::<TtyApp>(&dh);
     let xdg_shell_state = XdgShellState::new::<TtyApp>(&dh);
+    let xdg_decoration_state = XdgDecorationState::new::<TtyApp>(&dh);
     let shm_state = ShmState::new::<TtyApp>(&dh, vec![]);
     let output_manager_state = OutputManagerState::new();
 
@@ -166,6 +172,7 @@ fn main() {
             dh,
             compositor_state,
             xdg_shell_state,
+            xdg_decoration_state,
             shm_state,
             output_manager_state,
         ),
@@ -483,6 +490,20 @@ impl XdgShellHandler for TtyApp {
     fn grab(&mut self, _surface: PopupSurface, _seat: WlSeat, _serial: Serial) {}
 }
 
+impl XdgDecorationHandler for TtyApp {
+    fn new_decoration(&mut self, toplevel: ToplevelSurface) {
+        wayland::decoration::new_decoration(toplevel);
+    }
+
+    fn request_mode(&mut self, toplevel: ToplevelSurface, mode: DecorationMode) {
+        wayland::decoration::request_mode(toplevel, mode);
+    }
+
+    fn unset_mode(&mut self, toplevel: ToplevelSurface) {
+        wayland::decoration::unset_mode(toplevel);
+    }
+}
+
 impl SeatHandler for TtyApp {
     type KeyboardFocus = WlSurface;
     type PointerFocus = WlSurface;
@@ -498,5 +519,6 @@ impl OutputHandler for TtyApp {}
 delegate_compositor!(TtyApp);
 delegate_shm!(TtyApp);
 delegate_xdg_shell!(TtyApp);
+delegate_xdg_decoration!(TtyApp);
 delegate_seat!(TtyApp);
 delegate_output!(TtyApp);

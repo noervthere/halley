@@ -1,4 +1,5 @@
 pub mod compositor;
+pub mod decoration;
 pub mod xdg_shell;
 
 use std::collections::HashMap;
@@ -10,6 +11,7 @@ use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::wayland::compositor::{CompositorClientState, CompositorState};
 use smithay::wayland::output::OutputManagerState;
 use smithay::wayland::shell::xdg::XdgShellState;
+use smithay::wayland::shell::xdg::decoration::XdgDecorationState;
 use smithay::wayland::shm::ShmState;
 
 /// Wayland protocol state shared by every top-level app struct (`App`,
@@ -23,6 +25,7 @@ pub struct WaylandState {
     pub display_handle: DisplayHandle,
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
+    pub xdg_decoration_state: XdgDecorationState,
     pub shm_state: ShmState,
     pub output_manager_state: OutputManagerState,
     /// Real, visible windows - a surface only enters `space` once it has
@@ -42,6 +45,7 @@ impl WaylandState {
         display_handle: DisplayHandle,
         compositor_state: CompositorState,
         xdg_shell_state: XdgShellState,
+        xdg_decoration_state: XdgDecorationState,
         shm_state: ShmState,
         output_manager_state: OutputManagerState,
     ) -> Self {
@@ -49,6 +53,7 @@ impl WaylandState {
             display_handle,
             compositor_state,
             xdg_shell_state,
+            xdg_decoration_state,
             shm_state,
             output_manager_state,
             space: Space::default(),

@@ -13,6 +13,7 @@ use calloop::{EventLoop, Interest, Mode as CalloopMode, PostAction};
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::winit::{self as smithay_winit, WinitEvent};
 use smithay::input::{Seat, SeatHandler, SeatState};
+use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode;
 use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
 use smithay::reexports::wayland_server::protocol::wl_seat::WlSeat;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
@@ -23,12 +24,16 @@ use smithay::utils::Serial;
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::{CompositorClientState, CompositorHandler, CompositorState};
 use smithay::wayland::output::{OutputHandler, OutputManagerState};
+use smithay::wayland::shell::xdg::decoration::{XdgDecorationHandler, XdgDecorationState};
 use smithay::wayland::shell::xdg::{
     PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
 };
 use smithay::wayland::shm::{ShmHandler, ShmState};
 use smithay::wayland::socket::ListeningSocketSource;
-use smithay::{delegate_compositor, delegate_output, delegate_seat, delegate_shm, delegate_xdg_shell};
+use smithay::{
+    delegate_compositor, delegate_output, delegate_seat, delegate_shm, delegate_xdg_decoration,
+    delegate_xdg_shell,
+};
 
 use backend::Renderable;
 use backend::winit::WinitBackend;
@@ -81,6 +86,7 @@ fn main() {
 
     let compositor_state = CompositorState::new::<App>(&dh);
     let xdg_shell_state = XdgShellState::new::<App>(&dh);
+    let xdg_decoration_state = XdgDecorationState::new::<App>(&dh);
     let shm_state = ShmState::new::<App>(&dh, vec![]);
     let output_manager_state = OutputManagerState::new();
 
@@ -106,6 +112,7 @@ fn main() {
             dh,
             compositor_state,
             xdg_shell_state,
+            xdg_decoration_state,
             shm_state,
             output_manager_state,
         ),
@@ -279,6 +286,20 @@ impl XdgShellHandler for App {
     fn grab(&mut self, _surface: PopupSurface, _seat: WlSeat, _serial: Serial) {}
 }
 
+impl XdgDecorationHandler for App {
+    fn new_decoration(&mut self, toplevel: ToplevelSurface) {
+        wayland::decoration::new_decoration(toplevel);
+    }
+
+    fn request_mode(&mut self, toplevel: ToplevelSurface, mode: DecorationMode) {
+        wayland::decoration::request_mode(toplevel, mode);
+    }
+
+    fn unset_mode(&mut self, toplevel: ToplevelSurface) {
+        wayland::decoration::unset_mode(toplevel);
+    }
+}
+
 impl SeatHandler for App {
     type KeyboardFocus = WlSurface;
     type PointerFocus = WlSurface;
@@ -294,5 +315,6 @@ impl OutputHandler for App {}
 delegate_compositor!(App);
 delegate_shm!(App);
 delegate_xdg_shell!(App);
+delegate_xdg_decoration!(App);
 delegate_seat!(App);
 delegate_output!(App);
