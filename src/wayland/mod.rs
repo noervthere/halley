@@ -1,5 +1,6 @@
 pub mod compositor;
 pub mod decoration;
+pub mod selection;
 pub mod xdg_shell;
 
 use std::collections::HashMap;
@@ -10,6 +11,8 @@ use smithay::reexports::wayland_server::backend::{ClientData, ClientId, Disconne
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::wayland::compositor::{CompositorClientState, CompositorState};
 use smithay::wayland::output::OutputManagerState;
+use smithay::wayland::selection::data_device::DataDeviceState;
+use smithay::wayland::selection::primary_selection::PrimarySelectionState;
 use smithay::wayland::shell::xdg::XdgShellState;
 use smithay::wayland::shell::xdg::decoration::XdgDecorationState;
 use smithay::wayland::shm::ShmState;
@@ -28,6 +31,15 @@ pub struct WaylandState {
     pub xdg_decoration_state: XdgDecorationState,
     pub shm_state: ShmState,
     pub output_manager_state: OutputManagerState,
+    /// Clipboard (ctrl+c/ctrl+v) and drag-and-drop. Smithay owns the actual
+    /// transfer - it hands the source client's fd straight to the receiving
+    /// client - so this is only the global's state, with no compositor-side
+    /// buffering of clipboard contents.
+    pub data_device_state: DataDeviceState,
+    /// Middle-click paste. A separate protocol from `data_device_state`, not
+    /// a mode of it: clients set the two selections independently and
+    /// expect them to hold different contents.
+    pub primary_selection_state: PrimarySelectionState,
     /// Real, visible windows - a surface only enters `space` once it has
     /// actually attached a buffer (see `unmapped`), not merely once its
     /// toplevel role exists.
@@ -49,6 +61,12 @@ pub struct WaylandState {
 }
 
 impl WaylandState {
+    // One parameter per protocol global, each constructed by the caller
+    // because `State::new::<D>` needs the concrete app type (`App` vs
+    // `TtyApp`) that only the session driver knows. Grouping them into a
+    // struct would just move the same list somewhere else; this grows by
+    // exactly one line per protocol added, which is the point.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         display_handle: DisplayHandle,
         compositor_state: CompositorState,
@@ -56,6 +74,8 @@ impl WaylandState {
         xdg_decoration_state: XdgDecorationState,
         shm_state: ShmState,
         output_manager_state: OutputManagerState,
+        data_device_state: DataDeviceState,
+        primary_selection_state: PrimarySelectionState,
     ) -> Self {
         Self {
             display_handle,
@@ -64,6 +84,8 @@ impl WaylandState {
             xdg_decoration_state,
             shm_state,
             output_manager_state,
+            data_device_state,
+            primary_selection_state,
             space: Space::default(),
             unmapped: HashMap::new(),
             focused: None,

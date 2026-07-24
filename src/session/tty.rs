@@ -21,6 +21,13 @@ use smithay::utils::{Logical, Physical, Point, SERIAL_COUNTER, Serial};
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::{CompositorClientState, CompositorHandler, CompositorState};
 use smithay::wayland::output::{OutputHandler, OutputManagerState};
+use smithay::wayland::selection::SelectionHandler;
+use smithay::wayland::selection::data_device::{
+    DataDeviceHandler, DataDeviceState, WaylandDndGrabHandler,
+};
+use smithay::wayland::selection::primary_selection::{
+    PrimarySelectionHandler, PrimarySelectionState,
+};
 use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode;
 use smithay::wayland::shell::xdg::decoration::{XdgDecorationHandler, XdgDecorationState};
 use smithay::wayland::shell::xdg::{
@@ -29,8 +36,8 @@ use smithay::wayland::shell::xdg::{
 use smithay::wayland::shm::{ShmHandler, ShmState};
 use smithay::wayland::socket::ListeningSocketSource;
 use smithay::{
-    delegate_compositor, delegate_output, delegate_seat, delegate_shm, delegate_xdg_decoration,
-    delegate_xdg_shell,
+    delegate_compositor, delegate_data_device, delegate_output, delegate_primary_selection,
+    delegate_seat, delegate_shm, delegate_xdg_decoration, delegate_xdg_shell,
 };
 
 use crate::backend::tty::TtyBackend;
@@ -156,6 +163,8 @@ pub fn run() {
     let xdg_decoration_state = XdgDecorationState::new::<TtyApp>(&dh);
     let shm_state = ShmState::new::<TtyApp>(&dh, vec![]);
     let output_manager_state = OutputManagerState::new();
+    let data_device_state = DataDeviceState::new::<TtyApp>(&dh);
+    let primary_selection_state = PrimarySelectionState::new::<TtyApp>(&dh);
 
     let mut seat_state = SeatState::new();
     let mut seat: Seat<TtyApp> = seat_state.new_wl_seat(&dh, "seat0");
@@ -193,6 +202,8 @@ pub fn run() {
             xdg_decoration_state,
             shm_state,
             output_manager_state,
+            data_device_state,
+            primary_selection_state,
         ),
         seat_state,
         seat,
@@ -673,9 +684,48 @@ impl SeatHandler for TtyApp {
     fn seat_state(&mut self) -> &mut SeatState<Self> {
         &mut self.seat_state
     }
+
+    fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
+        let dh = self.wayland.display_handle.clone();
+        crate::wayland::selection::sync_selection_focus(&dh, seat, focused);
+    }
 }
 
 impl OutputHandler for TtyApp {}
+
+/// See `App`'s own impl (`session::winit`) - `()` for the same reason: no
+/// compositor-owned selections exist yet for user data to hang off.
+impl SelectionHandler for TtyApp {
+    type SelectionUserData = ();
+}
+
+impl DataDeviceHandler for TtyApp {
+    fn data_device_state(&mut self) -> &mut DataDeviceState {
+        &mut self.wayland.data_device_state
+    }
+}
+
+impl WaylandDndGrabHandler for TtyApp {
+    fn dnd_requested<S: smithay::input::dnd::Source>(
+        &mut self,
+        source: S,
+        _icon: Option<WlSurface>,
+        seat: Seat<Self>,
+        serial: Serial,
+        type_: smithay::input::dnd::GrabType,
+    ) {
+        let dh = self.wayland.display_handle.clone();
+        crate::wayland::selection::start_dnd_grab(self, &dh, source, seat, serial, type_);
+    }
+}
+
+impl smithay::input::dnd::DndGrabHandler for TtyApp {}
+
+impl PrimarySelectionHandler for TtyApp {
+    fn primary_selection_state(&mut self) -> &mut PrimarySelectionState {
+        &mut self.wayland.primary_selection_state
+    }
+}
 
 delegate_compositor!(TtyApp);
 delegate_shm!(TtyApp);
@@ -683,3 +733,5 @@ delegate_xdg_shell!(TtyApp);
 delegate_xdg_decoration!(TtyApp);
 delegate_seat!(TtyApp);
 delegate_output!(TtyApp);
+delegate_data_device!(TtyApp);
+delegate_primary_selection!(TtyApp);
