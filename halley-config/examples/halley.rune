@@ -1,6 +1,19 @@
-# Halley compositor config - first slice: keybinds only.
-# Everything else (outputs, appearance, gestures, ...) comes later,
+# Halley compositor config.
+# Everything else (outputs, gestures, ...) comes later,
 # in its own section, once it actually exists.
+
+decorations:
+  border:
+    # Border width in pixels, drawn around every window.
+    size 3
+
+    # Color of the border around the focused window.
+    colour-focused "#38d1eb"
+
+    # Color of the border around every other (unfocused) window.
+    colour-unfocused "#474d59"
+  end
+end
 
 keybinds:
   mod "super"
