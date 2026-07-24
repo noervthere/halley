@@ -91,9 +91,9 @@ pub fn remap_mod_bit(modifiers: Modifiers, from: ModifierKey, to: ModifierKey) -
 
 /// A keybind fully resolved for matching against live input: modifiers
 /// already remapped for this backend, key name already resolved to a
-/// `Keysym`. `Quit` and `OpenTerminal` are resolved; `CloseFocusedWindow`
-/// is still filtered out, not dispatched - there's no window-focus concept
-/// yet for it to act on.
+/// `Keysym`. Every `Action` variant is resolved now - real keyboard focus
+/// (`WaylandState.focused`) exists, so `CloseFocusedWindow` finally has
+/// something to act on (see `wayland::xdg_shell::close_focused`).
 #[derive(Clone, Copy, Debug)]
 pub struct ResolvedBind {
     pub modifiers: Modifiers,
@@ -107,7 +107,6 @@ pub fn resolve_binds(keybinds: &Keybinds, backend: BackendKind) -> Vec<ResolvedB
     keybinds
         .binds
         .iter()
-        .filter(|bind| matches!(bind.action, Action::Quit | Action::OpenTerminal))
         .filter_map(|bind| {
             let keysym = xkb::keysym_from_name(&bind.key, xkb::KEYSYM_NO_FLAGS);
             if keysym == Keysym::NoSymbol {
@@ -171,7 +170,7 @@ mod tests {
         let keybinds = Keybinds::default();
         let resolved = resolve_binds(&keybinds, BackendKind::Winit);
 
-        assert_eq!(resolved.len(), 2);
+        assert_eq!(resolved.len(), 6);
         let quit = resolved.iter().find(|bind| bind.action == Action::Quit).unwrap();
         assert!(quit.modifiers.alt);
         assert!(!quit.modifiers.super_key);
@@ -184,7 +183,7 @@ mod tests {
         let keybinds = Keybinds::default();
         let resolved = resolve_binds(&keybinds, BackendKind::Tty);
 
-        assert_eq!(resolved.len(), 2);
+        assert_eq!(resolved.len(), 6);
         let quit = resolved.iter().find(|bind| bind.action == Action::Quit).unwrap();
         assert!(quit.modifiers.super_key);
         assert!(!quit.modifiers.alt);
@@ -206,15 +205,14 @@ mod tests {
     }
 
     #[test]
-    fn quit_and_open_terminal_are_resolved_but_not_close_focused_window() {
+    fn every_configured_action_is_resolved() {
         let keybinds = Keybinds::default();
         let resolved = resolve_binds(&keybinds, BackendKind::Tty);
-        assert!(
-            resolved
-                .iter()
-                .all(|bind| matches!(bind.action, Action::Quit | Action::OpenTerminal))
-        );
         assert!(resolved.iter().any(|bind| bind.action == Action::Quit));
+        assert!(resolved.iter().any(|bind| bind.action == Action::CloseFocusedWindow));
         assert!(resolved.iter().any(|bind| bind.action == Action::OpenTerminal));
+        assert!(resolved.iter().any(|bind| bind.action == Action::ZoomIn));
+        assert!(resolved.iter().any(|bind| bind.action == Action::ZoomOut));
+        assert!(resolved.iter().any(|bind| bind.action == Action::ZoomReset));
     }
 }
