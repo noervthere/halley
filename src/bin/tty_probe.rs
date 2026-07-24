@@ -2,9 +2,9 @@ use std::ffi::OsString;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use calloop::EventLoop;
 use calloop::generic::Generic;
-use calloop::{Interest, Mode as CalloopMode, PostAction};
+use calloop::timer::{TimeoutAction, Timer};
+use calloop::{EventLoop, Interest, LoopHandle, LoopSignal, Mode as CalloopMode, PostAction, RegistrationToken};
 use smithay::backend::drm::DrmEvent;
 use smithay::backend::libinput::{LibinputInputBackend, LibinputSessionInterface};
 use smithay::backend::session::Event as SessionEvent;
@@ -47,20 +47,70 @@ use input::keybinds::BackendKind;
 use input::pointer::Pointer;
 use wayland::{ClientState, WaylandState};
 
+/// Mirrors niri's `RedrawState` (`niri/src/niri.rs`) - structurally the same
+/// machine old halley's `TtyRedrawState` also independently arrived at,
+/// which is a strong signal this is the actually-necessary shape for DRM
+/// correctness, not incidental complexity. DRM only produces a VBlank event
+/// in response to a page flip it was actually asked to do, so a scene that
+/// settles into "nothing changed" naturally stops generating any further
+/// VBlank at all - and the kernel occasionally just drops a promised VBlank
+/// notification outright (a known amdgpu quirk area, per this project's own
+/// freeze history). This tracks whether a redraw is owed and whether one is
+/// already in flight, so a request is never silently lost either way.
+#[derive(Debug, Default)]
+enum RedrawState {
+    #[default]
+    Idle,
+    /// A redraw was requested and nothing is in flight.
+    Queued,
+    /// A frame was submitted; waiting for its VBlank. `redraw_needed`
+    /// remembers whether another redraw was requested since.
+    WaitingForVBlank { redraw_needed: bool },
+    /// The last redraw attempt submitted nothing (no damage, or an error),
+    /// so a timer was armed for the estimated next VBlank instead of
+    /// waiting on a real one that might never come.
+    WaitingForEstimatedVBlank(RegistrationToken),
+    /// A redraw was requested on top of the above.
+    WaitingForEstimatedVBlankAndQueued(RegistrationToken),
+}
+
+impl RedrawState {
+    fn queue_redraw(self) -> Self {
+        match self {
+            RedrawState::Idle => RedrawState::Queued,
+            RedrawState::WaitingForEstimatedVBlank(token) => {
+                RedrawState::WaitingForEstimatedVBlankAndQueued(token)
+            }
+            // A redraw is already queued, one way or another.
+            value @ (RedrawState::Queued | RedrawState::WaitingForEstimatedVBlankAndQueued(_)) => value,
+            RedrawState::WaitingForVBlank { .. } => {
+                RedrawState::WaitingForVBlank { redraw_needed: true }
+            }
+        }
+    }
+}
+
 /// Mirrors main.rs's `App` shape (backend + keyboard + pointer + cursor +
-/// exit flag + wayland/seat_state/seat). Still a separate struct in a
-/// separate binary; full winit/tty unification is later, explicitly-deferred
-/// work.
+/// wayland/seat_state/seat). Still a separate struct in a separate binary;
+/// full winit/tty unification is later, explicitly-deferred work.
+/// `loop_signal`/`redraw_state` replace winit's `App`'s plain `exit: bool` +
+/// direct `render()` calls - the tty backend's redraw needs real scheduling
+/// (see `RedrawState`), which `event_loop.run()` + `LoopSignal` (matching
+/// smallvil's and niri's own structure) is built to support cleanly.
 struct TtyApp {
     backend: TtyBackend,
     keyboard: Keyboard,
     pointer: Pointer,
     cursor: CursorImage,
-    exit: bool,
+    loop_signal: LoopSignal,
     wayland: WaylandState,
     seat_state: SeatState<TtyApp>,
     seat: Seat<TtyApp>,
     start_time: Instant,
+    redraw_state: RedrawState,
+    /// Whether a VT switch away is currently in effect - `redraw()` must
+    /// not attempt to render while DRM master is dropped.
+    paused: bool,
 }
 
 fn main() {
@@ -85,6 +135,8 @@ fn main() {
     let libinput_backend = LibinputInputBackend::new(libinput_context);
 
     let mut event_loop: EventLoop<TtyApp> = EventLoop::try_new().expect("failed to create event loop");
+    let loop_signal = event_loop.get_signal();
+    let loop_handle = event_loop.handle();
 
     let display: Display<TtyApp> = Display::new().expect("failed to create wayland display");
     let dh = display.handle();
@@ -107,7 +159,7 @@ fn main() {
         keyboard: Keyboard::new(BackendKind::Tty).expect("failed to set up keyboard input"),
         pointer: Pointer::new((100.0, 100.0)),
         cursor: CursorImage::load(),
-        exit: false,
+        loop_signal,
         wayland: WaylandState::new(
             dh,
             compositor_state,
@@ -118,6 +170,8 @@ fn main() {
         seat_state,
         seat,
         start_time: Instant::now(),
+        redraw_state: RedrawState::default(),
+        paused: false,
     };
     app.wayland
         .space
@@ -126,63 +180,46 @@ fn main() {
     let socket_name = init_wayland_listener(display, &mut event_loop);
     println!("wayland socket ready, WAYLAND_DISPLAY={socket_name:?}");
 
-    let cursor_position = app.pointer.position();
-    match app
-        .backend
-        .render(CLEAR_COLOR, &app.cursor, cursor_position, &app.wayland.space)
-    {
-        Ok(()) => println!("first render() succeeded"),
-        Err(err) => println!("first render() failed (same caveat as initialize_output): {err}"),
-    }
+    // First frame: queue then perform directly, matching redraw()'s own
+    // invariant (only ever called on Queued/WaitingForEstimatedVBlankAndQueued)
+    // rather than special-casing "the very first one".
+    queue_redraw(&mut app);
+    redraw(&mut app, &loop_handle);
 
     event_loop
         .handle()
         .insert_source(libinput_backend, |event, _, app| {
             let output_size = app.backend.output_size().to_logical(1);
             app.pointer.process_input_event(&event, output_size);
-
-            // Motion alone doesn't trigger the next VBlank - once a scene
-            // has zero damage, nothing gets queued and no further VBlank
-            // ever arrives on its own (see TtyBackend::render's `pending`
-            // doc comment). Render eagerly here so movement actually
-            // reaches the screen instead of only updating on whatever
-            // redraw happens to already be in flight for another reason.
-            let cursor_position = app.pointer.position();
-            if let Err(err) =
-                app.backend
-                    .render(CLEAR_COLOR, &app.cursor, cursor_position, &app.wayland.space)
-            {
-                println!("render failed: {err}");
-            }
+            queue_redraw(app);
 
             if let Some(halley_config::Action::Quit) = app.keyboard.process_input_event(event) {
-                app.exit = true;
+                app.loop_signal.stop();
             }
         })
         .expect("failed to insert libinput source");
 
     event_loop
         .handle()
-        .insert_source(session_notifier, |event, _, app| match event {
-            SessionEvent::PauseSession => {
-                println!("session event: pause");
-                app.backend.pause();
-            }
-            SessionEvent::ActivateSession => {
-                println!("session event: activate");
-                match app.backend.resume() {
-                    Ok(()) => {
-                        let cursor_position = app.pointer.position();
-                        if let Err(err) = app.backend.render(
-                            CLEAR_COLOR,
-                            &app.cursor,
-                            cursor_position,
-                            &app.wayland.space,
-                        ) {
-                            println!("post-resume render failed: {err}");
-                        }
+        .insert_source(session_notifier, {
+            let loop_handle = loop_handle.clone();
+            move |event, _, app| match event {
+                SessionEvent::PauseSession => {
+                    println!("session event: pause");
+                    app.paused = true;
+                    app.backend.pause();
+                }
+                SessionEvent::ActivateSession => {
+                    println!("session event: activate");
+                    app.paused = false;
+                    match app.backend.resume() {
+                        // The whole DRM pipeline (and any frame that was in
+                        // flight before the switch away) is gone - reset
+                        // clean rather than trusting whatever redraw_state
+                        // said before the switch.
+                        Ok(()) => reset_redraw_state(app, &loop_handle),
+                        Err(err) => println!("resume failed: {err}"),
                     }
-                    Err(err) => println!("resume failed: {err}"),
                 }
             }
         })
@@ -196,18 +233,16 @@ fn main() {
                     println!("frame_submitted failed for {crtc:?}: {err}");
                     return;
                 }
-                let cursor_position = app.pointer.position();
-                if let Err(err) = app.backend.render(
-                    CLEAR_COLOR,
-                    &app.cursor,
-                    cursor_position,
-                    &app.wayland.space,
-                ) {
-                    println!("render failed: {err}");
+                // Secondary outputs never redraw beyond their first frame
+                // (see TtyBackend::render's doc comment) - only the primary
+                // output's VBlank cadence drives redraw_state.
+                if crtc != app.backend.primary_crtc() {
+                    return;
                 }
 
-                // Lets clients know their last commit was actually
-                // presented, so they schedule their next frame.
+                // Lets mapped clients know their last commit was actually
+                // presented, so they schedule their next frame - regardless
+                // of whether we redraw again ourselves.
                 let output = app.backend.primary_output().clone();
                 let elapsed = app.start_time.elapsed();
                 app.wayland.space.elements().for_each(|window| {
@@ -216,19 +251,140 @@ fn main() {
                     });
                 });
                 app.wayland.space.refresh();
+
+                let redraw_needed = match std::mem::take(&mut app.redraw_state) {
+                    RedrawState::WaitingForVBlank { redraw_needed } => redraw_needed,
+                    // Can happen when resuming from a VT switch, or a rogue
+                    // VBlank the kernel wasn't asked for - redraw defensively
+                    // rather than silently dropping the frame.
+                    other => {
+                        println!(
+                            "unexpected redraw state on vblank (expected WaitingForVBlank): {other:?}"
+                        );
+                        true
+                    }
+                };
+
+                if redraw_needed {
+                    queue_redraw(app);
+                }
             }
             DrmEvent::Error(err) => println!("drm event: error {err:?}"),
         })
         .expect("failed to insert drm notifier");
 
     println!("dispatching - switch to this VT to see a solid color fill the screen, press the Quit chord to exit");
-    while !app.exit {
-        event_loop
-            .dispatch(None, &mut app)
-            .expect("event loop dispatch failed");
-        let _ = app.wayland.display_handle.flush_clients();
-    }
+    event_loop
+        .run(None, &mut app, |app| {
+            if !app.paused
+                && matches!(
+                    app.redraw_state,
+                    RedrawState::Queued | RedrawState::WaitingForEstimatedVBlankAndQueued(_)
+                )
+            {
+                redraw(app, &loop_handle);
+            }
+            let _ = app.wayland.display_handle.flush_clients();
+        })
+        .expect("event loop run failed");
     println!("quit requested, exiting cleanly");
+}
+
+/// Pure state transition - safe to call from any input/event handler with
+/// no event-loop access. The actual rendering only ever happens in
+/// `redraw()`, called from the `run()` tail once a redraw is actually
+/// `Queued`.
+fn queue_redraw(app: &mut TtyApp) {
+    app.redraw_state = std::mem::take(&mut app.redraw_state).queue_redraw();
+}
+
+/// Performs one redraw attempt and updates `redraw_state` accordingly.
+/// Callers must only invoke this when `redraw_state` is `Queued` or
+/// `WaitingForEstimatedVBlankAndQueued` (mirrors niri's own `Niri::redraw`
+/// invariant) - `queue_redraw` followed by this is how every redraw in this
+/// binary happens, including the very first one.
+fn redraw(app: &mut TtyApp, loop_handle: &LoopHandle<'_, TtyApp>) {
+    let cursor_position = app.pointer.position();
+    if let Err(err) = app
+        .backend
+        .render(CLEAR_COLOR, &app.cursor, cursor_position, &app.wayland.space)
+    {
+        println!("render failed: {err}");
+    }
+
+    if app.backend.primary_frame_in_flight() {
+        // A frame was actually queued to DRM - a real VBlank is coming, so
+        // drop any estimated-vblank timer we might have been relying on
+        // instead.
+        if let RedrawState::WaitingForEstimatedVBlank(token)
+        | RedrawState::WaitingForEstimatedVBlankAndQueued(token) = std::mem::take(&mut app.redraw_state)
+        {
+            loop_handle.remove(token);
+        }
+        app.redraw_state = RedrawState::WaitingForVBlank {
+            redraw_needed: false,
+        };
+        return;
+    }
+
+    // Nothing was submitted (no damage, or the render failed) - arm a
+    // fallback timer for the estimated next VBlank so a redraw request
+    // isn't lost if a real VBlank never explains why.
+    queue_estimated_vblank_timer(app, loop_handle);
+}
+
+/// Arms (or keeps) a timer for the estimated next VBlank - mirrors niri's
+/// `queue_estimated_vblank_timer`. Only called when nothing was actually
+/// submitted to DRM this redraw attempt.
+fn queue_estimated_vblank_timer(app: &mut TtyApp, loop_handle: &LoopHandle<'_, TtyApp>) {
+    match std::mem::take(&mut app.redraw_state) {
+        RedrawState::Idle | RedrawState::WaitingForVBlank { .. } => {
+            unreachable!("queue_estimated_vblank_timer called from an unexpected redraw state")
+        }
+        RedrawState::Queued => {}
+        // Already waiting on a timer - keep it rather than stacking a
+        // second one for the same missing VBlank.
+        RedrawState::WaitingForEstimatedVBlank(token)
+        | RedrawState::WaitingForEstimatedVBlankAndQueued(token) => {
+            app.redraw_state = RedrawState::WaitingForEstimatedVBlank(token);
+            return;
+        }
+    }
+
+    let interval = app.backend.refresh_interval();
+    let token = loop_handle
+        .insert_source(Timer::from_duration(interval), |_, _, app| {
+            on_estimated_vblank_timer(app);
+            TimeoutAction::Drop
+        })
+        .expect("failed to arm estimated-vblank timer");
+    app.redraw_state = RedrawState::WaitingForEstimatedVBlank(token);
+}
+
+fn on_estimated_vblank_timer(app: &mut TtyApp) {
+    match std::mem::take(&mut app.redraw_state) {
+        RedrawState::WaitingForEstimatedVBlank(_) => {}
+        // A redraw was requested while we were waiting - the next run()
+        // tail will pick it up now that we're back to Queued.
+        RedrawState::WaitingForEstimatedVBlankAndQueued(_) => {
+            app.redraw_state = RedrawState::Queued;
+        }
+        other => {
+            println!("unexpected redraw state on estimated-vblank timer: {other:?}");
+        }
+    }
+}
+
+/// Discards whatever `redraw_state` was (cancelling any armed timer first)
+/// and starts fresh - used after resuming from a VT switch, since the
+/// entire DRM pipeline (and anything that was in flight) is gone by then.
+fn reset_redraw_state(app: &mut TtyApp, loop_handle: &LoopHandle<'_, TtyApp>) {
+    if let RedrawState::WaitingForEstimatedVBlank(token)
+    | RedrawState::WaitingForEstimatedVBlankAndQueued(token) = std::mem::take(&mut app.redraw_state)
+    {
+        loop_handle.remove(token);
+    }
+    app.redraw_state = RedrawState::Queued;
 }
 
 /// Sets up the listening socket new clients connect to, and the source that

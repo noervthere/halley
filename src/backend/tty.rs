@@ -1,4 +1,5 @@
 use std::error::Error;
+use std::time::Duration;
 
 use smithay::backend::allocator::gbm::{GbmAllocator, GbmBufferFlags, GbmDevice};
 use smithay::backend::allocator::{Format, Fourcc};
@@ -254,6 +255,38 @@ impl TtyBackend {
     /// caveat this shares with `output_size`/`primary_crtc`.
     pub fn primary_output(&self) -> &Output {
         &self.primary_output
+    }
+
+    /// The CRTC driving code's redraw scheduling should key off of - only
+    /// the primary output ever has genuinely dynamic content (windows, the
+    /// cursor), so it's the only one whose VBlank cadence needs to drive a
+    /// redraw-request state machine at all.
+    pub fn primary_crtc(&self) -> crtc::Handle {
+        self.primary_crtc
+    }
+
+    /// Whether the primary output currently has a frame queued and awaiting
+    /// its VBlank - lets driving code's redraw scheduling (see
+    /// `tty_probe.rs`'s `RedrawState`) tell whether the last `render()` call
+    /// actually submitted anything to DRM, or produced no damage.
+    pub fn primary_frame_in_flight(&self) -> bool {
+        self.drm_outputs
+            .iter()
+            .find(|entry| entry.crtc == self.primary_crtc)
+            .is_some_and(|entry| entry.pending)
+    }
+
+    /// The primary output's refresh interval, used to time the estimated-
+    /// VBlank fallback timer (see `tty_probe.rs`) - falls back to 60Hz if
+    /// the mode's refresh rate is somehow unset.
+    pub fn refresh_interval(&self) -> Duration {
+        let refresh_mhz = self
+            .primary_output
+            .current_mode()
+            .map(|mode| mode.refresh)
+            .filter(|&refresh| refresh > 0)
+            .unwrap_or(60_000);
+        Duration::from_secs_f64(1000.0 / refresh_mhz as f64)
     }
 
     /// Reacquire DRM master and resync KMS state after a VT switch back.
