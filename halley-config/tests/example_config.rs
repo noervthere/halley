@@ -1,7 +1,7 @@
 use halley_config::{Action, DefaultTerminal, ModifierKey, parse_keybinds};
 use rune_cfg::RuneConfig;
 
-const EXAMPLE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/examples/halley.rune");
+const EXAMPLE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../examples/halley.rune");
 
 /// Real end-to-end check: parse the actual shipped example file through
 /// real rune-cfg, not just hand-constructed strings like the unit tests
@@ -13,7 +13,7 @@ fn example_config_parses_end_to_end() {
 
     assert_eq!(keybinds.modifier, ModifierKey::Super);
     assert_eq!(keybinds.default_terminal, DefaultTerminal::Auto);
-    assert_eq!(keybinds.binds.len(), 3);
+    assert_eq!(keybinds.binds.len(), 6);
 
     let quit = keybinds
         .binds
@@ -40,4 +40,52 @@ fn example_config_parses_end_to_end() {
         .expect("open-terminal bind present");
     assert_eq!(terminal.key, "t");
     assert!(terminal.modifiers.super_key);
+
+    let zoom_out = keybinds
+        .binds
+        .iter()
+        .find(|b| b.action == Action::ZoomOut)
+        .expect("zoom-out bind present");
+    assert_eq!(zoom_out.key, "minus");
+    assert!(zoom_out.modifiers.super_key);
+
+    let zoom_in = keybinds
+        .binds
+        .iter()
+        .find(|b| b.action == Action::ZoomIn)
+        .expect("zoom-in bind present");
+    assert_eq!(zoom_in.key, "equal");
+    assert!(zoom_in.modifiers.super_key);
+
+    let zoom_reset = keybinds
+        .binds
+        .iter()
+        .find(|b| b.action == Action::ZoomReset)
+        .expect("zoom-reset bind present");
+    assert_eq!(zoom_reset.key, "0");
+    assert!(zoom_reset.modifiers.super_key);
+}
+
+/// Confirms the shipped example's `zoom:` section parses to non-default
+/// values matching the file's own documented settings - a lighter version of
+/// `example_config_parses_end_to_end` for the zoom section specifically.
+#[test]
+fn example_config_zoom_section_parses() {
+    let config = RuneConfig::from_file(EXAMPLE_PATH).expect("example config parses");
+    let zoom = halley_config::parse_zoom(&config);
+
+    assert!(zoom.enabled);
+    assert_eq!(zoom.min, 0.35);
+    assert_eq!(zoom.step, 1.10);
+    assert_eq!(zoom.smooth_rate, 12.5);
+}
+
+/// The shipped example's `output:` block is commented out on purpose (an
+/// active block whose `name` happened to match a real connector would force
+/// a mode onto hardware this file wasn't written for) - confirm it really
+/// parses to zero outputs, not just that it happens to not error.
+#[test]
+fn example_config_output_section_is_commented_out_by_default() {
+    let config = RuneConfig::from_file(EXAMPLE_PATH).expect("example config parses");
+    assert_eq!(halley_config::parse_outputs(&config), Vec::new());
 }

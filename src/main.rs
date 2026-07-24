@@ -1,6 +1,7 @@
 mod backend;
 mod cursor;
 mod input;
+mod ipc;
 mod session;
 mod terminal;
 mod wayland;

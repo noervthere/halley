@@ -5,7 +5,7 @@ edition = "2024"
 
 [workspace]
 resolver = "2"
-members = ["halley-config", "halley-core"]
+members = ["halley-cli", "halley-config", "halley-core", "halley-ipc"]
 
 [dependencies]
 smithay = { version = "0.7.0", git = "https://github.com/Smithay/smithay.git", rev = "ff5fa7df392cecfba049ffed55cdaa4e98a8e7ef", default-features = false, features = [
@@ -25,6 +25,7 @@ smithay-drm-extras = { git = "https://github.com/Smithay/smithay.git", rev = "ff
 calloop = "0.14.4"
 halley-config = { path = "halley-config" }
 halley-core = { path = "halley-core" }
+halley-ipc = { path = "halley-ipc" }
 libc = "0.2"
 rune-cfg = "0.6.1"
 xcursor = "0.3"

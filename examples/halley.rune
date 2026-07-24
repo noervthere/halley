@@ -1,6 +1,34 @@
 # Halley compositor config.
-# Everything else (outputs, gestures, ...) comes later,
-# in its own section, once it actually exists.
+# Everything else (gestures, ...) comes later, in its own section, once it
+# actually exists.
+
+# One `output:` block per physical monitor - not a wrapper section, just
+# repeat the block for each one. Commented out by default: an active block
+# whose `name` happens to match a real connector on your machine would force
+# that exact mode, which is very likely wrong for hardware this file wasn't
+# written for. Uncomment and edit to match your actual monitor(s) (find real
+# connector names/modes with `halleyctl outputs`).
+#
+# output:
+#   name "DP-1"
+#   width 2560
+#   height 1440
+#   offset-x 0
+#   offset-y 0
+#
+#   # Must match one of the connector's real modes exactly - no closest-rate
+#   # guessing. Omit this line entirely to just use the preferred mode at
+#   # this resolution instead.
+#   rate 179.998
+#
+#   # Rotation in degrees - 0, 90, 180, or 270.
+#   transform 0
+#
+#   # "off", "on", or "auto" (variable refresh rate). "auto" is accepted but
+#   # not yet content-aware - it behaves like "off" until there's a real
+#   # signal to drive it.
+#   vrr "auto"
+# end
 
 decorations:
   border:
@@ -13,6 +41,22 @@ decorations:
     # Color of the border around every other (unfocused) window.
     colour-unfocused "#474d59"
   end
+end
+
+# A "zoom out" effect - visually shrinks everything toward the screen
+# center, and back in again. Capped at 1.0x - zooming in only ever walks
+# zoom-out steps back, it never magnifies past normal size.
+zoom:
+  enabled true
+
+  # How far out you can zoom - 0.35 means windows can shrink to 35% size.
+  min 0.35
+
+  # Multiplicative zoom factor applied per zoom-out keypress.
+  step 1.10
+
+  # How quickly the zoom eases toward its target - higher is snappier.
+  smooth-rate 12.5
 end
 
 keybinds:
@@ -28,6 +72,11 @@ keybinds:
   # list (alacritty, kitty, ghostty, wezterm, ...); set an explicit command
   # here instead to skip detection.
   "$var.mod+t" "open-terminal"
+
+  # Zoom out one step, back in one step, or reset straight to 1.0x.
+  "$var.mod+minus" "zoom-out"
+  "$var.mod+equal" "zoom-in"
+  "$var.mod+0" "zoom-reset"
 
   default-terminal "auto"
 end
