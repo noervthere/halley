@@ -1,6 +1,8 @@
 use halley_core::camera::Camera;
 use halley_core::field::Vec2;
+use smithay::desktop::space::SpaceElement;
 use smithay::desktop::{Space, Window};
+use smithay::output::Output;
 use smithay::utils::{Logical, Physical, Point, Rectangle, Size};
 
 /// What's currently being dragged with the left mouse button held, if
@@ -183,6 +185,45 @@ pub fn screen_to_world(screen: (f64, f64), camera: &Camera, output_size: Size<i3
     }
 }
 
+/// Multi-output form of `screen_to_world`. The pointer is global in
+/// Smithay's mapped output layout, while `camera.center` is measured from
+/// the primary output's local center. Re-basing that same pan/zoom onto the
+/// output under the pointer keeps drag math continuous across output
+/// boundaries.
+pub fn screen_to_world_on_output(
+    screen: (f64, f64),
+    camera: &Camera,
+    primary_output_size: Size<i32, Physical>,
+    output_geometry: Rectangle<i32, Logical>,
+) -> Vec2 {
+    let primary_center = Vec2 {
+        x: primary_output_size.w as f32 / 2.0,
+        y: primary_output_size.h as f32 / 2.0,
+    };
+    let pan = Vec2 {
+        x: camera.center.x - primary_center.x,
+        y: camera.center.y - primary_center.y,
+    };
+    let output_center = Vec2 {
+        x: output_geometry.loc.x as f32 + output_geometry.size.w as f32 / 2.0,
+        y: output_geometry.loc.y as f32 + output_geometry.size.h as f32 / 2.0,
+    };
+    let local_screen = Vec2 {
+        x: screen.0 as f32 - output_geometry.loc.x as f32,
+        y: screen.1 as f32 - output_geometry.loc.y as f32,
+    };
+    let local_center = Vec2 {
+        x: output_geometry.size.w as f32 / 2.0,
+        y: output_geometry.size.h as f32 / 2.0,
+    };
+    let scale = crate::input::zoom::scale(camera);
+
+    Vec2 {
+        x: output_center.x + pan.x + (local_screen.x - local_center.x) / scale,
+        y: output_center.y + pan.y + (local_screen.y - local_center.y) / scale,
+    }
+}
+
 /// Converts a screen-space motion delta into a world-space delta - used
 /// while panning, where only the delta matters (not an absolute position).
 /// Scaled by the same factor `screen_to_world` uses, so panning speed stays
@@ -205,6 +246,34 @@ pub fn window_under(space: &Space<Window>, world: Vec2) -> Option<(Window, Point
     space
         .element_under((world.x as f64, world.y as f64))
         .map(|(window, loc)| (window.clone(), loc))
+}
+
+/// Output-owned variant of Smithay's `Space::element_under`. The hit-test
+/// itself follows Smithay's implementation; the only added predicate is
+/// Halley's whole-window output ownership, so a window owned by the other
+/// monitor cannot intercept clicks here.
+pub fn window_under_on_output(
+    space: &Space<Window>,
+    output: &Output,
+    primary: &Output,
+    world: Vec2,
+) -> Option<(Window, Point<i32, Logical>)> {
+    let point = Point::<f64, Logical>::from((world.x as f64, world.y as f64));
+
+    space.elements().rev().find_map(|window| {
+        if !crate::wayland::window_is_on_output(window, output, primary) {
+            return None;
+        }
+        let bbox = space.element_bbox(window)?;
+        if !bbox.to_f64().contains(point) {
+            return None;
+        }
+        let location = space.element_location(window)?;
+        let render_location = location - window.geometry().loc;
+        window
+            .is_in_input_region(&(point - render_location.to_f64()))
+            .then(|| (window.clone(), render_location))
+    })
 }
 
 #[cfg(test)]
@@ -246,6 +315,36 @@ mod tests {
         // At 0.5x scale, a 100px screen offset is a 200px world offset.
         let world = screen_to_world((740.0, 400.0), &camera, output_size);
         assert_eq!(world, Vec2 { x: 840.0, y: 400.0 });
+    }
+
+    #[test]
+    fn secondary_output_coordinates_are_global_at_rest() {
+        let camera = camera_at_rest();
+        let primary_size = Size::<i32, Physical>::from((1280, 800));
+        let secondary = Rectangle::<i32, Logical>::new((1280, 0).into(), (1920, 1200).into());
+
+        assert_eq!(
+            screen_to_world_on_output((1280.0, 0.0), &camera, primary_size, secondary),
+            Vec2 { x: 1280.0, y: 0.0 }
+        );
+        assert_eq!(
+            screen_to_world_on_output((1600.0, 600.0), &camera, primary_size, secondary),
+            Vec2 { x: 1600.0, y: 600.0 }
+        );
+    }
+
+    #[test]
+    fn secondary_output_coordinates_share_primary_pan_and_zoom() {
+        let mut camera = camera_at_rest();
+        camera.center = Vec2 { x: 740.0, y: 450.0 };
+        camera.view_size = Vec2 { x: 2560.0, y: 1600.0 };
+        let primary_size = Size::<i32, Physical>::from((1280, 800));
+        let secondary = Rectangle::<i32, Logical>::new((1280, 0).into(), (1920, 1200).into());
+
+        assert_eq!(
+            screen_to_world_on_output((2340.0, 650.0), &camera, primary_size, secondary),
+            Vec2 { x: 2540.0, y: 750.0 }
+        );
     }
 
     fn resize_rect() -> Rectangle<i32, Logical> {

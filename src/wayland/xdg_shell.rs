@@ -55,6 +55,9 @@ pub fn handle_commit(wayland: &mut WaylandState, surface: &WlSurface) {
     if has_buffer {
         let window = wayland.unmapped.remove(surface).expect("checked above");
         let location = centered_location(wayland, &window);
+        if let Some(output) = wayland.space.outputs().next() {
+            super::set_window_output(&window, output);
+        }
         wayland.space.map_element(window.clone(), location, false);
         // New windows steal focus - matches most WMs' default behavior.
         // Also raises+activates via `focus_and_raise`, same as clicking a
@@ -98,10 +101,9 @@ pub fn close_focused(wayland: &WaylandState) {
 }
 
 /// Where a newly-mapped window should land: centered on the output, rather
-/// than always `(0, 0)`. Both binaries map exactly one output into `space`
-/// before any client can connect, so `outputs().next()` is always the right
-/// one - falls back to `(0, 0)` only in the unreachable case where somehow
-/// none is mapped yet, rather than panicking.
+/// than always `(0, 0)`. Outputs are mapped primary-first before any client
+/// can connect, so `outputs().next()` is the configured primary - falls
+/// back to `(0, 0)` only in the unreachable case where none is mapped.
 fn centered_location(wayland: &WaylandState, window: &Window) -> Point<i32, Logical> {
     let Some(output) = wayland.space.outputs().next() else {
         return (0, 0).into();

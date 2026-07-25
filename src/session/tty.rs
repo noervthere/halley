@@ -10,15 +10,17 @@ use smithay::backend::input::{ButtonState, Event, InputEvent, KeyState, Keyboard
 use smithay::backend::libinput::{LibinputInputBackend, LibinputSessionInterface};
 use smithay::backend::session::Event as SessionEvent;
 use smithay::backend::session::Session;
+use smithay::desktop::{Space, Window};
 use smithay::input::keyboard::FilterResult;
 use smithay::input::{Seat, SeatHandler, SeatState};
+use smithay::output::Output;
 use smithay::reexports::drm::control::crtc;
 use smithay::reexports::input::Libinput;
 use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
 use smithay::reexports::wayland_server::protocol::wl_seat::WlSeat;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{Client, Display};
-use smithay::utils::{Logical, Physical, Point, SERIAL_COUNTER, Serial};
+use smithay::utils::{Logical, Physical, Point, Rectangle, SERIAL_COUNTER, Serial};
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::{CompositorClientState, CompositorHandler, CompositorState};
 use smithay::wayland::output::{OutputHandler, OutputManagerState};
@@ -59,6 +61,15 @@ use crate::wayland::{self, ClientState, WaylandState};
 const BTN_LEFT: u32 = 0x110;
 /// The right mouse button, same source and same reasoning as `BTN_LEFT`.
 const BTN_RIGHT: u32 = 0x111;
+
+fn output_at_pointer(
+    space: &Space<Window>,
+    position: (f64, f64),
+) -> Option<(Output, Rectangle<i32, Logical>)> {
+    let output = space.output_under(position).next()?.clone();
+    let geometry = space.output_geometry(&output)?;
+    Some((output, geometry))
+}
 
 /// Mirrors niri's `RedrawState` (`niri/src/niri.rs`) - structurally the same
 /// machine old halley's `TtyRedrawState` also independently arrived at,
@@ -261,12 +272,24 @@ pub fn run() {
             // re-deriving it from the raw event per grab kind.
             match &app.grab {
                 crate::input::grab::Grab::MoveWindow { window, offset } => {
-                    let world = crate::input::grab::screen_to_world(position_after, &app.camera, output_size_physical);
-                    let new_location = Point::<i32, Logical>::from((
-                        (world.x + offset.x).round() as i32,
-                        (world.y + offset.y).round() as i32,
-                    ));
-                    app.wayland.space.map_element(window.clone(), new_location, false);
+                    if let Some((output, output_geometry)) =
+                        output_at_pointer(&app.wayland.space, position_after)
+                    {
+                        let world = crate::input::grab::screen_to_world_on_output(
+                            position_after,
+                            &app.camera,
+                            output_size_physical,
+                            output_geometry,
+                        );
+                        let new_location = Point::<i32, Logical>::from((
+                            (world.x + offset.x).round() as i32,
+                            (world.y + offset.y).round() as i32,
+                        ));
+                        wayland::set_window_output(window, &output);
+                        app.wayland
+                            .space
+                            .map_element(window.clone(), new_location, false);
+                    }
                 }
                 crate::input::grab::Grab::Pan => {
                     let dx = position_after.0 - position_before.0;
@@ -277,7 +300,23 @@ pub fn run() {
                     app.camera.pan_target(halley_core::field::Vec2 { x: -delta.x, y: -delta.y });
                 }
                 crate::input::grab::Grab::ResizeWindow(state) => {
-                    let world = crate::input::grab::screen_to_world(position_after, &app.camera, output_size_physical);
+                    let primary = app.backend.primary_output();
+                    let output = app
+                        .wayland
+                        .space
+                        .outputs()
+                        .find(|output| wayland::window_is_on_output(&state.window, output, primary))
+                        .cloned()
+                        .unwrap_or_else(|| primary.clone());
+                    let Some(output_geometry) = app.wayland.space.output_geometry(&output) else {
+                        return;
+                    };
+                    let world = crate::input::grab::screen_to_world_on_output(
+                        position_after,
+                        &app.camera,
+                        output_size_physical,
+                        output_geometry,
+                    );
                     let size = crate::input::grab::resize_target_size(
                         state.handle,
                         state.start_rect,
@@ -311,12 +350,23 @@ pub fn run() {
                         // Resize is mod-only: a bare right-click has to stay
                         // available to clients (context menus).
                         if crate::input::mod_key_held(&mods, app.keyboard.effective_mod) {
-                            let world = crate::input::grab::screen_to_world(
+                            let Some((output, output_geometry)) =
+                                output_at_pointer(&app.wayland.space, position_after)
+                            else {
+                                return;
+                            };
+                            let world = crate::input::grab::screen_to_world_on_output(
                                 position_after,
                                 &app.camera,
                                 output_size_physical,
+                                output_geometry,
                             );
-                            if let Some((window, _)) = crate::input::grab::window_under(&app.wayland.space, world)
+                            if let Some((window, _)) = crate::input::grab::window_under_on_output(
+                                &app.wayland.space,
+                                &output,
+                                app.backend.primary_output(),
+                                world,
+                            )
                                 && let Some(start_rect) = app.wayland.space.element_geometry(&window)
                             {
                                 let handle = crate::input::grab::handle_from_press_position(start_rect, world);
@@ -350,9 +400,23 @@ pub fn run() {
                             .expect("keyboard capability added at seat setup")
                             .modifier_state();
                         let mod_held = crate::input::mod_key_held(&mods, app.keyboard.effective_mod);
-                        let world =
-                            crate::input::grab::screen_to_world(position_after, &app.camera, output_size_physical);
-                        match crate::input::grab::window_under(&app.wayland.space, world) {
+                        let Some((output, output_geometry)) =
+                            output_at_pointer(&app.wayland.space, position_after)
+                        else {
+                            return;
+                        };
+                        let world = crate::input::grab::screen_to_world_on_output(
+                            position_after,
+                            &app.camera,
+                            output_size_physical,
+                            output_geometry,
+                        );
+                        match crate::input::grab::window_under_on_output(
+                            &app.wayland.space,
+                            &output,
+                            app.backend.primary_output(),
+                            world,
+                        ) {
                             Some((window, window_loc)) if mod_held => {
                                 let offset = halley_core::field::Vec2 {
                                     x: window_loc.x as f32 - world.x,
@@ -464,18 +528,22 @@ pub fn run() {
                     println!("frame_submitted failed for {crtc:?}: {err}");
                     return;
                 }
-                // Lets mapped clients know their last commit was actually
-                // presented on the primary output, so they schedule their
-                // next frame - regardless of which output currently carries
-                // the cursor.
-                if crtc == app.backend.primary_crtc() {
-                    let output = app.backend.primary_output().clone();
+                // Lets clients painted on this output know their last commit
+                // was presented, so they schedule their next frame.
+                if let Some(output) = app.backend.output_for_crtc(crtc).cloned() {
+                    let primary = app.backend.primary_output();
                     let elapsed = app.start_time.elapsed();
-                    app.wayland.space.elements().for_each(|window| {
-                        window.send_frame(&output, elapsed, Some(Duration::ZERO), |_, _| {
-                            Some(output.clone())
+                    app.wayland
+                        .space
+                        .elements()
+                        .filter(|window| {
+                            wayland::window_is_on_output(window, &output, primary)
+                        })
+                        .for_each(|window| {
+                            window.send_frame(&output, elapsed, Some(Duration::ZERO), |_, _| {
+                                Some(output.clone())
+                            });
                         });
-                    });
                     app.wayland.space.refresh();
                 }
 
@@ -570,12 +638,14 @@ fn redraw(app: &mut TtyApp, loop_handle: &LoopHandle<'_, TtyApp>) {
         .cursor_crtc(&app.wayland.space, cursor_position);
     let primary_crtc = app.backend.primary_crtc();
     let waiting_crtc = if app.backend.frame_in_flight(primary_crtc) {
-        primary_crtc
+        Some(primary_crtc)
+    } else if app.backend.frame_in_flight(cursor_crtc) {
+        Some(cursor_crtc)
     } else {
-        cursor_crtc
+        app.backend.any_frame_in_flight()
     };
 
-    if app.backend.frame_in_flight(waiting_crtc) {
+    if let Some(waiting_crtc) = waiting_crtc {
         // A frame was actually queued to DRM - a real VBlank is coming, so
         // drop any estimated-vblank timer we might have been relying on
         // instead.

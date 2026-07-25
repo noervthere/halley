@@ -4,8 +4,10 @@ pub mod selection;
 pub mod xdg_shell;
 
 use std::collections::HashMap;
+use std::sync::RwLock;
 
 use smithay::desktop::{Space, Window};
+use smithay::output::Output;
 use smithay::reexports::wayland_server::DisplayHandle;
 use smithay::reexports::wayland_server::backend::{ClientData, ClientId, DisconnectReason};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
@@ -16,6 +18,36 @@ use smithay::wayland::selection::primary_selection::PrimarySelectionState;
 use smithay::wayland::shell::xdg::XdgShellState;
 use smithay::wayland::shell::xdg::decoration::XdgDecorationState;
 use smithay::wayland::shm::ShmState;
+
+/// The one output responsible for painting a window. Smithay's `Space`
+/// still owns output geometry and pointer routing; this is only Halley's
+/// whole-window handoff policy, matching the original compositor.
+struct WindowOutput(RwLock<String>);
+
+pub fn set_window_output(window: &Window, output: &Output) {
+    let owner = window
+        .user_data()
+        .get_or_insert_threadsafe(|| WindowOutput(RwLock::new(output.name())));
+    *owner.0.write().expect("window output lock poisoned") = output.name();
+}
+
+pub fn window_is_on_output(window: &Window, output: &Output, primary: &Output) -> bool {
+    window
+        .user_data()
+        .get::<WindowOutput>()
+        .map(|owner| {
+            owner
+                .0
+                .read()
+                .expect("window output lock poisoned")
+                .as_str()
+                == output.name()
+        })
+        // Windows are assigned during their initial map. Retaining this
+        // fallback keeps an already-mapped window visible if that invariant
+        // is ever broken while developing.
+        .unwrap_or_else(|| output == primary)
+}
 
 /// Wayland protocol state shared by every top-level app struct (`App`,
 /// `TtyApp`) - narrow on purpose: only what advertising the core globals,

@@ -79,18 +79,13 @@ pub struct TtyBackend {
     renderer: GlesRenderer,
     drm_output_manager: TtyDrmOutputManager,
     drm_outputs: Vec<DrmOutputEntry>,
-    /// The first successfully initialized output's size. Window rendering,
-    /// camera math, and input grabs remain primary-output-only for now;
-    /// pointer confinement itself uses every output mapped into `Space`.
+    /// The first successfully initialized output's size. The shared camera
+    /// is based on this size; other outputs rebase its pan/zoom from their
+    /// own mapped geometry.
     output_size: Size<i32, Physical>,
-    /// The CRTC of the first successfully initialized output. Windows still
-    /// render only here; the cursor is rendered on whichever mapped output
-    /// contains its global position.
+    /// The CRTC of the first successfully initialized output.
     primary_crtc: crtc::Handle,
-    /// The `wl_output` for the primary output - client windows are only
-    /// ever drawn there this round (see `render()`), matching the same
-    /// "first output" simplification `output_size`/`primary_crtc` already
-    /// establish rather than inventing a new one.
+    /// The `wl_output` where newly mapped windows begin.
     primary_output: Output,
     /// Every successfully initialized output, in connector-scan order - each
     /// one has its real name and configured mode/position/transform. Driving
@@ -407,6 +402,23 @@ impl TtyBackend {
             .is_some_and(|entry| entry.pending)
     }
 
+    /// Any CRTC currently awaiting VBlank. Used only after preferring the
+    /// primary and pointer outputs in the session's single redraw state
+    /// machine.
+    pub fn any_frame_in_flight(&self) -> Option<crtc::Handle> {
+        self.drm_outputs
+            .iter()
+            .find(|entry| entry.pending)
+            .map(|entry| entry.crtc)
+    }
+
+    pub fn output_for_crtc(&self, crtc: crtc::Handle) -> Option<&Output> {
+        self.drm_outputs
+            .iter()
+            .find(|entry| entry.crtc == crtc)
+            .map(|entry| &entry.output)
+    }
+
     /// The output containing the global pointer position, or the primary
     /// output when no mapped output contains it.
     pub fn cursor_crtc(
@@ -520,7 +532,8 @@ impl Renderable for TtyBackend {
         // every output failed.
         let mut ok_count = 0;
         let mut last_err: Option<Box<dyn Error>> = None;
-        let output_size = self.output_size();
+        let primary_output = self.primary_output.clone();
+        let primary_output_size = self.output_size;
 
         for entry in &mut self.drm_outputs {
             // A page flip is already queued for this output and hasn't
@@ -532,70 +545,90 @@ impl Renderable for TtyBackend {
                 continue;
             }
             let crtc = entry.crtc;
-            let cursor_position = space
-                .output_geometry(&entry.output)
-                .and_then(|geometry| cursor_position_for_output(geometry, cursor_position));
+            let Some(output_geometry) = space.output_geometry(&entry.output) else {
+                continue;
+            };
+            let output_size = output_geometry.size.to_physical(1);
+            let output_camera_center = camera_center_for_output(
+                camera_center,
+                primary_output_size,
+                output_geometry,
+            );
+            let cursor_position =
+                cursor_position_for_output(output_geometry, cursor_position);
             let drm_output = &mut entry.drm_output;
 
-            // Client windows remain primary-only. The cursor follows
-            // Smithay's Anvil pattern: select the mapped output containing
-            // its global logical position, then render at output-local
-            // coordinates on that output's CRTC.
+            // The cursor follows Smithay's Anvil pattern: select the mapped
+            // output containing its global logical position, then render at
+            // output-local coordinates on that output's CRTC. Windows use
+            // the same local coordinate space, filtered by Halley's single
+            // owning output so they never split across monitors.
             let mut elements: Vec<TtyRenderElement> = Vec::new();
-            if crtc == self.primary_crtc {
-                // Built directly per mapped window rather than via
-                // `space_render_elements` - nesting `SpaceRenderElements`
-                // inside this file's own combined element enum runs into an
-                // internal bound mismatch in the render_elements! macro
-                // (SpaceRenderElements's own generated impl wants
-                // `ImportMemWl`/`ImportDmaWl`, which its own declared
-                // `where` clause doesn't actually list); going straight to
-                // `Window`'s `AsRenderElements` avoids nesting the macro
-                // output of one render_elements! invocation inside another.
-                //
-                // `.rev()` is load-bearing: `Space::elements()` iterates
-                // z-order *back to front* (bottom-most first), but a render
-                // element list is front-to-back by convention -
-                // `draw_render_elements` reverses whatever it's given before
-                // drawing, so feeding it bottom-to-front order inverts
-                // z-order on screen and raising a window would push it
-                // visually to the back. Smithay's own
-                // `Space::render_elements_for_region` calls `.rev()` here for
-                // exactly this reason.
-                for window in space.elements().rev() {
-                    let Some(geometry) = space.element_geometry(window) else {
-                        continue;
-                    };
-                    let scaled_bbox =
-                        super::camera_rect(geometry.to_physical(1), camera_center, output_size, zoom_scale);
-
-                    // Rendered at native scale/position first, then each
-                    // returned element is individually wrapped to draw into
-                    // a `camera_rect`-scaled destination - see `RescaledElement`'s
-                    // doc comment for why passing `zoom_scale` directly here
-                    // doesn't work (it did move the anchor point, which is
-                    // what looked like "drift": a full-size texture anchored
-                    // at a shrinking point looks like it's sliding toward a
-                    // corner instead of shrinking in place).
-                    let surface_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = window
-                        .render_elements(&mut self.renderer, geometry.to_physical(1).loc, Scale::from(1.0), 1.0);
-                    elements.extend(surface_elements.into_iter().map(|surface_element| {
-                        let native_geo = surface_element.geometry(Scale::from(1.0));
-                        let dst = super::camera_rect(native_geo, camera_center, output_size, zoom_scale);
-                        TtyRenderElement::Rescaled(super::rescale::RescaledElement::new(surface_element, dst))
-                    }));
-
-                    let is_focused = window
-                        .toplevel()
-                        .is_some_and(|t| Some(t.wl_surface()) == focused);
-                    let color = super::window_border_color(decorations, is_focused);
-                    let border_width = ((decorations.border_width_px as f32 * zoom_scale).round() as i32).max(1);
-                    elements.extend(
-                        super::border_strips(scaled_bbox, border_width, color)
-                            .into_iter()
-                            .map(TtyRenderElement::Border),
-                    );
+            // Built directly per mapped window rather than via
+            // `space_render_elements` - nesting `SpaceRenderElements`
+            // inside this file's own combined element enum runs into an
+            // internal bound mismatch in the render_elements! macro
+            // (SpaceRenderElements's own generated impl wants
+            // `ImportMemWl`/`ImportDmaWl`, which its own declared
+            // `where` clause doesn't actually list); going straight to
+            // `Window`'s `AsRenderElements` avoids nesting the macro output
+            // of one render_elements! invocation inside another.
+            //
+            // `.rev()` is load-bearing: `Space::elements()` iterates z-order
+            // back to front, but render element lists are front-to-back.
+            for window in space.elements().rev() {
+                if !crate::wayland::window_is_on_output(
+                    window,
+                    &entry.output,
+                    &primary_output,
+                ) {
+                    continue;
                 }
+                let Some(geometry) = space.element_geometry(window) else {
+                    continue;
+                };
+                let scaled_bbox = super::camera_rect(
+                    geometry.to_physical(1),
+                    output_camera_center,
+                    output_size,
+                    zoom_scale,
+                );
+
+                // Rendered at native scale/position first, then each
+                // returned element is individually wrapped to draw into a
+                // camera-scaled, output-local destination.
+                let surface_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = window
+                    .render_elements(
+                        &mut self.renderer,
+                        geometry.to_physical(1).loc,
+                        Scale::from(1.0),
+                        1.0,
+                    );
+                elements.extend(surface_elements.into_iter().map(|surface_element| {
+                    let native_geo = surface_element.geometry(Scale::from(1.0));
+                    let dst = super::camera_rect(
+                        native_geo,
+                        output_camera_center,
+                        output_size,
+                        zoom_scale,
+                    );
+                    TtyRenderElement::Rescaled(super::rescale::RescaledElement::new(
+                        surface_element,
+                        dst,
+                    ))
+                }));
+
+                let is_focused = window
+                    .toplevel()
+                    .is_some_and(|t| Some(t.wl_surface()) == focused);
+                let color = super::window_border_color(decorations, is_focused);
+                let border_width =
+                    ((decorations.border_width_px as f32 * zoom_scale).round() as i32).max(1);
+                elements.extend(
+                    super::border_strips(scaled_bbox, border_width, color)
+                        .into_iter()
+                        .map(TtyRenderElement::Border),
+                );
             }
 
             if let Some(cursor_position) = cursor_position {
@@ -656,6 +689,22 @@ impl Renderable for TtyBackend {
     }
 }
 
+fn camera_center_for_output(
+    primary_camera_center: Point<f32, Physical>,
+    primary_output_size: Size<i32, Physical>,
+    output_geometry: Rectangle<i32, Logical>,
+) -> Point<f32, Physical> {
+    let primary_center = Point::<f32, Physical>::from((
+        primary_output_size.w as f32 / 2.0,
+        primary_output_size.h as f32 / 2.0,
+    ));
+    let pan = primary_camera_center - primary_center;
+    Point::from((
+        output_geometry.loc.x as f32 + output_geometry.size.w as f32 / 2.0 + pan.x,
+        output_geometry.loc.y as f32 + output_geometry.size.h as f32 / 2.0 + pan.y,
+    ))
+}
+
 fn cursor_position_for_output(
     output_geometry: Rectangle<i32, Logical>,
     cursor_position: (f64, f64),
@@ -694,6 +743,52 @@ mod tests {
         assert_eq!(
             cursor_position_for_output(secondary, (3000.0, 800.0)),
             Some(Point::from((440.0, 800.0)))
+        );
+    }
+
+    #[test]
+    fn secondary_camera_uses_global_output_center_and_shared_pan() {
+        let primary_size = Size::<i32, Physical>::from((2560, 1440));
+        let secondary = Rectangle::<i32, Logical>::new((2560, 0).into(), (1920, 1200).into());
+
+        assert_eq!(
+            camera_center_for_output(
+                Point::from((1280.0, 720.0)),
+                primary_size,
+                secondary,
+            ),
+            Point::from((3520.0, 600.0))
+        );
+        assert_eq!(
+            camera_center_for_output(
+                Point::from((1380.0, 670.0)),
+                primary_size,
+                secondary,
+            ),
+            Point::from((3620.0, 550.0))
+        );
+    }
+
+    #[test]
+    fn secondary_window_geometry_becomes_output_local() {
+        let primary_size = Size::<i32, Physical>::from((2560, 1440));
+        let secondary = Rectangle::<i32, Logical>::new((2560, 0).into(), (1920, 1200).into());
+        let camera_center = camera_center_for_output(
+            Point::from((1380.0, 670.0)),
+            primary_size,
+            secondary,
+        );
+        let world_rect =
+            Rectangle::<i32, Physical>::new((3520, 600).into(), (200, 100).into());
+
+        assert_eq!(
+            super::super::camera_rect(
+                world_rect,
+                camera_center,
+                secondary.size.to_physical(1),
+                0.5,
+            ),
+            Rectangle::new((910, 625).into(), (100, 50).into())
         );
     }
 
