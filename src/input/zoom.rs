@@ -16,8 +16,8 @@ const ZOOM_MAX: f32 = 1.0;
 ///
 /// Returns `(zoom_scale, still_animating)` - the tty backend's
 /// damage-driven redraw scheduler needs to know whether to keep requesting
-/// redraws until the ease settles; winit already redraws every frame
-/// unconditionally, so it can ignore the second value.
+/// redraws until the ease settles; the nested backend uses the same signal
+/// to request another host-window frame only while motion remains.
 pub fn tick(camera: &mut Camera, zoom: &halley_config::Zoom, dt: f32) -> (f32, bool) {
     // `dt` is wall-clock time since the last tick, and the tty backend only
     // redraws on demand (damage-driven) - after any idle gap it can be huge.

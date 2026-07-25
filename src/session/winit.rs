@@ -236,8 +236,9 @@ pub fn run() {
                 app.last_camera_tick = now;
                 let output_name = app.backend.output().name();
                 let view_before = app.cameras.view(&output_name);
+                let mut animating = false;
                 for camera in app.cameras.iter_mut() {
-                    crate::input::zoom::tick(camera, &app.zoom, dt);
+                    animating |= crate::input::zoom::tick(camera, &app.zoom, dt).1;
                 }
                 if view_before != app.cameras.view(&output_name) {
                     update_client_pointer_focus(app, app.start_time.elapsed().as_millis() as u32);
@@ -278,7 +279,9 @@ pub fn run() {
                 app.wayland.space.refresh();
                 wayland::layer_shell::cleanup(&mut app.wayland);
 
-                app.backend.request_redraw();
+                if animating {
+                    app.backend.request_redraw();
+                }
             }
             WinitEvent::Resized { .. } => {
                 // No separate size-tracking needed: render() re-queries
@@ -688,6 +691,7 @@ impl CompositorHandler for App {
 
     fn commit(&mut self, surface: &WlSurface) {
         wayland::compositor::commit::<Self>(&mut self.wayland, surface);
+        self.backend.request_redraw();
 
         sync_keyboard_focus(self, SERIAL_COUNTER.next_serial());
     }
@@ -714,6 +718,7 @@ impl XdgShellHandler for App {
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         wayland::xdg_shell::toplevel_destroyed(&mut self.wayland, &surface);
+        self.backend.request_redraw();
     }
 
     fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
