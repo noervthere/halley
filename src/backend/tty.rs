@@ -103,18 +103,36 @@ fn connector_name(connector: &connector::Info) -> String {
     format!("{}-{}", connector.interface().as_str(), connector.interface_id())
 }
 
-/// The real, precise refresh rate of a mode - `Mode::vrefresh()` only
-/// returns the kernel's rounded integer Hz (e.g. `60`), not a value with
-/// enough precision to exactly match a configured rate like `179.998`. This
-/// is the same clock/htotal/vtotal calculation niri and wlroots use.
-/// Doesn't special-case interlaced modes (a rare edge case, not worth the
-/// complexity here).
-fn exact_refresh_hz(mode: &Mode) -> f64 {
-    let (_, _, htotal) = mode.hsync();
-    let (_, _, vtotal) = mode.vsync();
-    let htotal = (htotal.max(1)) as f64;
-    let vtotal = (vtotal.max(1)) as f64;
-    (mode.clock() as f64 * 1000.0) / (htotal * vtotal)
+/// The single DRM-to-output-mode conversion used by selection, activation,
+/// and IPC. Smithay performs the same rounded millihertz calculation as
+/// niri, including interlace/doublescan handling.
+fn drm_output_mode(mode: &Mode) -> OutputMode {
+    OutputMode::from(*mode)
+}
+
+fn configured_refresh_millihz(refresh_hz: f64) -> i32 {
+    (refresh_hz * 1000.0).round() as i32
+}
+
+/// Returns the connector-order index of an exact configured mode. When the
+/// refresh is omitted, niri's policy is to use the highest refresh available
+/// at that exact resolution.
+fn matching_mode_index(
+    modes: impl IntoIterator<Item = (usize, i32, i32, i32)>,
+    width: i32,
+    height: i32,
+    refresh_hz: Option<f64>,
+) -> Option<usize> {
+    let refresh_millihz = refresh_hz.map(configured_refresh_millihz);
+    modes
+        .into_iter()
+        .filter(|(_, mode_width, mode_height, mode_refresh)| {
+            *mode_width == width
+                && *mode_height == height
+                && refresh_millihz.is_none_or(|refresh| *mode_refresh == refresh)
+        })
+        .max_by_key(|(_, _, _, refresh)| *refresh)
+        .map(|(index, _, _, _)| index)
 }
 
 fn connector_output_info(
@@ -129,7 +147,7 @@ fn connector_output_info(
         .iter()
         .map(|mode| {
             crate::ipc::mode_info(
-                OutputMode::from(*mode),
+                drm_output_mode(mode),
                 mode.mode_type().contains(ModeTypeFlags::PREFERRED),
             )
         })
@@ -173,12 +191,16 @@ fn select_mode(connector: &connector::Info, configured: Option<&halley_config::O
         return default_mode(connector);
     };
 
-    let matched = connector.modes().iter().find(|mode| {
-        let (w, h) = mode.size();
-        w as i32 == cfg.width
-            && h as i32 == cfg.height
-            && cfg.rate.is_none_or(|hz| (exact_refresh_hz(mode) - hz).abs() < 0.001)
-    });
+    let matched = matching_mode_index(
+        connector.modes().iter().enumerate().map(|(index, mode)| {
+            let output_mode = drm_output_mode(mode);
+            (index, output_mode.size.w, output_mode.size.h, output_mode.refresh)
+        }),
+        cfg.width,
+        cfg.height,
+        cfg.rate,
+    )
+    .and_then(|index| connector.modes().get(index));
 
     match matched {
         Some(mode) => *mode,
@@ -187,8 +209,13 @@ fn select_mode(connector: &connector::Info, configured: Option<&halley_config::O
                 .modes()
                 .iter()
                 .map(|mode| {
-                    let (w, h) = mode.size();
-                    format!("{w}x{h}@{:.3}", exact_refresh_hz(mode))
+                    let output_mode = drm_output_mode(mode);
+                    format!(
+                        "{}x{}@{:.3}",
+                        output_mode.size.w,
+                        output_mode.size.h,
+                        output_mode.refresh as f64 / 1000.0,
+                    )
                 })
                 .collect::<Vec<_>>()
                 .join(", ");
@@ -358,10 +385,7 @@ impl TtyBackend {
                             serial_number: "unknown".into(),
                         },
                     );
-                    let output_mode = OutputMode {
-                        size,
-                        refresh: (exact_refresh_hz(&mode) * 1000.0).round() as i32,
-                    };
+                    let output_mode = drm_output_mode(&mode);
                     output.change_current_state(Some(output_mode), Some(transform), None, Some(offset.into()));
                     output.set_preferred(output_mode);
 
@@ -739,6 +763,50 @@ fn cursor_position_for_output(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn configured_refresh_matches_exact_integer_millihertz_only() {
+        let modes = [
+            (0, 2560, 1440, 179_997),
+            (1, 2560, 1440, 179_998),
+            (2, 2560, 1440, 180_000),
+        ];
+
+        assert_eq!(
+            matching_mode_index(modes, 2560, 1440, Some(179.998)),
+            Some(1)
+        );
+        assert_eq!(
+            matching_mode_index(modes, 2560, 1440, Some(179.999)),
+            None
+        );
+    }
+
+    #[test]
+    fn configured_refresh_uses_niri_style_millihertz_rounding() {
+        let modes = [(0, 2560, 1440, 179_998)];
+
+        assert_eq!(
+            matching_mode_index(modes, 2560, 1440, Some(179.9984)),
+            Some(0)
+        );
+        assert_eq!(
+            matching_mode_index(modes, 2560, 1440, Some(179.9986)),
+            None
+        );
+    }
+
+    #[test]
+    fn omitted_refresh_selects_highest_rate_at_exact_resolution() {
+        let modes = [
+            (0, 1920, 1080, 60_000),
+            (1, 2560, 1440, 143_912),
+            (2, 2560, 1440, 179_998),
+        ];
+
+        assert_eq!(matching_mode_index(modes, 2560, 1440, None), Some(2));
+        assert_eq!(matching_mode_index(modes, 3840, 2160, None), None);
+    }
 
     #[test]
     fn transform_from_degrees_maps_known_values_and_falls_back_to_normal() {

@@ -27,10 +27,10 @@ pub struct OutputConfig {
     pub height: i32,
     pub offset_x: i32,
     pub offset_y: i32,
-    /// `None` means "use this connector's preferred mode at this
-    /// resolution" - when `Some`, the backend requires an *exact* match
-    /// (see `backend/tty.rs`) against the connector's real advertised
-    /// modes, not a closest/fuzzy match.
+    /// `None` means "use the highest advertised refresh at this exact
+    /// resolution" - when `Some`, the backend requires an exact
+    /// integer-millihertz match (see `backend/tty.rs`), not a closest/fuzzy
+    /// match.
     pub rate: Option<f64>,
     /// Raw degrees - 0/90/180/270. Any other value falls back to 0, same
     /// as old halley's own clamp (its legacy 1/2/3 shorthand isn't ported -
