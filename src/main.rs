@@ -1,6 +1,7 @@
 mod backend;
 mod camera;
 mod cursor;
+mod frame_clock;
 mod input;
 mod ipc;
 mod spawn;
