@@ -5,12 +5,12 @@ use smithay::wayland::compositor::{get_parent, is_sync_subsurface};
 use super::WaylandState;
 use super::{layer_shell, xdg_shell};
 
-/// Shared `CompositorHandler::commit` body, called identically from `App`
-/// and `TtyApp`. Deliberately narrow: buffer import, refreshing whichever
-/// window owns the committed surface tree, and the unmapped -> mapped
-/// transition - nothing else. Old halley's equivalent special-cased cursor
-/// surfaces directly inside this same path; that doesn't happen here, since
-/// there is no cursor-surface concept yet at all.
+/// Shared role-neutral commit pipeline for both session drivers.
+///
+/// This imports the committed buffer, resolves a subsurface to its root,
+/// updates the shared popup tree, then delegates role-specific lifecycle to
+/// `layer_shell` or `xdg_shell`. Rendering, focus policy, and backend redraw
+/// scheduling remain outside this protocol callback.
 pub fn commit<D: 'static>(wayland: &mut WaylandState, surface: &WlSurface) {
     on_commit_buffer_handler::<D>(surface);
 

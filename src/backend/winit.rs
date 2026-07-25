@@ -34,8 +34,8 @@ pub struct WinitBackend {
 }
 
 render_elements! {
-    /// Window content and border strips in one homogeneous list, so a
-    /// window's border can sit at that window's own depth in the stack.
+    /// Layer surfaces, window content, and border strips in one homogeneous
+    /// scene list, so every element retains its intended stacking depth.
     /// Drawing borders in a second `draw_render_elements` pass instead - as
     /// this backend used to - composites *every* border over *every* window
     /// regardless of z-order, so a buried window's border bleeds across
@@ -244,9 +244,8 @@ impl Renderable for WinitBackend {
 
             let mut frame = renderer.render(&mut framebuffer, size, Transform::Flipped180)?;
             frame.clear(clear, &[damage])?;
-            // Windows (borders included, interleaved at their own window's
-            // depth), then the cursor in its own later pass so it always
-            // composites on top of everything.
+            // The scene already follows layer-shell and window z-order; the
+            // cursor uses a later pass so it remains above every client.
             draw_render_elements(&mut frame, 1.0, &scene_elements, &[damage])?;
             draw_render_elements(&mut frame, 1.0, &[cursor_element], &[damage])?;
             // No cross-GPU/import synchronization needed for a plain clear -

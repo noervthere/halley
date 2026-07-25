@@ -53,13 +53,11 @@ pub fn window_is_on_output(window: &Window, output: &Output, primary: &Output) -
         .unwrap_or_else(|| output == primary)
 }
 
-/// Wayland protocol state shared by every top-level app struct (`App`,
-/// `TtyApp`) - narrow on purpose: only what advertising the core globals,
-/// tracking windows, and which one is focused actually needs, nothing about
-/// backend rendering. Old halley put all of this directly on its `Halley`
-/// god object; here it's one field (`wayland: WaylandState`) each app struct
-/// owns, matching how `cursor`/`keyboard`/`pointer` were each added for one
-/// concrete reason.
+/// Wayland protocol and shell-model state shared by both session drivers.
+///
+/// Backend rendering, cameras, input devices, and redraw scheduling stay out
+/// of this type. That keeps the Smithay globals and shell lifecycle together
+/// without recreating old Halley's compositor-wide god object.
 pub struct WaylandState {
     pub display_handle: DisplayHandle,
     pub compositor_state: CompositorState,

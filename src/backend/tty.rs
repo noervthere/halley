@@ -52,7 +52,7 @@ struct DrmOutputEntry {
 }
 
 render_elements! {
-    /// Combines mapped-window and cursor elements into one homogeneous list -
+    /// Combines layer, window, border, and cursor elements into one list -
     /// `DrmOutput::render_frame` takes a single element type per call, unlike
     /// the winit backend's `Frame`, which can be drawn into with several
     /// separate calls. Concrete over `GlesRenderer` (not generic over `R`) -
@@ -550,11 +550,9 @@ impl Renderable for TtyBackend {
                 cursor_position_for_output(output_geometry, cursor_position);
             let drm_output = &mut entry.drm_output;
 
-            // The cursor follows Smithay's Anvil pattern: select the mapped
-            // output containing its global logical position, then render at
-            // output-local coordinates on that output's CRTC. Windows use
-            // the same local coordinate space, filtered by Halley's single
-            // owning output so they never split across monitors.
+            // The cursor and screen-fixed layers use output-local
+            // coordinates. Windows are separately camera-transformed and
+            // filtered by Halley's single owning output.
             let mut elements: Vec<TtyRenderElement> =
                 super::layer_surface_elements(&mut self.renderer, &entry.output, Layer::Overlay)
                     .into_iter()
@@ -677,7 +675,7 @@ impl Renderable for TtyBackend {
                 ) {
                     // Inserted at the *front*, not pushed: this list is
                     // front-to-back, so index 0 is the topmost element. The
-                    // cursor has to composite over every window, and unlike
+                    // cursor has to composite over the entire scene, and unlike
                     // the winit backend there's no second draw call to put it
                     // in - `DrmOutput::render_frame` takes one list.
                     Ok(element) => elements.insert(0, TtyRenderElement::Cursor(element)),
