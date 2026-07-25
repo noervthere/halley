@@ -18,6 +18,26 @@ pub fn modifiers_match(state: &ModifiersState, expected: Modifiers) -> bool {
         && state.logo == expected.super_key
 }
 
+fn keyboard_modifiers_match(
+    state: &ModifiersState,
+    expected: Modifiers,
+    trigger: ResolvedTrigger,
+) -> bool {
+    let mut without_trigger = *state;
+    if let ResolvedTrigger::Keysym(keysym) = trigger {
+        if matches!(keysym, Keysym::Shift_L | Keysym::Shift_R) {
+            without_trigger.shift = false;
+        } else if matches!(keysym, Keysym::Control_L | Keysym::Control_R) {
+            without_trigger.ctrl = false;
+        } else if matches!(keysym, Keysym::Alt_L | Keysym::Alt_R) {
+            without_trigger.alt = false;
+        } else if matches!(keysym, Keysym::Super_L | Keysym::Super_R) {
+            without_trigger.logo = false;
+        }
+    }
+    modifiers_match(&without_trigger, expected)
+}
+
 /// Whether the given modifier key is currently held, per a live
 /// `ModifiersState` query - used by `input::grab`'s pointer-button dispatch,
 /// which (unlike keyboard binds) has no filter closure to read modifiers
@@ -47,7 +67,7 @@ pub fn match_keyboard_bind(
             ResolvedTrigger::Keycode(expected) => expected == keycode,
             ResolvedTrigger::PointerButton(_) | ResolvedTrigger::Wheel(_) => false,
         };
-        trigger_matches && modifiers_match(mods, bind.modifiers)
+        trigger_matches && keyboard_modifiers_match(mods, bind.modifiers, bind.trigger)
     })?;
     // Low-frequency (only fires on an actual match, not every keystroke) and
     // genuinely useful - confirms which action a chord resolved to without
@@ -232,6 +252,46 @@ mod tests {
                 &ModifiersState::default(),
                 None,
                 Keycode::new(255)
+            ),
+            Some(Action::Quit)
+        );
+    }
+
+    #[test]
+    fn modifier_keys_can_be_bare_triggers() {
+        let binds = [
+            bind(
+                ResolvedTrigger::Keysym(Keysym::Shift_L),
+                Modifiers::default(),
+            ),
+            bind(
+                ResolvedTrigger::Keysym(Keysym::Super_R),
+                Modifiers::default(),
+            ),
+        ];
+        let shift = ModifiersState {
+            shift: true,
+            ..ModifiersState::default()
+        };
+        assert_eq!(
+            match_keyboard_bind(
+                &binds,
+                &shift,
+                Some(Keysym::Shift_L),
+                Keycode::new(50)
+            ),
+            Some(Action::Quit)
+        );
+        let logo = ModifiersState {
+            logo: true,
+            ..ModifiersState::default()
+        };
+        assert_eq!(
+            match_keyboard_bind(
+                &binds,
+                &logo,
+                Some(Keysym::Super_R),
+                Keycode::new(134)
             ),
             Some(Action::Quit)
         );
