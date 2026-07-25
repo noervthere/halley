@@ -188,7 +188,7 @@ keybinds:
   mod "super"
   "$var.mod+equal" "zoom-in"
   "$var.mod+minus" "zoom-out"
-  "$var.mod+0" "zoom_reset"
+  "$var.mod+click-middle" "zoom_reset"
 end
 "#,
         );
@@ -201,7 +201,8 @@ end
             .iter()
             .find(|b| b.action == Action::ZoomReset)
             .unwrap();
-        assert_eq!(zoom_reset.key, "0");
+        assert_eq!(zoom_reset.key, "click-middle");
+        assert!(zoom_reset.modifiers.super_key);
     }
 
     #[test]

@@ -364,6 +364,13 @@ mod tests {
             ResolvedTrigger::PointerButton(PointerButtonTrigger::Left)
         );
         assert!(PointerButtonTrigger::Left.matches(0x110));
+        assert_eq!(
+            resolve_trigger_name("click-middle"),
+            Some(ResolvedTrigger::PointerButton(
+                PointerButtonTrigger::Middle
+            ))
+        );
+        assert!(PointerButtonTrigger::Middle.matches(0x112));
         assert!(PointerButtonTrigger::Back.matches(0x113));
         assert!(PointerButtonTrigger::Back.matches(0x116));
         assert!(PointerButtonTrigger::Forward.matches(0x114));
