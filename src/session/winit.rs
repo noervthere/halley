@@ -51,7 +51,7 @@ use crate::input::keybinds::BackendKind;
 use crate::input::match_bind;
 use crate::input::pointer::Pointer;
 use crate::ipc::OutputInfoSource;
-use crate::terminal;
+use crate::spawn;
 use crate::wayland::{self, ClientState, WaylandState};
 
 /// From `<linux/input-event-codes.h>` - the left mouse button's raw code.
@@ -592,7 +592,7 @@ pub fn run() {
                             wayland::xdg_shell::close_focused(&app.wayland);
                         }
                         Some(halley_config::Action::OpenTerminal) => match app.keyboard.terminal_command() {
-                            Some(command) => terminal::spawn_detached(command, &socket_name),
+                            Some(command) => spawn::spawn_detached(command, &socket_name),
                             None => eprintln!("mod+t: no terminal configured or found on PATH"),
                         },
                         Some(halley_config::Action::ZoomOut) => {
@@ -614,6 +614,9 @@ pub fn run() {
                                 .get_mut(&output_name)
                                 .expect("winit output camera initialized at startup")
                                 .reset_zoom_target();
+                        }
+                        Some(halley_config::Action::Spawn(command)) => {
+                            spawn::spawn_detached(&command, &socket_name);
                         }
                         _ => {}
                     }

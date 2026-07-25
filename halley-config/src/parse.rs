@@ -14,7 +14,6 @@ const KEY_DEFAULT_TERMINAL_SNAKE: &str = "default_terminal";
 pub enum ParseError {
     Rune(rune_cfg::RuneError),
     UnknownModifier(String),
-    UnknownAction { chord: String, action: String },
     InvalidChord(String),
 }
 
@@ -23,9 +22,6 @@ impl fmt::Display for ParseError {
         match self {
             ParseError::Rune(e) => write!(f, "config error: {e}"),
             ParseError::UnknownModifier(m) => write!(f, "unknown modifier key: {m:?}"),
-            ParseError::UnknownAction { chord, action } => {
-                write!(f, "unknown action {action:?} for bind {chord:?}")
-            }
             ParseError::InvalidChord(c) => write!(f, "invalid keybind chord: {c:?}"),
         }
     }
@@ -49,17 +45,17 @@ fn parse_modifier_key(s: &str) -> Option<ModifierKey> {
     }
 }
 
-fn parse_action(s: &str) -> Option<Action> {
+fn parse_action(s: &str) -> Action {
     match s {
-        "quit" => Some(Action::Quit),
+        "quit" => Action::Quit,
         "close-focused" | "close_focused" | "close-window" | "close_window" => {
-            Some(Action::CloseFocusedWindow)
+            Action::CloseFocusedWindow
         }
-        "open-terminal" | "open_terminal" => Some(Action::OpenTerminal),
-        "zoom-in" | "zoom_in" => Some(Action::ZoomIn),
-        "zoom-out" | "zoom_out" => Some(Action::ZoomOut),
-        "zoom-reset" | "zoom_reset" => Some(Action::ZoomReset),
-        _ => None,
+        "open-terminal" | "open_terminal" => Action::OpenTerminal,
+        "zoom-in" | "zoom_in" => Action::ZoomIn,
+        "zoom-out" | "zoom_out" => Action::ZoomOut,
+        "zoom-reset" | "zoom_reset" => Action::ZoomReset,
+        command => Action::Spawn(command.to_string()),
     }
 }
 
@@ -113,10 +109,7 @@ pub fn parse_keybinds(config: &RuneConfig) -> Result<Keybinds, ParseError> {
         let resolved_chord = chord_key.replace("$var.mod", &modifier_str);
         let (modifiers, key) = parse_chord(&resolved_chord)
             .ok_or_else(|| ParseError::InvalidChord(chord_key.clone()))?;
-        let action = parse_action(action_str).ok_or_else(|| ParseError::UnknownAction {
-            chord: chord_key.clone(),
-            action: action_str.clone(),
-        })?;
+        let action = parse_action(action_str);
         binds.push(Keybind {
             modifiers,
             key,
@@ -254,20 +247,25 @@ end
     }
 
     #[test]
-    fn unknown_action_errors() {
-        let config = RuneConfig::from_str(
+    fn non_builtin_action_is_a_command_line() {
+        let kb = parse(
             r#"
 keybinds:
   mod "super"
-  "$var.mod+x" "launch-nukes"
+  "$var.mod+d" "fuzzel"
+  "$var.mod+shift+s" "grim -g \"$(slurp)\" ~/shot.png"
 end
 "#,
-        )
-        .unwrap();
-        assert!(matches!(
-            parse_keybinds(&config),
-            Err(ParseError::UnknownAction { .. })
-        ));
+        );
+
+        assert!(kb.binds.iter().any(|bind| {
+            bind.key == "d" && bind.action == Action::Spawn("fuzzel".to_string())
+        }));
+        assert!(kb.binds.iter().any(|bind| {
+            bind.key == "s"
+                && bind.action
+                    == Action::Spawn("grim -g \"$(slurp)\" ~/shot.png".to_string())
+        }));
     }
 
     #[test]

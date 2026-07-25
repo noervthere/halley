@@ -33,7 +33,7 @@ pub struct Modifiers {
 /// with a hardcoded `zoom_max` of `1.0` at every call site in
 /// `src/input/zoom.rs`), so `ZoomIn` can never push past it no matter how
 /// many times it's pressed. At 1.0x it's simply a no-op.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Action {
     Quit,
     CloseFocusedWindow,
@@ -41,6 +41,9 @@ pub enum Action {
     ZoomIn,
     ZoomOut,
     ZoomReset,
+    /// A user-provided command line. This is the fallback for every action
+    /// string that is not one of Halley's compositor actions.
+    Spawn(String),
 }
 
 /// A single parsed keybind: the modifier combination, the key name (as

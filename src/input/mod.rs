@@ -42,7 +42,7 @@ pub fn match_bind(binds: &[ResolvedBind], mods: &ModifiersState, keysym: Keysym)
     // genuinely useful - confirms which action a chord resolved to without
     // needing to reason about it from config alone.
     eprintln!("keybinds: {keysym:?} + {mods:?} -> {:?}", bind.action);
-    Some(bind.action)
+    Some(bind.action.clone())
 }
 
 /// The resolved bind table plus the configured terminal command - nothing

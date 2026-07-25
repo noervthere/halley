@@ -92,9 +92,9 @@ pub fn remap_mod_bit(modifiers: Modifiers, from: ModifierKey, to: ModifierKey) -
 /// A keybind fully resolved for matching against live input: modifiers
 /// already remapped for this backend, key name already resolved to a
 /// `Keysym`. Every `Action` variant is resolved now - real keyboard focus
-/// (`WaylandState.focused`) exists, so `CloseFocusedWindow` finally has
+/// (`WaylandState.focused_window`) exists, so `CloseFocusedWindow` finally has
 /// something to act on (see `wayland::xdg_shell::close_focused`).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct ResolvedBind {
     pub modifiers: Modifiers,
     pub keysym: Keysym,
@@ -116,7 +116,7 @@ pub fn resolve_binds(keybinds: &Keybinds, backend: BackendKind) -> Vec<ResolvedB
             Some(ResolvedBind {
                 modifiers: remap_mod_bit(bind.modifiers, keybinds.modifier, effective),
                 keysym,
-                action: bind.action,
+                action: bind.action.clone(),
             })
         })
         .collect()
@@ -214,5 +214,29 @@ mod tests {
         assert!(resolved.iter().any(|bind| bind.action == Action::ZoomIn));
         assert!(resolved.iter().any(|bind| bind.action == Action::ZoomOut));
         assert!(resolved.iter().any(|bind| bind.action == Action::ZoomReset));
+    }
+
+    #[test]
+    fn loose_command_is_preserved_during_backend_resolution() {
+        let mut keybinds = Keybinds::default();
+        keybinds.binds.push(halley_config::Keybind {
+            modifiers: Modifiers {
+                super_key: true,
+                ..Modifiers::default()
+            },
+            key: "d".to_string(),
+            action: Action::Spawn("fuzzel --show-actions".to_string()),
+        });
+
+        let resolved = resolve_binds(&keybinds, BackendKind::Winit);
+        let command = resolved
+            .iter()
+            .find(|bind| bind.keysym == xkb::keysym_from_name("d", xkb::KEYSYM_NO_FLAGS))
+            .expect("spawn bind resolves");
+        assert!(command.modifiers.alt);
+        assert_eq!(
+            command.action,
+            Action::Spawn("fuzzel --show-actions".to_string())
+        );
     }
 }

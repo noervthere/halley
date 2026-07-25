@@ -3,8 +3,8 @@ mod camera;
 mod cursor;
 mod input;
 mod ipc;
+mod spawn;
 mod session;
-mod terminal;
 mod wayland;
 
 fn main() {
