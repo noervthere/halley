@@ -1,5 +1,6 @@
 use smithay::backend::input::{
-    AbsolutePositionEvent, Axis, InputBackend, InputEvent, PointerAxisEvent, PointerMotionEvent,
+    AbsolutePositionEvent, Axis, AxisSource, InputBackend, InputEvent, PointerAxisEvent,
+    PointerMotionEvent,
 };
 use smithay::desktop::{layer_map_for_output, LayerSurface, Space, Window, WindowSurfaceType};
 use smithay::input::pointer::AxisFrame;
@@ -81,7 +82,7 @@ impl WheelAccumulator {
     }
 }
 
-pub fn wheel_delta_v120<B, E>(event: &E, axis: Axis) -> f64
+fn wheel_delta_v120<B, E>(event: &E, axis: Axis) -> f64
 where
     B: InputBackend,
     E: PointerAxisEvent<B>,
@@ -92,7 +93,7 @@ where
         .unwrap_or(0.0)
 }
 
-pub fn wheel_direction(axis: Axis, delta_v120: f64) -> Option<WheelDirection> {
+fn wheel_direction(axis: Axis, delta_v120: f64) -> Option<WheelDirection> {
     match (axis, delta_v120.total_cmp(&0.0)) {
         (_, std::cmp::Ordering::Equal) => None,
         (Axis::Horizontal, std::cmp::Ordering::Less) => Some(WheelDirection::Left),
@@ -100,6 +101,69 @@ pub fn wheel_direction(axis: Axis, delta_v120: f64) -> Option<WheelDirection> {
         (Axis::Vertical, std::cmp::Ordering::Less) => Some(WheelDirection::Up),
         (Axis::Vertical, std::cmp::Ordering::Greater) => Some(WheelDirection::Down),
     }
+}
+
+/// Backend-independent result of applying configured wheel bindings to one
+/// axis event. Sessions execute the returned actions and forward only the
+/// axes left enabled here.
+pub struct WheelBindingResult<T> {
+    pub forward_horizontal: bool,
+    pub forward_vertical: bool,
+    pub actions: Vec<(WheelDirection, T)>,
+}
+
+impl<T> Default for WheelBindingResult<T> {
+    fn default() -> Self {
+        Self {
+            forward_horizontal: true,
+            forward_vertical: true,
+            actions: Vec::new(),
+        }
+    }
+}
+
+/// Applies physical-wheel source filtering, direction matching, high-
+/// resolution accumulation, and per-axis forwarding policy in one place.
+/// The callback keeps this low-level policy independent of Halley's action
+/// type and bind-table representation.
+pub fn process_wheel_bindings<B, E, T, F>(
+    event: &E,
+    accumulator: &mut WheelAccumulator,
+    bindings_enabled: bool,
+    mut action_for_direction: F,
+) -> WheelBindingResult<T>
+where
+    B: InputBackend,
+    E: PointerAxisEvent<B>,
+    T: Clone,
+    F: FnMut(WheelDirection) -> Option<T>,
+{
+    let mut result = WheelBindingResult::default();
+    if event.source() != AxisSource::Wheel || !bindings_enabled {
+        accumulator.reset_all();
+        return result;
+    }
+
+    for axis in [Axis::Horizontal, Axis::Vertical] {
+        let delta = wheel_delta_v120(event, axis);
+        let Some(direction) = wheel_direction(axis, delta) else {
+            continue;
+        };
+        let Some(action) = action_for_direction(direction) else {
+            accumulator.reset(axis);
+            continue;
+        };
+
+        match axis {
+            Axis::Horizontal => result.forward_horizontal = false,
+            Axis::Vertical => result.forward_vertical = false,
+        }
+        let ticks = accumulator.accumulate(axis, delta);
+        for _ in 0..ticks.unsigned_abs() {
+            result.actions.push((direction, action.clone()));
+        }
+    }
+    result
 }
 
 impl Pointer {
@@ -359,7 +423,7 @@ mod tests {
 
     use super::{
         WheelAccumulator, axis_frame, axis_frame_filtered, clamp_to_outputs, desktop_bounds,
-        wheel_delta_v120, wheel_direction,
+        process_wheel_bindings, wheel_delta_v120, wheel_direction,
     };
     use crate::input::keybinds::WheelDirection;
 
@@ -609,6 +673,71 @@ mod tests {
             Some(WheelDirection::Down)
         );
         assert_eq!(wheel_direction(Axis::Vertical, 0.0), None);
+    }
+
+    #[test]
+    fn wheel_binding_policy_consumes_only_matches_and_emits_full_notches() {
+        let wheel = |source, vertical_v120| TestAxisEvent {
+            source,
+            horizontal: None,
+            vertical: None,
+            horizontal_v120: None,
+            vertical_v120: Some(vertical_v120),
+            horizontal_direction: AxisRelativeDirection::Identical,
+            vertical_direction: AxisRelativeDirection::Identical,
+        };
+        let mut accumulator = WheelAccumulator::default();
+
+        let first = process_wheel_bindings(
+            &wheel(AxisSource::Wheel, 60.0),
+            &mut accumulator,
+            true,
+            |direction| (direction == WheelDirection::Down).then_some("zoom-out"),
+        );
+        assert!(first.forward_horizontal);
+        assert!(!first.forward_vertical);
+        assert!(first.actions.is_empty());
+
+        let second = process_wheel_bindings(
+            &wheel(AxisSource::Wheel, 60.0),
+            &mut accumulator,
+            true,
+            |direction| (direction == WheelDirection::Down).then_some("zoom-out"),
+        );
+        assert_eq!(
+            second.actions,
+            vec![(WheelDirection::Down, "zoom-out")]
+        );
+
+        let unbound = process_wheel_bindings(
+            &wheel(AxisSource::Wheel, -120.0),
+            &mut accumulator,
+            true,
+            |_| None::<&str>,
+        );
+        assert!(unbound.forward_vertical);
+
+        process_wheel_bindings(
+            &wheel(AxisSource::Wheel, 60.0),
+            &mut accumulator,
+            true,
+            |_| Some("zoom-out"),
+        );
+        let bypassed = process_wheel_bindings(
+            &wheel(AxisSource::Wheel, 120.0),
+            &mut accumulator,
+            false,
+            |_| Some("zoom-out"),
+        );
+        assert!(bypassed.forward_vertical);
+        assert!(bypassed.actions.is_empty());
+        let after_reset = process_wheel_bindings(
+            &wheel(AxisSource::Wheel, 60.0),
+            &mut accumulator,
+            true,
+            |_| Some("zoom-out"),
+        );
+        assert!(after_reset.actions.is_empty());
     }
 
     #[test]

@@ -5,8 +5,7 @@ use std::time::{Duration, Instant};
 use calloop::generic::Generic;
 use calloop::{EventLoop, Interest, Mode as CalloopMode, PostAction};
 use smithay::backend::input::{
-    Axis, AxisSource, ButtonState, Event, InputEvent, KeyState, KeyboardKeyEvent,
-    PointerAxisEvent, PointerButtonEvent,
+    ButtonState, Event, InputEvent, KeyState, KeyboardKeyEvent, PointerButtonEvent,
 };
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::winit::{self as smithay_winit, WinitEvent};
@@ -53,7 +52,7 @@ use crate::input::{Keyboard, SuppressedButtons};
 use crate::input::keybinds::BackendKind;
 use crate::input::{match_keyboard_bind, match_pointer_bind, match_wheel_bind, no_modifiers_held};
 use crate::input::pointer::{
-    Pointer, WheelAccumulator, axis_frame_filtered, wheel_delta_v120, wheel_direction,
+    Pointer, WheelAccumulator, axis_frame_filtered, process_wheel_bindings,
 };
 use crate::ipc::OutputInfoSource;
 use crate::spawn;
@@ -650,56 +649,33 @@ pub fn run() {
                     update_client_pointer_focus(app, axis_event.time_msec());
                     let bypass_shortcuts = wayland::focus::current(&app.wayland)
                         .is_some_and(|focus| focus.bypasses_shortcuts());
-                    let mut include_horizontal = true;
-                    let mut include_vertical = true;
-
-                    if axis_event.source() == AxisSource::Wheel && !bypass_shortcuts {
-                        let mods = app
-                            .seat
-                            .get_keyboard()
-                            .expect("keyboard capability added at seat setup")
-                            .modifier_state();
-                        for axis in [Axis::Horizontal, Axis::Vertical] {
-                            let delta = wheel_delta_v120(axis_event, axis);
-                            let Some(direction) = wheel_direction(axis, delta) else {
-                                continue;
-                            };
-                            if let Some(action) =
-                                match_wheel_bind(&app.keyboard.binds, &mods, direction)
-                            {
-                                match axis {
-                                    Axis::Horizontal => include_horizontal = false,
-                                    Axis::Vertical => include_vertical = false,
-                                }
-                                let ticks = app.wheel_accumulator.accumulate(axis, delta);
-                                for _ in 0..ticks.unsigned_abs() {
-                                    eprintln!(
-                                        "keybinds: wheel {direction:?} + {mods:?} -> {action:?}"
-                                    );
-                                    dispatch_action(
-                                        app,
-                                        action.clone(),
-                                        &socket_name,
-                                        &output_name,
-                                    );
-                                }
-                            } else {
-                                app.wheel_accumulator.reset(axis);
-                            }
-                        }
-                    } else {
-                        app.wheel_accumulator.reset_all();
+                    let mods = app
+                        .seat
+                        .get_keyboard()
+                        .expect("keyboard capability added at seat setup")
+                        .modifier_state();
+                    let result = process_wheel_bindings(
+                        axis_event,
+                        &mut app.wheel_accumulator,
+                        !bypass_shortcuts,
+                        |direction| match_wheel_bind(&app.keyboard.binds, &mods, direction),
+                    );
+                    for (direction, action) in result.actions {
+                        eprintln!(
+                            "keybinds: wheel {direction:?} + {mods:?} -> {action:?}"
+                        );
+                        dispatch_action(app, action, &socket_name, &output_name);
                     }
 
                     let pointer = app
                         .seat
                         .get_pointer()
                         .expect("pointer capability added at seat setup");
-                    if include_horizontal || include_vertical {
+                    if result.forward_horizontal || result.forward_vertical {
                         let frame = axis_frame_filtered(
                             axis_event,
-                            include_horizontal,
-                            include_vertical,
+                            result.forward_horizontal,
+                            result.forward_vertical,
                         );
                         pointer.axis(app, frame);
                     }
