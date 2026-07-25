@@ -708,6 +708,7 @@ impl CompositorHandler for TtyApp {
 
     fn commit(&mut self, surface: &WlSurface) {
         wayland::compositor::commit::<Self>(&mut self.wayland, surface);
+        queue_redraw(self);
 
         // Re-asserted every commit rather than only when it changes -
         // `set_focus` no-ops internally when the focus is already what's
