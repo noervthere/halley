@@ -1,8 +1,11 @@
 use smithay::backend::renderer::utils::with_renderer_surface_state;
-use smithay::desktop::{Window, layer_map_for_output};
+use smithay::desktop::Window;
+use smithay::output::Output;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::utils::{Logical, Point};
+use smithay::utils::{Logical, Physical, Point, Size};
 use smithay::wayland::shell::xdg::ToplevelSurface;
+
+use crate::camera::OutputCameras;
 
 use super::WaylandState;
 
@@ -37,7 +40,11 @@ pub fn toplevel_destroyed(wayland: &mut WaylandState, surface: &ToplevelSurface)
 /// immediately in `new_toplevel` and relies on Smithay's render-element
 /// code silently skipping bufferless surfaces - here "mapped" means
 /// "actually visible," not "present in `Space` but incidentally invisible."
-pub fn handle_commit(wayland: &mut WaylandState, surface: &WlSurface) -> Option<WlSurface> {
+pub fn handle_commit(
+    wayland: &mut WaylandState,
+    cameras: &OutputCameras,
+    surface: &WlSurface,
+) -> Option<WlSurface> {
     let window = wayland.unmapped.get(surface)?;
     let toplevel = window.toplevel()?;
 
@@ -50,8 +57,12 @@ pub fn handle_commit(wayland: &mut WaylandState, surface: &WlSurface) -> Option<
         with_renderer_surface_state(surface, |state| state.buffer().is_some()).unwrap_or(false);
     if has_buffer {
         let window = wayland.unmapped.remove(surface).expect("checked above");
-        let location = centered_location(wayland, &window);
-        if let Some(output) = wayland.space.outputs().next() {
+        let output = super::focus::selected_output(wayland).cloned();
+        let location = output
+            .as_ref()
+            .map(|output| centered_location(wayland, cameras, output, &window))
+            .unwrap_or_else(|| Point::from((0, 0)));
+        if let Some(output) = output.as_ref() {
             super::set_window_output(&window, output);
         }
         wayland.space.map_element(window.clone(), location, false);
@@ -100,17 +111,52 @@ pub fn close_focused(wayland: &WaylandState) {
     }
 }
 
-/// Where a newly-mapped window should land: centered in the primary
-/// output's layer-shell work area rather than underneath an exclusive panel.
-/// Existing freeform windows are not moved when that work area changes.
-fn centered_location(wayland: &WaylandState, window: &Window) -> Point<i32, Logical> {
-    let Some(output) = wayland.space.outputs().next() else {
-        return (0, 0).into();
-    };
+/// Centers a newly-mapped window on the selected output's live camera.
+/// Existing freeform windows stay where they are when the camera later moves.
+fn centered_location(
+    wayland: &WaylandState,
+    cameras: &OutputCameras,
+    output: &Output,
+    window: &Window,
+) -> Point<i32, Logical> {
     let Some(output_geo) = wayland.space.output_geometry(output) else {
         return (0, 0).into();
     };
-    let usable = layer_map_for_output(output).non_exclusive_zone();
-    let offset = (usable.size - window.geometry().size) / 2;
-    output_geo.loc + usable.loc + offset
+    let local_camera_center = cameras
+        .view(&output.name())
+        .map(|view| view.center)
+        .unwrap_or_else(|| {
+            Point::<f32, Physical>::from((
+                output_geo.size.w as f32 / 2.0,
+                output_geo.size.h as f32 / 2.0,
+            ))
+        });
+    let center = crate::camera::global_center(local_camera_center, output_geo);
+    center_window(center, window.geometry().size)
+}
+
+fn center_window(
+    center: Point<f32, Physical>,
+    window_size: Size<i32, Logical>,
+) -> Point<i32, Logical> {
+    Point::from((
+        (center.x - window_size.w as f32 / 2.0).round() as i32,
+        (center.y - window_size.h as f32 / 2.0).round() as i32,
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn window_location_is_centered_on_global_camera_position() {
+        assert_eq!(
+            center_window(
+                Point::from((3620.0, 550.0)),
+                Size::from((1000, 700)),
+            ),
+            Point::from((3120, 200))
+        );
+    }
 }

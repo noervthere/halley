@@ -773,7 +773,9 @@ impl CompositorHandler for App {
     }
 
     fn commit(&mut self, surface: &WlSurface) {
-        if let Some(mapped) = wayland::compositor::commit::<Self>(&mut self.wayland, surface) {
+        if let Some(mapped) =
+            wayland::compositor::commit::<Self>(&mut self.wayland, &self.cameras, surface)
+        {
             self.window_open_animations
                 .start(mapped, crate::frame_clock::monotonic_now());
         }

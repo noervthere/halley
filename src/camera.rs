@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use halley_core::camera::Camera;
 use halley_core::field::Vec2;
-use smithay::utils::{Physical, Point, Size};
+use smithay::utils::{Logical, Physical, Point, Rectangle, Size};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct OutputView {
@@ -54,6 +54,21 @@ pub fn scale(camera: &Camera) -> f32 {
     (camera.base_size.x / camera.view_size.x.max(1.0)).min(1.0)
 }
 
+/// Rebases an output-local camera center into Halley's global world space.
+///
+/// Cameras stay local so panning one output cannot move another. Windows,
+/// however, live in one global `Space`, so rendering and initial placement
+/// must apply the same output-layout offset to the selected camera.
+pub fn global_center(
+    local_camera_center: Point<f32, Physical>,
+    output_geometry: Rectangle<i32, Logical>,
+) -> Point<f32, Physical> {
+    Point::from((
+        output_geometry.loc.x as f32 + local_camera_center.x,
+        output_geometry.loc.y as f32 + local_camera_center.y,
+    ))
+}
+
 fn camera_at_rest(output_size: Size<i32, Physical>) -> Camera {
     Camera::new(
         Vec2 {
@@ -92,6 +107,20 @@ mod tests {
         assert_eq!(
             cameras.view("DP-2").unwrap().center,
             Point::from((1060.0, 600.0))
+        );
+    }
+
+    #[test]
+    fn output_local_camera_center_rebases_into_global_space() {
+        let secondary = Rectangle::<i32, Logical>::new((2560, 0).into(), (1920, 1200).into());
+
+        assert_eq!(
+            global_center(Point::from((960.0, 600.0)), secondary),
+            Point::from((3520.0, 600.0))
+        );
+        assert_eq!(
+            global_center(Point::from((1060.0, 550.0)), secondary),
+            Point::from((3620.0, 550.0))
         );
     }
 }

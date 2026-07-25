@@ -13,6 +13,7 @@ use super::{layer_shell, popup, xdg_shell};
 /// scheduling remain outside this protocol callback.
 pub fn commit<D: 'static>(
     wayland: &mut WaylandState,
+    cameras: &crate::camera::OutputCameras,
     surface: &WlSurface,
 ) -> Option<WlSurface> {
     on_commit_buffer_handler::<D>(surface);
@@ -43,5 +44,5 @@ pub fn commit<D: 'static>(
         window.on_commit();
     }
 
-    xdg_shell::handle_commit(wayland, &root)
+    xdg_shell::handle_commit(wayland, cameras, &root)
 }

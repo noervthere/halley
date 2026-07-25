@@ -504,10 +504,7 @@ impl Renderable for TtyBackend {
             let view = cameras
                 .view(&entry.output.name())
                 .expect("tty output camera initialized at startup");
-            let output_camera_center = camera_center_for_output(
-                view.center,
-                output_geometry,
-            );
+            let output_camera_center = crate::camera::global_center(view.center, output_geometry);
             let zoom_scale = view.scale;
             let cursor_position =
                 cursor_position_for_output(output_geometry, cursor_position);
@@ -696,21 +693,6 @@ impl Renderable for TtyBackend {
     }
 }
 
-fn camera_center_for_output(
-    local_camera_center: Point<f32, Physical>,
-    output_geometry: Rectangle<i32, Logical>,
-) -> Point<f32, Physical> {
-    let local_output_center = Point::<f32, Physical>::from((
-        output_geometry.size.w as f32 / 2.0,
-        output_geometry.size.h as f32 / 2.0,
-    ));
-    let pan = local_camera_center - local_output_center;
-    Point::from((
-        output_geometry.loc.x as f32 + output_geometry.size.w as f32 / 2.0 + pan.x,
-        output_geometry.loc.y as f32 + output_geometry.size.h as f32 / 2.0 + pan.y,
-    ))
-}
-
 fn cursor_position_for_output(
     output_geometry: Rectangle<i32, Logical>,
     cursor_position: (f64, f64),
@@ -753,29 +735,9 @@ mod tests {
     }
 
     #[test]
-    fn secondary_camera_rebases_its_local_pan_into_global_space() {
-        let secondary = Rectangle::<i32, Logical>::new((2560, 0).into(), (1920, 1200).into());
-
-        assert_eq!(
-            camera_center_for_output(
-                Point::from((960.0, 600.0)),
-                secondary,
-            ),
-            Point::from((3520.0, 600.0))
-        );
-        assert_eq!(
-            camera_center_for_output(
-                Point::from((1060.0, 550.0)),
-                secondary,
-            ),
-            Point::from((3620.0, 550.0))
-        );
-    }
-
-    #[test]
     fn secondary_window_geometry_becomes_output_local() {
         let secondary = Rectangle::<i32, Logical>::new((2560, 0).into(), (1920, 1200).into());
-        let camera_center = camera_center_for_output(
+        let camera_center = crate::camera::global_center(
             Point::from((1060.0, 550.0)),
             secondary,
         );

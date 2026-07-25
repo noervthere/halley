@@ -1,4 +1,4 @@
-use smithay::desktop::{layer_map_for_output, LayerSurface};
+use smithay::desktop::{layer_map_for_output, LayerSurface, Space, Window};
 use smithay::output::Output;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::wayland::shell::wlr_layer::{KeyboardInteractivity, Layer};
@@ -81,16 +81,20 @@ pub fn select_output(wayland: &mut WaylandState, output: &Output) {
 /// first mapped output. The fallback preserves startup behavior before the
 /// first click and makes hot-unplug self-healing.
 pub fn selected_output(wayland: &WaylandState) -> Option<&Output> {
-    wayland
-        .focused_output
-        .as_deref()
+    selected_output_in(&wayland.space, wayland.focused_output.as_deref())
+}
+
+fn selected_output_in<'a>(
+    space: &'a Space<Window>,
+    focused_output: Option<&str>,
+) -> Option<&'a Output> {
+    focused_output
         .and_then(|name| {
-            wayland
-                .space
+            space
                 .outputs()
                 .find(|output| output.name() == name)
         })
-        .or_else(|| wayland.space.outputs().next())
+        .or_else(|| space.outputs().next())
 }
 
 pub fn forget_layer(wayland: &mut WaylandState, surface: &WlSurface) {
@@ -134,4 +138,54 @@ fn first_interactive(
             Some(layer.wl_surface().clone())
         })
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use smithay::output::{Mode, PhysicalProperties, Subpixel};
+    use smithay::utils::{Physical, Size, Transform};
+
+    use super::*;
+
+    fn output(name: &str, size: Size<i32, Physical>) -> Output {
+        let output = Output::new(
+            name.to_string(),
+            PhysicalProperties {
+                size: (0, 0).into(),
+                subpixel: Subpixel::Unknown,
+                make: "halley-next".into(),
+                model: "test".into(),
+                serial_number: "test".into(),
+            },
+        );
+        let mode = Mode {
+            size,
+            refresh: 60_000,
+        };
+        output.change_current_state(
+            Some(mode),
+            Some(Transform::Normal),
+            None,
+            Some((0, 0).into()),
+        );
+        output
+    }
+
+    #[test]
+    fn clicked_output_wins_and_missing_output_falls_back() {
+        let left = output("DP-1", Size::from((2560, 1440)));
+        let right = output("DP-2", Size::from((1920, 1200)));
+        let mut space = Space::<Window>::default();
+        space.map_output(&left, (0, 0));
+        space.map_output(&right, (2560, 0));
+
+        assert_eq!(
+            selected_output_in(&space, Some("DP-2")).map(Output::name),
+            Some("DP-2".to_string())
+        );
+        assert_eq!(
+            selected_output_in(&space, Some("unplugged")).map(Output::name),
+            Some("DP-1".to_string())
+        );
+    }
 }
