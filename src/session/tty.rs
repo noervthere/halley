@@ -1148,6 +1148,7 @@ impl XdgShellHandler for TtyApp {
         self.window_open_animations.remove(surface.wl_surface());
         crate::input::grab::forget_resize_anchor(&mut self.resize_anchor, surface.wl_surface());
         wayland::xdg_shell::toplevel_destroyed(&mut self.wayland, &surface);
+        queue_redraw(self);
     }
 
     fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {

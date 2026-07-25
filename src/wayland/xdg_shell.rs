@@ -21,13 +21,26 @@ pub fn new_toplevel(wayland: &mut WaylandState, surface: ToplevelSurface) {
     wayland.unmapped.insert(wl_surface, window);
 }
 
-/// A toplevel was destroyed - only needs handling if it never made it past
-/// `unmapped`. Once a window is in `space`, `Space::refresh()` (called every
-/// redraw) prunes it automatically. If the destroyed window was the focused
-/// one, focus just clears to `None` - no fallback-refocus-another-window
-/// logic this round.
+/// Removes a destroyed toplevel from whichever lifecycle state owns it.
+///
+/// This must explicitly unmap a mapped window: Smithay calls this handler
+/// while the underlying `wl_surface` may still be alive, so waiting for
+/// `Space::refresh()` can leave Halley's compositor-drawn border in the next
+/// frame. Focus clears to `None`; there is no fallback-refocus policy yet.
 pub fn toplevel_destroyed(wayland: &mut WaylandState, surface: &ToplevelSurface) {
     wayland.unmapped.remove(surface.wl_surface());
+    let mapped = wayland
+        .space
+        .elements()
+        .find(|window| {
+            window
+                .toplevel()
+                .is_some_and(|toplevel| toplevel.wl_surface() == surface.wl_surface())
+        })
+        .cloned();
+    if let Some(window) = mapped {
+        wayland.space.unmap_elem(&window);
+    }
     if wayland.focused_window.as_ref() == Some(surface.wl_surface()) {
         wayland.focused_window = None;
     }
