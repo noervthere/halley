@@ -16,7 +16,7 @@ use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{Client, Display};
 use smithay::reexports::winit::dpi::LogicalSize;
 use smithay::reexports::winit::window::Window as WinitWindow;
-use smithay::utils::{Logical, Physical, Point, SERIAL_COUNTER, Serial};
+use smithay::utils::{Logical, Point, SERIAL_COUNTER, Serial};
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::{CompositorClientState, CompositorHandler, CompositorState};
 use smithay::wayland::output::{OutputHandler, OutputManagerState};
@@ -78,7 +78,7 @@ struct App {
     seat: Seat<App>,
     start_time: Instant,
     decorations: halley_config::Decorations,
-    camera: halley_core::camera::Camera,
+    cameras: crate::camera::OutputCameras,
     zoom: halley_config::Zoom,
     last_camera_tick: Instant,
     grab: crate::input::grab::Grab,
@@ -127,19 +127,8 @@ pub fn run() {
     let _output_global = winit_backend.output().create_global::<App>(&dh);
 
     let output_size = winit_backend.window_size();
-    let camera = halley_core::camera::Camera::new(
-        // Starts centered on the output - the baseline pan offsets are
-        // measured from, and exactly where a never-panned camera needs to
-        // sit so rendering/hit-testing reduce to "no pan" correctly.
-        halley_core::field::Vec2 {
-            x: output_size.w as f32 / 2.0,
-            y: output_size.h as f32 / 2.0,
-        },
-        halley_core::field::Vec2 {
-            x: output_size.w as f32,
-            y: output_size.h as f32,
-        },
-    );
+    let mut cameras = crate::camera::OutputCameras::default();
+    cameras.insert(winit_backend.output().name(), output_size);
 
     let mut app = App {
         backend: winit_backend,
@@ -161,7 +150,7 @@ pub fn run() {
         seat,
         start_time: Instant::now(),
         decorations: halley_config::load_decorations(),
-        camera,
+        cameras,
         zoom: halley_config::load_zoom(),
         last_camera_tick: Instant::now(),
         grab: crate::input::grab::Grab::None,
@@ -185,8 +174,9 @@ pub fn run() {
                 let now = Instant::now();
                 let dt = now.duration_since(app.last_camera_tick).as_secs_f32();
                 app.last_camera_tick = now;
-                let (zoom_scale, _animating) = crate::input::zoom::tick(&mut app.camera, &app.zoom, dt);
-                let camera_center = Point::<f32, Physical>::from((app.camera.center.x, app.camera.center.y));
+                for camera in app.cameras.iter_mut() {
+                    crate::input::zoom::tick(camera, &app.zoom, dt);
+                }
 
                 let position = app.pointer.position();
                 if let Err(err) = app.backend.render(
@@ -196,8 +186,7 @@ pub fn run() {
                     &app.wayland.space,
                     app.wayland.focused.as_ref(),
                     &app.decorations,
-                    camera_center,
-                    zoom_scale,
+                    &app.cameras,
                 ) {
                     eprintln!("render failed: {err}");
                 }
@@ -228,20 +217,13 @@ pub fn run() {
                 // resize - resizing mid-zoom/pan is a rare dev-only edge
                 // case, not worth the extra math.
                 let output_size = app.backend.window_size();
-                app.camera = halley_core::camera::Camera::new(
-                    halley_core::field::Vec2 {
-                        x: output_size.w as f32 / 2.0,
-                        y: output_size.h as f32 / 2.0,
-                    },
-                    halley_core::field::Vec2 {
-                        x: output_size.w as f32,
-                        y: output_size.h as f32,
-                    },
-                );
+                app.cameras
+                    .reset(app.backend.output().name(), output_size);
                 app.backend.request_redraw();
             }
             WinitEvent::Input(event) => {
                 let output_size_physical = app.backend.window_size();
+                let output_name = app.backend.output().name();
                 let position_before = app.pointer.position();
                 app.pointer.process_input_event(&event, &app.wayland.space);
                 let position_after = app.pointer.position();
@@ -255,26 +237,47 @@ pub fn run() {
                 // absolute motion, and clamping, uniformly) rather than
                 // re-deriving it from the raw event per grab kind.
                 match &app.grab {
-                    crate::input::grab::Grab::MoveWindow { window, offset } => {
+                    crate::input::grab::Grab::MoveWindow {
+                        window,
+                        screen_offset,
+                    } => {
+                        let camera = app
+                            .cameras
+                            .get(&output_name)
+                            .expect("winit output camera initialized at startup");
                         let world =
-                            crate::input::grab::screen_to_world(position_after, &app.camera, output_size_physical);
+                            crate::input::grab::screen_to_world(position_after, camera, output_size_physical);
+                        let world_offset = crate::input::grab::screen_offset_to_world(
+                            *screen_offset,
+                            camera,
+                        );
                         let new_location = Point::<i32, Logical>::from((
-                            (world.x + offset.x).round() as i32,
-                            (world.y + offset.y).round() as i32,
+                            (world.x + world_offset.x).round() as i32,
+                            (world.y + world_offset.y).round() as i32,
                         ));
                         app.wayland.space.map_element(window.clone(), new_location, false);
                     }
-                    crate::input::grab::Grab::Pan => {
+                    crate::input::grab::Grab::Pan { output } => {
                         let dx = position_after.0 - position_before.0;
                         let dy = position_after.1 - position_before.1;
-                        let delta = crate::input::grab::screen_delta_to_world(dx, dy, &app.camera);
-                        // Negated - content follows the cursor ("natural
-                        // drag"), matching old halley's own pan convention.
-                        app.camera.pan_target(halley_core::field::Vec2 { x: -delta.x, y: -delta.y });
+                        if let Some(camera) = app.cameras.get_mut(output) {
+                            let delta =
+                                crate::input::grab::screen_delta_to_world(dx, dy, camera);
+                            // Negated - content follows the cursor ("natural
+                            // drag") on the output where this drag began.
+                            camera.pan_target(halley_core::field::Vec2 {
+                                x: -delta.x,
+                                y: -delta.y,
+                            });
+                        }
                     }
                     crate::input::grab::Grab::ResizeWindow(state) => {
+                        let camera = app
+                            .cameras
+                            .get(&output_name)
+                            .expect("winit output camera initialized at startup");
                         let world =
-                            crate::input::grab::screen_to_world(position_after, &app.camera, output_size_physical);
+                            crate::input::grab::screen_to_world(position_after, camera, output_size_physical);
                         let size = crate::input::grab::resize_target_size(
                             state.handle,
                             state.start_rect,
@@ -308,9 +311,13 @@ pub fn run() {
                             // Resize is mod-only: a bare right-click has to
                             // stay available to clients (context menus).
                             if crate::input::mod_key_held(&mods, app.keyboard.effective_mod) {
+                                let camera = app
+                                    .cameras
+                                    .get(&output_name)
+                                    .expect("winit output camera initialized at startup");
                                 let world = crate::input::grab::screen_to_world(
                                     position_after,
-                                    &app.camera,
+                                    camera,
                                     output_size_physical,
                                 );
                                 if let Some((window, _)) =
@@ -350,25 +357,35 @@ pub fn run() {
                                 .expect("keyboard capability added at seat setup")
                                 .modifier_state();
                             let mod_held = crate::input::mod_key_held(&mods, app.keyboard.effective_mod);
+                            let camera = app
+                                .cameras
+                                .get(&output_name)
+                                .expect("winit output camera initialized at startup");
                             let world = crate::input::grab::screen_to_world(
                                 position_after,
-                                &app.camera,
+                                camera,
                                 output_size_physical,
                             );
                             match crate::input::grab::window_under(&app.wayland.space, world) {
                                 Some((window, window_loc)) if mod_held => {
-                                    let offset = halley_core::field::Vec2 {
-                                        x: window_loc.x as f32 - world.x,
-                                        y: window_loc.y as f32 - world.y,
+                                    let scale = crate::input::zoom::scale(camera);
+                                    let screen_offset = halley_core::field::Vec2 {
+                                        x: (window_loc.x as f32 - world.x) * scale,
+                                        y: (window_loc.y as f32 - world.y) * scale,
                                     };
                                     wayland::xdg_shell::focus_and_raise(&mut app.wayland, &window);
-                                    app.grab = crate::input::grab::Grab::MoveWindow { window, offset };
+                                    app.grab = crate::input::grab::Grab::MoveWindow {
+                                        window,
+                                        screen_offset,
+                                    };
                                 }
                                 Some((window, _)) => {
                                     wayland::xdg_shell::focus_and_raise(&mut app.wayland, &window);
                                 }
                                 None => {
-                                    app.grab = crate::input::grab::Grab::Pan;
+                                    app.grab = crate::input::grab::Grab::Pan {
+                                        output: output_name.clone(),
+                                    };
                                 }
                             }
                         }
@@ -422,12 +439,25 @@ pub fn run() {
                             None => eprintln!("mod+t: no terminal configured or found on PATH"),
                         },
                         Some(halley_config::Action::ZoomOut) => {
-                            crate::input::zoom::zoom_out(&mut app.camera, &app.zoom);
+                            let camera = app
+                                .cameras
+                                .get_mut(&output_name)
+                                .expect("winit output camera initialized at startup");
+                            crate::input::zoom::zoom_out(camera, &app.zoom);
                         }
                         Some(halley_config::Action::ZoomIn) => {
-                            crate::input::zoom::zoom_in(&mut app.camera, &app.zoom);
+                            let camera = app
+                                .cameras
+                                .get_mut(&output_name)
+                                .expect("winit output camera initialized at startup");
+                            crate::input::zoom::zoom_in(camera, &app.zoom);
                         }
-                        Some(halley_config::Action::ZoomReset) => app.camera.reset_zoom_target(),
+                        Some(halley_config::Action::ZoomReset) => {
+                            app.cameras
+                                .get_mut(&output_name)
+                                .expect("winit output camera initialized at startup")
+                                .reset_zoom_target();
+                        }
                         _ => {}
                     }
                 }

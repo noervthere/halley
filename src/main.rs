@@ -1,4 +1,5 @@
 mod backend;
+mod camera;
 mod cursor;
 mod input;
 mod ipc;

@@ -81,10 +81,9 @@ pub fn window_surface_elements(
 /// the trait signature itself - a real flaw, confirmed by reading
 /// `backend/interface.rs` in the old code. This doesn't repeat that: the
 /// trait grows exactly the parameters a render call actually needs, never
-/// "the whole state, just in case" - `cursor`, `focused`, `decorations`, and
-/// `zoom_scale` are each a legitimate growth (every frame concretely needs
-/// to know what to draw and how), not the bloat this doc comment warns
-/// against.
+/// "the whole state, just in case." `OutputCameras` exposes only per-output
+/// view transforms; it does not give rendering access to session, input, or
+/// Wayland policy state.
 pub trait Renderable {
     // Every parameter here is a distinct, legitimate per-frame need (see the
     // doc comment above) rather than incidental bloat - grouping them into a
@@ -98,8 +97,7 @@ pub trait Renderable {
         space: &Space<Window>,
         focused: Option<&WlSurface>,
         decorations: &Decorations,
-        camera_center: Point<f32, Physical>,
-        zoom_scale: f32,
+        cameras: &crate::camera::OutputCameras,
     ) -> Result<(), Box<dyn std::error::Error>>;
 }
 

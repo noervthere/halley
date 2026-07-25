@@ -20,7 +20,7 @@ use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
 use smithay::reexports::wayland_server::protocol::wl_seat::WlSeat;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{Client, Display};
-use smithay::utils::{Logical, Physical, Point, Rectangle, SERIAL_COUNTER, Serial};
+use smithay::utils::{Logical, Point, Rectangle, SERIAL_COUNTER, Serial};
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::{CompositorClientState, CompositorHandler, CompositorState};
 use smithay::wayland::output::{OutputHandler, OutputManagerState};
@@ -141,7 +141,7 @@ struct TtyApp {
     /// Whether a VT switch away is currently in effect - `redraw()` must
     /// not attempt to render while DRM master is dropped.
     paused: bool,
-    camera: halley_core::camera::Camera,
+    cameras: crate::camera::OutputCameras,
     zoom: halley_config::Zoom,
     last_camera_tick: Instant,
     grab: crate::input::grab::Grab,
@@ -196,21 +196,6 @@ pub fn run() {
         .map(|output| output.create_global::<TtyApp>(&dh))
         .collect();
 
-    let output_size = backend.output_size();
-    let camera = halley_core::camera::Camera::new(
-        // Starts centered on the output - the baseline pan offsets are
-        // measured from, and exactly where a never-panned camera needs to
-        // sit so rendering/hit-testing reduce to "no pan" correctly.
-        halley_core::field::Vec2 {
-            x: output_size.w as f32 / 2.0,
-            y: output_size.h as f32 / 2.0,
-        },
-        halley_core::field::Vec2 {
-            x: output_size.w as f32,
-            y: output_size.h as f32,
-        },
-    );
-
     let mut app = TtyApp {
         backend,
         keyboard: Keyboard::new(BackendKind::Tty),
@@ -233,7 +218,7 @@ pub fn run() {
         decorations: halley_config::load_decorations(),
         redraw_state: RedrawState::default(),
         paused: false,
-        camera,
+        cameras: crate::camera::OutputCameras::default(),
         zoom: halley_config::load_zoom(),
         last_camera_tick: Instant::now(),
         grab: crate::input::grab::Grab::None,
@@ -242,6 +227,13 @@ pub fn run() {
         app.wayland
             .space
             .map_output(&output, output.current_location());
+        let geometry = app
+            .wayland
+            .space
+            .output_geometry(&output)
+            .expect("mapped tty output has geometry");
+        app.cameras
+            .insert(output.name(), geometry.size.to_physical(1));
     }
 
     let socket_name = init_wayland_listener(display, &mut event_loop);
@@ -260,7 +252,6 @@ pub fn run() {
     event_loop
         .handle()
         .insert_source(libinput_backend, move |event, _, app| {
-            let output_size_physical = app.backend.output_size();
             let position_before = app.pointer.position();
             app.pointer.process_input_event(&event, &app.wayland.space);
             let position_after = app.pointer.position();
@@ -271,19 +262,28 @@ pub fn run() {
             // absolute motion, and clamping, uniformly) rather than
             // re-deriving it from the raw event per grab kind.
             match &app.grab {
-                crate::input::grab::Grab::MoveWindow { window, offset } => {
+                crate::input::grab::Grab::MoveWindow {
+                    window,
+                    screen_offset,
+                } => {
                     if let Some((output, output_geometry)) =
                         output_at_pointer(&app.wayland.space, position_after)
                     {
+                        let Some(camera) = app.cameras.get(&output.name()) else {
+                            return;
+                        };
                         let world = crate::input::grab::screen_to_world_on_output(
                             position_after,
-                            &app.camera,
-                            output_size_physical,
+                            camera,
                             output_geometry,
                         );
+                        let world_offset = crate::input::grab::screen_offset_to_world(
+                            *screen_offset,
+                            camera,
+                        );
                         let new_location = Point::<i32, Logical>::from((
-                            (world.x + offset.x).round() as i32,
-                            (world.y + offset.y).round() as i32,
+                            (world.x + world_offset.x).round() as i32,
+                            (world.y + world_offset.y).round() as i32,
                         ));
                         wayland::set_window_output(window, &output);
                         app.wayland
@@ -291,13 +291,19 @@ pub fn run() {
                             .map_element(window.clone(), new_location, false);
                     }
                 }
-                crate::input::grab::Grab::Pan => {
+                crate::input::grab::Grab::Pan { output } => {
                     let dx = position_after.0 - position_before.0;
                     let dy = position_after.1 - position_before.1;
-                    let delta = crate::input::grab::screen_delta_to_world(dx, dy, &app.camera);
-                    // Negated - content follows the cursor ("natural drag"),
-                    // matching old halley's own pan convention.
-                    app.camera.pan_target(halley_core::field::Vec2 { x: -delta.x, y: -delta.y });
+                    if let Some(camera) = app.cameras.get_mut(output) {
+                        let delta =
+                            crate::input::grab::screen_delta_to_world(dx, dy, camera);
+                        // Negated - content follows the cursor ("natural
+                        // drag"), on the output where this drag began.
+                        camera.pan_target(halley_core::field::Vec2 {
+                            x: -delta.x,
+                            y: -delta.y,
+                        });
+                    }
                 }
                 crate::input::grab::Grab::ResizeWindow(state) => {
                     let primary = app.backend.primary_output();
@@ -311,10 +317,12 @@ pub fn run() {
                     let Some(output_geometry) = app.wayland.space.output_geometry(&output) else {
                         return;
                     };
+                    let Some(camera) = app.cameras.get(&output.name()) else {
+                        return;
+                    };
                     let world = crate::input::grab::screen_to_world_on_output(
                         position_after,
-                        &app.camera,
-                        output_size_physical,
+                        camera,
                         output_geometry,
                     );
                     let size = crate::input::grab::resize_target_size(
@@ -355,10 +363,12 @@ pub fn run() {
                             else {
                                 return;
                             };
+                            let Some(camera) = app.cameras.get(&output.name()) else {
+                                return;
+                            };
                             let world = crate::input::grab::screen_to_world_on_output(
                                 position_after,
-                                &app.camera,
-                                output_size_physical,
+                                camera,
                                 output_geometry,
                             );
                             if let Some((window, _)) = crate::input::grab::window_under_on_output(
@@ -405,10 +415,12 @@ pub fn run() {
                         else {
                             return;
                         };
+                        let Some(camera) = app.cameras.get(&output.name()) else {
+                            return;
+                        };
                         let world = crate::input::grab::screen_to_world_on_output(
                             position_after,
-                            &app.camera,
-                            output_size_physical,
+                            camera,
                             output_geometry,
                         );
                         match crate::input::grab::window_under_on_output(
@@ -418,18 +430,24 @@ pub fn run() {
                             world,
                         ) {
                             Some((window, window_loc)) if mod_held => {
-                                let offset = halley_core::field::Vec2 {
-                                    x: window_loc.x as f32 - world.x,
-                                    y: window_loc.y as f32 - world.y,
+                                let scale = crate::input::zoom::scale(camera);
+                                let screen_offset = halley_core::field::Vec2 {
+                                    x: (window_loc.x as f32 - world.x) * scale,
+                                    y: (window_loc.y as f32 - world.y) * scale,
                                 };
                                 wayland::xdg_shell::focus_and_raise(&mut app.wayland, &window);
-                                app.grab = crate::input::grab::Grab::MoveWindow { window, offset };
+                                app.grab = crate::input::grab::Grab::MoveWindow {
+                                    window,
+                                    screen_offset,
+                                };
                             }
                             Some((window, _)) => {
                                 wayland::xdg_shell::focus_and_raise(&mut app.wayland, &window);
                             }
                             None => {
-                                app.grab = crate::input::grab::Grab::Pan;
+                                app.grab = crate::input::grab::Grab::Pan {
+                                    output: output.name(),
+                                };
                             }
                         }
                     }
@@ -471,6 +489,12 @@ pub fn run() {
                         }
                     },
                 );
+                let pointer_output = app
+                    .wayland
+                    .space
+                    .output_under(app.pointer.position())
+                    .next()
+                    .map(Output::name);
 
                 match action {
                     Some(halley_config::Action::Quit) => app.loop_signal.stop(),
@@ -482,12 +506,29 @@ pub fn run() {
                         None => println!("mod+t: no terminal configured or found on PATH"),
                     },
                     Some(halley_config::Action::ZoomOut) => {
-                        crate::input::zoom::zoom_out(&mut app.camera, &app.zoom);
+                        if let Some(camera) = pointer_output
+                            .as_deref()
+                            .and_then(|name| app.cameras.get_mut(name))
+                        {
+                            crate::input::zoom::zoom_out(camera, &app.zoom);
+                        }
                     }
                     Some(halley_config::Action::ZoomIn) => {
-                        crate::input::zoom::zoom_in(&mut app.camera, &app.zoom);
+                        if let Some(camera) = pointer_output
+                            .as_deref()
+                            .and_then(|name| app.cameras.get_mut(name))
+                        {
+                            crate::input::zoom::zoom_in(camera, &app.zoom);
+                        }
                     }
-                    Some(halley_config::Action::ZoomReset) => app.camera.reset_zoom_target(),
+                    Some(halley_config::Action::ZoomReset) => {
+                        if let Some(camera) = pointer_output
+                            .as_deref()
+                            .and_then(|name| app.cameras.get_mut(name))
+                        {
+                            camera.reset_zoom_target();
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -616,8 +657,10 @@ fn redraw(app: &mut TtyApp, loop_handle: &LoopHandle<'_, TtyApp>) {
     let now = Instant::now();
     let dt = now.duration_since(app.last_camera_tick).as_secs_f32();
     app.last_camera_tick = now;
-    let (zoom_scale, animating) = crate::input::zoom::tick(&mut app.camera, &app.zoom, dt);
-    let camera_center = Point::<f32, Physical>::from((app.camera.center.x, app.camera.center.y));
+    let mut animating = false;
+    for camera in app.cameras.iter_mut() {
+        animating |= crate::input::zoom::tick(camera, &app.zoom, dt).1;
+    }
 
     let cursor_position = app.pointer.position();
     if let Err(err) = app.backend.render(
@@ -627,8 +670,7 @@ fn redraw(app: &mut TtyApp, loop_handle: &LoopHandle<'_, TtyApp>) {
         &app.wayland.space,
         app.wayland.focused.as_ref(),
         &app.decorations,
-        camera_center,
-        zoom_scale,
+        &app.cameras,
     ) {
         println!("render failed: {err}");
     }
@@ -656,7 +698,7 @@ fn redraw(app: &mut TtyApp, loop_handle: &LoopHandle<'_, TtyApp>) {
         }
         app.redraw_state = RedrawState::WaitingForVBlank {
             crtc: waiting_crtc,
-            // While the zoom camera is still easing toward its target,
+            // While any output camera is still easing toward its pan/zoom target,
             // request another redraw once this frame's VBlank lands -
             // otherwise the damage-driven scheduler stops redrawing after a
             // single frame and the animation freezes mid-ease.

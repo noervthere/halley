@@ -11,14 +11,13 @@ use smithay::utils::{Logical, Physical, Point, Rectangle, Size};
 /// concrete reason.
 pub enum Grab {
     None,
-    /// `offset` is `window_pos - world_cursor_pos`, captured at grab-start
-    /// (both already in world/`Space` coordinates) - every motion event
-    /// recomputes the window's position as `world_cursor_pos + offset`, so
-    /// the window tracks the cursor exactly without drifting.
-    MoveWindow { window: Window, offset: Vec2 },
-    /// Left-click-drag on empty desktop. No extra state needed - panning
-    /// just feeds `Camera::pan_target` directly each motion event.
-    Pan,
+    /// Cursor-to-window offset in screen pixels. Keeping this in screen
+    /// space preserves the exact grip point when crossing between outputs
+    /// with different zoom scales.
+    MoveWindow { window: Window, screen_offset: Vec2 },
+    /// Left-click-drag on empty desktop. The output is captured at press
+    /// time so crossing a boundary mid-drag never pans both monitors.
+    Pan { output: String },
     /// Mod+right-click-drag on a window.
     ResizeWindow(ResizeState),
 }
@@ -186,23 +185,21 @@ pub fn screen_to_world(screen: (f64, f64), camera: &Camera, output_size: Size<i3
 }
 
 /// Multi-output form of `screen_to_world`. The pointer is global in
-/// Smithay's mapped output layout, while `camera.center` is measured from
-/// the primary output's local center. Re-basing that same pan/zoom onto the
-/// output under the pointer keeps drag math continuous across output
-/// boundaries.
+/// Smithay's mapped output layout, while each camera is local to its output.
+/// Re-basing that output's pan/zoom into the global layout keeps render and
+/// hit-test transforms exact inverses.
 pub fn screen_to_world_on_output(
     screen: (f64, f64),
     camera: &Camera,
-    primary_output_size: Size<i32, Physical>,
     output_geometry: Rectangle<i32, Logical>,
 ) -> Vec2 {
-    let primary_center = Vec2 {
-        x: primary_output_size.w as f32 / 2.0,
-        y: primary_output_size.h as f32 / 2.0,
+    let local_center = Vec2 {
+        x: output_geometry.size.w as f32 / 2.0,
+        y: output_geometry.size.h as f32 / 2.0,
     };
     let pan = Vec2 {
-        x: camera.center.x - primary_center.x,
-        y: camera.center.y - primary_center.y,
+        x: camera.center.x - local_center.x,
+        y: camera.center.y - local_center.y,
     };
     let output_center = Vec2 {
         x: output_geometry.loc.x as f32 + output_geometry.size.w as f32 / 2.0,
@@ -211,10 +208,6 @@ pub fn screen_to_world_on_output(
     let local_screen = Vec2 {
         x: screen.0 as f32 - output_geometry.loc.x as f32,
         y: screen.1 as f32 - output_geometry.loc.y as f32,
-    };
-    let local_center = Vec2 {
-        x: output_geometry.size.w as f32 / 2.0,
-        y: output_geometry.size.h as f32 / 2.0,
     };
     let scale = crate::input::zoom::scale(camera);
 
@@ -234,6 +227,14 @@ pub fn screen_delta_to_world(dx: f64, dy: f64, camera: &Camera) -> Vec2 {
     Vec2 {
         x: dx as f32 / scale,
         y: dy as f32 / scale,
+    }
+}
+
+pub fn screen_offset_to_world(offset: Vec2, camera: &Camera) -> Vec2 {
+    let scale = crate::input::zoom::scale(camera);
+    Vec2 {
+        x: offset.x / scale,
+        y: offset.y / scale,
     }
 }
 
@@ -319,30 +320,34 @@ mod tests {
 
     #[test]
     fn secondary_output_coordinates_are_global_at_rest() {
-        let camera = camera_at_rest();
-        let primary_size = Size::<i32, Physical>::from((1280, 800));
         let secondary = Rectangle::<i32, Logical>::new((1280, 0).into(), (1920, 1200).into());
+        let camera = Camera::new(
+            Vec2 { x: 960.0, y: 600.0 },
+            Vec2 { x: 1920.0, y: 1200.0 },
+        );
 
         assert_eq!(
-            screen_to_world_on_output((1280.0, 0.0), &camera, primary_size, secondary),
+            screen_to_world_on_output((1280.0, 0.0), &camera, secondary),
             Vec2 { x: 1280.0, y: 0.0 }
         );
         assert_eq!(
-            screen_to_world_on_output((1600.0, 600.0), &camera, primary_size, secondary),
+            screen_to_world_on_output((1600.0, 600.0), &camera, secondary),
             Vec2 { x: 1600.0, y: 600.0 }
         );
     }
 
     #[test]
-    fn secondary_output_coordinates_share_primary_pan_and_zoom() {
-        let mut camera = camera_at_rest();
-        camera.center = Vec2 { x: 740.0, y: 450.0 };
-        camera.view_size = Vec2 { x: 2560.0, y: 1600.0 };
-        let primary_size = Size::<i32, Physical>::from((1280, 800));
+    fn secondary_output_coordinates_use_its_own_pan_and_zoom() {
+        let mut camera = Camera::new(
+            Vec2 { x: 960.0, y: 600.0 },
+            Vec2 { x: 1920.0, y: 1200.0 },
+        );
+        camera.center = Vec2 { x: 1060.0, y: 650.0 };
+        camera.view_size = Vec2 { x: 3840.0, y: 2400.0 };
         let secondary = Rectangle::<i32, Logical>::new((1280, 0).into(), (1920, 1200).into());
 
         assert_eq!(
-            screen_to_world_on_output((2340.0, 650.0), &camera, primary_size, secondary),
+            screen_to_world_on_output((2340.0, 650.0), &camera, secondary),
             Vec2 { x: 2540.0, y: 750.0 }
         );
     }
@@ -428,5 +433,21 @@ mod tests {
 
         camera.view_size = Vec2 { x: 2560.0, y: 1600.0 };
         assert_eq!(screen_delta_to_world(100.0, 50.0, &camera), Vec2 { x: 200.0, y: 100.0 });
+    }
+
+    #[test]
+    fn screen_grab_offset_stays_visually_fixed_across_zoom_levels() {
+        let mut camera = camera_at_rest();
+        let offset = Vec2 { x: -200.0, y: -80.0 };
+        assert_eq!(
+            screen_offset_to_world(offset, &camera),
+            Vec2 { x: -200.0, y: -80.0 }
+        );
+
+        camera.view_size = Vec2 { x: 2560.0, y: 1600.0 };
+        assert_eq!(
+            screen_offset_to_world(offset, &camera),
+            Vec2 { x: -400.0, y: -160.0 }
+        );
     }
 }

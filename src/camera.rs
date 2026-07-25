@@ -1,0 +1,97 @@
+use std::collections::HashMap;
+
+use halley_core::camera::Camera;
+use halley_core::field::Vec2;
+use smithay::utils::{Physical, Point, Size};
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OutputView {
+    pub center: Point<f32, Physical>,
+    pub scale: f32,
+}
+
+/// Independent camera state keyed by Smithay output name.
+///
+/// The collection owns no output/protocol objects and no rendering state;
+/// sessions route input to it, while backends only read the resulting
+/// `OutputView`. This avoids old Halley's active-monitor state swapping.
+#[derive(Default)]
+pub struct OutputCameras {
+    cameras: HashMap<String, Camera>,
+}
+
+impl OutputCameras {
+    pub fn insert(&mut self, output_name: String, output_size: Size<i32, Physical>) {
+        self.cameras
+            .insert(output_name, camera_at_rest(output_size));
+    }
+
+    pub fn reset(&mut self, output_name: String, output_size: Size<i32, Physical>) {
+        self.insert(output_name, output_size);
+    }
+
+    pub fn get(&self, output_name: &str) -> Option<&Camera> {
+        self.cameras.get(output_name)
+    }
+
+    pub fn get_mut(&mut self, output_name: &str) -> Option<&mut Camera> {
+        self.cameras.get_mut(output_name)
+    }
+
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut Camera> {
+        self.cameras.values_mut()
+    }
+
+    pub fn view(&self, output_name: &str) -> Option<OutputView> {
+        self.get(output_name).map(|camera| OutputView {
+            center: Point::from((camera.center.x, camera.center.y)),
+            scale: scale(camera),
+        })
+    }
+}
+
+pub fn scale(camera: &Camera) -> f32 {
+    (camera.base_size.x / camera.view_size.x.max(1.0)).min(1.0)
+}
+
+fn camera_at_rest(output_size: Size<i32, Physical>) -> Camera {
+    Camera::new(
+        Vec2 {
+            x: output_size.w as f32 / 2.0,
+            y: output_size.h as f32 / 2.0,
+        },
+        Vec2 {
+            x: output_size.w as f32,
+            y: output_size.h as f32,
+        },
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn outputs_keep_independent_camera_state() {
+        let mut cameras = OutputCameras::default();
+        cameras.insert("DP-1".into(), Size::from((2560, 1440)));
+        cameras.insert("DP-2".into(), Size::from((1920, 1200)));
+
+        cameras.get_mut("DP-2").unwrap().view_size = Vec2 {
+            x: 3840.0,
+            y: 2400.0,
+        };
+        cameras.get_mut("DP-2").unwrap().center.x += 100.0;
+
+        assert_eq!(cameras.view("DP-1").unwrap().scale, 1.0);
+        assert_eq!(
+            cameras.view("DP-1").unwrap().center,
+            Point::from((1280.0, 720.0))
+        );
+        assert_eq!(cameras.view("DP-2").unwrap().scale, 0.5);
+        assert_eq!(
+            cameras.view("DP-2").unwrap().center,
+            Point::from((1060.0, 600.0))
+        );
+    }
+}

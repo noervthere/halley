@@ -80,10 +80,6 @@ pub struct TtyBackend {
     renderer: GlesRenderer,
     drm_output_manager: TtyDrmOutputManager,
     drm_outputs: Vec<DrmOutputEntry>,
-    /// The first successfully initialized output's size. The shared camera
-    /// is based on this size; other outputs rebase its pan/zoom from their
-    /// own mapped geometry.
-    output_size: Size<i32, Physical>,
     /// The CRTC of the first successfully initialized output.
     primary_crtc: crtc::Handle,
     /// The `wl_output` where newly mapped windows begin.
@@ -270,7 +266,6 @@ impl TtyBackend {
         // failing the whole backend, so a working primary still comes up
         // even if a secondary monitor can't be driven for some reason.
         let mut drm_outputs = Vec::new();
-        let mut output_size = None;
         let mut primary_crtc = None;
         let mut primary_output: Option<Output> = None;
         let mut outputs = Vec::new();
@@ -307,7 +302,6 @@ impl TtyBackend {
 
             match result {
                 Ok(drm_output) => {
-                    output_size.get_or_insert(size);
                     primary_crtc.get_or_insert(crtc);
 
                     let offset = configured.map_or((0, 0), |cfg| (cfg.offset_x, cfg.offset_y));
@@ -353,29 +347,22 @@ impl TtyBackend {
             }
         }
 
-        let Some(output_size) = output_size else {
+        let Some(primary_crtc) = primary_crtc else {
             return Err("no output could be initialized".into());
         };
-        let primary_crtc = primary_crtc.expect("set alongside output_size above");
-        let primary_output = primary_output.expect("set alongside output_size above");
+        let primary_output = primary_output.expect("set alongside primary_crtc above");
 
         let backend = TtyBackend {
             session,
             renderer,
             drm_output_manager,
             drm_outputs,
-            output_size,
             primary_crtc,
             primary_output,
             outputs,
         };
 
         Ok((backend, session_notifier, drm_notifier))
-    }
-
-    /// The primary output size used by primary-only window/camera behavior.
-    pub fn output_size(&self) -> Size<i32, Physical> {
-        self.output_size
     }
 
     /// The `wl_output` used for primary-only window rendering and frame
@@ -525,8 +512,7 @@ impl Renderable for TtyBackend {
         space: &Space<Window>,
         focused: Option<&WlSurface>,
         decorations: &halley_config::Decorations,
-        camera_center: Point<f32, Physical>,
-        zoom_scale: f32,
+        cameras: &crate::camera::OutputCameras,
     ) -> Result<(), Box<dyn Error>> {
         // A single bad output shouldn't hide a working one - failures are
         // logged per-output, and only surfaced to the caller if literally
@@ -534,7 +520,6 @@ impl Renderable for TtyBackend {
         let mut ok_count = 0;
         let mut last_err: Option<Box<dyn Error>> = None;
         let primary_output = self.primary_output.clone();
-        let primary_output_size = self.output_size;
 
         for entry in &mut self.drm_outputs {
             // A page flip is already queued for this output and hasn't
@@ -550,11 +535,14 @@ impl Renderable for TtyBackend {
                 continue;
             };
             let output_size = output_geometry.size.to_physical(1);
+            let view = cameras
+                .view(&entry.output.name())
+                .expect("tty output camera initialized at startup");
             let output_camera_center = camera_center_for_output(
-                camera_center,
-                primary_output_size,
+                view.center,
                 output_geometry,
             );
+            let zoom_scale = view.scale;
             let cursor_position =
                 cursor_position_for_output(output_geometry, cursor_position);
             let drm_output = &mut entry.drm_output;
@@ -707,15 +695,14 @@ impl Renderable for TtyBackend {
 }
 
 fn camera_center_for_output(
-    primary_camera_center: Point<f32, Physical>,
-    primary_output_size: Size<i32, Physical>,
+    local_camera_center: Point<f32, Physical>,
     output_geometry: Rectangle<i32, Logical>,
 ) -> Point<f32, Physical> {
-    let primary_center = Point::<f32, Physical>::from((
-        primary_output_size.w as f32 / 2.0,
-        primary_output_size.h as f32 / 2.0,
+    let local_output_center = Point::<f32, Physical>::from((
+        output_geometry.size.w as f32 / 2.0,
+        output_geometry.size.h as f32 / 2.0,
     ));
-    let pan = primary_camera_center - primary_center;
+    let pan = local_camera_center - local_output_center;
     Point::from((
         output_geometry.loc.x as f32 + output_geometry.size.w as f32 / 2.0 + pan.x,
         output_geometry.loc.y as f32 + output_geometry.size.h as f32 / 2.0 + pan.y,
@@ -764,22 +751,19 @@ mod tests {
     }
 
     #[test]
-    fn secondary_camera_uses_global_output_center_and_shared_pan() {
-        let primary_size = Size::<i32, Physical>::from((2560, 1440));
+    fn secondary_camera_rebases_its_local_pan_into_global_space() {
         let secondary = Rectangle::<i32, Logical>::new((2560, 0).into(), (1920, 1200).into());
 
         assert_eq!(
             camera_center_for_output(
-                Point::from((1280.0, 720.0)),
-                primary_size,
+                Point::from((960.0, 600.0)),
                 secondary,
             ),
             Point::from((3520.0, 600.0))
         );
         assert_eq!(
             camera_center_for_output(
-                Point::from((1380.0, 670.0)),
-                primary_size,
+                Point::from((1060.0, 550.0)),
                 secondary,
             ),
             Point::from((3620.0, 550.0))
@@ -788,11 +772,9 @@ mod tests {
 
     #[test]
     fn secondary_window_geometry_becomes_output_local() {
-        let primary_size = Size::<i32, Physical>::from((2560, 1440));
         let secondary = Rectangle::<i32, Logical>::new((2560, 0).into(), (1920, 1200).into());
         let camera_center = camera_center_for_output(
-            Point::from((1380.0, 670.0)),
-            primary_size,
+            Point::from((1060.0, 550.0)),
             secondary,
         );
         let world_rect =

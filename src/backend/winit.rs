@@ -127,11 +127,15 @@ impl Renderable for WinitBackend {
         space: &Space<Window>,
         focused: Option<&WlSurface>,
         decorations: &halley_config::Decorations,
-        camera_center: Point<f32, Physical>,
-        zoom_scale: f32,
+        cameras: &crate::camera::OutputCameras,
     ) -> Result<(), Box<dyn Error>> {
         let size = self.backend.window_size();
         let damage = Rectangle::from_size(size);
+        let view = cameras
+            .view(&self.output.name())
+            .expect("winit output camera initialized at startup");
+        let camera_center = view.center;
+        let zoom_scale = view.scale;
 
         // Scoped so `renderer`/`framebuffer` (both borrowed from
         // `self.backend`) are dropped before `submit()` needs its own
