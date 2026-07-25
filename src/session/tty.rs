@@ -12,6 +12,7 @@ use smithay::backend::session::Event as SessionEvent;
 use smithay::backend::session::Session;
 use smithay::input::keyboard::FilterResult;
 use smithay::input::{Seat, SeatHandler, SeatState};
+use smithay::reexports::drm::control::crtc;
 use smithay::reexports::input::Libinput;
 use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
 use smithay::reexports::wayland_server::protocol::wl_seat::WlSeat;
@@ -77,7 +78,10 @@ enum RedrawState {
     Queued,
     /// A frame was submitted; waiting for its VBlank. `redraw_needed`
     /// remembers whether another redraw was requested since.
-    WaitingForVBlank { redraw_needed: bool },
+    WaitingForVBlank {
+        crtc: crtc::Handle,
+        redraw_needed: bool,
+    },
     /// The last redraw attempt submitted nothing (no damage, or an error),
     /// so a timer was armed for the estimated next VBlank instead of
     /// waiting on a real one that might never come.
@@ -95,9 +99,10 @@ impl RedrawState {
             }
             // A redraw is already queued, one way or another.
             value @ (RedrawState::Queued | RedrawState::WaitingForEstimatedVBlankAndQueued(_)) => value,
-            RedrawState::WaitingForVBlank { .. } => {
-                RedrawState::WaitingForVBlank { redraw_needed: true }
-            }
+            RedrawState::WaitingForVBlank { crtc, .. } => RedrawState::WaitingForVBlank {
+                crtc,
+                redraw_needed: true,
+            },
         }
     }
 }
@@ -174,7 +179,11 @@ pub fn run() {
         .expect("failed to advertise keyboard capability on the wl_seat");
     seat.add_pointer();
 
-    let _output_global = backend.primary_output().create_global::<TtyApp>(&dh);
+    let outputs: Vec<_> = backend.outputs().cloned().collect();
+    let _output_globals: Vec<_> = outputs
+        .iter()
+        .map(|output| output.create_global::<TtyApp>(&dh))
+        .collect();
 
     let output_size = backend.output_size();
     let camera = halley_core::camera::Camera::new(
@@ -218,9 +227,11 @@ pub fn run() {
         last_camera_tick: Instant::now(),
         grab: crate::input::grab::Grab::None,
     };
-    app.wayland
-        .space
-        .map_output(app.backend.primary_output(), (0, 0));
+    for output in outputs {
+        app.wayland
+            .space
+            .map_output(&output, output.current_location());
+    }
 
     let socket_name = init_wayland_listener(display, &mut event_loop);
     println!("wayland socket ready, WAYLAND_DISPLAY={socket_name:?}");
@@ -238,10 +249,9 @@ pub fn run() {
     event_loop
         .handle()
         .insert_source(libinput_backend, move |event, _, app| {
-            let output_size = app.backend.output_size().to_logical(1);
             let output_size_physical = app.backend.output_size();
             let position_before = app.pointer.position();
-            app.pointer.process_input_event(&event, output_size);
+            app.pointer.process_input_event(&event, &app.wayland.space);
             let position_after = app.pointer.position();
             queue_redraw(app);
 
@@ -454,27 +464,37 @@ pub fn run() {
                     println!("frame_submitted failed for {crtc:?}: {err}");
                     return;
                 }
-                // Secondary outputs never redraw beyond their first frame
-                // (see TtyBackend::render's doc comment) - only the primary
-                // output's VBlank cadence drives redraw_state.
-                if crtc != app.backend.primary_crtc() {
+                // Lets mapped clients know their last commit was actually
+                // presented on the primary output, so they schedule their
+                // next frame - regardless of which output currently carries
+                // the cursor.
+                if crtc == app.backend.primary_crtc() {
+                    let output = app.backend.primary_output().clone();
+                    let elapsed = app.start_time.elapsed();
+                    app.wayland.space.elements().for_each(|window| {
+                        window.send_frame(&output, elapsed, Some(Duration::ZERO), |_, _| {
+                            Some(output.clone())
+                        });
+                    });
+                    app.wayland.space.refresh();
+                }
+
+                // Several outputs may have submitted damage during the same
+                // render. Only the CRTC selected when that render completed
+                // drives this single redraw state machine; other VBlanks
+                // still clear their backend `pending` flag above.
+                if !matches!(
+                    app.redraw_state,
+                    RedrawState::WaitingForVBlank {
+                        crtc: waiting_crtc,
+                        ..
+                    } if waiting_crtc == crtc
+                ) {
                     return;
                 }
 
-                // Lets mapped clients know their last commit was actually
-                // presented, so they schedule their next frame - regardless
-                // of whether we redraw again ourselves.
-                let output = app.backend.primary_output().clone();
-                let elapsed = app.start_time.elapsed();
-                app.wayland.space.elements().for_each(|window| {
-                    window.send_frame(&output, elapsed, Some(Duration::ZERO), |_, _| {
-                        Some(output.clone())
-                    });
-                });
-                app.wayland.space.refresh();
-
                 let redraw_needed = match std::mem::take(&mut app.redraw_state) {
-                    RedrawState::WaitingForVBlank { redraw_needed } => redraw_needed,
+                    RedrawState::WaitingForVBlank { redraw_needed, .. } => redraw_needed,
                     // Can happen when resuming from a VT switch, or a rogue
                     // VBlank the kernel wasn't asked for - redraw defensively
                     // rather than silently dropping the frame.
@@ -545,7 +565,17 @@ fn redraw(app: &mut TtyApp, loop_handle: &LoopHandle<'_, TtyApp>) {
         println!("render failed: {err}");
     }
 
-    if app.backend.primary_frame_in_flight() {
+    let cursor_crtc = app
+        .backend
+        .cursor_crtc(&app.wayland.space, cursor_position);
+    let primary_crtc = app.backend.primary_crtc();
+    let waiting_crtc = if app.backend.frame_in_flight(primary_crtc) {
+        primary_crtc
+    } else {
+        cursor_crtc
+    };
+
+    if app.backend.frame_in_flight(waiting_crtc) {
         // A frame was actually queued to DRM - a real VBlank is coming, so
         // drop any estimated-vblank timer we might have been relying on
         // instead.
@@ -555,6 +585,7 @@ fn redraw(app: &mut TtyApp, loop_handle: &LoopHandle<'_, TtyApp>) {
             loop_handle.remove(token);
         }
         app.redraw_state = RedrawState::WaitingForVBlank {
+            crtc: waiting_crtc,
             // While the zoom camera is still easing toward its target,
             // request another redraw once this frame's VBlank lands -
             // otherwise the damage-driven scheduler stops redrawing after a
@@ -588,7 +619,10 @@ fn queue_estimated_vblank_timer(app: &mut TtyApp, loop_handle: &LoopHandle<'_, T
         }
     }
 
-    let interval = app.backend.refresh_interval();
+    let cursor_crtc = app
+        .backend
+        .cursor_crtc(&app.wayland.space, app.pointer.position());
+    let interval = app.backend.refresh_interval(cursor_crtc);
     let token = loop_handle
         .insert_source(Timer::from_duration(interval), |_, _, app| {
             on_estimated_vblank_timer(app);

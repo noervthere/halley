@@ -22,7 +22,7 @@ use smithay::output::{Mode as OutputMode, Output, OutputModeSource, PhysicalProp
 use smithay::reexports::drm::control::{Mode, ModeTypeFlags, connector, crtc};
 use smithay::reexports::rustix::fs::OFlags;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::utils::{DeviceFd, Physical, Point, Scale, Size, Transform};
+use smithay::utils::{DeviceFd, Logical, Physical, Point, Rectangle, Scale, Size, Transform};
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
 
 use super::Renderable;
@@ -44,6 +44,7 @@ type TtyDrmOutput =
 /// still waiting on its last one.
 struct DrmOutputEntry {
     crtc: crtc::Handle,
+    output: Output,
     drm_output: TtyDrmOutput,
     pending: bool,
 }
@@ -78,17 +79,13 @@ pub struct TtyBackend {
     renderer: GlesRenderer,
     drm_output_manager: TtyDrmOutputManager,
     drm_outputs: Vec<DrmOutputEntry>,
-    /// The first successfully initialized output's size - used only to
-    /// clamp the single shared pointer position (see `Pointer`'s doc
-    /// comment on the multi-output simplification). Not per-output layout;
-    /// real per-output pointer coordinate spaces are future multi-monitor
-    /// work.
+    /// The first successfully initialized output's size. Window rendering,
+    /// camera math, and input grabs remain primary-output-only for now;
+    /// pointer confinement itself uses every output mapped into `Space`.
     output_size: Size<i32, Physical>,
-    /// The CRTC of the first successfully initialized output - the only one
-    /// the cursor is drawn on. There's no per-output coordinate layout yet
-    /// (see `output_size`), so a single shared cursor position can't be
-    /// meaningfully placed on every monitor at once; showing it on all of
-    /// them made it look duplicated rather than tracking one pointer.
+    /// The CRTC of the first successfully initialized output. Windows still
+    /// render only here; the cursor is rendered on whichever mapped output
+    /// contains its global position.
     primary_crtc: crtc::Handle,
     /// The `wl_output` for the primary output - client windows are only
     /// ever drawn there this round (see `render()`), matching the same
@@ -96,11 +93,8 @@ pub struct TtyBackend {
     /// establish rather than inventing a new one.
     primary_output: Output,
     /// Every successfully initialized output, in connector-scan order - each
-    /// one now gets its own real name, configured mode/position/transform
-    /// (see `TtyBackend::new`'s per-connector loop). Purely informational
-    /// until multi-output window placement exists (`halleyctl outputs` and
-    /// future per-output work read this); rendering still only ever targets
-    /// `primary_output`.
+    /// one has its real name and configured mode/position/transform. Driving
+    /// code advertises and maps all of them into Smithay's `Space`.
     outputs: Vec<TtyOutput>,
 }
 
@@ -348,9 +342,13 @@ impl TtyBackend {
                     output.set_preferred(output_mode);
 
                     primary_output.get_or_insert_with(|| output.clone());
-                    outputs.push(TtyOutput { output, vrr });
+                    outputs.push(TtyOutput {
+                        output: output.clone(),
+                        vrr,
+                    });
                     drm_outputs.push(DrmOutputEntry {
                         crtc,
+                        output,
                         drm_output,
                         pending: false,
                     });
@@ -379,45 +377,63 @@ impl TtyBackend {
         Ok((backend, session_notifier, drm_notifier))
     }
 
-    /// The size used to clamp the shared pointer position - see the
-    /// `output_size` field's doc comment for the multi-output caveat.
+    /// The primary output size used by primary-only window/camera behavior.
     pub fn output_size(&self) -> Size<i32, Physical> {
         self.output_size
     }
 
-    /// The `wl_output` driving code registers as a global and maps into a
-    /// `Space` - see `primary_output`'s doc comment for the single-output
-    /// caveat this shares with `output_size`/`primary_crtc`.
+    /// The `wl_output` used for primary-only window rendering and frame
+    /// callbacks.
     pub fn primary_output(&self) -> &Output {
         &self.primary_output
     }
 
-    /// The CRTC driving code's redraw scheduling should key off of - only
-    /// the primary output ever has genuinely dynamic content (windows, the
-    /// cursor), so it's the only one whose VBlank cadence needs to drive a
-    /// redraw-request state machine at all.
+    /// Every initialized `wl_output`, for registering globals and mapping
+    /// the configured layout into Smithay's `Space`.
+    pub fn outputs(&self) -> impl Iterator<Item = &Output> {
+        self.outputs.iter().map(|entry| &entry.output)
+    }
+
+    /// The CRTC used for primary-only client content.
     pub fn primary_crtc(&self) -> crtc::Handle {
         self.primary_crtc
     }
 
-    /// Whether the primary output currently has a frame queued and awaiting
-    /// its VBlank - lets driving code's redraw scheduling (see
-    /// `session::tty`'s `RedrawState`) tell whether the last `render()` call
-    /// actually submitted anything to DRM, or produced no damage.
-    pub fn primary_frame_in_flight(&self) -> bool {
+    /// Whether an output currently has a frame queued and awaiting VBlank.
+    pub fn frame_in_flight(&self, crtc: crtc::Handle) -> bool {
         self.drm_outputs
             .iter()
-            .find(|entry| entry.crtc == self.primary_crtc)
+            .find(|entry| entry.crtc == crtc)
             .is_some_and(|entry| entry.pending)
     }
 
-    /// The primary output's refresh interval, used to time the estimated-
-    /// VBlank fallback timer (see `session::tty`) - falls back to 60Hz if
-    /// the mode's refresh rate is somehow unset.
-    pub fn refresh_interval(&self) -> Duration {
+    /// The output containing the global pointer position, or the primary
+    /// output when no mapped output contains it.
+    pub fn cursor_crtc(
+        &self,
+        space: &Space<Window>,
+        cursor_position: (f64, f64),
+    ) -> crtc::Handle {
+        self.drm_outputs
+            .iter()
+            .find(|entry| {
+                space
+                    .output_geometry(&entry.output)
+                    .is_some_and(|geometry| {
+                        cursor_position_for_output(geometry, cursor_position).is_some()
+                    })
+            })
+            .map_or(self.primary_crtc, |entry| entry.crtc)
+    }
+
+    /// One output's refresh interval, used to time the estimated-VBlank
+    /// fallback for whichever output currently carries the cursor.
+    pub fn refresh_interval(&self, crtc: crtc::Handle) -> Duration {
         let refresh_mhz = self
-            .primary_output
-            .current_mode()
+            .drm_outputs
+            .iter()
+            .find(|entry| entry.crtc == crtc)
+            .and_then(|entry| entry.output.current_mode())
             .map(|mode| mode.refresh)
             .filter(|&refresh| refresh > 0)
             .unwrap_or(60_000);
@@ -516,13 +532,15 @@ impl Renderable for TtyBackend {
                 continue;
             }
             let crtc = entry.crtc;
+            let cursor_position = space
+                .output_geometry(&entry.output)
+                .and_then(|geometry| cursor_position_for_output(geometry, cursor_position));
             let drm_output = &mut entry.drm_output;
 
-            // Only the primary output draws windows and the cursor - there's
-            // no per-output coordinate/layout system yet (see
-            // `primary_crtc`'s doc comment), so a single shared pointer
-            // position and one `Space` can't be meaningfully split across
-            // monitors. Secondary outputs keep rendering clear-color only.
+            // Client windows remain primary-only. The cursor follows
+            // Smithay's Anvil pattern: select the mapped output containing
+            // its global logical position, then render at output-local
+            // coordinates on that output's CRTC.
             let mut elements: Vec<TtyRenderElement> = Vec::new();
             if crtc == self.primary_crtc {
                 // Built directly per mapped window rather than via
@@ -578,12 +596,14 @@ impl Renderable for TtyBackend {
                             .map(TtyRenderElement::Border),
                     );
                 }
+            }
 
+            if let Some(cursor_position) = cursor_position {
                 // Built before render_frame() borrows the renderer again -
                 // from_buffer() only needs it transiently to import the texture.
                 match MemoryRenderBufferRenderElement::from_buffer(
                     &mut self.renderer,
-                    Point::<f64, Physical>::from(cursor_position),
+                    cursor_position,
                     &cursor.buffer,
                     None,
                     None,
@@ -636,6 +656,17 @@ impl Renderable for TtyBackend {
     }
 }
 
+fn cursor_position_for_output(
+    output_geometry: Rectangle<i32, Logical>,
+    cursor_position: (f64, f64),
+) -> Option<Point<f64, Physical>> {
+    let cursor_position = Point::<f64, Logical>::from(cursor_position);
+    output_geometry
+        .to_f64()
+        .contains(cursor_position)
+        .then(|| (cursor_position - output_geometry.loc.to_f64()).to_physical(1.0))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -649,5 +680,34 @@ mod tests {
         // parse_one_output already clamps anything else to 0, but this
         // function stays defensive on its own rather than trusting that.
         assert_eq!(transform_from_degrees(45), Transform::Normal);
+    }
+
+    #[test]
+    fn cursor_position_is_local_to_the_output_that_contains_it() {
+        let primary = Rectangle::new((0, 0).into(), (2560, 1440).into());
+        let secondary = Rectangle::new((2560, 0).into(), (1920, 1200).into());
+
+        assert_eq!(
+            cursor_position_for_output(primary, (3000.0, 800.0)),
+            None
+        );
+        assert_eq!(
+            cursor_position_for_output(secondary, (3000.0, 800.0)),
+            Some(Point::from((440.0, 800.0)))
+        );
+    }
+
+    #[test]
+    fn cursor_position_uses_half_open_output_edges() {
+        let secondary = Rectangle::new((2560, 0).into(), (1920, 1200).into());
+
+        assert_eq!(
+            cursor_position_for_output(secondary, (2560.0, 0.0)),
+            Some(Point::from((0.0, 0.0)))
+        );
+        assert_eq!(
+            cursor_position_for_output(secondary, (4480.0, 1199.0)),
+            None
+        );
     }
 }

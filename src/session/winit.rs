@@ -241,10 +241,9 @@ pub fn run() {
                 app.backend.request_redraw();
             }
             WinitEvent::Input(event) => {
-                let output_size = app.backend.window_size().to_logical(1);
                 let output_size_physical = app.backend.window_size();
                 let position_before = app.pointer.position();
-                app.pointer.process_input_event(&event, output_size);
+                app.pointer.process_input_event(&event, &app.wayland.space);
                 let position_after = app.pointer.position();
                 // Motion alone doesn't trigger a Redraw - request one so the
                 // cursor visibly follows the mouse instead of only moving on
