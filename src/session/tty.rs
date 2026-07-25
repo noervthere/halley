@@ -502,6 +502,7 @@ pub fn run() {
                                         handle,
                                         phase: crate::input::grab::ResizePhase::Ongoing,
                                         last_configure: None,
+                                        last_size: start_rect.size,
                                     });
                                     intercepted = true;
                             }
@@ -1061,19 +1062,11 @@ impl CompositorHandler for TtyApp {
     }
 
     fn commit(&mut self, surface: &WlSurface) {
-        let resizing = crate::input::grab::begin_resize_commit(
-            self.resize_anchor.as_ref(),
-            &self.wayland.space,
-        );
         if let Some(mapped) = wayland::compositor::commit::<Self>(&mut self.wayland, surface) {
             self.window_open_animations
                 .start(mapped, crate::frame_clock::monotonic_now());
         }
-        crate::input::grab::finish_resize_commit(
-            &mut self.resize_anchor,
-            &mut self.wayland.space,
-            resizing,
-        );
+        crate::input::grab::finish_resize_commit(&mut self.resize_anchor, &mut self.wayland.space);
         queue_redraw(self);
 
         sync_keyboard_focus(self, SERIAL_COUNTER.next_serial());

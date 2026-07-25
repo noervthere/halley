@@ -81,6 +81,18 @@ pub struct ResizeAnchor {
     /// Serial of the most recent configure actually sent to this client
     /// during the drag, or `None` if the drag never changed the size.
     pub last_configure: Option<Serial>,
+    /// The compositor's own copy of the window's size, and the *only* usable
+    /// "before" side of the anchoring correction.
+    ///
+    /// It cannot be re-read from the surface at commit time: Smithay swaps
+    /// pending cached state into current (`PrivateSurfaceData::commit` in
+    /// `wayland/compositor/tree.rs`) *before* dispatching
+    /// `CompositorHandler::commit`, so by the time this code runs
+    /// `Window::geometry()` already reports the newly committed size and the
+    /// correction would always work out to zero. niri sidesteps the same trap
+    /// by diffing against its own cached `data.size` in
+    /// `FloatingSpace::update_window`.
+    pub last_size: Size<i32, Logical>,
 }
 
 pub enum ResizePhase {
@@ -263,65 +275,35 @@ pub fn resize_location_after_commit(
     Point::from((x, y))
 }
 
-/// The size the anchored window had going *into* a commit, read before
-/// Smithay swaps in the client's newly committed geometry. Paired with
-/// `finish_resize_commit`, which needs both sides of that swap.
-pub struct PendingResizeCommit {
-    window: Window,
-    handle: ResizeHandle,
-    previous_size: Size<i32, Logical>,
-}
-
-/// Call at the top of `CompositorHandler::commit`, before dispatching to
-/// Smithay.
+/// Call from `CompositorHandler::commit`, after dispatching to Smithay.
+/// Applies the anchoring correction against the size this code last saw,
+/// re-arms that size for the next commit, then retires the anchor if this was
+/// the commit a released drag was waiting on.
 ///
 /// Not scoped to the surface that actually committed: a window's geometry
-/// can only change on its own commit, so for any other surface this reads a
-/// size that the matching `finish_resize_commit` will find unchanged, and the
-/// correction works out to zero.
-pub fn begin_resize_commit(
-    anchor: Option<&ResizeAnchor>,
-    space: &Space<Window>,
-) -> Option<PendingResizeCommit> {
-    let anchor = anchor?;
-    let geometry = space.element_geometry(&anchor.window)?;
-    Some(PendingResizeCommit {
-        window: anchor.window.clone(),
-        handle: anchor.handle,
-        previous_size: geometry.size,
-    })
-}
-
-/// Call at the bottom of `CompositorHandler::commit`, after dispatching to
-/// Smithay. Applies the anchoring correction, then retires the anchor if this
-/// was the commit the released drag was waiting on.
+/// only changes on its own commit, so for any other surface the size is
+/// unchanged and the correction works out to zero.
 ///
 /// The retirement check runs *after* the correction, matching niri's ordering
 /// in `update_window` (it reads `interactive_resize_data()` before
 /// `on_commit()` clears it) - the final commit of a drag is still anchored.
-pub fn finish_resize_commit(
-    anchor: &mut Option<ResizeAnchor>,
-    space: &mut Space<Window>,
-    pending: Option<PendingResizeCommit>,
-) {
-    let Some(pending) = pending else {
+pub fn finish_resize_commit(anchor: &mut Option<ResizeAnchor>, space: &mut Space<Window>) {
+    let Some(resize) = anchor.as_mut() else {
         return;
     };
 
-    if let Some(committed) = space.element_geometry(&pending.window)
-        && let Some(location) = space.element_location(&pending.window)
+    if let Some(committed) = space.element_geometry(&resize.window)
+        && let Some(location) = space.element_location(&resize.window)
     {
-        let location = resize_location_after_commit(
-            pending.handle,
-            location,
-            pending.previous_size,
-            committed.size,
-        );
-        space.relocate_element(&pending.window, location);
+        let location =
+            resize_location_after_commit(resize.handle, location, resize.last_size, committed.size);
+        resize.last_size = committed.size;
+        let window = resize.window.clone();
+        space.relocate_element(&window, location);
     }
 
     let retire = anchor.as_ref().is_some_and(|resize| {
-        anchor_is_retired(&resize.phase, committed_configure_serial(&pending.window))
+        anchor_is_retired(&resize.phase, committed_configure_serial(&resize.window))
     });
     if retire {
         *anchor = None;
@@ -607,6 +589,41 @@ mod tests {
 
         assert_eq!(location, Point::from((56, 100)));
         assert_eq!(location.x + committed_size.w, 400);
+    }
+
+    #[test]
+    fn anchoring_diffs_against_the_tracked_size_not_the_committed_one() {
+        // Regression: the "before" size used to be re-read from the surface
+        // inside the commit handler, but Smithay has already swapped the new
+        // geometry in by then - so every correction came out zero and a
+        // left-edge drag dragged the *right* edge instead. Walk a drag as a
+        // run of commits and hold the compositor's own tracked size.
+        let mut location = Point::from((100, 100));
+        let mut tracked = Size::from((300, 300));
+
+        for committed in [
+            Size::from((280, 300)),
+            Size::from((264, 300)),
+            Size::from((248, 300)),
+        ] {
+            location =
+                resize_location_after_commit(ResizeHandle::BottomLeft, location, tracked, committed);
+            tracked = committed;
+            // The un-dragged right edge holds at its original 400 throughout.
+            assert_eq!(location.x + committed.w, 400);
+            assert_eq!(location.y, 100);
+        }
+
+        // Feeding the committed size in as the "before" side - the bug - moves
+        // nothing, leaving the right edge to walk in with the left one.
+        let stuck = resize_location_after_commit(
+            ResizeHandle::BottomLeft,
+            Point::from((100, 100)),
+            Size::from((248, 300)),
+            Size::from((248, 300)),
+        );
+        assert_eq!(stuck, Point::from((100, 100)));
+        assert_ne!(stuck.x + 248, 400);
     }
 
     #[test]

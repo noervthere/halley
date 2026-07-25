@@ -465,6 +465,7 @@ pub fn run() {
                                                 handle,
                                                 phase: crate::input::grab::ResizePhase::Ongoing,
                                                 last_configure: None,
+                                                last_size: start_rect.size,
                                             });
                                         intercepted = true;
                                 }
@@ -719,10 +720,6 @@ impl CompositorHandler for App {
     }
 
     fn commit(&mut self, surface: &WlSurface) {
-        let resizing = crate::input::grab::begin_resize_commit(
-            self.resize_anchor.as_ref(),
-            &self.wayland.space,
-        );
         if let Some(mapped) = wayland::compositor::commit::<Self>(&mut self.wayland, surface) {
             self.window_open_animations
                 .start(mapped, crate::frame_clock::monotonic_now());
@@ -730,7 +727,6 @@ impl CompositorHandler for App {
         crate::input::grab::finish_resize_commit(
             &mut self.resize_anchor,
             &mut self.wayland.space,
-            resizing,
         );
         self.backend.request_redraw();
 
