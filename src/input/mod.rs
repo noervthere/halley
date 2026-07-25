@@ -6,7 +6,7 @@ pub mod zoom;
 use std::collections::HashSet;
 
 use halley_config::{Action, ModifierKey, Modifiers};
-use smithay::backend::input::Keycode;
+use smithay::backend::input::{ButtonState, Keycode};
 use smithay::input::keyboard::{Keysym, ModifiersState};
 
 use keybinds::{BackendKind, ResolvedBind, ResolvedTrigger, WheelDirection};
@@ -109,7 +109,7 @@ pub fn match_wheel_bind(
     Some(bind.action.clone())
 }
 
-pub fn no_modifiers_held(state: &ModifiersState) -> bool {
+fn no_modifiers_held(state: &ModifiersState) -> bool {
     !state.ctrl && !state.alt && !state.shift && !state.logo
 }
 
@@ -126,6 +126,43 @@ impl SuppressedButtons {
     pub fn release_is_suppressed(&mut self, button: u32) -> bool {
         self.buttons.remove(&button)
     }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum PointerBindingResult {
+    Action(Action),
+    SuppressedRelease,
+    Unhandled,
+}
+
+/// Applies the backend-independent pointer-bind policy: consume the release
+/// paired with an intercepted press, reserve bare background left-drag for
+/// panning, and let an exact configured chord win everywhere else.
+pub fn process_pointer_binding(
+    binds: &[ResolvedBind],
+    mods: &ModifiersState,
+    button: u32,
+    state: ButtonState,
+    on_background: bool,
+    bindings_enabled: bool,
+    suppressed: &mut SuppressedButtons,
+) -> PointerBindingResult {
+    if state == ButtonState::Released && suppressed.release_is_suppressed(button) {
+        return PointerBindingResult::SuppressedRelease;
+    }
+    if state != ButtonState::Pressed {
+        return PointerBindingResult::Unhandled;
+    }
+
+    let is_left = keybinds::PointerButtonTrigger::Left.matches(button);
+    if !bindings_enabled || (is_left && on_background && no_modifiers_held(mods)) {
+        return PointerBindingResult::Unhandled;
+    }
+    let Some(action) = match_pointer_bind(binds, mods, button) else {
+        return PointerBindingResult::Unhandled;
+    };
+    suppressed.suppress(button);
+    PointerBindingResult::Action(action)
 }
 
 /// The resolved bind table plus the configured terminal command - nothing
@@ -304,5 +341,59 @@ mod tests {
         assert!(!suppressed.release_is_suppressed(0x111));
         assert!(suppressed.release_is_suppressed(0x110));
         assert!(!suppressed.release_is_suppressed(0x110));
+    }
+
+    #[test]
+    fn pointer_binding_policy_reserves_bare_background_pan() {
+        let binds = [bind(
+            ResolvedTrigger::PointerButton(PointerButtonTrigger::Left),
+            Modifiers::default(),
+        )];
+        let mut suppressed = SuppressedButtons::default();
+        assert_eq!(
+            process_pointer_binding(
+                &binds,
+                &ModifiersState::default(),
+                0x110,
+                ButtonState::Pressed,
+                true,
+                true,
+                &mut suppressed,
+            ),
+            PointerBindingResult::Unhandled
+        );
+    }
+
+    #[test]
+    fn pointer_binding_policy_pairs_intercepted_press_and_release() {
+        let binds = [bind(
+            ResolvedTrigger::PointerButton(PointerButtonTrigger::Left),
+            Modifiers::default(),
+        )];
+        let mut suppressed = SuppressedButtons::default();
+        assert_eq!(
+            process_pointer_binding(
+                &binds,
+                &ModifiersState::default(),
+                0x110,
+                ButtonState::Pressed,
+                false,
+                true,
+                &mut suppressed,
+            ),
+            PointerBindingResult::Action(Action::Quit)
+        );
+        assert_eq!(
+            process_pointer_binding(
+                &binds,
+                &ModifiersState::default(),
+                0x110,
+                ButtonState::Released,
+                false,
+                true,
+                &mut suppressed,
+            ),
+            PointerBindingResult::SuppressedRelease
+        );
     }
 }

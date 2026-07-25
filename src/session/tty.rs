@@ -55,14 +55,13 @@ use crate::backend::tty::TtyBackend;
 use crate::backend::{CLEAR_COLOR, RenderStatus, Renderable};
 use crate::cursor::CursorImage;
 use crate::frame_clock::FrameClock;
-use crate::input::{Keyboard, SuppressedButtons};
+use crate::input::{Keyboard, PointerBindingResult, SuppressedButtons};
 use crate::input::keybinds::BackendKind;
-use crate::input::{match_keyboard_bind, match_pointer_bind, match_wheel_bind, no_modifiers_held};
+use crate::input::{match_keyboard_bind, match_wheel_bind, process_pointer_binding};
 use crate::input::pointer::{
     Pointer, WheelAccumulator, axis_frame_filtered, process_wheel_bindings,
 };
 use crate::ipc::OutputInfoSource;
-use crate::spawn;
 use crate::wayland::{self, ClientState, WaylandState};
 
 /// From `<linux/input-event-codes.h>` - the left mouse button's raw code,
@@ -139,33 +138,17 @@ fn dispatch_action(
     socket_name: &OsString,
     output_name: Option<&str>,
 ) {
-    match action {
-        halley_config::Action::Quit => app.loop_signal.stop(),
-        halley_config::Action::CloseFocusedWindow => {
-            wayland::xdg_shell::close_focused(&app.wayland);
-        }
-        halley_config::Action::OpenTerminal => match app.keyboard.terminal_command() {
-            Some(command) => spawn::spawn_detached(command, socket_name),
-            None => eprintln!("keybinds: no terminal configured or found on PATH"),
-        },
-        halley_config::Action::ZoomOut => {
-            if let Some(camera) = output_name.and_then(|name| app.cameras.get_mut(name)) {
-                crate::input::zoom::zoom_out(camera, &app.zoom);
-            }
-        }
-        halley_config::Action::ZoomIn => {
-            if let Some(camera) = output_name.and_then(|name| app.cameras.get_mut(name)) {
-                crate::input::zoom::zoom_in(camera, &app.zoom);
-            }
-        }
-        halley_config::Action::ZoomReset => {
-            if let Some(camera) = output_name.and_then(|name| app.cameras.get_mut(name)) {
-                camera.reset_zoom_target();
-            }
-        }
-        halley_config::Action::Spawn(command) => {
-            spawn::spawn_detached(&command, socket_name);
-        }
+    let camera = output_name.and_then(|name| app.cameras.get_mut(name));
+    if super::dispatch_action(
+        action,
+        &app.wayland,
+        app.keyboard.terminal_command(),
+        socket_name,
+        camera,
+        &app.zoom,
+    ) == super::SessionControl::Quit
+    {
+        app.loop_signal.stop();
     }
 }
 
@@ -511,31 +494,30 @@ pub fn run() {
                     .modifier_state();
                 let bypass_shortcuts = wayland::focus::current(&app.wayland)
                     .is_some_and(|focus| focus.bypasses_shortcuts());
-
-                if state == ButtonState::Released
-                    && app.suppressed_buttons.release_is_suppressed(button)
-                {
-                    intercepted = true;
-                } else if state == ButtonState::Pressed {
-                    let reserved_background_pan = button == BTN_LEFT
-                        && no_modifiers_held(&mods)
-                        && route.as_ref().is_some_and(|route| {
-                            matches!(
-                                &route.target,
-                                crate::input::pointer::PointerTarget::Background
-                            )
-                        });
-                    if !bypass_shortcuts
-                        && !reserved_background_pan
-                        && let Some(action) =
-                            match_pointer_bind(&app.keyboard.binds, &mods, button)
-                    {
-                        let output_name =
-                            route.as_ref().map(|route| route.output.name().to_string());
-                        app.suppressed_buttons.suppress(button);
+                let on_background = route.as_ref().is_some_and(|route| {
+                    matches!(
+                        &route.target,
+                        crate::input::pointer::PointerTarget::Background
+                    )
+                });
+                match process_pointer_binding(
+                    &app.keyboard.binds,
+                    &mods,
+                    button,
+                    state,
+                    on_background,
+                    !bypass_shortcuts,
+                    &mut app.suppressed_buttons,
+                ) {
+                    PointerBindingResult::Action(action) => {
+                        let output_name = route
+                            .as_ref()
+                            .map(|route| route.output.name().to_string());
                         dispatch_action(app, action, &socket_name, output_name.as_deref());
                         intercepted = true;
                     }
+                    PointerBindingResult::SuppressedRelease => intercepted = true,
+                    PointerBindingResult::Unhandled => {}
                 }
 
                 if !intercepted && button == BTN_RIGHT {
