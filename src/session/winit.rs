@@ -32,11 +32,15 @@ use smithay::wayland::shell::xdg::decoration::{XdgDecorationHandler, XdgDecorati
 use smithay::wayland::shell::xdg::{
     PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
 };
+use smithay::wayland::shell::wlr_layer::{
+    Layer, LayerSurface as WlrLayerSurface, WlrLayerShellHandler, WlrLayerShellState,
+};
 use smithay::wayland::shm::{ShmHandler, ShmState};
 use smithay::wayland::socket::ListeningSocketSource;
 use smithay::{
-    delegate_compositor, delegate_data_device, delegate_output, delegate_primary_selection,
-    delegate_seat, delegate_shm, delegate_xdg_decoration, delegate_xdg_shell,
+    delegate_compositor, delegate_data_device, delegate_layer_shell, delegate_output,
+    delegate_primary_selection, delegate_seat, delegate_shm, delegate_xdg_decoration,
+    delegate_xdg_shell,
 };
 
 use crate::backend::winit::WinitBackend;
@@ -147,6 +151,7 @@ pub fn run() {
 
     let compositor_state = CompositorState::new::<App>(&dh);
     let xdg_shell_state = XdgShellState::new::<App>(&dh);
+    let layer_shell_state = WlrLayerShellState::new::<App>(&dh);
     let xdg_decoration_state = XdgDecorationState::new::<App>(&dh);
     let shm_state = ShmState::new::<App>(&dh, vec![]);
     let output_manager_state = OutputManagerState::new();
@@ -179,6 +184,7 @@ pub fn run() {
             dh,
             compositor_state,
             xdg_shell_state,
+            layer_shell_state,
             xdg_decoration_state,
             shm_state,
             output_manager_state,
@@ -251,6 +257,7 @@ pub fn run() {
                     });
                 });
                 app.wayland.space.refresh();
+                wayland::layer_shell::cleanup(&mut app.wayland);
 
                 app.backend.request_redraw();
             }
@@ -261,6 +268,7 @@ pub fn run() {
                 // differs from the last bound size. Just need a new frame,
                 // plus the advertised wl_output mode kept in sync.
                 app.backend.update_output_mode();
+                smithay::desktop::layer_map_for_output(app.backend.output()).arrange();
                 // Simplification: snap zoom and pan back to rest at the new
                 // size rather than preserving the current state across a
                 // resize - resizing mid-zoom/pan is a rare dev-only edge
@@ -695,6 +703,32 @@ impl XdgShellHandler for App {
     fn grab(&mut self, _surface: PopupSurface, _seat: WlSeat, _serial: Serial) {}
 }
 
+impl WlrLayerShellHandler for App {
+    fn shell_state(&mut self) -> &mut WlrLayerShellState {
+        &mut self.wayland.layer_shell_state
+    }
+
+    fn new_layer_surface(
+        &mut self,
+        surface: WlrLayerSurface,
+        output: Option<smithay::reexports::wayland_server::protocol::wl_output::WlOutput>,
+        _layer: Layer,
+        namespace: String,
+    ) {
+        let output = output
+            .as_ref()
+            .and_then(smithay::output::Output::from_resource)
+            .or_else(|| Some(self.backend.output().clone()));
+        wayland::layer_shell::new_surface(&mut self.wayland, surface, output, namespace);
+        self.backend.request_redraw();
+    }
+
+    fn layer_destroyed(&mut self, surface: WlrLayerSurface) {
+        wayland::layer_shell::destroyed(&mut self.wayland, &surface);
+        self.backend.request_redraw();
+    }
+}
+
 impl XdgDecorationHandler for App {
     fn new_decoration(&mut self, toplevel: ToplevelSurface) {
         wayland::decoration::new_decoration(toplevel);
@@ -769,6 +803,7 @@ impl PrimarySelectionHandler for App {
 delegate_compositor!(App);
 delegate_shm!(App);
 delegate_xdg_shell!(App);
+delegate_layer_shell!(App);
 delegate_xdg_decoration!(App);
 delegate_seat!(App);
 delegate_output!(App);

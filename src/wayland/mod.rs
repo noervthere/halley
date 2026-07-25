@@ -1,12 +1,13 @@
 pub mod compositor;
 pub mod decoration;
+pub mod layer_shell;
 pub mod selection;
 pub mod xdg_shell;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::RwLock;
 
-use smithay::desktop::{Space, Window};
+use smithay::desktop::{PopupManager, Space, Window};
 use smithay::output::Output;
 use smithay::reexports::wayland_server::DisplayHandle;
 use smithay::reexports::wayland_server::backend::{ClientData, ClientId, DisconnectReason};
@@ -17,6 +18,7 @@ use smithay::wayland::selection::data_device::DataDeviceState;
 use smithay::wayland::selection::primary_selection::PrimarySelectionState;
 use smithay::wayland::shell::xdg::XdgShellState;
 use smithay::wayland::shell::xdg::decoration::XdgDecorationState;
+use smithay::wayland::shell::wlr_layer::WlrLayerShellState;
 use smithay::wayland::shm::ShmState;
 
 /// The one output responsible for painting a window. Smithay's `Space`
@@ -60,6 +62,7 @@ pub struct WaylandState {
     pub display_handle: DisplayHandle,
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
+    pub layer_shell_state: WlrLayerShellState,
     pub xdg_decoration_state: XdgDecorationState,
     pub shm_state: ShmState,
     pub output_manager_state: OutputManagerState,
@@ -72,6 +75,10 @@ pub struct WaylandState {
     /// a mode of it: clients set the two selections independently and
     /// expect them to hold different contents.
     pub primary_selection_state: PrimarySelectionState,
+    /// Tracks popup trees once for both xdg-toplevel and layer-shell roots.
+    /// Rendering and input can then ask Smithay for the same canonical tree
+    /// instead of each subsystem inventing its own parent/offset bookkeeping.
+    pub popup_manager: PopupManager,
     /// Real, visible windows - a surface only enters `space` once it has
     /// actually attached a buffer (see `unmapped`), not merely once its
     /// toplevel role exists.
@@ -82,6 +89,11 @@ pub struct WaylandState {
     /// to show, without niri's window-rules/credentials/placement-policy
     /// weight this milestone doesn't need.
     pub unmapped: HashMap<WlSurface, Window>,
+    /// Layer surfaces that have not attached a buffer since creation (or
+    /// since a null-buffer unmap). The Smithay `LayerMap` retains the role so
+    /// it can calculate and send the next configure; this set records the
+    /// separate Wayland mapped/unmapped lifecycle.
+    pub unmapped_layers: HashSet<WlSurface>,
     /// The surface that should have keyboard focus - `None` if nothing is
     /// mapped. Set by `xdg_shell::handle_commit` (new windows steal focus on
     /// map) and cleared by `xdg_shell::toplevel_destroyed` if the destroyed
@@ -103,6 +115,7 @@ impl WaylandState {
         display_handle: DisplayHandle,
         compositor_state: CompositorState,
         xdg_shell_state: XdgShellState,
+        layer_shell_state: WlrLayerShellState,
         xdg_decoration_state: XdgDecorationState,
         shm_state: ShmState,
         output_manager_state: OutputManagerState,
@@ -113,13 +126,16 @@ impl WaylandState {
             display_handle,
             compositor_state,
             xdg_shell_state,
+            layer_shell_state,
             xdg_decoration_state,
             shm_state,
             output_manager_state,
             data_device_state,
             primary_selection_state,
+            popup_manager: PopupManager::default(),
             space: Space::default(),
             unmapped: HashMap::new(),
+            unmapped_layers: HashSet::new(),
             focused: None,
         }
     }

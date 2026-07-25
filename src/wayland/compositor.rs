@@ -3,7 +3,7 @@ use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::wayland::compositor::{get_parent, is_sync_subsurface};
 
 use super::WaylandState;
-use super::xdg_shell;
+use super::{layer_shell, xdg_shell};
 
 /// Shared `CompositorHandler::commit` body, called identically from `App`
 /// and `TtyApp`. Deliberately narrow: buffer import, refreshing whichever
@@ -23,6 +23,12 @@ pub fn commit<D: 'static>(wayland: &mut WaylandState, surface: &WlSurface) {
     let mut root = surface.clone();
     while let Some(parent) = get_parent(&root) {
         root = parent;
+    }
+
+    wayland.popup_manager.commit(surface);
+
+    if layer_shell::handle_commit(wayland, &root) {
+        return;
     }
 
     let owning_window = wayland

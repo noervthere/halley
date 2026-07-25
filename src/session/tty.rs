@@ -37,11 +37,15 @@ use smithay::wayland::shell::xdg::decoration::{XdgDecorationHandler, XdgDecorati
 use smithay::wayland::shell::xdg::{
     PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
 };
+use smithay::wayland::shell::wlr_layer::{
+    Layer, LayerSurface as WlrLayerSurface, WlrLayerShellHandler, WlrLayerShellState,
+};
 use smithay::wayland::shm::{ShmHandler, ShmState};
 use smithay::wayland::socket::ListeningSocketSource;
 use smithay::{
-    delegate_compositor, delegate_data_device, delegate_output, delegate_primary_selection,
-    delegate_seat, delegate_shm, delegate_xdg_decoration, delegate_xdg_shell,
+    delegate_compositor, delegate_data_device, delegate_layer_shell, delegate_output,
+    delegate_primary_selection, delegate_seat, delegate_shm, delegate_xdg_decoration,
+    delegate_xdg_shell,
 };
 
 use crate::backend::tty::TtyBackend;
@@ -219,6 +223,7 @@ pub fn run() {
 
     let compositor_state = CompositorState::new::<TtyApp>(&dh);
     let xdg_shell_state = XdgShellState::new::<TtyApp>(&dh);
+    let layer_shell_state = WlrLayerShellState::new::<TtyApp>(&dh);
     let xdg_decoration_state = XdgDecorationState::new::<TtyApp>(&dh);
     let shm_state = ShmState::new::<TtyApp>(&dh, vec![]);
     let output_manager_state = OutputManagerState::new();
@@ -247,6 +252,7 @@ pub fn run() {
             dh,
             compositor_state,
             xdg_shell_state,
+            layer_shell_state,
             xdg_decoration_state,
             shm_state,
             output_manager_state,
@@ -696,6 +702,7 @@ pub fn run() {
                             });
                         });
                     app.wayland.space.refresh();
+                    wayland::layer_shell::cleanup(&mut app.wayland);
                 }
 
                 // Several outputs may have submitted damage during the same
@@ -1001,6 +1008,39 @@ impl XdgShellHandler for TtyApp {
     fn grab(&mut self, _surface: PopupSurface, _seat: WlSeat, _serial: Serial) {}
 }
 
+impl WlrLayerShellHandler for TtyApp {
+    fn shell_state(&mut self) -> &mut WlrLayerShellState {
+        &mut self.wayland.layer_shell_state
+    }
+
+    fn new_layer_surface(
+        &mut self,
+        surface: WlrLayerSurface,
+        output: Option<smithay::reexports::wayland_server::protocol::wl_output::WlOutput>,
+        _layer: Layer,
+        namespace: String,
+    ) {
+        let output = output
+            .as_ref()
+            .and_then(Output::from_resource)
+            .or_else(|| {
+                self.wayland
+                    .space
+                    .output_under(self.pointer.position())
+                    .next()
+                    .cloned()
+            })
+            .or_else(|| Some(self.backend.primary_output().clone()));
+        wayland::layer_shell::new_surface(&mut self.wayland, surface, output, namespace);
+        queue_redraw(self);
+    }
+
+    fn layer_destroyed(&mut self, surface: WlrLayerSurface) {
+        wayland::layer_shell::destroyed(&mut self.wayland, &surface);
+        queue_redraw(self);
+    }
+}
+
 impl XdgDecorationHandler for TtyApp {
     fn new_decoration(&mut self, toplevel: ToplevelSurface) {
         wayland::decoration::new_decoration(toplevel);
@@ -1069,6 +1109,7 @@ impl PrimarySelectionHandler for TtyApp {
 delegate_compositor!(TtyApp);
 delegate_shm!(TtyApp);
 delegate_xdg_shell!(TtyApp);
+delegate_layer_shell!(TtyApp);
 delegate_xdg_decoration!(TtyApp);
 delegate_seat!(TtyApp);
 delegate_output!(TtyApp);
