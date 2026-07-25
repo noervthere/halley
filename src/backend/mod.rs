@@ -103,7 +103,15 @@ pub fn layer_surface_elements(
         .collect()
 }
 
-/// A backend that can render a single frame.
+/// Whether rendering an output submitted a frame that will produce a
+/// presentation event, or found no new damage to submit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RenderStatus {
+    Submitted,
+    Skipped,
+}
+
+/// A backend that can render one output.
 ///
 /// Deliberately narrow: takes only what it needs, nothing else. Old
 /// halley-wl's equivalent (`RenderBackend::draw_frame(&mut self, st: &mut
@@ -121,6 +129,7 @@ pub trait Renderable {
     #[allow(clippy::too_many_arguments)]
     fn render(
         &mut self,
+        output: &Output,
         clear: Color32F,
         cursor: &CursorImage,
         cursor_position: (f64, f64),
@@ -128,7 +137,7 @@ pub trait Renderable {
         focused: Option<&WlSurface>,
         decorations: &Decorations,
         cameras: &crate::camera::OutputCameras,
-    ) -> Result<(), Box<dyn std::error::Error>>;
+    ) -> Result<RenderStatus, Box<dyn std::error::Error>>;
 }
 
 fn border_color(color: halley_config::BorderColor) -> Color32F {

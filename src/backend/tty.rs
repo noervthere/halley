@@ -27,7 +27,7 @@ use smithay::utils::{DeviceFd, Logical, Physical, Point, Rectangle, Scale, Size,
 use smithay::wayland::shell::wlr_layer::Layer;
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
 
-use super::Renderable;
+use super::{RenderStatus, Renderable};
 use crate::cursor::CursorImage;
 
 type TtyDrmOutputManager =
@@ -509,6 +509,7 @@ impl crate::ipc::OutputInfoSource for TtyBackend {
 impl Renderable for TtyBackend {
     fn render(
         &mut self,
+        output: &Output,
         clear: Color32F,
         cursor: &CursorImage,
         cursor_position: (f64, f64),
@@ -516,27 +517,24 @@ impl Renderable for TtyBackend {
         focused: Option<&WlSurface>,
         decorations: &halley_config::Decorations,
         cameras: &crate::camera::OutputCameras,
-    ) -> Result<(), Box<dyn Error>> {
-        // A single bad output shouldn't hide a working one - failures are
-        // logged per-output, and only surfaced to the caller if literally
-        // every output failed.
-        let mut ok_count = 0;
-        let mut last_err: Option<Box<dyn Error>> = None;
+    ) -> Result<RenderStatus, Box<dyn Error>> {
         let primary_output = self.primary_output.clone();
-
-        for entry in &mut self.drm_outputs {
+        let entry = self
+            .drm_outputs
+            .iter_mut()
+            .find(|entry| &entry.output == output)
+            .ok_or_else(|| format!("unknown tty output {:?}", output.name()))?;
             // A page flip is already queued for this output and hasn't
             // landed yet - DRM won't accept a second commit before that
             // happens. Nothing is lost: `frame_submitted()` clears `pending`
             // on the next VBlank, and the driving code always re-renders
             // right after, picking up whatever changed in the meantime.
             if entry.pending {
-                continue;
+                return Ok(RenderStatus::Skipped);
             }
-            let crtc = entry.crtc;
-            let Some(output_geometry) = space.output_geometry(&entry.output) else {
-                continue;
-            };
+            let output_geometry = space
+                .output_geometry(&entry.output)
+                .ok_or_else(|| format!("tty output {:?} is not mapped", entry.output.name()))?;
             let output_size = output_geometry.size.to_physical(1);
             let view = cameras
                 .view(&entry.output.name())
@@ -664,7 +662,7 @@ impl Renderable for TtyBackend {
             if let Some(cursor_position) = cursor_position {
                 // Built before render_frame() borrows the renderer again -
                 // from_buffer() only needs it transiently to import the texture.
-                match MemoryRenderBufferRenderElement::from_buffer(
+                let element = MemoryRenderBufferRenderElement::from_buffer(
                     &mut self.renderer,
                     cursor_position,
                     &cursor.buffer,
@@ -672,50 +670,29 @@ impl Renderable for TtyBackend {
                     None,
                     None,
                     Kind::Cursor,
-                ) {
-                    // Inserted at the *front*, not pushed: this list is
-                    // front-to-back, so index 0 is the topmost element. The
-                    // cursor has to composite over the entire scene, and unlike
-                    // the winit backend there's no second draw call to put it
-                    // in - `DrmOutput::render_frame` takes one list.
-                    Ok(element) => elements.insert(0, TtyRenderElement::Cursor(element)),
-                    Err(err) => {
-                        eprintln!("failed to build cursor element for {crtc:?}: {err}");
-                        last_err = Some(Box::new(err));
-                        continue;
-                    }
-                }
+                )?;
+                // Inserted at the *front*, not pushed: this list is
+                // front-to-back, so index 0 is the topmost element. The
+                // cursor has to composite over the entire scene, and unlike
+                // the winit backend there's no second draw call to put it
+                // in - `DrmOutput::render_frame` takes one list.
+                elements.insert(0, TtyRenderElement::Cursor(element));
             }
 
-            match drm_output.render_frame::<_, TtyRenderElement>(
+            let result = drm_output.render_frame::<_, TtyRenderElement>(
                 &mut self.renderer,
                 &elements,
                 clear,
                 FrameFlags::empty(),
-            ) {
-                Ok(result) => {
-                    ok_count += 1;
-                    if !result.is_empty {
-                        match drm_output.queue_frame(()) {
-                            Ok(()) => entry.pending = true,
-                            Err(err) => eprintln!("queue_frame failed for {crtc:?}: {err}"),
-                        }
-                    }
-                }
-                Err(err) => {
-                    eprintln!("render_frame failed for {crtc:?}: {err}");
-                    last_err = Some(Box::new(err));
-                }
+            )?;
+
+            if result.is_empty {
+                return Ok(RenderStatus::Skipped);
             }
-        }
 
-        if ok_count == 0
-            && let Some(err) = last_err
-        {
-            return Err(err);
-        }
-
-        Ok(())
+            drm_output.queue_frame(())?;
+            entry.pending = true;
+            Ok(RenderStatus::Submitted)
     }
 }
 

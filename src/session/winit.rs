@@ -249,7 +249,9 @@ pub fn run() {
                 }
 
                 let position = app.pointer.position();
+                let output = app.backend.output().clone();
                 if let Err(err) = app.backend.render(
+                    &output,
                     backend::CLEAR_COLOR,
                     &app.cursor,
                     position,

@@ -15,7 +15,7 @@ use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Physical, Point, Rectangle, Scale, Size, Transform};
 use smithay::wayland::shell::wlr_layer::Layer;
 
-use super::Renderable;
+use super::{RenderStatus, Renderable};
 use crate::cursor::CursorImage;
 
 /// The winit (nested) backend - a real window on the host's desktop,
@@ -124,6 +124,7 @@ impl crate::ipc::OutputInfoSource for WinitBackend {
 impl Renderable for WinitBackend {
     fn render(
         &mut self,
+        output: &Output,
         clear: Color32F,
         cursor: &CursorImage,
         cursor_position: (f64, f64),
@@ -131,7 +132,10 @@ impl Renderable for WinitBackend {
         focused: Option<&WlSurface>,
         decorations: &halley_config::Decorations,
         cameras: &crate::camera::OutputCameras,
-    ) -> Result<(), Box<dyn Error>> {
+    ) -> Result<RenderStatus, Box<dyn Error>> {
+        if output != &self.output {
+            return Err(format!("winit cannot render unknown output {:?}", output.name()).into());
+        }
         let size = self.backend.window_size();
         let damage = Rectangle::from_size(size);
         let view = cameras
@@ -255,6 +259,6 @@ impl Renderable for WinitBackend {
 
         self.backend.submit(Some(&[damage]))?;
 
-        Ok(())
+        Ok(RenderStatus::Submitted)
     }
 }

@@ -812,16 +812,20 @@ fn redraw(app: &mut TtyApp, loop_handle: &LoopHandle<'_, TtyApp>) {
     }
 
     let cursor_position = app.pointer.position();
-    if let Err(err) = app.backend.render(
-        CLEAR_COLOR,
-        &app.cursor,
-        cursor_position,
-        &app.wayland.space,
-        app.wayland.focused_window.as_ref(),
-        &app.decorations,
-        &app.cameras,
-    ) {
-        println!("render failed: {err}");
+    let outputs: Vec<_> = app.backend.outputs().cloned().collect();
+    for output in outputs {
+        if let Err(err) = app.backend.render(
+            &output,
+            CLEAR_COLOR,
+            &app.cursor,
+            cursor_position,
+            &app.wayland.space,
+            app.wayland.focused_window.as_ref(),
+            &app.decorations,
+            &app.cameras,
+        ) {
+            println!("render failed for {:?}: {err}", output.name());
+        }
     }
 
     let cursor_crtc = app
