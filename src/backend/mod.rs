@@ -5,11 +5,15 @@ pub mod winit;
 use halley_config::Decorations;
 use smithay::backend::renderer::Color32F;
 use smithay::backend::renderer::element::solid::SolidColorRenderElement;
+use smithay::backend::renderer::element::surface::{
+    WaylandSurfaceRenderElement, render_elements_from_surface_tree,
+};
 use smithay::backend::renderer::element::{Id, Kind};
+use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::renderer::utils::CommitCounter;
-use smithay::desktop::{Space, Window};
+use smithay::desktop::{PopupManager, Space, Window};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::utils::{Physical, Point, Rectangle, Size};
+use smithay::utils::{Logical, Physical, Point, Rectangle, Scale, Size};
 
 use crate::cursor::CursorImage;
 
@@ -17,6 +21,57 @@ use crate::cursor::CursorImage;
 /// Shared by both backends' drivers (session::tty, session::winit) so there's one
 /// definition instead of two independently-maintained literals.
 pub const CLEAR_COLOR: Color32F = Color32F::new(0.58, 0.64, 0.72, 1.0);
+
+pub fn window_surface_location(
+    mapped_geometry_location: Point<i32, Logical>,
+    local_geometry: Rectangle<i32, Logical>,
+) -> Point<i32, Physical> {
+    (mapped_geometry_location - local_geometry.loc).to_physical(1)
+}
+
+/// Build a window's normal surface tree separately from its popups.
+///
+/// Smithay's `Window::render_elements` combines both, which is convenient
+/// until the compositor needs to crop client-side shadows to the window
+/// geometry: popups must remain free to extend beyond that geometry.
+pub fn window_surface_elements(
+    renderer: &mut GlesRenderer,
+    window: &Window,
+    surface_location: Point<i32, Physical>,
+) -> (
+    Vec<WaylandSurfaceRenderElement<GlesRenderer>>,
+    Vec<WaylandSurfaceRenderElement<GlesRenderer>>,
+) {
+    let Some(toplevel) = window.toplevel() else {
+        return (Vec::new(), Vec::new());
+    };
+    let surface = toplevel.wl_surface();
+    let scale = Scale::from(1.0);
+    let popup_elements = PopupManager::popups_for_surface(surface)
+        .flat_map(|(popup, popup_offset)| {
+            let offset = (window.geometry().loc + popup_offset - popup.geometry().loc)
+                .to_physical_precise_round(scale);
+            render_elements_from_surface_tree(
+                renderer,
+                popup.wl_surface(),
+                surface_location + offset,
+                scale,
+                1.0,
+                Kind::Unspecified,
+            )
+        })
+        .collect();
+    let surface_elements = render_elements_from_surface_tree(
+        renderer,
+        surface,
+        surface_location,
+        scale,
+        1.0,
+        Kind::Unspecified,
+    );
+
+    (popup_elements, surface_elements)
+}
 
 /// A backend that can render a single frame.
 ///
@@ -137,6 +192,17 @@ mod tests {
 
     fn output_center(output_size: Size<i32, Physical>) -> Point<f32, Physical> {
         Point::from((output_size.w as f32 / 2.0, output_size.h as f32 / 2.0))
+    }
+
+    #[test]
+    fn surface_origin_accounts_for_client_side_geometry_offset() {
+        let mapped = Point::<i32, Logical>::from((500, 300));
+        let local_geometry = Rectangle::<i32, Logical>::new((12, 16).into(), (800, 600).into());
+
+        assert_eq!(
+            window_surface_location(mapped, local_geometry),
+            Point::from((488, 284))
+        );
     }
 
     #[test]

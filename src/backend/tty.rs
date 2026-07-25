@@ -10,8 +10,8 @@ use smithay::backend::drm::{DrmDevice, DrmDeviceFd, DrmDeviceNotifier};
 use smithay::backend::egl::{EGLContext, EGLDisplay};
 use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
 use smithay::backend::renderer::element::solid::SolidColorRenderElement;
-use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
-use smithay::backend::renderer::element::{AsRenderElements, Element, Kind, render_elements};
+use smithay::backend::renderer::element::utils::CropRenderElement;
+use smithay::backend::renderer::element::{Element, Kind, render_elements};
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::renderer::Color32F;
 use smithay::backend::session::Session;
@@ -59,6 +59,7 @@ render_elements! {
     /// generic bought nothing.
     TtyRenderElement<=GlesRenderer>;
     Rescaled=super::rescale::RescaledElement,
+    Cropped=CropRenderElement<super::rescale::RescaledElement>,
     Border=SolidColorRenderElement,
     Cursor=MemoryRenderBufferRenderElement<GlesRenderer>,
 }
@@ -587,6 +588,9 @@ impl Renderable for TtyBackend {
                 let Some(geometry) = space.element_geometry(window) else {
                     continue;
                 };
+                let Some(location) = space.element_location(window) else {
+                    continue;
+                };
                 let scaled_bbox = super::camera_rect(
                     geometry.to_physical(1),
                     output_camera_center,
@@ -594,17 +598,17 @@ impl Renderable for TtyBackend {
                     zoom_scale,
                 );
 
-                // Rendered at native scale/position first, then each
-                // returned element is individually wrapped to draw into a
-                // camera-scaled, output-local destination.
-                let surface_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = window
-                    .render_elements(
-                        &mut self.renderer,
-                        geometry.to_physical(1).loc,
-                        Scale::from(1.0),
-                        1.0,
-                    );
-                elements.extend(surface_elements.into_iter().map(|surface_element| {
+                // `Space` locations refer to window geometry, while Smithay
+                // renders from the underlying surface origin. GTK, Qt and
+                // Firefox commonly use a non-zero geometry offset for CSD.
+                let surface_location =
+                    super::window_surface_location(location, window.geometry());
+                let (popup_elements, surface_elements) = super::window_surface_elements(
+                    &mut self.renderer,
+                    window,
+                    surface_location,
+                );
+                elements.extend(popup_elements.into_iter().map(|surface_element| {
                     let native_geo = surface_element.geometry(Scale::from(1.0));
                     let dst = super::camera_rect(
                         native_geo,
@@ -616,6 +620,19 @@ impl Renderable for TtyBackend {
                         surface_element,
                         dst,
                     ))
+                }));
+                elements.extend(surface_elements.into_iter().filter_map(|surface_element| {
+                    let native_geo = surface_element.geometry(Scale::from(1.0));
+                    let dst = super::camera_rect(
+                        native_geo,
+                        output_camera_center,
+                        output_size,
+                        zoom_scale,
+                    );
+                    let element =
+                        super::rescale::RescaledElement::new(surface_element, dst);
+                    CropRenderElement::from_element(element, 1.0, scaled_bbox)
+                        .map(TtyRenderElement::Cropped)
                 }));
 
                 let is_focused = window
