@@ -12,6 +12,7 @@ use smithay::backend::session::Event as SessionEvent;
 use smithay::backend::session::Session;
 use smithay::desktop::{Space, Window};
 use smithay::input::keyboard::FilterResult;
+use smithay::input::pointer::{ButtonEvent, MotionEvent};
 use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::output::Output;
 use smithay::reexports::drm::control::crtc;
@@ -69,6 +70,46 @@ fn output_at_pointer(
     let output = space.output_under(position).next()?.clone();
     let geometry = space.output_geometry(&output)?;
     Some((output, geometry))
+}
+
+fn route_client_pointer(app: &TtyApp) -> Option<crate::input::pointer::PointerRoute> {
+    crate::input::pointer::route_to_client(
+        &app.wayland.space,
+        &app.cameras,
+        app.backend.primary_output(),
+        app.pointer.position(),
+    )
+}
+
+/// Refreshes Smithay's pointer location and surface focus from Halley's
+/// camera-aware scene.
+fn update_client_pointer_focus(app: &mut TtyApp, time: u32) {
+    let Some(route) = route_client_pointer(app) else {
+        return;
+    };
+    let pointer = app
+        .seat
+        .get_pointer()
+        .expect("pointer capability added at seat setup");
+    pointer.motion(
+        app,
+        route.focus.clone(),
+        &MotionEvent {
+            location: route.location,
+            serial: SERIAL_COUNTER.next_serial(),
+            time,
+        },
+    );
+}
+
+fn focus_window(app: &mut TtyApp, window: &Window, serial: Serial) {
+    wayland::xdg_shell::focus_and_raise(&mut app.wayland, window);
+    let focused = app.wayland.focused.clone();
+    let keyboard = app
+        .seat
+        .get_keyboard()
+        .expect("keyboard capability added at seat setup");
+    keyboard.set_focus(app, focused, serial);
 }
 
 /// Mirrors niri's `RedrawState` (`niri/src/niri.rs`) - structurally the same
@@ -345,19 +386,98 @@ pub fn run() {
                 crate::input::grab::Grab::None => {}
             }
 
-            if let InputEvent::PointerButton { event: button_event } = &event
-                && button_event.button_code() == BTN_RIGHT
+            let motion_time = match &event {
+                InputEvent::PointerMotion { event } => Some(event.time_msec()),
+                InputEvent::PointerMotionAbsolute { event } => Some(event.time_msec()),
+                _ => None,
+            };
+            if let Some(time) = motion_time {
+                update_client_pointer_focus(app, time);
+                let pointer = app
+                    .seat
+                    .get_pointer()
+                    .expect("pointer capability added at seat setup");
+                pointer.frame(app);
+            }
+
+            if let InputEvent::PointerButton {
+                event: button_event,
+            } = &event
             {
-                match button_event.state() {
-                    ButtonState::Pressed => {
-                        let mods = app
-                            .seat
-                            .get_keyboard()
-                            .expect("keyboard capability added at seat setup")
-                            .modifier_state();
-                        // Resize is mod-only: a bare right-click has to stay
-                        // available to clients (context menus).
-                        if crate::input::mod_key_held(&mods, app.keyboard.effective_mod) {
+                let button = button_event.button_code();
+                let state = button_event.state();
+                let time = button_event.time_msec();
+                let serial = SERIAL_COUNTER.next_serial();
+                update_client_pointer_focus(app, time);
+                let mut intercepted = false;
+
+                if button == BTN_RIGHT {
+                    match state {
+                        ButtonState::Pressed => {
+                            let mods = app
+                                .seat
+                                .get_keyboard()
+                                .expect("keyboard capability added at seat setup")
+                                .modifier_state();
+                            // Resize is mod-only: a bare right-click stays
+                            // available to clients for context menus.
+                            if crate::input::mod_key_held(&mods, app.keyboard.effective_mod) {
+                                let Some((output, output_geometry)) =
+                                    output_at_pointer(&app.wayland.space, position_after)
+                                else {
+                                    return;
+                                };
+                                let Some(camera) = app.cameras.get(&output.name()) else {
+                                    return;
+                                };
+                                let world = crate::input::grab::screen_to_world_on_output(
+                                    position_after,
+                                    camera,
+                                    output_geometry,
+                                );
+                                if let Some((window, _)) =
+                                    crate::input::grab::window_under_on_output(
+                                        &app.wayland.space,
+                                        &output,
+                                        app.backend.primary_output(),
+                                        world,
+                                    )
+                                    && let Some(start_rect) =
+                                        app.wayland.space.element_geometry(&window)
+                                {
+                                    let handle = crate::input::grab::handle_from_press_position(
+                                        start_rect, world,
+                                    );
+                                    focus_window(app, &window, serial);
+                                    app.grab = crate::input::grab::Grab::ResizeWindow(
+                                        crate::input::grab::ResizeState {
+                                            window,
+                                            handle,
+                                            start_rect,
+                                            start_cursor: world,
+                                        },
+                                    );
+                                    intercepted = true;
+                                }
+                            }
+                        }
+                        ButtonState::Released => {
+                            if matches!(app.grab, crate::input::grab::Grab::ResizeWindow(_)) {
+                                app.grab = crate::input::grab::Grab::None;
+                                intercepted = true;
+                            }
+                        }
+                    }
+                } else if button == BTN_LEFT {
+                    match state {
+                        ButtonState::Pressed => {
+                            let mods = app
+                                .seat
+                                .get_keyboard()
+                                .expect("keyboard capability added at seat setup")
+                                .modifier_state();
+                            let mod_held =
+                                crate::input::mod_key_held(&mods, app.keyboard.effective_mod);
                             let Some((output, output_geometry)) =
                                 output_at_pointer(&app.wayland.space, position_after)
                             else {
@@ -371,90 +491,80 @@ pub fn run() {
                                 camera,
                                 output_geometry,
                             );
-                            if let Some((window, _)) = crate::input::grab::window_under_on_output(
+                            match crate::input::grab::window_under_on_output(
                                 &app.wayland.space,
                                 &output,
                                 app.backend.primary_output(),
                                 world,
-                            )
-                                && let Some(start_rect) = app.wayland.space.element_geometry(&window)
-                            {
-                                let handle = crate::input::grab::handle_from_press_position(start_rect, world);
-                                wayland::xdg_shell::focus_and_raise(&mut app.wayland, &window);
-                                app.grab =
-                                    crate::input::grab::Grab::ResizeWindow(crate::input::grab::ResizeState {
+                            ) {
+                                Some((window, window_loc)) if mod_held => {
+                                    let scale = crate::input::zoom::scale(camera);
+                                    let screen_offset = halley_core::field::Vec2 {
+                                        x: (window_loc.x as f32 - world.x) * scale,
+                                        y: (window_loc.y as f32 - world.y) * scale,
+                                    };
+                                    focus_window(app, &window, serial);
+                                    app.grab = crate::input::grab::Grab::MoveWindow {
                                         window,
-                                        handle,
-                                        start_rect,
-                                        start_cursor: world,
-                                    });
+                                        screen_offset,
+                                    };
+                                    intercepted = true;
+                                }
+                                Some((window, _)) => {
+                                    focus_window(app, &window, serial);
+                                }
+                                None => {
+                                    app.grab = crate::input::grab::Grab::Pan {
+                                        output: output.name(),
+                                    };
+                                    intercepted = true;
+                                }
+                            }
+                        }
+                        ButtonState::Released => {
+                            if matches!(
+                                app.grab,
+                                crate::input::grab::Grab::MoveWindow { .. }
+                                    | crate::input::grab::Grab::Pan { .. }
+                            ) {
+                                app.grab = crate::input::grab::Grab::None;
+                                intercepted = true;
                             }
                         }
                     }
-                    ButtonState::Released => {
-                        if matches!(app.grab, crate::input::grab::Grab::ResizeWindow(_)) {
-                            app.grab = crate::input::grab::Grab::None;
-                        }
-                    }
                 }
+
+                if !intercepted {
+                    let pointer = app
+                        .seat
+                        .get_pointer()
+                        .expect("pointer capability added at seat setup");
+                    pointer.button(
+                        app,
+                        &ButtonEvent {
+                            serial,
+                            time,
+                            button,
+                            state,
+                        },
+                    );
+                }
+                let pointer = app
+                    .seat
+                    .get_pointer()
+                    .expect("pointer capability added at seat setup");
+                pointer.frame(app);
             }
 
-            if let InputEvent::PointerButton { event: button_event } = &event
-                && button_event.button_code() == BTN_LEFT
-            {
-                match button_event.state() {
-                    ButtonState::Pressed => {
-                        let mods = app
-                            .seat
-                            .get_keyboard()
-                            .expect("keyboard capability added at seat setup")
-                            .modifier_state();
-                        let mod_held = crate::input::mod_key_held(&mods, app.keyboard.effective_mod);
-                        let Some((output, output_geometry)) =
-                            output_at_pointer(&app.wayland.space, position_after)
-                        else {
-                            return;
-                        };
-                        let Some(camera) = app.cameras.get(&output.name()) else {
-                            return;
-                        };
-                        let world = crate::input::grab::screen_to_world_on_output(
-                            position_after,
-                            camera,
-                            output_geometry,
-                        );
-                        match crate::input::grab::window_under_on_output(
-                            &app.wayland.space,
-                            &output,
-                            app.backend.primary_output(),
-                            world,
-                        ) {
-                            Some((window, window_loc)) if mod_held => {
-                                let scale = crate::input::zoom::scale(camera);
-                                let screen_offset = halley_core::field::Vec2 {
-                                    x: (window_loc.x as f32 - world.x) * scale,
-                                    y: (window_loc.y as f32 - world.y) * scale,
-                                };
-                                wayland::xdg_shell::focus_and_raise(&mut app.wayland, &window);
-                                app.grab = crate::input::grab::Grab::MoveWindow {
-                                    window,
-                                    screen_offset,
-                                };
-                            }
-                            Some((window, _)) => {
-                                wayland::xdg_shell::focus_and_raise(&mut app.wayland, &window);
-                            }
-                            None => {
-                                app.grab = crate::input::grab::Grab::Pan {
-                                    output: output.name(),
-                                };
-                            }
-                        }
-                    }
-                    ButtonState::Released => {
-                        app.grab = crate::input::grab::Grab::None;
-                    }
-                }
+            if let InputEvent::PointerAxis { event: axis_event } = &event {
+                update_client_pointer_focus(app, axis_event.time_msec());
+                let frame = crate::input::pointer::axis_frame(axis_event);
+                let pointer = app
+                    .seat
+                    .get_pointer()
+                    .expect("pointer capability added at seat setup");
+                pointer.axis(app, frame);
+                pointer.frame(app);
             }
 
             // Drives the real seat directly (rather than a separate fake
@@ -657,9 +767,29 @@ fn redraw(app: &mut TtyApp, loop_handle: &LoopHandle<'_, TtyApp>) {
     let now = Instant::now();
     let dt = now.duration_since(app.last_camera_tick).as_secs_f32();
     app.last_camera_tick = now;
+    let pointer_output = app
+        .wayland
+        .space
+        .output_under(app.pointer.position())
+        .next()
+        .map(Output::name);
+    let view_before = pointer_output
+        .as_deref()
+        .and_then(|name| app.cameras.view(name));
     let mut animating = false;
     for camera in app.cameras.iter_mut() {
         animating |= crate::input::zoom::tick(camera, &app.zoom, dt).1;
+    }
+    let view_after = pointer_output
+        .as_deref()
+        .and_then(|name| app.cameras.view(name));
+    if view_before != view_after {
+        update_client_pointer_focus(app, app.start_time.elapsed().as_millis() as u32);
+        let pointer = app
+            .seat
+            .get_pointer()
+            .expect("pointer capability added at seat setup");
+        pointer.frame(app);
     }
 
     let cursor_position = app.pointer.position();
