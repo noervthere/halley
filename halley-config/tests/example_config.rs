@@ -80,6 +80,20 @@ fn example_config_zoom_section_parses() {
     assert_eq!(zoom.smooth_rate, 12.5);
 }
 
+#[test]
+fn example_config_window_open_animation_parses() {
+    let config = RuneConfig::from_file(EXAMPLE_PATH).expect("example config parses");
+    let animations = halley_config::parse_animations(&config);
+
+    assert!(!animations.off);
+    assert!(!animations.window_open.off);
+    assert_eq!(animations.window_open.duration_ms, 300);
+    assert_eq!(
+        animations.window_open.curve,
+        halley_config::AnimationCurve::Linear
+    );
+}
+
 /// The shipped example's `output:` block is commented out on purpose (an
 /// active block whose `name` happened to match a real connector would force
 /// a mode onto hardware this file wasn't written for) - confirm it really

@@ -1,3 +1,4 @@
+pub mod animations;
 pub mod bootstrap;
 pub mod chord;
 pub mod decorations;
@@ -7,6 +8,9 @@ pub mod parse;
 pub mod terminal;
 pub mod zoom;
 
+pub use animations::{
+    AnimationCurve, Animations, WindowOpenAnimation, load_animations, parse_animations,
+};
 pub use bootstrap::{DEFAULT_CONFIG, bootstrap_default_config, bootstrap_default_config_at, config_path};
 pub use chord::parse_chord;
 pub use decorations::{BorderColor, Decorations, load_decorations, parse_decorations};

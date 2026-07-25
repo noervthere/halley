@@ -59,6 +59,22 @@ zoom:
   smooth-rate 12.5
 end
 
+# Animation settings follow niri's section shape. Only window opening exists
+# for now; more animation names will be added only when their effects exist.
+animations:
+  # Uncomment to turn off all animations.
+  # off true
+
+  window-open:
+    # Uncomment to turn off just the window-open animation.
+    # off true
+
+    # newm's original center-out opening lasts 300 ms and moves linearly.
+    duration-ms 300
+    curve "linear"
+  end
+end
+
 keybinds:
   mod "super"
 
