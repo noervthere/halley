@@ -3,7 +3,8 @@ use halley_core::field::Vec2;
 use smithay::desktop::space::SpaceElement;
 use smithay::desktop::{Space, Window};
 use smithay::output::Output;
-use smithay::utils::{Logical, Physical, Point, Rectangle, Size};
+use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+use smithay::utils::{Logical, Physical, Point, Rectangle, Serial, Size};
 
 /// What's currently being dragged with the left mouse button held, if
 /// anything - `None` the rest of the time. Lives on `App`/`TtyApp` next to
@@ -62,6 +63,93 @@ pub struct ResizeState {
     pub handle: ResizeHandle,
     pub start_rect: Rectangle<i32, Logical>,
     pub start_cursor: Vec2,
+}
+
+/// Left/top-edge anchoring state, kept *outside* `Grab` because it has to
+/// outlive the drag itself.
+///
+/// niri models the same thing on the window (`InteractiveResize::Ongoing` ->
+/// `WaitingForLastConfigure` -> `WaitingForLastCommit` in
+/// `niri/src/window/mapped.rs`) for the reason below. Halley needs only two
+/// states because it sends resize configures inline from the motion handler,
+/// so the last serial is already known by the time the button comes up;
+/// niri defers configures to its refresh cycle and so needs the extra hop.
+pub struct ResizeAnchor {
+    pub window: Window,
+    pub handle: ResizeHandle,
+    pub phase: ResizePhase,
+    /// Serial of the most recent configure actually sent to this client
+    /// during the drag, or `None` if the drag never changed the size.
+    pub last_configure: Option<Serial>,
+}
+
+pub enum ResizePhase {
+    /// Button still held - every commit re-anchors.
+    Ongoing,
+    /// Button released, but the client still owes us a commit for the last
+    /// configure we sent. Dropping the anchor here instead would let that
+    /// final, in-flight resize land unanchored and snap the window sideways
+    /// by whatever the client rounded off - exactly the jump anchoring
+    /// exists to prevent, just moved to the end of the drag.
+    WaitingForLastCommit(Serial),
+}
+
+/// Records a configure sent mid-drag, so the release below knows which commit
+/// to wait for. A `None` serial means `send_pending_configure` found nothing
+/// pending, which leaves the previous serial standing as the latest one.
+pub fn note_resize_configure(anchor: &mut Option<ResizeAnchor>, serial: Option<Serial>) {
+    if let Some(anchor) = anchor
+        && serial.is_some()
+    {
+        anchor.last_configure = serial;
+    }
+}
+
+/// Drops the anchor if it belonged to a window that just went away - a
+/// released drag can otherwise sit in `WaitingForLastCommit` for a commit
+/// that is never coming, since the client closed instead of answering.
+pub fn forget_resize_anchor(anchor: &mut Option<ResizeAnchor>, surface: &WlSurface) {
+    let belongs_to_surface = anchor.as_ref().is_some_and(|resize| {
+        resize
+            .window
+            .toplevel()
+            .is_some_and(|toplevel| toplevel.wl_surface() == surface)
+    });
+    if belongs_to_surface {
+        *anchor = None;
+    }
+}
+
+/// The drag ended. Keeps the anchor alive for one more round trip if a
+/// configure is still unanswered, and drops it outright if the drag never
+/// asked the client for anything.
+pub fn release_resize_anchor(anchor: &mut Option<ResizeAnchor>) {
+    let Some(resize) = anchor.as_mut() else {
+        return;
+    };
+    match released_phase(resize.last_configure) {
+        Some(phase) => resize.phase = phase,
+        None => *anchor = None,
+    }
+}
+
+/// Which phase a released drag moves to, or `None` to retire the anchor
+/// immediately because no configure is outstanding.
+fn released_phase(last_configure: Option<Serial>) -> Option<ResizePhase> {
+    Some(ResizePhase::WaitingForLastCommit(last_configure?))
+}
+
+/// Whether the commit just processed is the one a released drag was waiting
+/// for. `committed` is the serial the client had acked as of that commit;
+/// `is_no_older_than` (rather than equality) because a client is free to skip
+/// straight to a newer configure, which acks every older one with it.
+fn anchor_is_retired(phase: &ResizePhase, committed: Option<Serial>) -> bool {
+    match phase {
+        ResizePhase::Ongoing => false,
+        ResizePhase::WaitingForLastCommit(waiting) => {
+            committed.is_some_and(|committed| committed.is_no_older_than(waiting))
+        }
+    }
 }
 
 /// Floor on interactive resize, matching old halley's own `.max(96.0)` /
@@ -151,6 +239,11 @@ pub fn resize_target_size(
 /// edge opposite the grab. Using committed sizes here is important: clients
 /// can respond asynchronously or quantize a requested size, so anchoring
 /// against the request makes left/top resizes visibly jump.
+///
+/// Same correction niri applies in `FloatingSpace::update_window`
+/// (`niri/src/layout/floating.rs`): `pos += prev_size - committed_size` for
+/// the LEFT/TOP edges only, evaluated once per commit against the size the
+/// client actually landed on.
 pub fn resize_location_after_commit(
     handle: ResizeHandle,
     current_location: Point<i32, Logical>,
@@ -168,6 +261,82 @@ pub fn resize_location_after_commit(
         current_location.y
     };
     Point::from((x, y))
+}
+
+/// The size the anchored window had going *into* a commit, read before
+/// Smithay swaps in the client's newly committed geometry. Paired with
+/// `finish_resize_commit`, which needs both sides of that swap.
+pub struct PendingResizeCommit {
+    window: Window,
+    handle: ResizeHandle,
+    previous_size: Size<i32, Logical>,
+}
+
+/// Call at the top of `CompositorHandler::commit`, before dispatching to
+/// Smithay.
+///
+/// Not scoped to the surface that actually committed: a window's geometry
+/// can only change on its own commit, so for any other surface this reads a
+/// size that the matching `finish_resize_commit` will find unchanged, and the
+/// correction works out to zero.
+pub fn begin_resize_commit(
+    anchor: Option<&ResizeAnchor>,
+    space: &Space<Window>,
+) -> Option<PendingResizeCommit> {
+    let anchor = anchor?;
+    let geometry = space.element_geometry(&anchor.window)?;
+    Some(PendingResizeCommit {
+        window: anchor.window.clone(),
+        handle: anchor.handle,
+        previous_size: geometry.size,
+    })
+}
+
+/// Call at the bottom of `CompositorHandler::commit`, after dispatching to
+/// Smithay. Applies the anchoring correction, then retires the anchor if this
+/// was the commit the released drag was waiting on.
+///
+/// The retirement check runs *after* the correction, matching niri's ordering
+/// in `update_window` (it reads `interactive_resize_data()` before
+/// `on_commit()` clears it) - the final commit of a drag is still anchored.
+pub fn finish_resize_commit(
+    anchor: &mut Option<ResizeAnchor>,
+    space: &mut Space<Window>,
+    pending: Option<PendingResizeCommit>,
+) {
+    let Some(pending) = pending else {
+        return;
+    };
+
+    if let Some(committed) = space.element_geometry(&pending.window)
+        && let Some(location) = space.element_location(&pending.window)
+    {
+        let location = resize_location_after_commit(
+            pending.handle,
+            location,
+            pending.previous_size,
+            committed.size,
+        );
+        space.relocate_element(&pending.window, location);
+    }
+
+    let retire = anchor.as_ref().is_some_and(|resize| {
+        anchor_is_retired(&resize.phase, committed_configure_serial(&pending.window))
+    });
+    if retire {
+        *anchor = None;
+    }
+}
+
+/// Serial of the configure the client had acked as of the commit currently
+/// being processed - i.e. which resize request this frame is the answer to.
+fn committed_configure_serial(window: &Window) -> Option<Serial> {
+    window.toplevel()?.with_cached_state(|state| {
+        state
+            .last_acked
+            .as_ref()
+            .map(|configure| configure.serial)
+    })
 }
 
 /// Converts a screen-space (physical-pixel) position into world (`Space`)
@@ -438,6 +607,31 @@ mod tests {
 
         assert_eq!(location, Point::from((56, 100)));
         assert_eq!(location.x + committed_size.w, 400);
+    }
+
+    #[test]
+    fn releasing_a_drag_keeps_anchoring_until_the_last_configure_is_answered() {
+        // Button up with a configure still in flight: the anchor has to
+        // survive, or the client's final commit lands unanchored and the
+        // window snaps sideways at the end of every left/top drag.
+        let phase = released_phase(Some(Serial::from(7)))
+            .expect("an outstanding configure keeps the anchor alive");
+
+        assert!(!anchor_is_retired(&phase, None));
+        assert!(!anchor_is_retired(&phase, Some(Serial::from(6))));
+        assert!(anchor_is_retired(&phase, Some(Serial::from(7))));
+        // Clients may skip ahead; a newer ack covers the one being waited on.
+        assert!(anchor_is_retired(&phase, Some(Serial::from(9))));
+    }
+
+    #[test]
+    fn releasing_a_drag_that_never_configured_retires_the_anchor() {
+        assert!(released_phase(None).is_none());
+    }
+
+    #[test]
+    fn an_ongoing_drag_is_never_retired_by_a_commit() {
+        assert!(!anchor_is_retired(&ResizePhase::Ongoing, Some(Serial::from(9000))));
     }
 
     #[test]

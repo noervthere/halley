@@ -218,6 +218,9 @@ struct TtyApp {
     cameras: crate::camera::OutputCameras,
     zoom: halley_config::Zoom,
     grab: crate::input::grab::Grab,
+    /// Outlives `grab` on purpose - a released resize keeps anchoring until
+    /// the client answers the last configure. See `grab::ResizePhase`.
+    resize_anchor: Option<crate::input::grab::ResizeAnchor>,
     window_open_animations: crate::animation::WindowOpenAnimations,
 }
 
@@ -309,6 +312,7 @@ pub fn run() {
         cameras: crate::camera::OutputCameras::default(),
         zoom: halley_config::load_zoom(),
         grab: crate::input::grab::Grab::None,
+        resize_anchor: None,
         window_open_animations: crate::animation::WindowOpenAnimations::new(
             halley_config::load_animations(),
         ),
@@ -425,7 +429,8 @@ pub fn run() {
                         // No-ops unless the pending state actually changed, so
                         // this is safe to call per motion event rather than
                         // rate-limiting it here.
-                        toplevel.send_pending_configure();
+                        let serial = toplevel.send_pending_configure();
+                        crate::input::grab::note_resize_configure(&mut app.resize_anchor, serial);
                     }
                 }
                 crate::input::grab::Grab::None => {}
@@ -492,12 +497,19 @@ pub fn run() {
                                             start_cursor: world,
                                         },
                                     );
+                                    app.resize_anchor = Some(crate::input::grab::ResizeAnchor {
+                                        window: window.clone(),
+                                        handle,
+                                        phase: crate::input::grab::ResizePhase::Ongoing,
+                                        last_configure: None,
+                                    });
                                     intercepted = true;
                             }
                         }
                         ButtonState::Released => {
                             if matches!(app.grab, crate::input::grab::Grab::ResizeWindow(_)) {
                                 app.grab = crate::input::grab::Grab::None;
+                                crate::input::grab::release_resize_anchor(&mut app.resize_anchor);
                                 intercepted = true;
                             }
                         }
@@ -1049,30 +1061,19 @@ impl CompositorHandler for TtyApp {
     }
 
     fn commit(&mut self, surface: &WlSurface) {
-        let resize_before = match &self.grab {
-            crate::input::grab::Grab::ResizeWindow(state) => self
-                .wayland
-                .space
-                .element_geometry(&state.window)
-                .map(|geometry| (state.window.clone(), state.handle, geometry.size)),
-            _ => None,
-        };
+        let resizing = crate::input::grab::begin_resize_commit(
+            self.resize_anchor.as_ref(),
+            &self.wayland.space,
+        );
         if let Some(mapped) = wayland::compositor::commit::<Self>(&mut self.wayland, surface) {
             self.window_open_animations
                 .start(mapped, crate::frame_clock::monotonic_now());
         }
-        if let Some((window, handle, previous_size)) = resize_before
-            && let Some(committed_geometry) = self.wayland.space.element_geometry(&window)
-            && let Some(current_location) = self.wayland.space.element_location(&window)
-        {
-            let location = crate::input::grab::resize_location_after_commit(
-                handle,
-                current_location,
-                previous_size,
-                committed_geometry.size,
-            );
-            self.wayland.space.relocate_element(&window, location);
-        }
+        crate::input::grab::finish_resize_commit(
+            &mut self.resize_anchor,
+            &mut self.wayland.space,
+            resizing,
+        );
         queue_redraw(self);
 
         sync_keyboard_focus(self, SERIAL_COUNTER.next_serial());
@@ -1100,6 +1101,7 @@ impl XdgShellHandler for TtyApp {
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         self.window_open_animations.remove(surface.wl_surface());
+        crate::input::grab::forget_resize_anchor(&mut self.resize_anchor, surface.wl_surface());
         wayland::xdg_shell::toplevel_destroyed(&mut self.wayland, &surface);
     }
 
