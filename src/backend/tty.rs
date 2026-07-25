@@ -88,16 +88,12 @@ pub struct TtyBackend {
     /// Every successfully initialized output, in connector-scan order - each
     /// one has its real name and configured mode/position/transform. Driving
     /// code advertises and maps all of them into Smithay's `Space`.
-    outputs: Vec<TtyOutput>,
-}
-
-/// One fully-initialized output's live handle plus the VRR mode it was
-/// configured with. `Output` itself has no VRR concept, and real VRR
-/// toggling isn't wired yet (see `TtyBackend::new`'s doc comment on why) -
-/// this is tracked separately purely so IPC can report what was requested.
-pub struct TtyOutput {
-    pub output: Output,
-    pub vrr: halley_config::Vrr,
+    outputs: Vec<Output>,
+    /// IPC inventory for every physically connected connector, including
+    /// connectors which had no usable CRTC/mode or failed initialization.
+    /// There is no tty hotplug or runtime output reconfiguration yet, so
+    /// this startup inventory is the authoritative connector state.
+    ipc_output_info: Vec<halley_ipc::OutputInfo>,
 }
 
 /// `{interface}-{interface_id}`, e.g. "DP-1" - the standard connector-name
@@ -119,6 +115,36 @@ fn exact_refresh_hz(mode: &Mode) -> f64 {
     let htotal = (htotal.max(1)) as f64;
     let vtotal = (vtotal.max(1)) as f64;
     (mode.clock() as f64 * 1000.0) / (htotal * vtotal)
+}
+
+fn connector_output_info(
+    name: String,
+    connector: &connector::Info,
+    current_mode: Option<Mode>,
+    offset: (i32, i32),
+    vrr: halley_config::Vrr,
+) -> halley_ipc::OutputInfo {
+    let modes = connector
+        .modes()
+        .iter()
+        .map(|mode| {
+            crate::ipc::mode_info(
+                OutputMode::from(*mode),
+                mode.mode_type().contains(ModeTypeFlags::PREFERRED),
+            )
+        })
+        .collect::<Vec<_>>();
+    let current_mode =
+        current_mode.and_then(|current| connector.modes().iter().position(|mode| *mode == current));
+
+    halley_ipc::OutputInfo {
+        name,
+        modes,
+        current_mode,
+        offset_x: offset.0,
+        offset_y: offset.1,
+        vrr: crate::ipc::vrr_str(vrr).to_string(),
+    }
 }
 
 /// This connector's preferred mode, or its first mode if none is flagged
@@ -221,17 +247,14 @@ impl TtyBackend {
         // configured `output:` block into account.
         let mut scanner: DrmScanner = DrmScanner::new();
         let scan = scanner.scan_connectors(&drm)?;
-        let mut connected: Vec<(connector::Info, crtc::Handle)> = Vec::new();
+        let mut connected: Vec<(connector::Info, Option<crtc::Handle>)> = Vec::new();
         for event in scan {
-            if let DrmScanEvent::Connected { connector, crtc } = event
-                && let Some(crtc) = crtc
-                && !connector.modes().is_empty()
-            {
+            if let DrmScanEvent::Connected { connector, crtc } = event {
                 connected.push((connector, crtc));
             }
         }
         if connected.is_empty() {
-            return Err("no connected connector/CRTC/mode found".into());
+            return Err("no connected connector found".into());
         }
 
         let outputs_config = halley_config::load_outputs();
@@ -269,9 +292,24 @@ impl TtyBackend {
         let mut drm_outputs = Vec::new();
         let mut primary_output: Option<Output> = None;
         let mut outputs = Vec::new();
+        let mut ipc_output_info = Vec::new();
         for (connector, crtc) in connected {
             let name = connector_name(&connector);
             let configured = outputs_config.iter().find(|cfg| cfg.name == name);
+            let offset = configured.map_or((0, 0), |cfg| (cfg.offset_x, cfg.offset_y));
+            let vrr = configured.map(|cfg| cfg.vrr).unwrap_or_default();
+
+            if connector.modes().is_empty() {
+                eprintln!("output {name:?}: connected connector advertises no modes");
+                ipc_output_info.push(connector_output_info(name, &connector, None, offset, vrr));
+                continue;
+            }
+            let Some(crtc) = crtc else {
+                eprintln!("output {name:?}: connected connector has no available CRTC");
+                ipc_output_info.push(connector_output_info(name, &connector, None, offset, vrr));
+                continue;
+            };
+
             let mode = select_mode(&connector, configured);
             let (width, height) = mode.size();
             let size = Size::from((width as i32, height as i32));
@@ -302,9 +340,7 @@ impl TtyBackend {
 
             match result {
                 Ok(drm_output) => {
-                    let offset = configured.map_or((0, 0), |cfg| (cfg.offset_x, cfg.offset_y));
                     let transform = configured.map_or(Transform::Normal, |cfg| transform_from_degrees(cfg.transform));
-                    let vrr = configured.map(|cfg| cfg.vrr).unwrap_or_default();
                     if vrr == halley_config::Vrr::On {
                         eprintln!(
                             "output {name:?}: vrr \"on\" is configured but not wired to real hardware VRR yet \
@@ -330,10 +366,14 @@ impl TtyBackend {
                     output.set_preferred(output_mode);
 
                     primary_output.get_or_insert_with(|| output.clone());
-                    outputs.push(TtyOutput {
-                        output: output.clone(),
+                    outputs.push(output.clone());
+                    ipc_output_info.push(connector_output_info(
+                        name,
+                        &connector,
+                        Some(mode),
+                        offset,
                         vrr,
-                    });
+                    ));
                     drm_outputs.push(DrmOutputEntry {
                         crtc,
                         output,
@@ -341,7 +381,10 @@ impl TtyBackend {
                         pending: false,
                     });
                 }
-                Err(err) => eprintln!("failed to initialize output {name:?}: {err}"),
+                Err(err) => {
+                    eprintln!("failed to initialize output {name:?}: {err}");
+                    ipc_output_info.push(connector_output_info(name, &connector, None, offset, vrr));
+                }
             }
         }
 
@@ -356,6 +399,7 @@ impl TtyBackend {
             drm_outputs,
             primary_output,
             outputs,
+            ipc_output_info,
         };
 
         Ok((backend, session_notifier, drm_notifier))
@@ -370,7 +414,7 @@ impl TtyBackend {
     /// Every initialized `wl_output`, for registering globals and mapping
     /// the configured layout into Smithay's `Space`.
     pub fn outputs(&self) -> impl Iterator<Item = &Output> {
-        self.outputs.iter().map(|entry| &entry.output)
+        self.outputs.iter()
     }
 
     pub fn output_for_crtc(&self, crtc: crtc::Handle) -> Option<&Output> {
@@ -453,19 +497,7 @@ impl TtyBackend {
 
 impl crate::ipc::OutputInfoSource for TtyBackend {
     fn output_info(&self) -> Vec<halley_ipc::OutputInfo> {
-        self.outputs
-            .iter()
-            .map(|entry| {
-                let location = entry.output.current_location();
-                halley_ipc::OutputInfo {
-                    name: entry.output.name(),
-                    current_mode: crate::ipc::mode_info(entry.output.current_mode()),
-                    offset_x: location.x,
-                    offset_y: location.y,
-                    vrr: crate::ipc::vrr_str(entry.vrr).to_string(),
-                }
-            })
-            .collect()
+        self.ipc_output_info.clone()
     }
 }
 

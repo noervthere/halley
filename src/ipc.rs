@@ -12,14 +12,15 @@ pub trait OutputInfoSource {
     fn output_info(&self) -> Vec<halley_ipc::OutputInfo>;
 }
 
-/// Shared by both backends' `OutputInfoSource` impls - converts Smithay's
-/// own `Mode` (refresh in mHz) into the wire `ModeInfo` (refresh in Hz).
-pub fn mode_info(mode: Option<OutputMode>) -> Option<halley_ipc::ModeInfo> {
-    mode.map(|mode| halley_ipc::ModeInfo {
+/// Shared by both backends' `OutputInfoSource` impls - keeps Smithay's
+/// millihertz refresh representation intact on the wire.
+pub fn mode_info(mode: OutputMode, preferred: bool) -> halley_ipc::ModeInfo {
+    halley_ipc::ModeInfo {
         width: mode.size.w,
         height: mode.size.h,
-        refresh_hz: mode.refresh as f64 / 1000.0,
-    })
+        refresh_millihz: mode.refresh,
+        preferred,
+    }
 }
 
 pub fn vrr_str(vrr: halley_config::Vrr) -> &'static str {

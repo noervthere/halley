@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 /// the end of `Request`/`Response` silently breaks wire-compatibility with
 /// a differently-versioned build - worth remembering as this grows, not
 /// solved here (this first pass has nothing to negotiate against yet).
-pub const HALLEY_IPC_VERSION: u32 = 1;
+pub const HALLEY_IPC_VERSION: u32 = 2;
 
 /// A request from `halleyctl` (or any other client) to the compositor.
 /// Deliberately just the two read-only queries this first pass needs -
@@ -34,7 +34,11 @@ pub struct OutputsResponse {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct OutputInfo {
     pub name: String,
-    pub current_mode: Option<ModeInfo>,
+    /// Every mode advertised by the connector, in connector order.
+    pub modes: Vec<ModeInfo>,
+    /// Index of the active mode in `modes`, or `None` when this connected
+    /// output could not be initialized.
+    pub current_mode: Option<usize>,
     pub offset_x: i32,
     pub offset_y: i32,
     /// The *configured* VRR mode as a plain string ("off"/"on"/"auto") -
@@ -48,7 +52,10 @@ pub struct OutputInfo {
 pub struct ModeInfo {
     pub width: i32,
     pub height: i32,
-    pub refresh_hz: f64,
+    /// Refresh rate in millihertz, matching Smithay and niri's lossless
+    /// representation rather than sending an approximate floating value.
+    pub refresh_millihz: i32,
+    pub preferred: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

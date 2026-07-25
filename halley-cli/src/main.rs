@@ -1,3 +1,4 @@
+use std::fmt::Write;
 use std::process::ExitCode;
 
 use halley_ipc::{ModeInfo, OutputInfo, Request, Response};
@@ -75,26 +76,81 @@ fn print_outputs(resp: Response) -> ExitCode {
         println!("(no outputs)");
         return ExitCode::SUCCESS;
     }
-    for output in &outputs.outputs {
-        print_output(output);
+    for (index, output) in outputs.outputs.iter().enumerate() {
+        match format_output(output) {
+            Ok(formatted) => {
+                if index > 0 {
+                    println!();
+                }
+                print!("{formatted}");
+            }
+            Err(err) => {
+                eprintln!("halleyctl: invalid output response: {err}");
+                return ExitCode::FAILURE;
+            }
+        }
     }
     ExitCode::SUCCESS
 }
 
-fn print_output(output: &OutputInfo) {
-    println!("{}", output.name);
-    match &output.current_mode {
-        Some(ModeInfo {
-            width,
-            height,
-            refresh_hz,
-        }) => {
-            println!("  mode: {width}x{height} @ {refresh_hz:.3}Hz");
-        }
-        None => println!("  mode: (none)"),
+fn format_output(output: &OutputInfo) -> Result<String, String> {
+    let mut formatted = String::new();
+    writeln!(formatted, "{}", output.name).unwrap();
+
+    if let Some(current_index) = output.current_mode {
+        let current = output.modes.get(current_index).ok_or_else(|| {
+            format!(
+                "{} refers to missing current mode index {current_index}",
+                output.name
+            )
+        })?;
+        writeln!(
+            formatted,
+            "  Current mode: {}x{} @ {:.3} Hz{}",
+            current.width,
+            current.height,
+            refresh_hz(current),
+            mode_qualifier(current.preferred, false),
+        )
+        .unwrap();
+        writeln!(formatted, "  Position: {}, {}", output.offset_x, output.offset_y).unwrap();
+        writeln!(formatted, "  VRR: {}", output.vrr).unwrap();
+    } else {
+        writeln!(formatted, "  Disabled").unwrap();
     }
-    println!("  position: {}, {}", output.offset_x, output.offset_y);
-    println!("  vrr: {}", output.vrr);
+
+    if output.modes.is_empty() {
+        writeln!(formatted, "  Available modes: (none)").unwrap();
+        return Ok(formatted);
+    }
+
+    writeln!(formatted, "  Available modes:").unwrap();
+    for (index, mode) in output.modes.iter().enumerate() {
+        writeln!(
+            formatted,
+            "    {}x{}@{:.3}{}",
+            mode.width,
+            mode.height,
+            refresh_hz(mode),
+            mode_qualifier(mode.preferred, Some(index) == output.current_mode),
+        )
+        .unwrap();
+    }
+
+    Ok(formatted)
+}
+
+fn refresh_hz(mode: &ModeInfo) -> f64 {
+    mode.refresh_millihz as f64 / 1000.0
+}
+
+fn mode_qualifier(preferred: bool, current: bool) -> String {
+    match (current, preferred) {
+        (true, true) => " (current, preferred)".to_string(),
+        (true, false) => " (current)".to_string(),
+        (false, true) => " (preferred)".to_string(),
+        (false, false) => String::new(),
+    }
 }
 
 fn print_version(resp: Response) -> ExitCode {
@@ -163,6 +219,84 @@ mod tests {
         assert_eq!(
             parse_args(&args(&["--version", "extra"])),
             Err("unexpected argument \"extra\"".to_string())
+        );
+    }
+
+    fn mode(width: i32, height: i32, refresh_millihz: i32, preferred: bool) -> ModeInfo {
+        ModeInfo {
+            width,
+            height,
+            refresh_millihz,
+            preferred,
+        }
+    }
+
+    #[test]
+    fn formats_every_available_mode_with_exact_refresh_and_qualifiers() {
+        let output = OutputInfo {
+            name: "DP-1".to_string(),
+            modes: vec![
+                mode(2560, 1440, 179_998, true),
+                mode(2560, 1440, 143_912, false),
+                mode(1920, 1080, 60_000, false),
+            ],
+            current_mode: Some(0),
+            offset_x: 2560,
+            offset_y: 0,
+            vrr: "auto".to_string(),
+        };
+
+        assert_eq!(
+            format_output(&output).unwrap(),
+            "\
+DP-1
+  Current mode: 2560x1440 @ 179.998 Hz (preferred)
+  Position: 2560, 0
+  VRR: auto
+  Available modes:
+    2560x1440@179.998 (current, preferred)
+    2560x1440@143.912
+    1920x1080@60.000
+"
+        );
+    }
+
+    #[test]
+    fn formats_connected_but_inactive_output_with_its_modes() {
+        let output = OutputInfo {
+            name: "HDMI-A-1".to_string(),
+            modes: vec![mode(1920, 1080, 60_000, true)],
+            current_mode: None,
+            offset_x: 0,
+            offset_y: 0,
+            vrr: "off".to_string(),
+        };
+
+        assert_eq!(
+            format_output(&output).unwrap(),
+            "\
+HDMI-A-1
+  Disabled
+  Available modes:
+    1920x1080@60.000 (preferred)
+"
+        );
+    }
+
+    #[test]
+    fn rejects_current_mode_index_outside_available_modes() {
+        let output = OutputInfo {
+            name: "DP-1".to_string(),
+            modes: Vec::new(),
+            current_mode: Some(1),
+            offset_x: 0,
+            offset_y: 0,
+            vrr: "off".to_string(),
+        };
+
+        assert_eq!(
+            format_output(&output),
+            Err("DP-1 refers to missing current mode index 1".to_string())
         );
     }
 }

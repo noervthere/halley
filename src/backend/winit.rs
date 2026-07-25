@@ -108,9 +108,14 @@ impl WinitBackend {
 impl crate::ipc::OutputInfoSource for WinitBackend {
     fn output_info(&self) -> Vec<halley_ipc::OutputInfo> {
         let location = self.output.current_location();
+        let mode = self
+            .output
+            .current_mode()
+            .expect("winit output always has a current mode");
         vec![halley_ipc::OutputInfo {
             name: self.output.name(),
-            current_mode: crate::ipc::mode_info(self.output.current_mode()),
+            modes: vec![crate::ipc::mode_info(mode, true)],
+            current_mode: Some(0),
             offset_x: location.x,
             offset_y: location.y,
             // The dev-mode nested backend has no real VRR/hardware concept

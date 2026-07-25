@@ -121,10 +121,29 @@ mod tests {
     }
 
     #[test]
-    fn response_round_trips_through_postcard() {
-        let resp = Response::Version(crate::VersionInfo {
-            version: "0.1.0".to_string(),
-            ipc_protocol: crate::HALLEY_IPC_VERSION,
+    fn output_response_round_trips_through_postcard() {
+        let resp = Response::Outputs(crate::OutputsResponse {
+            outputs: vec![crate::OutputInfo {
+                name: "DP-1".to_string(),
+                modes: vec![
+                    crate::ModeInfo {
+                        width: 2560,
+                        height: 1440,
+                        refresh_millihz: 179_998,
+                        preferred: true,
+                    },
+                    crate::ModeInfo {
+                        width: 1920,
+                        height: 1080,
+                        refresh_millihz: 60_000,
+                        preferred: false,
+                    },
+                ],
+                current_mode: Some(0),
+                offset_x: 0,
+                offset_y: 0,
+                vrr: "auto".to_string(),
+            }],
         });
         let bytes = encode_response(&resp).unwrap();
         let decoded = decode_response(&bytes).unwrap();
