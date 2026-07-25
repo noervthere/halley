@@ -4,9 +4,10 @@ pub mod pointer;
 pub mod zoom;
 
 use halley_config::{Action, ModifierKey, Modifiers};
+use smithay::backend::input::Keycode;
 use smithay::input::keyboard::{Keysym, ModifiersState};
 
-use keybinds::{BackendKind, ResolvedBind};
+use keybinds::{BackendKind, ResolvedBind, ResolvedTrigger};
 
 pub fn modifiers_match(state: &ModifiersState, expected: Modifiers) -> bool {
     state.ctrl == expected.ctrl
@@ -29,19 +30,30 @@ pub fn mod_key_held(state: &ModifiersState, key: ModifierKey) -> bool {
     }
 }
 
-/// Looks up a pressed keysym+modifiers against the resolved bind table -
-/// pure and backend-independent, so both `session::tty` and `session::winit`
-/// can share it from inside their own real `KeyboardHandle::input()` filter
-/// closures (which need the concrete `App`/`TtyApp` type, so the closure
-/// itself can't live here - only this lookup can).
-pub fn match_bind(binds: &[ResolvedBind], mods: &ModifiersState, keysym: Keysym) -> Option<Action> {
-    let bind = binds
-        .iter()
-        .find(|bind| bind.keysym == keysym && modifiers_match(mods, bind.modifiers))?;
+/// Looks up a pressed keysym/raw keycode plus modifiers against the resolved
+/// bind table. This remains pure and backend-independent so both sessions
+/// can share it from their real `KeyboardHandle::input()` filter closures.
+pub fn match_keyboard_bind(
+    binds: &[ResolvedBind],
+    mods: &ModifiersState,
+    keysym: Keysym,
+    keycode: Keycode,
+) -> Option<Action> {
+    let bind = binds.iter().find(|bind| {
+        let trigger_matches = match bind.trigger {
+            ResolvedTrigger::Keysym(expected) => expected == keysym,
+            ResolvedTrigger::Keycode(expected) => expected == keycode,
+            ResolvedTrigger::PointerButton(_) | ResolvedTrigger::Wheel(_) => false,
+        };
+        trigger_matches && modifiers_match(mods, bind.modifiers)
+    })?;
     // Low-frequency (only fires on an actual match, not every keystroke) and
     // genuinely useful - confirms which action a chord resolved to without
     // needing to reason about it from config alone.
-    eprintln!("keybinds: {keysym:?} + {mods:?} -> {:?}", bind.action);
+    eprintln!(
+        "keybinds: {:?} + {mods:?} -> {:?}",
+        bind.trigger, bind.action
+    );
     Some(bind.action.clone())
 }
 
@@ -49,8 +61,7 @@ pub fn match_bind(binds: &[ResolvedBind], mods: &ModifiersState, keysym: Keysym)
 /// else. Used to own a fake `Seat`/`KeyboardHandle` purely to match
 /// keybinds, back when there was no real Wayland client to focus or forward
 /// to; now that real clients exist, matching happens directly on the real
-/// `Seat<App>`/`Seat<TtyApp>` each app already owns (see `match_bind` and
-/// each session module's input-handling closure), so this is just data.
+/// `Seat<App>`/`Seat<TtyApp>` each app already owns, so this is just data.
 pub struct Keyboard {
     pub binds: Vec<ResolvedBind>,
     /// The configured mod key, already remapped for this backend (matches

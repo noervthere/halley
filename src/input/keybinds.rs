@@ -1,5 +1,55 @@
 use halley_config::{Action, Keybinds, ModifierKey, Modifiers};
+use smithay::backend::input::Keycode;
 use smithay::input::keyboard::{Keysym, xkb};
+
+const XKB_KEYCODE_OFFSET: u32 = 8;
+
+/// A mouse button that can be named in a Rune keybind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PointerButtonTrigger {
+    Left,
+    Right,
+    Middle,
+    Back,
+    Forward,
+    /// An exact Linux evdev button code from `button-N`.
+    Code(u32),
+}
+
+impl PointerButtonTrigger {
+    pub fn matches(self, button: u32) -> bool {
+        match self {
+            Self::Left => button == 0x110,
+            Self::Right => button == 0x111,
+            Self::Middle => button == 0x112,
+            // Linux exposes the same physical navigation buttons under two
+            // pairs of names depending on the device/driver.
+            Self::Back => matches!(button, 0x113 | 0x116),
+            Self::Forward => matches!(button, 0x114 | 0x115),
+            Self::Code(expected) => button == expected,
+        }
+    }
+}
+
+/// A physical mouse-wheel direction that can be named in a Rune keybind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WheelDirection {
+    Up,
+    Down,
+    Left,
+    Right,
+}
+
+/// A fully parsed input trigger. Keyboard symbols remain layout-aware while
+/// raw codes provide an escape hatch for unusual hardware.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResolvedTrigger {
+    Keysym(Keysym),
+    /// XKB's internal keycode (`evdev + 8`), resolved from `keycode-N`.
+    Keycode(Keycode),
+    PointerButton(PointerButtonTrigger),
+    Wheel(WheelDirection),
+}
 
 /// Which backend a bind table is being resolved for - drives the
 /// Alt-vs-Super mod-key convention (design decision 4).
@@ -89,16 +139,48 @@ pub fn remap_mod_bit(modifiers: Modifiers, from: ModifierKey, to: ModifierKey) -
     remapped
 }
 
-/// A keybind fully resolved for matching against live input: modifiers
-/// already remapped for this backend, key name already resolved to a
-/// `Keysym`. Every `Action` variant is resolved now - real keyboard focus
-/// (`WaylandState.focused_window`) exists, so `CloseFocusedWindow` finally has
-/// something to act on (see `wayland::xdg_shell::close_focused`).
+/// A keybind fully resolved for matching against live input: modifiers are
+/// already remapped for this backend and the config's final chord segment is
+/// classified as a keyboard, pointer-button, or wheel trigger.
 #[derive(Clone, Debug)]
 pub struct ResolvedBind {
     pub modifiers: Modifiers,
-    pub keysym: Keysym,
+    pub trigger: ResolvedTrigger,
     pub action: Action,
+}
+
+fn raw_code(name: &str, prefix: &str) -> Option<u32> {
+    name.strip_prefix(prefix)?.parse().ok()
+}
+
+pub fn resolve_trigger_name(name: &str) -> Option<ResolvedTrigger> {
+    let normalized = name.trim().to_ascii_lowercase();
+    let trigger = match normalized.as_str() {
+        "click-left" => ResolvedTrigger::PointerButton(PointerButtonTrigger::Left),
+        "click-right" => ResolvedTrigger::PointerButton(PointerButtonTrigger::Right),
+        "click-middle" => ResolvedTrigger::PointerButton(PointerButtonTrigger::Middle),
+        "click-back" => ResolvedTrigger::PointerButton(PointerButtonTrigger::Back),
+        "click-forward" => ResolvedTrigger::PointerButton(PointerButtonTrigger::Forward),
+        "scroll-up" => ResolvedTrigger::Wheel(WheelDirection::Up),
+        "scroll-down" => ResolvedTrigger::Wheel(WheelDirection::Down),
+        "scroll-left" => ResolvedTrigger::Wheel(WheelDirection::Left),
+        "scroll-right" => ResolvedTrigger::Wheel(WheelDirection::Right),
+        _ => {
+            if let Some(code) = raw_code(&normalized, "button-") {
+                ResolvedTrigger::PointerButton(PointerButtonTrigger::Code(code))
+            } else if let Some(code) = raw_code(&normalized, "keycode-") {
+                let xkb_code = code.checked_add(XKB_KEYCODE_OFFSET)?;
+                ResolvedTrigger::Keycode(Keycode::new(xkb_code))
+            } else {
+                let keysym = xkb::keysym_from_name(name.trim(), xkb::KEYSYM_CASE_INSENSITIVE);
+                if keysym == Keysym::NoSymbol {
+                    return None;
+                }
+                ResolvedTrigger::Keysym(keysym)
+            }
+        }
+    };
+    Some(trigger)
 }
 
 pub fn resolve_binds(keybinds: &Keybinds, backend: BackendKind) -> Vec<ResolvedBind> {
@@ -108,14 +190,16 @@ pub fn resolve_binds(keybinds: &Keybinds, backend: BackendKind) -> Vec<ResolvedB
         .binds
         .iter()
         .filter_map(|bind| {
-            let keysym = xkb::keysym_from_name(&bind.key, xkb::KEYSYM_NO_FLAGS);
-            if keysym == Keysym::NoSymbol {
-                eprintln!("keybinds: unknown key name {:?}, skipping bind", bind.key);
-                return None;
-            }
+            let trigger = match resolve_trigger_name(&bind.key) {
+                Some(trigger) => trigger,
+                None => {
+                    eprintln!("keybinds: unknown trigger name {:?}, skipping bind", bind.key);
+                    return None;
+                }
+            };
             Some(ResolvedBind {
                 modifiers: remap_mod_bit(bind.modifiers, keybinds.modifier, effective),
-                keysym,
+                trigger,
                 action: bind.action.clone(),
             })
         })
@@ -175,7 +259,10 @@ mod tests {
         assert!(quit.modifiers.alt);
         assert!(!quit.modifiers.super_key);
         assert!(quit.modifiers.shift);
-        assert_eq!(quit.keysym, xkb::keysym_from_name("e", xkb::KEYSYM_NO_FLAGS));
+        assert_eq!(
+            quit.trigger,
+            ResolvedTrigger::Keysym(xkb::keysym_from_name("e", xkb::KEYSYM_NO_FLAGS))
+        );
     }
 
     #[test]
@@ -201,7 +288,10 @@ mod tests {
             .unwrap();
         assert!(open_terminal.modifiers.super_key);
         assert!(!open_terminal.modifiers.shift);
-        assert_eq!(open_terminal.keysym, xkb::keysym_from_name("t", xkb::KEYSYM_NO_FLAGS));
+        assert_eq!(
+            open_terminal.trigger,
+            ResolvedTrigger::Keysym(xkb::keysym_from_name("t", xkb::KEYSYM_NO_FLAGS))
+        );
     }
 
     #[test]
@@ -231,12 +321,84 @@ mod tests {
         let resolved = resolve_binds(&keybinds, BackendKind::Winit);
         let command = resolved
             .iter()
-            .find(|bind| bind.keysym == xkb::keysym_from_name("d", xkb::KEYSYM_NO_FLAGS))
+            .find(|bind| {
+                bind.trigger
+                    == ResolvedTrigger::Keysym(xkb::keysym_from_name(
+                        "d",
+                        xkb::KEYSYM_NO_FLAGS,
+                    ))
+            })
             .expect("spawn bind resolves");
         assert!(command.modifiers.alt);
         assert_eq!(
             command.action,
             Action::Spawn("fuzzel --show-actions".to_string())
         );
+    }
+
+    #[test]
+    fn standard_xkb_names_are_case_insensitive() {
+        for name in ["Print", "page_up", "PAGE_DOWN", "delete", "F12", "XF86AudioMute"] {
+            assert!(matches!(
+                resolve_trigger_name(name),
+                Some(ResolvedTrigger::Keysym(keysym)) if keysym != Keysym::NoSymbol
+            ));
+        }
+    }
+
+    #[test]
+    fn resolves_raw_evdev_keycodes_with_xkb_offset() {
+        assert_eq!(
+            resolve_trigger_name("keycode-111"),
+            Some(ResolvedTrigger::Keycode(Keycode::new(119)))
+        );
+        assert_eq!(resolve_trigger_name("keycode-nope"), None);
+        assert_eq!(resolve_trigger_name("keycode-4294967295"), None);
+    }
+
+    #[test]
+    fn resolves_named_pointer_buttons_and_raw_button_codes() {
+        let left = resolve_trigger_name("CLICK-LEFT").unwrap();
+        assert_eq!(
+            left,
+            ResolvedTrigger::PointerButton(PointerButtonTrigger::Left)
+        );
+        assert!(PointerButtonTrigger::Left.matches(0x110));
+        assert!(PointerButtonTrigger::Back.matches(0x113));
+        assert!(PointerButtonTrigger::Back.matches(0x116));
+        assert!(PointerButtonTrigger::Forward.matches(0x114));
+        assert!(PointerButtonTrigger::Forward.matches(0x115));
+        assert_eq!(
+            resolve_trigger_name("button-279"),
+            Some(ResolvedTrigger::PointerButton(PointerButtonTrigger::Code(
+                279
+            )))
+        );
+        assert_eq!(resolve_trigger_name("button-nope"), None);
+    }
+
+    #[test]
+    fn resolves_all_wheel_directions() {
+        assert_eq!(
+            resolve_trigger_name("scroll-up"),
+            Some(ResolvedTrigger::Wheel(WheelDirection::Up))
+        );
+        assert_eq!(
+            resolve_trigger_name("scroll-down"),
+            Some(ResolvedTrigger::Wheel(WheelDirection::Down))
+        );
+        assert_eq!(
+            resolve_trigger_name("scroll-left"),
+            Some(ResolvedTrigger::Wheel(WheelDirection::Left))
+        );
+        assert_eq!(
+            resolve_trigger_name("scroll-right"),
+            Some(ResolvedTrigger::Wheel(WheelDirection::Right))
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_trigger_names() {
+        assert_eq!(resolve_trigger_name("definitely-not-a-real-trigger"), None);
     }
 }

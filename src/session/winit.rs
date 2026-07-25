@@ -48,7 +48,7 @@ use crate::backend::{self, Renderable};
 use crate::cursor::CursorImage;
 use crate::input::Keyboard;
 use crate::input::keybinds::BackendKind;
-use crate::input::match_bind;
+use crate::input::match_keyboard_bind;
 use crate::input::pointer::Pointer;
 use crate::ipc::OutputInfoSource;
 use crate::spawn;
@@ -615,7 +615,12 @@ pub fn run() {
                             let Some(keysym) = handle.raw_latin_sym_or_raw_current_sym() else {
                                 return FilterResult::Forward;
                             };
-                            match match_bind(&data.keyboard.binds, mods, keysym) {
+                            match match_keyboard_bind(
+                                &data.keyboard.binds,
+                                mods,
+                                keysym,
+                                keycode,
+                            ) {
                                 Some(action) => FilterResult::Intercept(action),
                                 None => FilterResult::Forward,
                             }
