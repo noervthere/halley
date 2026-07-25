@@ -94,9 +94,12 @@ fn apply_curve(curve: AnimationCurve, progress: f64) -> f64 {
 
 /// Scales `rect` around the center of the window's final `bounds`.
 ///
-/// Every surface in the toplevel tree uses the same origin, so subsurfaces
-/// stay attached while the whole window expands from its center. Popups do
-/// not pass through this function.
+/// Every surface in the toplevel tree - subsurfaces and popups alike - uses
+/// the same origin, so the whole window expands from its center as one
+/// piece. This mirrors newm, where the open animation interpolates a single
+/// per-view `box` from `(center, 0x0)` to the final rect and pywm renders
+/// the entire surface tree scaled into it (`newm/view.py::_show_tiled` /
+/// `_show_floating`, `newm/interpolation.py::ViewDownstreamInterpolation`).
 pub fn window_open_rect(
     rect: Rectangle<i32, Physical>,
     bounds: Rectangle<i32, Physical>,
