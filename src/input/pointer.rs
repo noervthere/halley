@@ -1,24 +1,37 @@
 use smithay::backend::input::{
     AbsolutePositionEvent, Axis, InputBackend, InputEvent, PointerAxisEvent, PointerMotionEvent,
 };
-use smithay::desktop::{Space, Window, WindowSurfaceType};
+use smithay::desktop::{layer_map_for_output, LayerSurface, Space, Window, WindowSurfaceType};
 use smithay::input::pointer::AxisFrame;
 use smithay::output::Output;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point, Rectangle};
+use smithay::wayland::shell::wlr_layer::Layer;
 
 use crate::camera::OutputCameras;
 
-/// The result of projecting Halley's screen-space cursor through one
-/// output's camera into Smithay's world space.
+#[derive(Debug)]
+pub enum PointerTarget {
+    Layer(LayerSurface),
+    Window(Window),
+    Background,
+}
+
+pub type SurfaceFocus = (WlSurface, Point<f64, Logical>);
+type LayerHit = (LayerSurface, SurfaceFocus);
+
+/// A pointer route in the coordinate system used by its focused surface.
 ///
-/// Smithay requires both the pointer location and the focused surface's
-/// origin to use the same global coordinate system. Keeping them in world
-/// coordinates makes their difference the client's unscaled surface-local
-/// coordinate even while the output is panned or zoomed.
+/// Camera-transformed windows use world coordinates so their client-local
+/// position remains unscaled. Screen-fixed layer surfaces use global output
+/// layout coordinates. In both cases `location` and the focus origin share
+/// one coordinate system, which is Smithay's required invariant.
+#[derive(Debug)]
 pub struct PointerRoute {
+    pub output: Output,
     pub location: Point<f64, Logical>,
-    pub focus: Option<(WlSurface, Point<f64, Logical>)>,
+    pub focus: Option<SurfaceFocus>,
+    pub target: PointerTarget,
 }
 
 /// Screen-space cursor tracking. Client-facing focus, buttons, implicit
@@ -92,6 +105,23 @@ pub fn route_to_client(
 ) -> Option<PointerRoute> {
     let output = space.output_under(screen_position).next()?;
     let output_geometry = space.output_geometry(output)?;
+    let screen_location = Point::<f64, Logical>::from(screen_position);
+    let output_local = screen_location - output_geometry.loc.to_f64();
+
+    if let Some((layer, focus)) = layer_under(
+        output,
+        output_geometry.loc,
+        output_local,
+        [Layer::Overlay, Layer::Top],
+    ) {
+        return Some(PointerRoute {
+            output: output.clone(),
+            location: screen_location,
+            focus: Some(focus),
+            target: PointerTarget::Layer(layer),
+        });
+    }
+
     let camera = cameras.get(&output.name())?;
     let world =
         crate::input::grab::screen_to_world_on_output(screen_position, camera, output_geometry);
@@ -99,17 +129,66 @@ pub fn route_to_client(
 
     let window_and_origin =
         crate::input::grab::window_under_on_output(space, output, primary, world);
-    let focus = window_and_origin
-        .as_ref()
-        .and_then(|(window, render_location)| {
-            window
-                .surface_under(location - render_location.to_f64(), WindowSurfaceType::ALL)
-                .map(|(surface, surface_location)| {
-                    (surface, (surface_location + *render_location).to_f64())
-                })
-        });
+    if let Some((window, render_location)) = window_and_origin {
+        let focus = window
+            .surface_under(location - render_location.to_f64(), WindowSurfaceType::ALL)
+            .map(|(surface, surface_location)| {
+                (surface, (surface_location + render_location).to_f64())
+            });
+        if focus.is_some() {
+            return Some(PointerRoute {
+                output: output.clone(),
+                location,
+                focus,
+                target: PointerTarget::Window(window),
+            });
+        }
+    }
 
-    Some(PointerRoute { location, focus })
+    if let Some((layer, focus)) = layer_under(
+        output,
+        output_geometry.loc,
+        output_local,
+        [Layer::Bottom, Layer::Background],
+    ) {
+        return Some(PointerRoute {
+            output: output.clone(),
+            location: screen_location,
+            focus: Some(focus),
+            target: PointerTarget::Layer(layer),
+        });
+    }
+
+    Some(PointerRoute {
+        output: output.clone(),
+        location,
+        focus: None,
+        target: PointerTarget::Background,
+    })
+}
+
+fn layer_under(
+    output: &Output,
+    output_location: Point<i32, Logical>,
+    output_local: Point<f64, Logical>,
+    layers: [Layer; 2],
+) -> Option<LayerHit> {
+    let map = layer_map_for_output(output);
+    for layer_kind in layers {
+        for layer in map.layers_on(layer_kind).rev() {
+            let Some(geometry) = map.layer_geometry(layer) else {
+                continue;
+            };
+            let Some((surface, surface_location)) =
+                layer.surface_under(output_local - geometry.loc.to_f64(), WindowSurfaceType::ALL)
+            else {
+                continue;
+            };
+            let origin = output_location + geometry.loc + surface_location;
+            return Some((layer.clone(), (surface, origin.to_f64())));
+        }
+    }
+    None
 }
 
 /// Converts one backend scroll event into the complete Smithay/Wayland axis

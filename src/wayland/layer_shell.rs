@@ -58,6 +58,7 @@ pub fn handle_commit(wayland: &mut WaylandState, root: &WlSurface) -> bool {
         wayland.unmapped_layers.remove(root);
     } else {
         wayland.unmapped_layers.insert(root.clone());
+        super::focus::forget_layer(wayland, root);
 
         if !initial_configure_sent(root) {
             layer.layer_surface().send_configure();
@@ -69,6 +70,7 @@ pub fn handle_commit(wayland: &mut WaylandState, root: &WlSurface) -> bool {
 
 pub fn destroyed(wayland: &mut WaylandState, surface: &WlrLayerSurface) {
     wayland.unmapped_layers.remove(surface.wl_surface());
+    super::focus::forget_layer(wayland, surface.wl_surface());
 
     let found = wayland.space.outputs().find_map(|output| {
         let map = layer_map_for_output(output);

@@ -1,5 +1,6 @@
 pub mod compositor;
 pub mod decoration;
+pub mod focus;
 pub mod layer_shell;
 pub mod popup;
 pub mod selection;
@@ -8,7 +9,7 @@ pub mod xdg_shell;
 use std::collections::{HashMap, HashSet};
 use std::sync::RwLock;
 
-use smithay::desktop::{PopupManager, Space, Window};
+use smithay::desktop::{LayerSurface, PopupManager, Space, Window};
 use smithay::output::Output;
 use smithay::reexports::wayland_server::DisplayHandle;
 use smithay::reexports::wayland_server::backend::{ClientData, ClientId, DisconnectReason};
@@ -95,14 +96,13 @@ pub struct WaylandState {
     /// it can calculate and send the next configure; this set records the
     /// separate Wayland mapped/unmapped lifecycle.
     pub unmapped_layers: HashSet<WlSurface>,
-    /// The surface that should have keyboard focus - `None` if nothing is
-    /// mapped. Set by `xdg_shell::handle_commit` (new windows steal focus on
-    /// map) and cleared by `xdg_shell::toplevel_destroyed` if the destroyed
-    /// window was the focused one. Driving code re-asserts this onto the
-    /// real seat every commit (see `session::tty`/`session::winit`); this
-    /// field is just the source of truth, not the actual Wayland-facing
-    /// focus state.
-    pub focused: Option<WlSurface>,
+    /// The one on-demand layer surface selected by a click. Exclusive layer
+    /// focus is derived from mapped protocol state and is never stored here.
+    pub focused_layer: Option<LayerSurface>,
+    /// Persistent normal-window focus. Layer-shell focus is resolved
+    /// separately so a temporary launcher or exclusive overlay does not
+    /// erase the window that should regain focus after it closes.
+    pub focused_window: Option<WlSurface>,
 }
 
 impl WaylandState {
@@ -137,7 +137,8 @@ impl WaylandState {
             space: Space::default(),
             unmapped: HashMap::new(),
             unmapped_layers: HashSet::new(),
-            focused: None,
+            focused_layer: None,
+            focused_window: None,
         }
     }
 }

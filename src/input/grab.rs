@@ -238,17 +238,6 @@ pub fn screen_offset_to_world(offset: Vec2, camera: &Camera) -> Vec2 {
     }
 }
 
-/// Hit-tests a world-space point against every mapped window, returning the
-/// front-most match - a thin wrapper over `Space::element_under` (Smithay's
-/// own front-to-back element order already matches expectations here;
-/// there's no competing stacking/cluster policy to arbitrate, unlike old
-/// halley's custom multi-tier hit-test).
-pub fn window_under(space: &Space<Window>, world: Vec2) -> Option<(Window, Point<i32, smithay::utils::Logical>)> {
-    space
-        .element_under((world.x as f64, world.y as f64))
-        .map(|(window, loc)| (window.clone(), loc))
-}
-
 /// Output-owned variant of Smithay's `Space::element_under`. The hit-test
 /// itself follows Smithay's implementation; the only added predicate is
 /// Halley's whole-window output ownership, so a window owned by the other

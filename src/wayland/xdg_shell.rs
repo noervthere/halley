@@ -25,8 +25,8 @@ pub fn new_toplevel(wayland: &mut WaylandState, surface: ToplevelSurface) {
 /// logic this round.
 pub fn toplevel_destroyed(wayland: &mut WaylandState, surface: &ToplevelSurface) {
     wayland.unmapped.remove(surface.wl_surface());
-    if wayland.focused.as_ref() == Some(surface.wl_surface()) {
-        wayland.focused = None;
+    if wayland.focused_window.as_ref() == Some(surface.wl_surface()) {
+        wayland.focused_window = None;
     }
 }
 
@@ -72,11 +72,12 @@ pub fn handle_commit(wayland: &mut WaylandState, surface: &WlSurface) {
 /// above and `input::grab`'s click-to-focus/grab-start paths. `window` must
 /// already be mapped into `wayland.space`.
 pub fn focus_and_raise(wayland: &mut WaylandState, window: &Window) {
+    wayland.focused_layer = None;
     if let Some(location) = wayland.space.element_location(window) {
         wayland.space.map_element(window.clone(), location, true);
     }
     if let Some(toplevel) = window.toplevel() {
-        wayland.focused = Some(toplevel.wl_surface().clone());
+        wayland.focused_window = Some(toplevel.wl_surface().clone());
     }
 }
 
@@ -85,7 +86,7 @@ pub fn focus_and_raise(wayland: &mut WaylandState, window: &Window) {
 /// etc.), matching every other close keybind/button on any desktop. A no-op
 /// if nothing is focused or the focused surface somehow isn't in `space`.
 pub fn close_focused(wayland: &WaylandState) {
-    let Some(focused) = wayland.focused.as_ref() else {
+    let Some(focused) = wayland.focused_window.as_ref() else {
         return;
     };
     let Some(window) = wayland

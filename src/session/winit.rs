@@ -74,10 +74,11 @@ fn route_client_pointer(app: &App) -> Option<crate::input::pointer::PointerRoute
     )
 }
 
-fn update_client_pointer_focus(app: &mut App, time: u32) {
-    let Some(route) = route_client_pointer(app) else {
-        return;
-    };
+fn update_client_pointer_focus(
+    app: &mut App,
+    time: u32,
+) -> Option<crate::input::pointer::PointerRoute> {
+    let route = route_client_pointer(app)?;
     let pointer = app
         .seat
         .get_pointer()
@@ -91,16 +92,30 @@ fn update_client_pointer_focus(app: &mut App, time: u32) {
             time,
         },
     );
+    Some(route)
 }
 
-fn focus_window(app: &mut App, window: &smithay::desktop::Window, serial: Serial) {
-    wayland::xdg_shell::focus_and_raise(&mut app.wayland, window);
-    let focused = app.wayland.focused.clone();
+fn sync_keyboard_focus(app: &mut App, serial: Serial) {
+    let focused = wayland::focus::current(&app.wayland).map(|focus| focus.surface());
     let keyboard = app
         .seat
         .get_keyboard()
         .expect("keyboard capability added at seat setup");
     keyboard.set_focus(app, focused, serial);
+}
+
+fn focus_layer(
+    app: &mut App,
+    layer: Option<smithay::desktop::LayerSurface>,
+    serial: Serial,
+) {
+    wayland::focus::select_layer(&mut app.wayland, layer);
+    sync_keyboard_focus(app, serial);
+}
+
+fn focus_window(app: &mut App, window: &smithay::desktop::Window, serial: Serial) {
+    wayland::xdg_shell::focus_and_raise(&mut app.wayland, window);
+    sync_keyboard_focus(app, serial);
 }
 
 /// Everything this milestone needs: a backend to render into, a way to match
@@ -239,7 +254,7 @@ pub fn run() {
                     &app.cursor,
                     position,
                     &app.wayland.space,
-                    app.wayland.focused.as_ref(),
+                    app.wayland.focused_window.as_ref(),
                     &app.decorations,
                     &app.cameras,
                 ) {
@@ -382,7 +397,7 @@ pub fn run() {
                     let state = button_event.state();
                     let time = button_event.time_msec();
                     let serial = SERIAL_COUNTER.next_serial();
-                    update_client_pointer_focus(app, time);
+                    let route = update_client_pointer_focus(app, time);
                     let mut intercepted = false;
 
                     if button == BTN_RIGHT {
@@ -393,35 +408,33 @@ pub fn run() {
                                     .get_keyboard()
                                     .expect("keyboard capability added at seat setup")
                                     .modifier_state();
-                                if crate::input::mod_key_held(&mods, app.keyboard.effective_mod) {
-                                    let camera = app
-                                        .cameras
-                                        .get(&output_name)
-                                        .expect("winit output camera initialized at startup");
-                                    let world = crate::input::grab::screen_to_world(
-                                        position_after,
-                                        camera,
-                                        output_size_physical,
-                                    );
-                                    if let Some((window, _)) =
-                                        crate::input::grab::window_under(&app.wayland.space, world)
-                                        && let Some(start_rect) =
-                                            app.wayland.space.element_geometry(&window)
-                                    {
+                                if crate::input::mod_key_held(&mods, app.keyboard.effective_mod)
+                                    && let Some(crate::input::pointer::PointerRoute {
+                                        target:
+                                            crate::input::pointer::PointerTarget::Window(window),
+                                        location,
+                                        ..
+                                    }) = route.as_ref()
+                                    && let Some(start_rect) =
+                                            app.wayland.space.element_geometry(window)
+                                {
+                                        let world = halley_core::field::Vec2 {
+                                            x: location.x as f32,
+                                            y: location.y as f32,
+                                        };
                                         let handle = crate::input::grab::handle_from_press_position(
                                             start_rect, world,
                                         );
-                                        focus_window(app, &window, serial);
+                                        focus_window(app, window, serial);
                                         app.grab = crate::input::grab::Grab::ResizeWindow(
                                             crate::input::grab::ResizeState {
-                                                window,
+                                                window: window.clone(),
                                                 handle,
                                                 start_rect,
                                                 start_cursor: world,
                                             },
                                         );
                                         intercepted = true;
-                                    }
                                 }
                             }
                             ButtonState::Released => {
@@ -441,38 +454,54 @@ pub fn run() {
                                     .modifier_state();
                                 let mod_held =
                                     crate::input::mod_key_held(&mods, app.keyboard.effective_mod);
-                                let camera = app
-                                    .cameras
-                                    .get(&output_name)
-                                    .expect("winit output camera initialized at startup");
-                                let world = crate::input::grab::screen_to_world(
-                                    position_after,
-                                    camera,
-                                    output_size_physical,
-                                );
-                                match crate::input::grab::window_under(&app.wayland.space, world) {
-                                    Some((window, window_loc)) if mod_held => {
+                                match route.as_ref().map(|route| &route.target) {
+                                    Some(crate::input::pointer::PointerTarget::Window(window))
+                                        if mod_held =>
+                                    {
+                                        let route = route.as_ref().expect("matched above");
+                                        let world = halley_core::field::Vec2 {
+                                            x: route.location.x as f32,
+                                            y: route.location.y as f32,
+                                        };
+                                        let window_loc = app
+                                            .wayland
+                                            .space
+                                            .element_location(window)
+                                            .expect("routed window is mapped");
+                                        let camera = app
+                                            .cameras
+                                            .get(&route.output.name())
+                                            .expect("routed output camera initialized");
                                         let scale = crate::input::zoom::scale(camera);
                                         let screen_offset = halley_core::field::Vec2 {
                                             x: (window_loc.x as f32 - world.x) * scale,
                                             y: (window_loc.y as f32 - world.y) * scale,
                                         };
-                                        focus_window(app, &window, serial);
+                                        focus_window(app, window, serial);
                                         app.grab = crate::input::grab::Grab::MoveWindow {
-                                            window,
+                                            window: window.clone(),
                                             screen_offset,
                                         };
                                         intercepted = true;
                                     }
-                                    Some((window, _)) => {
-                                        focus_window(app, &window, serial);
+                                    Some(crate::input::pointer::PointerTarget::Window(window)) => {
+                                        focus_window(app, window, serial);
                                     }
-                                    None => {
+                                    Some(crate::input::pointer::PointerTarget::Layer(layer)) => {
+                                        focus_layer(app, Some(layer.clone()), serial);
+                                    }
+                                    Some(crate::input::pointer::PointerTarget::Background) => {
+                                        focus_layer(app, None, serial);
                                         app.grab = crate::input::grab::Grab::Pan {
-                                            output: output_name.clone(),
+                                            output: route
+                                                .as_ref()
+                                                .expect("matched above")
+                                                .output
+                                                .name(),
                                         };
                                         intercepted = true;
                                     }
+                                    None => {}
                                 }
                             }
                             ButtonState::Released => {
@@ -535,6 +564,8 @@ pub fn run() {
                         .seat
                         .get_keyboard()
                         .expect("keyboard capability added at seat setup");
+                    let bypass_shortcuts = wayland::focus::current(&app.wayland)
+                        .is_some_and(|focus| focus.bypasses_shortcuts());
                     let action = keyboard.input::<halley_config::Action, _>(
                         app,
                         keycode,
@@ -542,7 +573,7 @@ pub fn run() {
                         SERIAL_COUNTER.next_serial(),
                         time,
                         |data, mods, handle| {
-                            if state != KeyState::Pressed {
+                            if state != KeyState::Pressed || bypass_shortcuts {
                                 return FilterResult::Forward;
                             }
                             let Some(keysym) = handle.raw_latin_sym_or_raw_current_sym() else {
@@ -652,16 +683,7 @@ impl CompositorHandler for App {
     fn commit(&mut self, surface: &WlSurface) {
         wayland::compositor::commit::<Self>(&mut self.wayland, surface);
 
-        // Re-asserted every commit rather than only when it changes -
-        // `set_focus` no-ops internally when the focus is already what's
-        // requested, so this is cheap and avoids needing separate
-        // change-tracking on top of `wayland.focused`.
-        let focused = self.wayland.focused.clone();
-        let keyboard = self
-            .seat
-            .get_keyboard()
-            .expect("keyboard capability added at seat setup");
-        keyboard.set_focus(self, focused, SERIAL_COUNTER.next_serial());
+        sync_keyboard_focus(self, SERIAL_COUNTER.next_serial());
     }
 }
 
@@ -735,6 +757,7 @@ impl WlrLayerShellHandler for App {
 
     fn layer_destroyed(&mut self, surface: WlrLayerSurface) {
         wayland::layer_shell::destroyed(&mut self.wayland, &surface);
+        sync_keyboard_focus(self, SERIAL_COUNTER.next_serial());
         self.backend.request_redraw();
     }
 
