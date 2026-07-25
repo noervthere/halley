@@ -453,6 +453,12 @@ pub fn run() {
                     let time = button_event.time_msec();
                     let serial = SERIAL_COUNTER.next_serial();
                     let route = update_client_pointer_focus(app, time);
+                    if button == BTN_LEFT
+                        && state == ButtonState::Pressed
+                        && let Some(route) = route.as_ref()
+                    {
+                        wayland::focus::select_output(&mut app.wayland, &route.output);
+                    }
                     let mut intercepted = false;
                     let mods = app
                         .seat

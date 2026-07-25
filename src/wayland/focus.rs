@@ -1,4 +1,5 @@
 use smithay::desktop::{layer_map_for_output, LayerSurface};
+use smithay::output::Output;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::wayland::shell::wlr_layer::{KeyboardInteractivity, Layer};
 
@@ -67,6 +68,29 @@ pub fn select_layer(wayland: &mut WaylandState, selected: Option<LayerSurface>) 
         !wayland.unmapped_layers.contains(layer.wl_surface())
             && layer.cached_state().keyboard_interactivity == KeyboardInteractivity::OnDemand
     });
+}
+
+/// Records the output chosen by click-to-focus. Resolution is deliberately
+/// deferred until placement so unplugging an output cannot leave a stale
+/// Smithay handle as the spawn target.
+pub fn select_output(wayland: &mut WaylandState, output: &Output) {
+    wayland.focused_output = Some(output.name());
+}
+
+/// Returns the click-focused output while it remains mapped, otherwise the
+/// first mapped output. The fallback preserves startup behavior before the
+/// first click and makes hot-unplug self-healing.
+pub fn selected_output(wayland: &WaylandState) -> Option<&Output> {
+    wayland
+        .focused_output
+        .as_deref()
+        .and_then(|name| {
+            wayland
+                .space
+                .outputs()
+                .find(|output| output.name() == name)
+        })
+        .or_else(|| wayland.space.outputs().next())
 }
 
 pub fn forget_layer(wayland: &mut WaylandState, surface: &WlSurface) {

@@ -101,6 +101,10 @@ pub struct WaylandState {
     /// separately so a temporary launcher or exclusive overlay does not
     /// erase the window that should regain focus after it closes.
     pub focused_window: Option<WlSurface>,
+    /// The output selected by the most recent focus click. New toplevels
+    /// use it as their spawn output; storing only the stable output name
+    /// keeps output handles and camera state in their existing owners.
+    pub focused_output: Option<String>,
 }
 
 impl WaylandState {
@@ -137,6 +141,7 @@ impl WaylandState {
             unmapped_layers: HashSet::new(),
             focused_layer: None,
             focused_window: None,
+            focused_output: None,
         }
     }
 }
