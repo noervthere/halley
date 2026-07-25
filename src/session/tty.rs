@@ -271,6 +271,9 @@ pub fn run() {
         .map(|output| output.create_global::<TtyApp>(&dh))
         .collect();
 
+    // Smithay's `Output` is its stable identity handle and is the key used
+    // throughout its own per-output state maps despite containing an Arc.
+    #[allow(clippy::mutable_key_type)]
     let output_frames = outputs
         .iter()
         .cloned()

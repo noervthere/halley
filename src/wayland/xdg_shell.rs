@@ -38,12 +38,8 @@ pub fn toplevel_destroyed(wayland: &mut WaylandState, surface: &ToplevelSurface)
 /// code silently skipping bufferless surfaces - here "mapped" means
 /// "actually visible," not "present in `Space` but incidentally invisible."
 pub fn handle_commit(wayland: &mut WaylandState, surface: &WlSurface) -> Option<WlSurface> {
-    let Some(window) = wayland.unmapped.get(surface) else {
-        return None;
-    };
-    let Some(toplevel) = window.toplevel() else {
-        return None;
-    };
+    let window = wayland.unmapped.get(surface)?;
+    let toplevel = window.toplevel()?;
 
     if !toplevel.is_initial_configure_sent() {
         toplevel.send_configure();
