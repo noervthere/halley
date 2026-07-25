@@ -382,8 +382,6 @@ pub fn run() {
                             state.start_cursor,
                             world,
                         );
-                        let location =
-                            crate::input::grab::resize_anchored_location(state.handle, state.start_rect, size);
                         if let Some(toplevel) = state.window.toplevel() {
                             toplevel.with_pending_state(|pending| pending.size = Some(size));
                             // No-ops unless the pending state actually
@@ -391,7 +389,6 @@ pub fn run() {
                             // event rather than rate-limiting it here.
                             toplevel.send_pending_configure();
                         }
-                        app.wayland.space.map_element(state.window.clone(), location, false);
                     }
                     crate::input::grab::Grab::None => {}
                 }
@@ -704,9 +701,29 @@ impl CompositorHandler for App {
     }
 
     fn commit(&mut self, surface: &WlSurface) {
+        let resize_before = match &self.grab {
+            crate::input::grab::Grab::ResizeWindow(state) => self
+                .wayland
+                .space
+                .element_geometry(&state.window)
+                .map(|geometry| (state.window.clone(), state.handle, geometry.size)),
+            _ => None,
+        };
         if let Some(mapped) = wayland::compositor::commit::<Self>(&mut self.wayland, surface) {
             self.window_open_animations
                 .start(mapped, crate::frame_clock::monotonic_now());
+        }
+        if let Some((window, handle, previous_size)) = resize_before
+            && let Some(committed_geometry) = self.wayland.space.element_geometry(&window)
+            && let Some(current_location) = self.wayland.space.element_location(&window)
+        {
+            let location = crate::input::grab::resize_location_after_commit(
+                handle,
+                current_location,
+                previous_size,
+                committed_geometry.size,
+            );
+            self.wayland.space.relocate_element(&window, location);
         }
         self.backend.request_redraw();
 

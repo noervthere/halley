@@ -147,23 +147,25 @@ pub fn resize_target_size(
     Size::from((width.max(MIN_RESIZE_W), height.max(MIN_RESIZE_H)))
 }
 
-/// Where the window has to sit for `size` to leave the un-dragged edges
-/// where they started. Only left/top drags move the window at all - pulling
-/// the right or bottom edge grows it in place.
-pub fn resize_anchored_location(
+/// Repositions a window after its client commits a resize, preserving the
+/// edge opposite the grab. Using committed sizes here is important: clients
+/// can respond asynchronously or quantize a requested size, so anchoring
+/// against the request makes left/top resizes visibly jump.
+pub fn resize_location_after_commit(
     handle: ResizeHandle,
-    start_rect: Rectangle<i32, Logical>,
-    size: Size<i32, Logical>,
+    current_location: Point<i32, Logical>,
+    previous_size: Size<i32, Logical>,
+    committed_size: Size<i32, Logical>,
 ) -> Point<i32, Logical> {
     let x = if handle.moves_left() {
-        start_rect.loc.x + start_rect.size.w - size.w
+        current_location.x + previous_size.w - committed_size.w
     } else {
-        start_rect.loc.x
+        current_location.x
     };
     let y = if handle.moves_top() {
-        start_rect.loc.y + start_rect.size.h - size.h
+        current_location.y + previous_size.h - committed_size.h
     } else {
-        start_rect.loc.y
+        current_location.y
     };
     Point::from((x, y))
 }
@@ -384,7 +386,12 @@ mod tests {
         assert_eq!(size, Size::from((350, 330)));
         // Right/bottom drags anchor the top-left, so the window stays put.
         assert_eq!(
-            resize_anchored_location(ResizeHandle::BottomRight, rect, size),
+            resize_location_after_commit(
+                ResizeHandle::BottomRight,
+                rect.loc,
+                rect.size,
+                size,
+            ),
             Point::from((100, 100))
         );
     }
@@ -398,7 +405,8 @@ mod tests {
         // the bottom-right corner stays at (400, 400).
         let size = resize_target_size(ResizeHandle::TopLeft, rect, start, Vec2 { x: 50.0, y: 50.0 });
         assert_eq!(size, Size::from((350, 350)));
-        let loc = resize_anchored_location(ResizeHandle::TopLeft, rect, size);
+        let loc =
+            resize_location_after_commit(ResizeHandle::TopLeft, rect.loc, rect.size, size);
         assert_eq!(loc, Point::from((50, 50)));
         assert_eq!((loc.x + size.w, loc.y + size.h), (400, 400));
     }
@@ -411,8 +419,25 @@ mod tests {
         // negative or inverting the rect, and the anchored corner holds.
         let size = resize_target_size(ResizeHandle::TopLeft, rect, start, Vec2 { x: 9000.0, y: 9000.0 });
         assert_eq!(size, Size::from((MIN_RESIZE_W, MIN_RESIZE_H)));
-        let loc = resize_anchored_location(ResizeHandle::TopLeft, rect, size);
+        let loc =
+            resize_location_after_commit(ResizeHandle::TopLeft, rect.loc, rect.size, size);
         assert_eq!((loc.x + size.w, loc.y + size.h), (400, 400));
+    }
+
+    #[test]
+    fn commit_size_is_authoritative_for_left_edge_anchoring() {
+        let previous_size = Size::from((300, 300));
+        // A terminal may commit 344 px after receiving a 350 px request.
+        let committed_size = Size::from((344, 300));
+        let location = resize_location_after_commit(
+            ResizeHandle::Left,
+            Point::from((100, 100)),
+            previous_size,
+            committed_size,
+        );
+
+        assert_eq!(location, Point::from((56, 100)));
+        assert_eq!(location.x + committed_size.w, 400);
     }
 
     #[test]
