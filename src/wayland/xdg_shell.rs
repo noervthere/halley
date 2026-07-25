@@ -1,5 +1,5 @@
 use smithay::backend::renderer::utils::with_renderer_surface_state;
-use smithay::desktop::Window;
+use smithay::desktop::{Window, layer_map_for_output};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point};
 use smithay::wayland::shell::xdg::ToplevelSurface;
@@ -100,10 +100,9 @@ pub fn close_focused(wayland: &WaylandState) {
     }
 }
 
-/// Where a newly-mapped window should land: centered on the output, rather
-/// than always `(0, 0)`. Outputs are mapped primary-first before any client
-/// can connect, so `outputs().next()` is the configured primary - falls
-/// back to `(0, 0)` only in the unreachable case where none is mapped.
+/// Where a newly-mapped window should land: centered in the primary
+/// output's layer-shell work area rather than underneath an exclusive panel.
+/// Existing freeform windows are not moved when that work area changes.
 fn centered_location(wayland: &WaylandState, window: &Window) -> Point<i32, Logical> {
     let Some(output) = wayland.space.outputs().next() else {
         return (0, 0).into();
@@ -111,6 +110,7 @@ fn centered_location(wayland: &WaylandState, window: &Window) -> Point<i32, Logi
     let Some(output_geo) = wayland.space.output_geometry(output) else {
         return (0, 0).into();
     };
-    let offset = (output_geo.size - window.geometry().size) / 2;
-    output_geo.loc + offset
+    let usable = layer_map_for_output(output).non_exclusive_zone();
+    let offset = (usable.size - window.geometry().size) / 2;
+    output_geo.loc + usable.loc + offset
 }

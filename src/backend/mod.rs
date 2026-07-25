@@ -8,12 +8,14 @@ use smithay::backend::renderer::element::solid::SolidColorRenderElement;
 use smithay::backend::renderer::element::surface::{
     WaylandSurfaceRenderElement, render_elements_from_surface_tree,
 };
-use smithay::backend::renderer::element::{Id, Kind};
+use smithay::backend::renderer::element::{AsRenderElements, Id, Kind};
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::renderer::utils::CommitCounter;
-use smithay::desktop::{PopupManager, Space, Window};
+use smithay::desktop::{PopupManager, Space, Window, layer_map_for_output};
+use smithay::output::Output;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Physical, Point, Rectangle, Scale, Size};
+use smithay::wayland::shell::wlr_layer::Layer;
 
 use crate::cursor::CursorImage;
 
@@ -71,6 +73,34 @@ pub fn window_surface_elements(
     );
 
     (popup_elements, surface_elements)
+}
+
+/// Builds one output's layer-shell surfaces in front-to-back order.
+///
+/// `LayerMap` supplies the protocol-defined placement and popup tree. Unlike
+/// normal windows, the returned locations are output-local and intentionally
+/// never pass through Halley's workspace camera.
+pub fn layer_surface_elements(
+    renderer: &mut GlesRenderer,
+    output: &Output,
+    layer: Layer,
+) -> Vec<WaylandSurfaceRenderElement<GlesRenderer>> {
+    let map = layer_map_for_output(output);
+    let scale = Scale::from(output.current_scale().fractional_scale());
+    map.layers_on(layer)
+        .rev()
+        .flat_map(|surface| {
+            let Some(geometry) = map.layer_geometry(surface) else {
+                return Vec::new();
+            };
+            let location = geometry
+                .loc
+                .to_f64()
+                .to_physical(scale)
+                .to_i32_round();
+            surface.render_elements(renderer, location, scale, 1.0)
+        })
+        .collect()
 }
 
 /// A backend that can render a single frame.

@@ -256,6 +256,7 @@ pub fn run() {
                         Some(output.clone())
                     });
                 });
+                wayland::layer_shell::send_frames(&output, elapsed);
                 app.wayland.space.refresh();
                 wayland::layer_shell::cleanup(&mut app.wayland);
 

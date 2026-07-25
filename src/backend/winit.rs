@@ -2,6 +2,7 @@ use std::error::Error;
 
 use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
 use smithay::backend::renderer::element::solid::SolidColorRenderElement;
+use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
 use smithay::backend::renderer::element::utils::CropRenderElement;
 use smithay::backend::renderer::element::{Element, Kind, render_elements};
 use smithay::backend::renderer::gles::GlesRenderer;
@@ -12,6 +13,7 @@ use smithay::desktop::{Space, Window};
 use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Physical, Point, Rectangle, Scale, Size, Transform};
+use smithay::wayland::shell::wlr_layer::Layer;
 
 use super::Renderable;
 use crate::cursor::CursorImage;
@@ -42,6 +44,7 @@ render_elements! {
     Rescaled=super::rescale::RescaledElement,
     Cropped=CropRenderElement<super::rescale::RescaledElement>,
     Border=SolidColorRenderElement,
+    Layer=WaylandSurfaceRenderElement<GlesRenderer>,
 }
 
 fn output_mode(size: Size<i32, Physical>) -> Mode {
@@ -152,7 +155,16 @@ impl Renderable for WinitBackend {
             // destination - see its doc comment for why passing `zoom_scale`
             // straight into `render_elements` doesn't actually resize
             // anything.
-            let mut window_elements: Vec<WinitRenderElement> = Vec::new();
+            let mut scene_elements: Vec<WinitRenderElement> =
+                super::layer_surface_elements(renderer, &self.output, Layer::Overlay)
+                    .into_iter()
+                    .map(WinitRenderElement::Layer)
+                    .collect();
+            scene_elements.extend(
+                super::layer_surface_elements(renderer, &self.output, Layer::Top)
+                    .into_iter()
+                    .map(WinitRenderElement::Layer),
+            );
             // `.rev()` is load-bearing: `Space::elements()` iterates z-order
             // *back to front* (bottom-most first), but a render element list
             // is front-to-back by convention - `draw_render_elements`
@@ -177,12 +189,12 @@ impl Renderable for WinitBackend {
                     super::window_surface_location(location, window.geometry());
                 let (popup_elements, surface_elements) =
                     super::window_surface_elements(renderer, window, surface_location);
-                window_elements.extend(popup_elements.into_iter().map(|surface_element| {
+                scene_elements.extend(popup_elements.into_iter().map(|surface_element| {
                     let native_geo = surface_element.geometry(Scale::from(1.0));
                     let dst = super::camera_rect(native_geo, camera_center, size, zoom_scale);
                     WinitRenderElement::Rescaled(super::rescale::RescaledElement::new(surface_element, dst))
                 }));
-                window_elements.extend(surface_elements.into_iter().filter_map(|surface_element| {
+                scene_elements.extend(surface_elements.into_iter().filter_map(|surface_element| {
                     let native_geo = surface_element.geometry(Scale::from(1.0));
                     let dst = super::camera_rect(native_geo, camera_center, size, zoom_scale);
                     let element = super::rescale::RescaledElement::new(surface_element, dst);
@@ -200,12 +212,23 @@ impl Renderable for WinitBackend {
                 // `WinitRenderElement`). Relative order against this window's
                 // own content doesn't matter - `border_strips` builds strips
                 // that sit entirely outside the window's bbox.
-                window_elements.extend(
+                scene_elements.extend(
                     super::border_strips(scaled_bbox, border_width, color)
                         .into_iter()
                         .map(WinitRenderElement::Border),
                 );
             }
+
+            scene_elements.extend(
+                super::layer_surface_elements(renderer, &self.output, Layer::Bottom)
+                    .into_iter()
+                    .map(WinitRenderElement::Layer),
+            );
+            scene_elements.extend(
+                super::layer_surface_elements(renderer, &self.output, Layer::Background)
+                    .into_iter()
+                    .map(WinitRenderElement::Layer),
+            );
 
             // Built before renderer.render() borrows renderer for the frame -
             // doesn't need it beyond this transient import step.
@@ -224,7 +247,7 @@ impl Renderable for WinitBackend {
             // Windows (borders included, interleaved at their own window's
             // depth), then the cursor in its own later pass so it always
             // composites on top of everything.
-            draw_render_elements(&mut frame, 1.0, &window_elements, &[damage])?;
+            draw_render_elements(&mut frame, 1.0, &scene_elements, &[damage])?;
             draw_render_elements(&mut frame, 1.0, &[cursor_element], &[damage])?;
             // No cross-GPU/import synchronization needed for a plain clear -
             // discarding the fence is fine at this stage.

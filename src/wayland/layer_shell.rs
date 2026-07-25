@@ -90,6 +90,15 @@ pub fn cleanup(wayland: &mut WaylandState) {
     wayland.popup_manager.cleanup();
 }
 
+pub fn send_frames(output: &Output, elapsed: Duration) {
+    let map = layer_map_for_output(output);
+    for layer in map.layers() {
+        layer.send_frame(output, elapsed, Some(Duration::ZERO), |_, _| {
+            Some(output.clone())
+        });
+    }
+}
+
 fn layer_for_root(wayland: &WaylandState, root: &WlSurface) -> Option<(Output, LayerSurface)> {
     wayland.space.outputs().find_map(|output| {
         let map = layer_map_for_output(output);
@@ -107,3 +116,4 @@ fn initial_configure_sent(surface: &WlSurface) -> bool {
             .is_some_and(|data| data.lock().unwrap().initial_configure_sent)
     })
 }
+use std::time::Duration;

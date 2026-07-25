@@ -10,6 +10,7 @@ use smithay::backend::drm::{DrmDevice, DrmDeviceFd, DrmDeviceNotifier};
 use smithay::backend::egl::{EGLContext, EGLDisplay};
 use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
 use smithay::backend::renderer::element::solid::SolidColorRenderElement;
+use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
 use smithay::backend::renderer::element::utils::CropRenderElement;
 use smithay::backend::renderer::element::{Element, Kind, render_elements};
 use smithay::backend::renderer::gles::GlesRenderer;
@@ -23,6 +24,7 @@ use smithay::reexports::drm::control::{Mode, ModeTypeFlags, connector, crtc};
 use smithay::reexports::rustix::fs::OFlags;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{DeviceFd, Logical, Physical, Point, Rectangle, Scale, Size, Transform};
+use smithay::wayland::shell::wlr_layer::Layer;
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
 
 use super::Renderable;
@@ -61,6 +63,7 @@ render_elements! {
     Rescaled=super::rescale::RescaledElement,
     Cropped=CropRenderElement<super::rescale::RescaledElement>,
     Border=SolidColorRenderElement,
+    Layer=WaylandSurfaceRenderElement<GlesRenderer>,
     Cursor=MemoryRenderBufferRenderElement<GlesRenderer>,
 }
 
@@ -552,7 +555,16 @@ impl Renderable for TtyBackend {
             // output-local coordinates on that output's CRTC. Windows use
             // the same local coordinate space, filtered by Halley's single
             // owning output so they never split across monitors.
-            let mut elements: Vec<TtyRenderElement> = Vec::new();
+            let mut elements: Vec<TtyRenderElement> =
+                super::layer_surface_elements(&mut self.renderer, &entry.output, Layer::Overlay)
+                    .into_iter()
+                    .map(TtyRenderElement::Layer)
+                    .collect();
+            elements.extend(
+                super::layer_surface_elements(&mut self.renderer, &entry.output, Layer::Top)
+                    .into_iter()
+                    .map(TtyRenderElement::Layer),
+            );
             // Built directly per mapped window rather than via
             // `space_render_elements` - nesting `SpaceRenderElements`
             // inside this file's own combined element enum runs into an
@@ -635,6 +647,21 @@ impl Renderable for TtyBackend {
                         .map(TtyRenderElement::Border),
                 );
             }
+
+            elements.extend(
+                super::layer_surface_elements(&mut self.renderer, &entry.output, Layer::Bottom)
+                    .into_iter()
+                    .map(TtyRenderElement::Layer),
+            );
+            elements.extend(
+                super::layer_surface_elements(
+                    &mut self.renderer,
+                    &entry.output,
+                    Layer::Background,
+                )
+                .into_iter()
+                .map(TtyRenderElement::Layer),
+            );
 
             if let Some(cursor_position) = cursor_position {
                 // Built before render_frame() borrows the renderer again -
