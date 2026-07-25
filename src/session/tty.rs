@@ -995,17 +995,29 @@ impl XdgShellHandler for TtyApp {
         wayland::xdg_shell::toplevel_destroyed(&mut self.wayland, &surface);
     }
 
-    fn new_popup(&mut self, _surface: PopupSurface, _positioner: PositionerState) {}
+    fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
+        wayland::popup::track(&mut self.wayland, surface);
+        queue_redraw(self);
+    }
 
     fn reposition_request(
         &mut self,
-        _surface: PopupSurface,
-        _positioner: PositionerState,
-        _token: u32,
+        surface: PopupSurface,
+        positioner: PositionerState,
+        token: u32,
     ) {
+        wayland::popup::reposition(&self.wayland, surface, positioner, token);
+        queue_redraw(self);
     }
 
-    fn grab(&mut self, _surface: PopupSurface, _seat: WlSeat, _serial: Serial) {}
+    fn grab(&mut self, surface: PopupSurface, seat: WlSeat, serial: Serial) {
+        let seat = Seat::<Self>::from_resource(&seat).expect("popup grab used an unknown wl_seat");
+        let grab =
+            wayland::popup::begin_grab(&mut self.wayland.popup_manager, &seat, surface, serial);
+        if let Some(grab) = grab {
+            wayland::popup::install_grab(self, &seat, grab, serial);
+        }
+    }
 }
 
 impl WlrLayerShellHandler for TtyApp {
@@ -1037,6 +1049,11 @@ impl WlrLayerShellHandler for TtyApp {
 
     fn layer_destroyed(&mut self, surface: WlrLayerSurface) {
         wayland::layer_shell::destroyed(&mut self.wayland, &surface);
+        queue_redraw(self);
+    }
+
+    fn new_popup(&mut self, _parent: WlrLayerSurface, popup: PopupSurface) {
+        wayland::popup::unconstrain_surface(&self.wayland, popup);
         queue_redraw(self);
     }
 }
