@@ -7,7 +7,10 @@ use calloop::generic::Generic;
 use calloop::timer::{TimeoutAction, Timer};
 use calloop::{EventLoop, Interest, LoopHandle, LoopSignal, Mode as CalloopMode, PostAction, RegistrationToken};
 use smithay::backend::drm::{DrmEvent, DrmEventMetadata, DrmEventTime};
-use smithay::backend::input::{ButtonState, Event, InputEvent, KeyState, KeyboardKeyEvent, PointerButtonEvent};
+use smithay::backend::input::{
+    Axis, AxisSource, ButtonState, Event, InputEvent, KeyState, KeyboardKeyEvent,
+    PointerAxisEvent, PointerButtonEvent,
+};
 use smithay::backend::libinput::{LibinputInputBackend, LibinputSessionInterface};
 use smithay::backend::session::Event as SessionEvent;
 use smithay::backend::session::Session;
@@ -53,10 +56,12 @@ use crate::backend::tty::TtyBackend;
 use crate::backend::{CLEAR_COLOR, RenderStatus, Renderable};
 use crate::cursor::CursorImage;
 use crate::frame_clock::FrameClock;
-use crate::input::Keyboard;
+use crate::input::{Keyboard, SuppressedButtons};
 use crate::input::keybinds::BackendKind;
-use crate::input::match_keyboard_bind;
-use crate::input::pointer::Pointer;
+use crate::input::{match_keyboard_bind, match_pointer_bind, match_wheel_bind, no_modifiers_held};
+use crate::input::pointer::{
+    Pointer, WheelAccumulator, axis_frame_filtered, wheel_delta_v120, wheel_direction,
+};
 use crate::ipc::OutputInfoSource;
 use crate::spawn;
 use crate::wayland::{self, ClientState, WaylandState};
@@ -127,6 +132,42 @@ fn focus_layer(app: &mut TtyApp, layer: Option<smithay::desktop::LayerSurface>, 
 fn focus_window(app: &mut TtyApp, window: &Window, serial: Serial) {
     wayland::xdg_shell::focus_and_raise(&mut app.wayland, window);
     sync_keyboard_focus(app, serial);
+}
+
+fn dispatch_action(
+    app: &mut TtyApp,
+    action: halley_config::Action,
+    socket_name: &OsString,
+    output_name: Option<&str>,
+) {
+    match action {
+        halley_config::Action::Quit => app.loop_signal.stop(),
+        halley_config::Action::CloseFocusedWindow => {
+            wayland::xdg_shell::close_focused(&app.wayland);
+        }
+        halley_config::Action::OpenTerminal => match app.keyboard.terminal_command() {
+            Some(command) => spawn::spawn_detached(command, socket_name),
+            None => eprintln!("keybinds: no terminal configured or found on PATH"),
+        },
+        halley_config::Action::ZoomOut => {
+            if let Some(camera) = output_name.and_then(|name| app.cameras.get_mut(name)) {
+                crate::input::zoom::zoom_out(camera, &app.zoom);
+            }
+        }
+        halley_config::Action::ZoomIn => {
+            if let Some(camera) = output_name.and_then(|name| app.cameras.get_mut(name)) {
+                crate::input::zoom::zoom_in(camera, &app.zoom);
+            }
+        }
+        halley_config::Action::ZoomReset => {
+            if let Some(camera) = output_name.and_then(|name| app.cameras.get_mut(name)) {
+                camera.reset_zoom_target();
+            }
+        }
+        halley_config::Action::Spawn(command) => {
+            spawn::spawn_detached(&command, socket_name);
+        }
+    }
 }
 
 /// Mirrors niri's `RedrawState` (`niri/src/niri.rs`) - structurally the same
@@ -221,6 +262,8 @@ struct TtyApp {
     /// Outlives `grab` on purpose - a released resize keeps anchoring until
     /// the client answers the last configure. See `grab::ResizePhase`.
     resize_anchor: Option<crate::input::grab::ResizeAnchor>,
+    suppressed_buttons: SuppressedButtons,
+    wheel_accumulator: WheelAccumulator,
     window_open_animations: crate::animation::WindowOpenAnimations,
 }
 
@@ -313,6 +356,8 @@ pub fn run() {
         zoom: halley_config::load_zoom(),
         grab: crate::input::grab::Grab::None,
         resize_anchor: None,
+        suppressed_buttons: SuppressedButtons::default(),
+        wheel_accumulator: WheelAccumulator::default(),
         window_open_animations: crate::animation::WindowOpenAnimations::new(
             halley_config::load_animations(),
         ),
@@ -460,15 +505,43 @@ pub fn run() {
                 let serial = SERIAL_COUNTER.next_serial();
                 let route = update_client_pointer_focus(app, time);
                 let mut intercepted = false;
+                let mods = app
+                    .seat
+                    .get_keyboard()
+                    .expect("keyboard capability added at seat setup")
+                    .modifier_state();
+                let bypass_shortcuts = wayland::focus::current(&app.wayland)
+                    .is_some_and(|focus| focus.bypasses_shortcuts());
 
-                if button == BTN_RIGHT {
+                if state == ButtonState::Released
+                    && app.suppressed_buttons.release_is_suppressed(button)
+                {
+                    intercepted = true;
+                } else if state == ButtonState::Pressed {
+                    let reserved_background_pan = button == BTN_LEFT
+                        && no_modifiers_held(&mods)
+                        && route.as_ref().is_some_and(|route| {
+                            matches!(
+                                &route.target,
+                                crate::input::pointer::PointerTarget::Background
+                            )
+                        });
+                    if !bypass_shortcuts
+                        && !reserved_background_pan
+                        && let Some(action) =
+                            match_pointer_bind(&app.keyboard.binds, &mods, button)
+                    {
+                        let output_name =
+                            route.as_ref().map(|route| route.output.name().to_string());
+                        app.suppressed_buttons.suppress(button);
+                        dispatch_action(app, action, &socket_name, output_name.as_deref());
+                        intercepted = true;
+                    }
+                }
+
+                if !intercepted && button == BTN_RIGHT {
                     match state {
                         ButtonState::Pressed => {
-                            let mods = app
-                                .seat
-                                .get_keyboard()
-                                .expect("keyboard capability added at seat setup")
-                                .modifier_state();
                             // Resize is mod-only: a bare right-click stays
                             // available to clients for context menus.
                             if crate::input::mod_key_held(&mods, app.keyboard.effective_mod)
@@ -515,14 +588,9 @@ pub fn run() {
                             }
                         }
                     }
-                } else if button == BTN_LEFT {
+                } else if !intercepted && button == BTN_LEFT {
                     match state {
                         ButtonState::Pressed => {
-                            let mods = app
-                                .seat
-                                .get_keyboard()
-                                .expect("keyboard capability added at seat setup")
-                                .modifier_state();
                             let mod_held =
                                 crate::input::mod_key_held(&mods, app.keyboard.effective_mod);
                             match route.as_ref().map(|route| &route.target) {
@@ -610,13 +678,60 @@ pub fn run() {
             }
 
             if let InputEvent::PointerAxis { event: axis_event } = &event {
-                update_client_pointer_focus(app, axis_event.time_msec());
-                let frame = crate::input::pointer::axis_frame(axis_event);
+                let route = update_client_pointer_focus(app, axis_event.time_msec());
+                let output_name = route.as_ref().map(|route| route.output.name().to_string());
+                let bypass_shortcuts = wayland::focus::current(&app.wayland)
+                    .is_some_and(|focus| focus.bypasses_shortcuts());
+                let mut include_horizontal = true;
+                let mut include_vertical = true;
+
+                if axis_event.source() == AxisSource::Wheel && !bypass_shortcuts {
+                    let mods = app
+                        .seat
+                        .get_keyboard()
+                        .expect("keyboard capability added at seat setup")
+                        .modifier_state();
+                    for axis in [Axis::Horizontal, Axis::Vertical] {
+                        let delta = wheel_delta_v120(axis_event, axis);
+                        let Some(direction) = wheel_direction(axis, delta) else {
+                            continue;
+                        };
+                        if let Some(action) =
+                            match_wheel_bind(&app.keyboard.binds, &mods, direction)
+                        {
+                            match axis {
+                                Axis::Horizontal => include_horizontal = false,
+                                Axis::Vertical => include_vertical = false,
+                            }
+                            let ticks = app.wheel_accumulator.accumulate(axis, delta);
+                            for _ in 0..ticks.unsigned_abs() {
+                                eprintln!(
+                                    "keybinds: wheel {direction:?} + {mods:?} -> {action:?}"
+                                );
+                                dispatch_action(
+                                    app,
+                                    action.clone(),
+                                    &socket_name,
+                                    output_name.as_deref(),
+                                );
+                            }
+                        } else {
+                            app.wheel_accumulator.reset(axis);
+                        }
+                    }
+                } else {
+                    app.wheel_accumulator.reset_all();
+                }
+
                 let pointer = app
                     .seat
                     .get_pointer()
                     .expect("pointer capability added at seat setup");
-                pointer.axis(app, frame);
+                if include_horizontal || include_vertical {
+                    let frame =
+                        axis_frame_filtered(axis_event, include_horizontal, include_vertical);
+                    pointer.axis(app, frame);
+                }
                 pointer.frame(app);
             }
 
@@ -626,6 +741,7 @@ pub fn run() {
             // - Smithay's own `KeyboardTarget<D> for WlSurface` impl handles
             // that forwarding for free once `App::KeyboardFocus = WlSurface`.
             if let InputEvent::Keyboard { event: key_event } = &event {
+                app.wheel_accumulator.reset_all();
                 let keycode = key_event.key_code();
                 let state = key_event.state();
                 let time = key_event.time_msec();
@@ -645,13 +761,10 @@ pub fn run() {
                         if state != KeyState::Pressed || bypass_shortcuts {
                             return FilterResult::Forward;
                         }
-                        let Some(keysym) = handle.raw_latin_sym_or_raw_current_sym() else {
-                            return FilterResult::Forward;
-                        };
                         match match_keyboard_bind(
                             &data.keyboard.binds,
                             mods,
-                            keysym,
+                            handle.raw_latin_sym_or_raw_current_sym(),
                             keycode,
                         ) {
                             Some(action) => FilterResult::Intercept(action),
@@ -666,43 +779,8 @@ pub fn run() {
                     .next()
                     .map(Output::name);
 
-                match action {
-                    Some(halley_config::Action::Quit) => app.loop_signal.stop(),
-                    Some(halley_config::Action::CloseFocusedWindow) => {
-                        wayland::xdg_shell::close_focused(&app.wayland);
-                    }
-                    Some(halley_config::Action::OpenTerminal) => match app.keyboard.terminal_command() {
-                        Some(command) => spawn::spawn_detached(command, &socket_name),
-                        None => println!("mod+t: no terminal configured or found on PATH"),
-                    },
-                    Some(halley_config::Action::ZoomOut) => {
-                        if let Some(camera) = pointer_output
-                            .as_deref()
-                            .and_then(|name| app.cameras.get_mut(name))
-                        {
-                            crate::input::zoom::zoom_out(camera, &app.zoom);
-                        }
-                    }
-                    Some(halley_config::Action::ZoomIn) => {
-                        if let Some(camera) = pointer_output
-                            .as_deref()
-                            .and_then(|name| app.cameras.get_mut(name))
-                        {
-                            crate::input::zoom::zoom_in(camera, &app.zoom);
-                        }
-                    }
-                    Some(halley_config::Action::ZoomReset) => {
-                        if let Some(camera) = pointer_output
-                            .as_deref()
-                            .and_then(|name| app.cameras.get_mut(name))
-                        {
-                            camera.reset_zoom_target();
-                        }
-                    }
-                    Some(halley_config::Action::Spawn(command)) => {
-                        spawn::spawn_detached(&command, &socket_name);
-                    }
-                    _ => {}
+                if let Some(action) = action {
+                    dispatch_action(app, action, &socket_name, pointer_output.as_deref());
                 }
             }
         })

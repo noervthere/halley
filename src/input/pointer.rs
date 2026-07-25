@@ -9,6 +9,7 @@ use smithay::utils::{Logical, Point, Rectangle};
 use smithay::wayland::shell::wlr_layer::Layer;
 
 use crate::camera::OutputCameras;
+use crate::input::keybinds::WheelDirection;
 
 #[derive(Debug)]
 pub enum PointerTarget {
@@ -39,6 +40,66 @@ pub struct PointerRoute {
 /// tracks where Halley draws the hardware/software cursor.
 pub struct Pointer {
     position: (f64, f64),
+}
+
+const WHEEL_V120_PER_TICK: f64 = 120.0;
+
+/// Accumulates high-resolution physical wheel deltas into discrete notches.
+/// Each axis is independent, and reversing direction drops the unfinished
+/// fraction from the previous direction.
+#[derive(Debug, Default)]
+pub struct WheelAccumulator {
+    horizontal: f64,
+    vertical: f64,
+}
+
+impl WheelAccumulator {
+    pub fn accumulate(&mut self, axis: Axis, delta_v120: f64) -> i32 {
+        let pending = match axis {
+            Axis::Horizontal => &mut self.horizontal,
+            Axis::Vertical => &mut self.vertical,
+        };
+        if *pending != 0.0 && delta_v120 != 0.0 && pending.signum() != delta_v120.signum() {
+            *pending = 0.0;
+        }
+        *pending += delta_v120;
+        let ticks = (*pending / WHEEL_V120_PER_TICK).trunc() as i32;
+        *pending -= f64::from(ticks) * WHEEL_V120_PER_TICK;
+        ticks
+    }
+
+    pub fn reset(&mut self, axis: Axis) {
+        match axis {
+            Axis::Horizontal => self.horizontal = 0.0,
+            Axis::Vertical => self.vertical = 0.0,
+        }
+    }
+
+    pub fn reset_all(&mut self) {
+        self.horizontal = 0.0;
+        self.vertical = 0.0;
+    }
+}
+
+pub fn wheel_delta_v120<B, E>(event: &E, axis: Axis) -> f64
+where
+    B: InputBackend,
+    E: PointerAxisEvent<B>,
+{
+    event
+        .amount_v120(axis)
+        .or_else(|| event.amount(axis).map(|amount| amount * WHEEL_V120_PER_TICK / 15.0))
+        .unwrap_or(0.0)
+}
+
+pub fn wheel_direction(axis: Axis, delta_v120: f64) -> Option<WheelDirection> {
+    match (axis, delta_v120.total_cmp(&0.0)) {
+        (_, std::cmp::Ordering::Equal) => None,
+        (Axis::Horizontal, std::cmp::Ordering::Less) => Some(WheelDirection::Left),
+        (Axis::Horizontal, std::cmp::Ordering::Greater) => Some(WheelDirection::Right),
+        (Axis::Vertical, std::cmp::Ordering::Less) => Some(WheelDirection::Up),
+        (Axis::Vertical, std::cmp::Ordering::Greater) => Some(WheelDirection::Down),
+    }
 }
 
 impl Pointer {
@@ -195,7 +256,22 @@ fn layer_under(
 /// frame used by both sessions. This follows Smithay's Anvil example:
 /// continuous values are preferred, wheel `v120` data is retained, and
 /// finger-source zeroes become explicit stop events.
+#[cfg(test)]
 pub fn axis_frame<B, E>(event: &E) -> AxisFrame
+where
+    B: InputBackend,
+    E: PointerAxisEvent<B>,
+{
+    axis_frame_filtered(event, true, true)
+}
+
+/// Builds a client-facing frame while omitting axes consumed by compositor
+/// keybinds. This preserves a diagonal event's unbound axis.
+pub fn axis_frame_filtered<B, E>(
+    event: &E,
+    include_horizontal: bool,
+    include_vertical: bool,
+) -> AxisFrame
 where
     B: InputBackend,
     E: PointerAxisEvent<B>,
@@ -208,7 +284,7 @@ where
         .unwrap_or_else(|| event.amount_v120(Axis::Vertical).unwrap_or(0.0) * 15.0 / 120.0);
 
     let mut frame = AxisFrame::new(event.time_msec()).source(event.source());
-    if horizontal != 0.0 {
+    if include_horizontal && horizontal != 0.0 {
         frame = frame
             .relative_direction(Axis::Horizontal, event.relative_direction(Axis::Horizontal))
             .value(Axis::Horizontal, horizontal);
@@ -216,7 +292,7 @@ where
             frame = frame.v120(Axis::Horizontal, v120 as i32);
         }
     }
-    if vertical != 0.0 {
+    if include_vertical && vertical != 0.0 {
         frame = frame
             .relative_direction(Axis::Vertical, event.relative_direction(Axis::Vertical))
             .value(Axis::Vertical, vertical);
@@ -225,10 +301,10 @@ where
         }
     }
     if event.source() == smithay::backend::input::AxisSource::Finger {
-        if event.amount(Axis::Horizontal) == Some(0.0) {
+        if include_horizontal && event.amount(Axis::Horizontal) == Some(0.0) {
             frame = frame.stop(Axis::Horizontal);
         }
-        if event.amount(Axis::Vertical) == Some(0.0) {
+        if include_vertical && event.amount(Axis::Vertical) == Some(0.0) {
             frame = frame.stop(Axis::Vertical);
         }
     }
@@ -281,7 +357,11 @@ mod tests {
     };
     use smithay::utils::Rectangle;
 
-    use super::{axis_frame, clamp_to_outputs, desktop_bounds};
+    use super::{
+        WheelAccumulator, axis_frame, axis_frame_filtered, clamp_to_outputs, desktop_bounds,
+        wheel_delta_v120, wheel_direction,
+    };
+    use crate::input::keybinds::WheelDirection;
 
     #[derive(Clone, Copy, PartialEq, Eq, Hash)]
     struct TestDevice;
@@ -457,6 +537,78 @@ mod tests {
             )
         );
         assert_eq!(frame.stop, (false, false));
+    }
+
+    #[test]
+    fn filtered_axis_frame_preserves_only_the_unbound_axis() {
+        let event = TestAxisEvent {
+            source: AxisSource::Wheel,
+            horizontal: None,
+            vertical: None,
+            horizontal_v120: Some(-120.0),
+            vertical_v120: Some(120.0),
+            horizontal_direction: AxisRelativeDirection::Identical,
+            vertical_direction: AxisRelativeDirection::Identical,
+        };
+
+        let frame = axis_frame_filtered(&event, true, false);
+        assert_eq!(frame.axis, (-15.0, 0.0));
+        assert_eq!(frame.v120, Some((-120, 0)));
+    }
+
+    #[test]
+    fn wheel_accumulator_handles_partial_multiple_and_reversed_notches() {
+        let mut accumulator = WheelAccumulator::default();
+        assert_eq!(accumulator.accumulate(Axis::Vertical, 30.0), 0);
+        assert_eq!(accumulator.accumulate(Axis::Vertical, 90.0), 1);
+        assert_eq!(accumulator.accumulate(Axis::Vertical, 300.0), 2);
+        assert_eq!(accumulator.accumulate(Axis::Vertical, -30.0), 0);
+        assert_eq!(accumulator.accumulate(Axis::Vertical, -90.0), -1);
+    }
+
+    #[test]
+    fn wheel_accumulator_keeps_axes_independent_and_resets() {
+        let mut accumulator = WheelAccumulator::default();
+        assert_eq!(accumulator.accumulate(Axis::Horizontal, 60.0), 0);
+        assert_eq!(accumulator.accumulate(Axis::Vertical, 120.0), 1);
+        assert_eq!(accumulator.accumulate(Axis::Horizontal, 60.0), 1);
+        accumulator.accumulate(Axis::Vertical, 60.0);
+        accumulator.reset(Axis::Vertical);
+        assert_eq!(accumulator.accumulate(Axis::Vertical, 60.0), 0);
+        accumulator.reset_all();
+        assert_eq!(accumulator.accumulate(Axis::Horizontal, 60.0), 0);
+    }
+
+    #[test]
+    fn wheel_helpers_derive_v120_and_map_logical_directions() {
+        let event = TestAxisEvent {
+            source: AxisSource::Wheel,
+            horizontal: Some(-15.0),
+            vertical: Some(30.0),
+            horizontal_v120: None,
+            vertical_v120: None,
+            horizontal_direction: AxisRelativeDirection::Identical,
+            vertical_direction: AxisRelativeDirection::Identical,
+        };
+        assert_eq!(wheel_delta_v120(&event, Axis::Horizontal), -120.0);
+        assert_eq!(wheel_delta_v120(&event, Axis::Vertical), 240.0);
+        assert_eq!(
+            wheel_direction(Axis::Horizontal, -1.0),
+            Some(WheelDirection::Left)
+        );
+        assert_eq!(
+            wheel_direction(Axis::Horizontal, 1.0),
+            Some(WheelDirection::Right)
+        );
+        assert_eq!(
+            wheel_direction(Axis::Vertical, -1.0),
+            Some(WheelDirection::Up)
+        );
+        assert_eq!(
+            wheel_direction(Axis::Vertical, 1.0),
+            Some(WheelDirection::Down)
+        );
+        assert_eq!(wheel_direction(Axis::Vertical, 0.0), None);
     }
 
     #[test]

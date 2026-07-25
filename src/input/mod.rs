@@ -3,11 +3,13 @@ pub mod keybinds;
 pub mod pointer;
 pub mod zoom;
 
+use std::collections::HashSet;
+
 use halley_config::{Action, ModifierKey, Modifiers};
 use smithay::backend::input::Keycode;
 use smithay::input::keyboard::{Keysym, ModifiersState};
 
-use keybinds::{BackendKind, ResolvedBind, ResolvedTrigger};
+use keybinds::{BackendKind, ResolvedBind, ResolvedTrigger, WheelDirection};
 
 pub fn modifiers_match(state: &ModifiersState, expected: Modifiers) -> bool {
     state.ctrl == expected.ctrl
@@ -36,12 +38,12 @@ pub fn mod_key_held(state: &ModifiersState, key: ModifierKey) -> bool {
 pub fn match_keyboard_bind(
     binds: &[ResolvedBind],
     mods: &ModifiersState,
-    keysym: Keysym,
+    keysym: Option<Keysym>,
     keycode: Keycode,
 ) -> Option<Action> {
     let bind = binds.iter().find(|bind| {
         let trigger_matches = match bind.trigger {
-            ResolvedTrigger::Keysym(expected) => expected == keysym,
+            ResolvedTrigger::Keysym(expected) => Some(expected) == keysym,
             ResolvedTrigger::Keycode(expected) => expected == keycode,
             ResolvedTrigger::PointerButton(_) | ResolvedTrigger::Wheel(_) => false,
         };
@@ -55,6 +57,55 @@ pub fn match_keyboard_bind(
         bind.trigger, bind.action
     );
     Some(bind.action.clone())
+}
+
+pub fn match_pointer_bind(
+    binds: &[ResolvedBind],
+    mods: &ModifiersState,
+    button: u32,
+) -> Option<Action> {
+    let bind = binds.iter().find(|bind| {
+        matches!(
+            bind.trigger,
+            ResolvedTrigger::PointerButton(trigger) if trigger.matches(button)
+        ) && modifiers_match(mods, bind.modifiers)
+    })?;
+    eprintln!(
+        "keybinds: {:?} + {mods:?} -> {:?}",
+        bind.trigger, bind.action
+    );
+    Some(bind.action.clone())
+}
+
+pub fn match_wheel_bind(
+    binds: &[ResolvedBind],
+    mods: &ModifiersState,
+    direction: WheelDirection,
+) -> Option<Action> {
+    let bind = binds.iter().find(|bind| {
+        bind.trigger == ResolvedTrigger::Wheel(direction)
+            && modifiers_match(mods, bind.modifiers)
+    })?;
+    Some(bind.action.clone())
+}
+
+pub fn no_modifiers_held(state: &ModifiersState) -> bool {
+    !state.ctrl && !state.alt && !state.shift && !state.logo
+}
+
+#[derive(Default)]
+pub struct SuppressedButtons {
+    buttons: HashSet<u32>,
+}
+
+impl SuppressedButtons {
+    pub fn suppress(&mut self, button: u32) {
+        self.buttons.insert(button);
+    }
+
+    pub fn release_is_suppressed(&mut self, button: u32) -> bool {
+        self.buttons.remove(&button)
+    }
 }
 
 /// The resolved bind table plus the configured terminal command - nothing
@@ -97,5 +148,101 @@ impl Keyboard {
     /// `PATH`.
     pub fn terminal_command(&self) -> Option<&str> {
         self.terminal_command.as_deref()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::input::keybinds::{PointerButtonTrigger, ResolvedTrigger};
+
+    fn bind(trigger: ResolvedTrigger, modifiers: Modifiers) -> ResolvedBind {
+        ResolvedBind {
+            modifiers,
+            trigger,
+            action: Action::Quit,
+        }
+    }
+
+    #[test]
+    fn pointer_bind_requires_exact_modifiers() {
+        let binds = [bind(
+            ResolvedTrigger::PointerButton(PointerButtonTrigger::Left),
+            Modifiers {
+                super_key: true,
+                ..Modifiers::default()
+            },
+        )];
+        assert_eq!(
+            match_pointer_bind(&binds, &ModifiersState::default(), 0x110),
+            None
+        );
+        let mods = ModifiersState {
+            logo: true,
+            ..ModifiersState::default()
+        };
+        assert_eq!(match_pointer_bind(&binds, &mods, 0x110), Some(Action::Quit));
+    }
+
+    #[test]
+    fn raw_pointer_button_matches_only_its_code() {
+        let binds = [bind(
+            ResolvedTrigger::PointerButton(PointerButtonTrigger::Code(279)),
+            Modifiers::default(),
+        )];
+        assert_eq!(
+            match_pointer_bind(&binds, &ModifiersState::default(), 278),
+            None
+        );
+        assert_eq!(
+            match_pointer_bind(&binds, &ModifiersState::default(), 279),
+            Some(Action::Quit)
+        );
+    }
+
+    #[test]
+    fn wheel_directions_do_not_cross_match() {
+        let binds = [bind(
+            ResolvedTrigger::Wheel(WheelDirection::Up),
+            Modifiers::default(),
+        )];
+        assert_eq!(
+            match_wheel_bind(
+                &binds,
+                &ModifiersState::default(),
+                WheelDirection::Down
+            ),
+            None
+        );
+        assert_eq!(
+            match_wheel_bind(&binds, &ModifiersState::default(), WheelDirection::Up),
+            Some(Action::Quit)
+        );
+    }
+
+    #[test]
+    fn raw_keycodes_match_even_when_xkb_has_no_symbol() {
+        let binds = [bind(
+            ResolvedTrigger::Keycode(Keycode::new(255)),
+            Modifiers::default(),
+        )];
+        assert_eq!(
+            match_keyboard_bind(
+                &binds,
+                &ModifiersState::default(),
+                None,
+                Keycode::new(255)
+            ),
+            Some(Action::Quit)
+        );
+    }
+
+    #[test]
+    fn suppressed_button_release_is_consumed_exactly_once() {
+        let mut suppressed = SuppressedButtons::default();
+        suppressed.suppress(0x110);
+        assert!(!suppressed.release_is_suppressed(0x111));
+        assert!(suppressed.release_is_suppressed(0x110));
+        assert!(!suppressed.release_is_suppressed(0x110));
     }
 }
