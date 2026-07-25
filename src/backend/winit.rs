@@ -125,6 +125,7 @@ impl Renderable for WinitBackend {
     fn render(
         &mut self,
         output: &Output,
+        _target_presentation_time: std::time::Duration,
         clear: Color32F,
         cursor: &CursorImage,
         cursor_position: (f64, f64),

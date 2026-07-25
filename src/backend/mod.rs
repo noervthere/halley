@@ -111,6 +111,11 @@ pub enum RenderStatus {
     Skipped,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct FrameSubmission {
+    pub target_presentation_time: std::time::Duration,
+}
+
 /// A backend that can render one output.
 ///
 /// Deliberately narrow: takes only what it needs, nothing else. Old
@@ -130,6 +135,7 @@ pub trait Renderable {
     fn render(
         &mut self,
         output: &Output,
+        target_presentation_time: std::time::Duration,
         clear: Color32F,
         cursor: &CursorImage,
         cursor_position: (f64, f64),

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -5,7 +6,7 @@ use std::time::{Duration, Instant};
 use calloop::generic::Generic;
 use calloop::timer::{TimeoutAction, Timer};
 use calloop::{EventLoop, Interest, LoopHandle, LoopSignal, Mode as CalloopMode, PostAction, RegistrationToken};
-use smithay::backend::drm::DrmEvent;
+use smithay::backend::drm::{DrmEvent, DrmEventMetadata, DrmEventTime};
 use smithay::backend::input::{ButtonState, Event, InputEvent, KeyState, KeyboardKeyEvent, PointerButtonEvent};
 use smithay::backend::libinput::{LibinputInputBackend, LibinputSessionInterface};
 use smithay::backend::session::Event as SessionEvent;
@@ -49,8 +50,9 @@ use smithay::{
 };
 
 use crate::backend::tty::TtyBackend;
-use crate::backend::{CLEAR_COLOR, Renderable};
+use crate::backend::{CLEAR_COLOR, RenderStatus, Renderable};
 use crate::cursor::CursorImage;
+use crate::frame_clock::FrameClock;
 use crate::input::Keyboard;
 use crate::input::keybinds::BackendKind;
 use crate::input::match_bind;
@@ -146,7 +148,6 @@ enum RedrawState {
     /// A frame was submitted; waiting for its VBlank. `redraw_needed`
     /// remembers whether another redraw was requested since.
     WaitingForVBlank {
-        crtc: crtc::Handle,
         redraw_needed: bool,
     },
     /// The last redraw attempt submitted nothing (no damage, or an error),
@@ -166,10 +167,27 @@ impl RedrawState {
             }
             // A redraw is already queued, one way or another.
             value @ (RedrawState::Queued | RedrawState::WaitingForEstimatedVBlankAndQueued(_)) => value,
-            RedrawState::WaitingForVBlank { crtc, .. } => RedrawState::WaitingForVBlank {
-                crtc,
+            RedrawState::WaitingForVBlank { .. } => RedrawState::WaitingForVBlank {
                 redraw_needed: true,
             },
+        }
+    }
+}
+
+struct OutputFrameState {
+    clock: FrameClock,
+    redraw: RedrawState,
+    last_camera_sample: Duration,
+    unfinished_animations: bool,
+}
+
+impl OutputFrameState {
+    fn new(refresh_interval: Duration) -> Self {
+        Self {
+            clock: FrameClock::new(Some(refresh_interval)),
+            redraw: RedrawState::default(),
+            last_camera_sample: crate::frame_clock::monotonic_now(),
+            unfinished_animations: false,
         }
     }
 }
@@ -178,7 +196,7 @@ impl RedrawState {
 /// cursor + wayland/seat_state/seat). Still a separate struct in a separate
 /// session module; full winit/tty unification is later, explicitly-deferred
 /// work.
-/// `loop_signal`/`redraw_state` replace winit's `App`'s plain `exit: bool` +
+/// `loop_signal`/`output_frames` replace winit's `App`'s plain `exit: bool` +
 /// direct `render()` calls - the tty backend's redraw needs real scheduling
 /// (see `RedrawState`), which `event_loop.run()` + `LoopSignal` (matching
 /// smallvil's and niri's own structure) is built to support cleanly.
@@ -193,13 +211,12 @@ struct TtyApp {
     seat: Seat<TtyApp>,
     start_time: Instant,
     decorations: halley_config::Decorations,
-    redraw_state: RedrawState,
+    output_frames: HashMap<Output, OutputFrameState>,
     /// Whether a VT switch away is currently in effect - `redraw()` must
     /// not attempt to render while DRM master is dropped.
     paused: bool,
     cameras: crate::camera::OutputCameras,
     zoom: halley_config::Zoom,
-    last_camera_tick: Instant,
     grab: crate::input::grab::Grab,
 }
 
@@ -253,6 +270,15 @@ pub fn run() {
         .map(|output| output.create_global::<TtyApp>(&dh))
         .collect();
 
+    let output_frames = outputs
+        .iter()
+        .cloned()
+        .map(|output| {
+            let interval = backend.refresh_interval_for_output(&output);
+            (output, OutputFrameState::new(interval))
+        })
+        .collect();
+
     let mut app = TtyApp {
         backend,
         keyboard: Keyboard::new(BackendKind::Tty),
@@ -274,11 +300,10 @@ pub fn run() {
         seat,
         start_time: Instant::now(),
         decorations: halley_config::load_decorations(),
-        redraw_state: RedrawState::default(),
+        output_frames,
         paused: false,
         cameras: crate::camera::OutputCameras::default(),
         zoom: halley_config::load_zoom(),
-        last_camera_tick: Instant::now(),
         grab: crate::input::grab::Grab::None,
     };
     for output in outputs {
@@ -301,11 +326,10 @@ pub fn run() {
         eprintln!("ipc: failed to start listener: {err}");
     }
 
-    // First frame: queue then perform directly, matching redraw()'s own
-    // invariant (only ever called on Queued/WaitingForEstimatedVBlankAndQueued)
-    // rather than special-casing "the very first one".
+    // Queue every output's first frame through the same state machine used
+    // for all later redraws.
     queue_redraw(&mut app);
-    redraw(&mut app, &loop_handle);
+    redraw_queued_outputs(&mut app, &loop_handle);
 
     event_loop
         .handle()
@@ -678,7 +702,7 @@ pub fn run() {
                     match app.backend.resume() {
                         // The whole DRM pipeline (and any frame that was in
                         // flight before the switch away) is gone - reset
-                        // clean rather than trusting whatever redraw_state
+                        // clean rather than trusting whatever redraw states
                         // said before the switch.
                         Ok(()) => reset_redraw_state(app, &loop_handle),
                         Err(err) => println!("resume failed: {err}"),
@@ -690,64 +714,8 @@ pub fn run() {
 
     event_loop
         .handle()
-        .insert_source(drm_notifier, |event, _, app| match event {
-            DrmEvent::VBlank(crtc) => {
-                if let Err(err) = app.backend.frame_submitted(crtc) {
-                    println!("frame_submitted failed for {crtc:?}: {err}");
-                    return;
-                }
-                // Lets clients painted on this output know their last commit
-                // was presented, so they schedule their next frame.
-                if let Some(output) = app.backend.output_for_crtc(crtc).cloned() {
-                    let primary = app.backend.primary_output();
-                    let elapsed = app.start_time.elapsed();
-                    app.wayland
-                        .space
-                        .elements()
-                        .filter(|window| {
-                            wayland::window_is_on_output(window, &output, primary)
-                        })
-                        .for_each(|window| {
-                            window.send_frame(&output, elapsed, Some(Duration::ZERO), |_, _| {
-                                Some(output.clone())
-                            });
-                        });
-                    wayland::layer_shell::send_frames(&output, elapsed);
-                    app.wayland.space.refresh();
-                    wayland::layer_shell::cleanup(&mut app.wayland);
-                }
-
-                // Several outputs may have submitted damage during the same
-                // render. Only the CRTC selected when that render completed
-                // drives this single redraw state machine; other VBlanks
-                // still clear their backend `pending` flag above.
-                if !matches!(
-                    app.redraw_state,
-                    RedrawState::WaitingForVBlank {
-                        crtc: waiting_crtc,
-                        ..
-                    } if waiting_crtc == crtc
-                ) {
-                    return;
-                }
-
-                let redraw_needed = match std::mem::take(&mut app.redraw_state) {
-                    RedrawState::WaitingForVBlank { redraw_needed, .. } => redraw_needed,
-                    // Can happen when resuming from a VT switch, or a rogue
-                    // VBlank the kernel wasn't asked for - redraw defensively
-                    // rather than silently dropping the frame.
-                    other => {
-                        println!(
-                            "unexpected redraw state on vblank (expected WaitingForVBlank): {other:?}"
-                        );
-                        true
-                    }
-                };
-
-                if redraw_needed {
-                    queue_redraw(app);
-                }
-            }
+        .insert_source(drm_notifier, |event, metadata, app| match event {
+            DrmEvent::VBlank(crtc) => on_vblank(app, crtc, metadata.as_ref()),
             DrmEvent::Error(err) => println!("drm event: error {err:?}"),
         })
         .expect("failed to insert drm notifier");
@@ -755,13 +723,8 @@ pub fn run() {
     println!("dispatching - switch to this VT to see a solid color fill the screen, press the Quit chord to exit");
     event_loop
         .run(None, &mut app, |app| {
-            if !app.paused
-                && matches!(
-                    app.redraw_state,
-                    RedrawState::Queued | RedrawState::WaitingForEstimatedVBlankAndQueued(_)
-                )
-            {
-                redraw(app, &loop_handle);
+            if !app.paused {
+                redraw_queued_outputs(app, &loop_handle);
             }
             let _ = app.wayland.display_handle.flush_clients();
         })
@@ -769,39 +732,131 @@ pub fn run() {
     println!("quit requested, exiting cleanly");
 }
 
-/// Pure state transition - safe to call from any input/event handler with
-/// no event-loop access. The actual rendering only ever happens in
-/// `redraw()`, called from the `run()` tail once a redraw is actually
-/// `Queued`.
-fn queue_redraw(app: &mut TtyApp) {
-    app.redraw_state = std::mem::take(&mut app.redraw_state).queue_redraw();
+fn presentation_time(metadata: Option<&DrmEventMetadata>) -> Option<Duration> {
+    match metadata?.time {
+        DrmEventTime::Monotonic(time) if !time.is_zero() => Some(time),
+        DrmEventTime::Monotonic(_) | DrmEventTime::Realtime(_) => None,
+    }
 }
 
-/// Performs one redraw attempt and updates `redraw_state` accordingly.
-/// Callers must only invoke this when `redraw_state` is `Queued` or
-/// `WaitingForEstimatedVBlankAndQueued` (mirrors niri's own `Niri::redraw`
-/// invariant) - `queue_redraw` followed by this is how every redraw in this
-/// session happens, including the very first one.
-fn redraw(app: &mut TtyApp, loop_handle: &LoopHandle<'_, TtyApp>) {
-    let now = Instant::now();
-    let dt = now.duration_since(app.last_camera_tick).as_secs_f32();
-    app.last_camera_tick = now;
-    let pointer_output = app
+fn on_vblank(
+    app: &mut TtyApp,
+    crtc: crtc::Handle,
+    metadata: Option<&DrmEventMetadata>,
+) {
+    let Some(output) = app.backend.output_for_crtc(crtc).cloned() else {
+        println!("vblank received for unknown CRTC {crtc:?}");
+        return;
+    };
+    let submission = match app.backend.frame_submitted(crtc) {
+        Ok(submission) => submission,
+        Err(err) => {
+            println!("failed to acknowledge vblank for {:?}: {err}", output.name());
+            None
+        }
+    };
+    // Keep the prediction attached to its submitted frame. It is useful for
+    // presentation diagnostics, while the clock itself is deliberately
+    // corrected only by the kernel's monotonic timestamp below.
+    let _target_presentation_time =
+        submission.map(|submission| submission.target_presentation_time);
+
+    let presented = presentation_time(metadata);
+    let Some(state) = app.output_frames.get_mut(&output) else {
+        return;
+    };
+    state.clock.presented(presented);
+    let redraw_needed = match std::mem::take(&mut state.redraw) {
+        RedrawState::WaitingForVBlank { redraw_needed } => {
+            redraw_needed || state.unfinished_animations
+        }
+        other => {
+            println!(
+                "unexpected redraw state on vblank for {:?}: {other:?}",
+                output.name()
+            );
+            true
+        }
+    };
+    state.redraw = if redraw_needed {
+        RedrawState::Queued
+    } else {
+        RedrawState::Idle
+    };
+
+    let elapsed = app.start_time.elapsed();
+    let primary = app.backend.primary_output();
+    app.wayland
+        .space
+        .elements()
+        .filter(|window| wayland::window_is_on_output(window, &output, primary))
+        .for_each(|window| {
+            window.send_frame(&output, elapsed, Some(Duration::ZERO), |_, _| {
+                Some(output.clone())
+            });
+        });
+    wayland::layer_shell::send_frames(&output, elapsed);
+    app.wayland.space.refresh();
+    wayland::layer_shell::cleanup(&mut app.wayland);
+}
+
+/// Pure state transition - safe to call from any input/event handler with
+/// no event-loop access. The actual rendering only ever happens in
+/// `redraw_output()`, called from the `run()` tail once a redraw is actually
+/// `Queued`.
+fn queue_redraw(app: &mut TtyApp) {
+    for state in app.output_frames.values_mut() {
+        state.redraw = std::mem::take(&mut state.redraw).queue_redraw();
+    }
+}
+
+fn redraw_queued_outputs(app: &mut TtyApp, loop_handle: &LoopHandle<'_, TtyApp>) {
+    let outputs: Vec<_> = app
+        .output_frames
+        .iter()
+        .filter(|(_, state)| {
+            matches!(
+                state.redraw,
+                RedrawState::Queued | RedrawState::WaitingForEstimatedVBlankAndQueued(_)
+            )
+        })
+        .map(|(output, _)| output.clone())
+        .collect();
+
+    for output in outputs {
+        redraw_output(app, &output, loop_handle);
+    }
+}
+
+fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_, TtyApp>) {
+    let now = crate::frame_clock::monotonic_now();
+    let (target_presentation_time, dt) = {
+        let state = app
+            .output_frames
+            .get_mut(output)
+            .expect("redraw output has frame state");
+        let target = state.clock.next_presentation_time(now);
+        let dt = target.saturating_sub(state.last_camera_sample);
+        state.last_camera_sample = target;
+        (target, dt)
+    };
+
+    let pointer_is_on_output = app
         .wayland
         .space
         .output_under(app.pointer.position())
         .next()
-        .map(Output::name);
-    let view_before = pointer_output
-        .as_deref()
-        .and_then(|name| app.cameras.view(name));
-    let mut animating = false;
-    for camera in app.cameras.iter_mut() {
-        animating |= crate::input::zoom::tick(camera, &app.zoom, dt).1;
-    }
-    let view_after = pointer_output
-        .as_deref()
-        .and_then(|name| app.cameras.view(name));
+        .is_some_and(|under| under == output);
+    let view_before = pointer_is_on_output
+        .then(|| app.cameras.view(&output.name()))
+        .flatten();
+    let animating = app
+        .cameras
+        .get_mut(&output.name())
+        .is_some_and(|camera| crate::input::zoom::tick(camera, &app.zoom, dt.as_secs_f32()).1);
+    let view_after = pointer_is_on_output
+        .then(|| app.cameras.view(&output.name()))
+        .flatten();
     if view_before != view_after {
         update_client_pointer_focus(app, app.start_time.elapsed().as_millis() as u32);
         let pointer = app
@@ -811,66 +866,59 @@ fn redraw(app: &mut TtyApp, loop_handle: &LoopHandle<'_, TtyApp>) {
         pointer.frame(app);
     }
 
-    let cursor_position = app.pointer.position();
-    let outputs: Vec<_> = app.backend.outputs().cloned().collect();
-    for output in outputs {
-        if let Err(err) = app.backend.render(
-            &output,
-            CLEAR_COLOR,
-            &app.cursor,
-            cursor_position,
-            &app.wayland.space,
-            app.wayland.focused_window.as_ref(),
-            &app.decorations,
-            &app.cameras,
-        ) {
+    let status = match app.backend.render(
+        output,
+        target_presentation_time,
+        CLEAR_COLOR,
+        &app.cursor,
+        app.pointer.position(),
+        &app.wayland.space,
+        app.wayland.focused_window.as_ref(),
+        &app.decorations,
+        &app.cameras,
+    ) {
+        Ok(status) => status,
+        Err(err) => {
             println!("render failed for {:?}: {err}", output.name());
+            RenderStatus::Skipped
         }
-    }
-
-    let cursor_crtc = app
-        .backend
-        .cursor_crtc(&app.wayland.space, cursor_position);
-    let primary_crtc = app.backend.primary_crtc();
-    let waiting_crtc = if app.backend.frame_in_flight(primary_crtc) {
-        Some(primary_crtc)
-    } else if app.backend.frame_in_flight(cursor_crtc) {
-        Some(cursor_crtc)
-    } else {
-        app.backend.any_frame_in_flight()
     };
 
-    if let Some(waiting_crtc) = waiting_crtc {
-        // A frame was actually queued to DRM - a real VBlank is coming, so
-        // drop any estimated-vblank timer we might have been relying on
-        // instead.
+    if status == RenderStatus::Submitted {
+        let state = app
+            .output_frames
+            .get_mut(output)
+            .expect("rendered output has frame state");
         if let RedrawState::WaitingForEstimatedVBlank(token)
-        | RedrawState::WaitingForEstimatedVBlankAndQueued(token) = std::mem::take(&mut app.redraw_state)
+        | RedrawState::WaitingForEstimatedVBlankAndQueued(token) =
+            std::mem::take(&mut state.redraw)
         {
             loop_handle.remove(token);
         }
-        app.redraw_state = RedrawState::WaitingForVBlank {
-            crtc: waiting_crtc,
-            // While any output camera is still easing toward its pan/zoom target,
-            // request another redraw once this frame's VBlank lands -
-            // otherwise the damage-driven scheduler stops redrawing after a
-            // single frame and the animation freezes mid-ease.
+        state.unfinished_animations = animating;
+        state.redraw = RedrawState::WaitingForVBlank {
             redraw_needed: animating,
         };
         return;
     }
 
-    // Nothing was submitted (no damage, or the render failed) - arm a
-    // fallback timer for the estimated next VBlank so a redraw request
-    // isn't lost if a real VBlank never explains why.
-    queue_estimated_vblank_timer(app, loop_handle);
+    app.output_frames
+        .get_mut(output)
+        .expect("rendered output has frame state")
+        .unfinished_animations = animating;
+    queue_estimated_vblank_timer(app, output, loop_handle);
 }
 
-/// Arms (or keeps) a timer for the estimated next VBlank - mirrors niri's
-/// `queue_estimated_vblank_timer`. Only called when nothing was actually
-/// submitted to DRM this redraw attempt.
-fn queue_estimated_vblank_timer(app: &mut TtyApp, loop_handle: &LoopHandle<'_, TtyApp>) {
-    match std::mem::take(&mut app.redraw_state) {
+fn queue_estimated_vblank_timer(
+    app: &mut TtyApp,
+    output: &Output,
+    loop_handle: &LoopHandle<'_, TtyApp>,
+) {
+    let state = app
+        .output_frames
+        .get_mut(output)
+        .expect("estimated-vblank output has frame state");
+    match std::mem::take(&mut state.redraw) {
         RedrawState::Idle | RedrawState::WaitingForVBlank { .. } => {
             unreachable!("queue_estimated_vblank_timer called from an unexpected redraw state")
         }
@@ -879,48 +927,61 @@ fn queue_estimated_vblank_timer(app: &mut TtyApp, loop_handle: &LoopHandle<'_, T
         // second one for the same missing VBlank.
         RedrawState::WaitingForEstimatedVBlank(token)
         | RedrawState::WaitingForEstimatedVBlankAndQueued(token) => {
-            app.redraw_state = RedrawState::WaitingForEstimatedVBlank(token);
+            state.redraw = RedrawState::WaitingForEstimatedVBlank(token);
             return;
         }
     }
 
-    let cursor_crtc = app
-        .backend
-        .cursor_crtc(&app.wayland.space, app.pointer.position());
-    let interval = app.backend.refresh_interval(cursor_crtc);
+    let now = crate::frame_clock::monotonic_now();
+    let due = state.clock.next_presentation_time(now);
+    let delay = due
+        .saturating_sub(now)
+        .max(Duration::from_millis(1));
+    let output = output.clone();
     let token = loop_handle
-        .insert_source(Timer::from_duration(interval), |_, _, app| {
-            on_estimated_vblank_timer(app);
+        .insert_source(Timer::from_duration(delay), move |_, _, app| {
+            on_estimated_vblank_timer(app, &output);
             TimeoutAction::Drop
         })
         .expect("failed to arm estimated-vblank timer");
-    app.redraw_state = RedrawState::WaitingForEstimatedVBlank(token);
+    state.redraw = RedrawState::WaitingForEstimatedVBlank(token);
 }
 
-fn on_estimated_vblank_timer(app: &mut TtyApp) {
-    match std::mem::take(&mut app.redraw_state) {
+fn on_estimated_vblank_timer(app: &mut TtyApp, output: &Output) {
+    let Some(state) = app.output_frames.get_mut(output) else {
+        return;
+    };
+    match std::mem::take(&mut state.redraw) {
+        RedrawState::WaitingForEstimatedVBlank(_) if state.unfinished_animations => {
+            state.redraw = RedrawState::Queued;
+        }
         RedrawState::WaitingForEstimatedVBlank(_) => {}
-        // A redraw was requested while we were waiting - the next run()
-        // tail will pick it up now that we're back to Queued.
         RedrawState::WaitingForEstimatedVBlankAndQueued(_) => {
-            app.redraw_state = RedrawState::Queued;
+            state.redraw = RedrawState::Queued;
         }
         other => {
-            println!("unexpected redraw state on estimated-vblank timer: {other:?}");
+            println!(
+                "unexpected redraw state on estimated-vblank timer for {:?}: {other:?}",
+                output.name()
+            );
         }
     }
 }
 
-/// Discards whatever `redraw_state` was (cancelling any armed timer first)
-/// and starts fresh - used after resuming from a VT switch, since the
-/// entire DRM pipeline (and anything that was in flight) is gone by then.
 fn reset_redraw_state(app: &mut TtyApp, loop_handle: &LoopHandle<'_, TtyApp>) {
-    if let RedrawState::WaitingForEstimatedVBlank(token)
-    | RedrawState::WaitingForEstimatedVBlankAndQueued(token) = std::mem::take(&mut app.redraw_state)
-    {
-        loop_handle.remove(token);
+    let now = crate::frame_clock::monotonic_now();
+    for state in app.output_frames.values_mut() {
+        if let RedrawState::WaitingForEstimatedVBlank(token)
+        | RedrawState::WaitingForEstimatedVBlankAndQueued(token) =
+            std::mem::take(&mut state.redraw)
+        {
+            loop_handle.remove(token);
+        }
+        state.clock.reset();
+        state.last_camera_sample = now;
+        state.unfinished_animations = false;
+        state.redraw = RedrawState::Queued;
     }
-    app.redraw_state = RedrawState::Queued;
 }
 
 /// Sets up the listening socket new clients connect to, and the source that

@@ -21,14 +21,14 @@ impl FrameClock {
         }
     }
 
-    pub fn refresh_interval(&self) -> Option<Duration> {
-        self.refresh_interval
-    }
-
     pub fn presented(&mut self, presentation_time: Option<Duration>) {
         if let Some(presentation_time) = presentation_time.filter(|time| !time.is_zero()) {
             self.last_presentation_time = Some(presentation_time);
         }
+    }
+
+    pub fn reset(&mut self) {
+        self.last_presentation_time = None;
     }
 
     pub fn next_presentation_time(&self, now: Duration) -> Duration {
@@ -99,6 +99,16 @@ mod tests {
             clock.next_presentation_time(Duration::from_millis(104)),
             Duration::from_millis(110)
         );
+    }
+
+    #[test]
+    fn reset_discards_stale_presentation_history() {
+        let mut clock = FrameClock::new(Some(Duration::from_millis(10)));
+        clock.presented(Some(Duration::from_millis(100)));
+        clock.reset();
+
+        let now = Duration::from_secs(12);
+        assert_eq!(clock.next_presentation_time(now), now);
     }
 
     #[test]

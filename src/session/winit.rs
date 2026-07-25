@@ -252,6 +252,7 @@ pub fn run() {
                 let output = app.backend.output().clone();
                 if let Err(err) = app.backend.render(
                     &output,
+                    crate::frame_clock::monotonic_now(),
                     backend::CLEAR_COLOR,
                     &app.cursor,
                     position,

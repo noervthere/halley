@@ -27,14 +27,14 @@ use smithay::utils::{DeviceFd, Logical, Physical, Point, Rectangle, Scale, Size,
 use smithay::wayland::shell::wlr_layer::Layer;
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
 
-use super::{RenderStatus, Renderable};
+use super::{FrameSubmission, RenderStatus, Renderable};
 use crate::cursor::CursorImage;
 
 type TtyDrmOutputManager =
-    DrmOutputManager<GbmAllocator<DrmDeviceFd>, GbmFramebufferExporter<DrmDeviceFd>, (), DrmDeviceFd>;
+    DrmOutputManager<GbmAllocator<DrmDeviceFd>, GbmFramebufferExporter<DrmDeviceFd>, FrameSubmission, DrmDeviceFd>;
 
 type TtyDrmOutput =
-    DrmOutput<GbmAllocator<DrmDeviceFd>, GbmFramebufferExporter<DrmDeviceFd>, (), DrmDeviceFd>;
+    DrmOutput<GbmAllocator<DrmDeviceFd>, GbmFramebufferExporter<DrmDeviceFd>, FrameSubmission, DrmDeviceFd>;
 
 /// One connected output plus whether it currently has a frame queued and
 /// awaiting its VBlank. DRM only produces a VBlank in response to a page
@@ -83,8 +83,6 @@ pub struct TtyBackend {
     renderer: GlesRenderer,
     drm_output_manager: TtyDrmOutputManager,
     drm_outputs: Vec<DrmOutputEntry>,
-    /// The CRTC of the first successfully initialized output.
-    primary_crtc: crtc::Handle,
     /// The `wl_output` where newly mapped windows begin.
     primary_output: Output,
     /// Every successfully initialized output, in connector-scan order - each
@@ -269,7 +267,6 @@ impl TtyBackend {
         // failing the whole backend, so a working primary still comes up
         // even if a secondary monitor can't be driven for some reason.
         let mut drm_outputs = Vec::new();
-        let mut primary_crtc = None;
         let mut primary_output: Option<Output> = None;
         let mut outputs = Vec::new();
         for (connector, crtc) in connected {
@@ -305,8 +302,6 @@ impl TtyBackend {
 
             match result {
                 Ok(drm_output) => {
-                    primary_crtc.get_or_insert(crtc);
-
                     let offset = configured.map_or((0, 0), |cfg| (cfg.offset_x, cfg.offset_y));
                     let transform = configured.map_or(Transform::Normal, |cfg| transform_from_degrees(cfg.transform));
                     let vrr = configured.map(|cfg| cfg.vrr).unwrap_or_default();
@@ -350,17 +345,15 @@ impl TtyBackend {
             }
         }
 
-        let Some(primary_crtc) = primary_crtc else {
+        let Some(primary_output) = primary_output else {
             return Err("no output could be initialized".into());
         };
-        let primary_output = primary_output.expect("set alongside primary_crtc above");
 
         let backend = TtyBackend {
             session,
             renderer,
             drm_output_manager,
             drm_outputs,
-            primary_crtc,
             primary_output,
             outputs,
         };
@@ -380,29 +373,6 @@ impl TtyBackend {
         self.outputs.iter().map(|entry| &entry.output)
     }
 
-    /// The CRTC used for primary-only client content.
-    pub fn primary_crtc(&self) -> crtc::Handle {
-        self.primary_crtc
-    }
-
-    /// Whether an output currently has a frame queued and awaiting VBlank.
-    pub fn frame_in_flight(&self, crtc: crtc::Handle) -> bool {
-        self.drm_outputs
-            .iter()
-            .find(|entry| entry.crtc == crtc)
-            .is_some_and(|entry| entry.pending)
-    }
-
-    /// Any CRTC currently awaiting VBlank. Used only after preferring the
-    /// primary and pointer outputs in the session's single redraw state
-    /// machine.
-    pub fn any_frame_in_flight(&self) -> Option<crtc::Handle> {
-        self.drm_outputs
-            .iter()
-            .find(|entry| entry.pending)
-            .map(|entry| entry.crtc)
-    }
-
     pub fn output_for_crtc(&self, crtc: crtc::Handle) -> Option<&Output> {
         self.drm_outputs
             .iter()
@@ -410,27 +380,8 @@ impl TtyBackend {
             .map(|entry| &entry.output)
     }
 
-    /// The output containing the global pointer position, or the primary
-    /// output when no mapped output contains it.
-    pub fn cursor_crtc(
-        &self,
-        space: &Space<Window>,
-        cursor_position: (f64, f64),
-    ) -> crtc::Handle {
-        self.drm_outputs
-            .iter()
-            .find(|entry| {
-                space
-                    .output_geometry(&entry.output)
-                    .is_some_and(|geometry| {
-                        cursor_position_for_output(geometry, cursor_position).is_some()
-                    })
-            })
-            .map_or(self.primary_crtc, |entry| entry.crtc)
-    }
-
-    /// One output's refresh interval, used to time the estimated-VBlank
-    /// fallback for whichever output currently carries the cursor.
+    /// One output's refresh interval, used to time its estimated-VBlank
+    /// fallback.
     pub fn refresh_interval(&self, crtc: crtc::Handle) -> Duration {
         let refresh_mhz = self
             .drm_outputs
@@ -441,6 +392,14 @@ impl TtyBackend {
             .filter(|&refresh| refresh > 0)
             .unwrap_or(60_000);
         Duration::from_secs_f64(1000.0 / refresh_mhz as f64)
+    }
+
+    pub fn refresh_interval_for_output(&self, output: &Output) -> Duration {
+        self.drm_outputs
+            .iter()
+            .find(|entry| &entry.output == output)
+            .map(|entry| self.refresh_interval(entry.crtc))
+            .unwrap_or_else(|| Duration::from_secs_f64(1.0 / 60.0))
     }
 
     /// Reacquire DRM master and resync KMS state after a VT switch back.
@@ -479,12 +438,16 @@ impl TtyBackend {
     /// `WinitBackend::request_redraw()`. Takes a `crtc::Handle` since with
     /// multiple outputs "which one flipped" is no longer implicit. Must be
     /// followed by a fresh `render()` call to queue that output's next frame.
-    pub fn frame_submitted(&mut self, crtc: crtc::Handle) -> Result<(), Box<dyn Error>> {
+    pub fn frame_submitted(
+        &mut self,
+        crtc: crtc::Handle,
+    ) -> Result<Option<FrameSubmission>, Box<dyn Error>> {
         if let Some(entry) = self.drm_outputs.iter_mut().find(|e| e.crtc == crtc) {
-            entry.drm_output.frame_submitted()?;
+            let submitted = entry.drm_output.frame_submitted()?;
             entry.pending = false;
+            return Ok(submitted);
         }
-        Ok(())
+        Ok(None)
     }
 }
 
@@ -510,6 +473,7 @@ impl Renderable for TtyBackend {
     fn render(
         &mut self,
         output: &Output,
+        target_presentation_time: Duration,
         clear: Color32F,
         cursor: &CursorImage,
         cursor_position: (f64, f64),
@@ -690,7 +654,9 @@ impl Renderable for TtyBackend {
                 return Ok(RenderStatus::Skipped);
             }
 
-            drm_output.queue_frame(())?;
+            drm_output.queue_frame(FrameSubmission {
+                target_presentation_time,
+            })?;
             entry.pending = true;
             Ok(RenderStatus::Submitted)
     }
