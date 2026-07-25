@@ -143,6 +143,7 @@ pub trait Renderable {
         focused: Option<&WlSurface>,
         decorations: &Decorations,
         cameras: &crate::camera::OutputCameras,
+        window_open_animations: &crate::animation::WindowOpenAnimations,
     ) -> Result<RenderStatus, Box<dyn std::error::Error>>;
 }
 

@@ -125,7 +125,7 @@ impl Renderable for WinitBackend {
     fn render(
         &mut self,
         output: &Output,
-        _target_presentation_time: std::time::Duration,
+        target_presentation_time: std::time::Duration,
         clear: Color32F,
         cursor: &CursorImage,
         cursor_position: (f64, f64),
@@ -133,6 +133,7 @@ impl Renderable for WinitBackend {
         focused: Option<&WlSurface>,
         decorations: &halley_config::Decorations,
         cameras: &crate::camera::OutputCameras,
+        window_open_animations: &crate::animation::WindowOpenAnimations,
     ) -> Result<RenderStatus, Box<dyn Error>> {
         if output != &self.output {
             return Err(format!("winit cannot render unknown output {:?}", output.name()).into());
@@ -186,6 +187,18 @@ impl Renderable for WinitBackend {
                     continue;
                 };
                 let scaled_bbox = super::camera_rect(geometry.to_physical(1), camera_center, size, zoom_scale);
+                let opening_progress = window
+                    .toplevel()
+                    .and_then(|toplevel| {
+                        window_open_animations
+                            .progress(toplevel.wl_surface(), target_presentation_time)
+                    })
+                    .unwrap_or(1.0);
+                let animated_bbox = crate::animation::window_open_rect(
+                    scaled_bbox,
+                    scaled_bbox,
+                    opening_progress,
+                );
 
                 // `Space` locations refer to window geometry, while Smithay
                 // renders from the underlying surface origin. GTK, Qt and
@@ -199,11 +212,20 @@ impl Renderable for WinitBackend {
                     let dst = super::camera_rect(native_geo, camera_center, size, zoom_scale);
                     WinitRenderElement::Rescaled(super::rescale::RescaledElement::new(surface_element, dst))
                 }));
+                if animated_bbox.size.w == 0 || animated_bbox.size.h == 0 {
+                    continue;
+                }
                 scene_elements.extend(surface_elements.into_iter().filter_map(|surface_element| {
                     let native_geo = surface_element.geometry(Scale::from(1.0));
-                    let dst = super::camera_rect(native_geo, camera_center, size, zoom_scale);
+                    let final_dst =
+                        super::camera_rect(native_geo, camera_center, size, zoom_scale);
+                    let dst = crate::animation::window_open_rect(
+                        final_dst,
+                        scaled_bbox,
+                        opening_progress,
+                    );
                     let element = super::rescale::RescaledElement::new(surface_element, dst);
-                    CropRenderElement::from_element(element, 1.0, scaled_bbox)
+                    CropRenderElement::from_element(element, 1.0, animated_bbox)
                         .map(WinitRenderElement::Cropped)
                 }));
 
@@ -211,14 +233,18 @@ impl Renderable for WinitBackend {
                     .toplevel()
                     .is_some_and(|t| Some(t.wl_surface()) == focused);
                 let color = super::window_border_color(decorations, is_focused);
-                let border_width = ((decorations.border_width_px as f32 * zoom_scale).round() as i32).max(1);
+                let border_width = ((decorations.border_width_px as f64
+                    * zoom_scale as f64
+                    * opening_progress)
+                    .round() as i32)
+                    .max(1);
                 // Pushed alongside this window's own content rather than into
                 // a separate list, so it stays at this window's depth (see
                 // `WinitRenderElement`). Relative order against this window's
                 // own content doesn't matter - `border_strips` builds strips
                 // that sit entirely outside the window's bbox.
                 scene_elements.extend(
-                    super::border_strips(scaled_bbox, border_width, color)
+                    super::border_strips(animated_bbox, border_width, color)
                         .into_iter()
                         .map(WinitRenderElement::Border),
                 );

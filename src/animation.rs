@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use halley_config::{AnimationCurve, Animations};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+use smithay::utils::{Physical, Rectangle};
 
 #[derive(Clone, Copy, Debug)]
 struct WindowOpenTimeline {
@@ -91,6 +92,40 @@ fn apply_curve(curve: AnimationCurve, progress: f64) -> f64 {
     }
 }
 
+/// Scales `rect` around the center of the window's final `bounds`.
+///
+/// Every surface in the toplevel tree uses the same origin, so subsurfaces
+/// stay attached while the whole window expands from its center. Popups do
+/// not pass through this function.
+pub fn window_open_rect(
+    rect: Rectangle<i32, Physical>,
+    bounds: Rectangle<i32, Physical>,
+    progress: f64,
+) -> Rectangle<i32, Physical> {
+    let progress = progress.clamp(0.0, 1.0);
+    if progress == 1.0 {
+        return rect;
+    }
+
+    let center_x = bounds.loc.x as f64 + bounds.size.w as f64 / 2.0;
+    let center_y = bounds.loc.y as f64 + bounds.size.h as f64 / 2.0;
+    let left = center_x + (rect.loc.x as f64 - center_x) * progress;
+    let top = center_y + (rect.loc.y as f64 - center_y) * progress;
+    let right =
+        center_x + (rect.loc.x as f64 + rect.size.w as f64 - center_x) * progress;
+    let bottom =
+        center_y + (rect.loc.y as f64 + rect.size.h as f64 - center_y) * progress;
+
+    let left = left.round() as i32;
+    let top = top.round() as i32;
+    let right = right.round() as i32;
+    let bottom = bottom.round() as i32;
+    Rectangle::new(
+        (left, top).into(),
+        ((right - left).max(0), (bottom - top).max(0)).into(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -134,5 +169,31 @@ mod tests {
         assert!(apply_curve(AnimationCurve::EaseOutQuad, 0.5) > linear);
         assert!(apply_curve(AnimationCurve::EaseOutCubic, 0.5) > linear);
         assert!(apply_curve(AnimationCurve::EaseOutExpo, 0.5) > linear);
+    }
+
+    #[test]
+    fn opening_rect_expands_from_final_center() {
+        let bounds = Rectangle::new((100, 50).into(), (800, 600).into());
+
+        assert_eq!(
+            window_open_rect(bounds, bounds, 0.0),
+            Rectangle::new((500, 350).into(), (0, 0).into())
+        );
+        assert_eq!(
+            window_open_rect(bounds, bounds, 0.5),
+            Rectangle::new((300, 200).into(), (400, 300).into())
+        );
+        assert_eq!(window_open_rect(bounds, bounds, 1.0), bounds);
+    }
+
+    #[test]
+    fn surface_tree_rects_share_the_window_center() {
+        let bounds = Rectangle::new((100, 50).into(), (800, 600).into());
+        let subsurface = Rectangle::new((110, 60).into(), (100, 50).into());
+
+        assert_eq!(
+            window_open_rect(subsurface, bounds, 0.5),
+            Rectangle::new((305, 205).into(), (50, 25).into())
+        );
     }
 }

@@ -481,6 +481,7 @@ impl Renderable for TtyBackend {
         focused: Option<&WlSurface>,
         decorations: &halley_config::Decorations,
         cameras: &crate::camera::OutputCameras,
+        window_open_animations: &crate::animation::WindowOpenAnimations,
     ) -> Result<RenderStatus, Box<dyn Error>> {
         let primary_output = self.primary_output.clone();
         let entry = self
@@ -557,6 +558,18 @@ impl Renderable for TtyBackend {
                     output_size,
                     zoom_scale,
                 );
+                let opening_progress = window
+                    .toplevel()
+                    .and_then(|toplevel| {
+                        window_open_animations
+                            .progress(toplevel.wl_surface(), target_presentation_time)
+                    })
+                    .unwrap_or(1.0);
+                let animated_bbox = crate::animation::window_open_rect(
+                    scaled_bbox,
+                    scaled_bbox,
+                    opening_progress,
+                );
 
                 // `Space` locations refer to window geometry, while Smithay
                 // renders from the underlying surface origin. GTK, Qt and
@@ -581,17 +594,25 @@ impl Renderable for TtyBackend {
                         dst,
                     ))
                 }));
+                if animated_bbox.size.w == 0 || animated_bbox.size.h == 0 {
+                    continue;
+                }
                 elements.extend(surface_elements.into_iter().filter_map(|surface_element| {
                     let native_geo = surface_element.geometry(Scale::from(1.0));
-                    let dst = super::camera_rect(
+                    let final_dst = super::camera_rect(
                         native_geo,
                         output_camera_center,
                         output_size,
                         zoom_scale,
                     );
+                    let dst = crate::animation::window_open_rect(
+                        final_dst,
+                        scaled_bbox,
+                        opening_progress,
+                    );
                     let element =
                         super::rescale::RescaledElement::new(surface_element, dst);
-                    CropRenderElement::from_element(element, 1.0, scaled_bbox)
+                    CropRenderElement::from_element(element, 1.0, animated_bbox)
                         .map(TtyRenderElement::Cropped)
                 }));
 
@@ -599,10 +620,13 @@ impl Renderable for TtyBackend {
                     .toplevel()
                     .is_some_and(|t| Some(t.wl_surface()) == focused);
                 let color = super::window_border_color(decorations, is_focused);
-                let border_width =
-                    ((decorations.border_width_px as f32 * zoom_scale).round() as i32).max(1);
+                let border_width = ((decorations.border_width_px as f64
+                    * zoom_scale as f64
+                    * opening_progress)
+                    .round() as i32)
+                    .max(1);
                 elements.extend(
-                    super::border_strips(scaled_bbox, border_width, color)
+                    super::border_strips(animated_bbox, border_width, color)
                         .into_iter()
                         .map(TtyRenderElement::Border),
                 );

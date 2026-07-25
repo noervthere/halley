@@ -889,6 +889,7 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
         app.wayland.focused_window.as_ref(),
         &app.decorations,
         &app.cameras,
+        &app.window_open_animations,
     ) {
         Ok(status) => status,
         Err(err) => {

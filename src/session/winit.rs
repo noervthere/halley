@@ -272,6 +272,7 @@ pub fn run() {
                     app.wayland.focused_window.as_ref(),
                     &app.decorations,
                     &app.cameras,
+                    &app.window_open_animations,
                 ) {
                     eprintln!("render failed: {err}");
                 }
