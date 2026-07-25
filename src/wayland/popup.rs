@@ -20,6 +20,20 @@ pub fn track(wayland: &mut WaylandState, surface: PopupSurface) {
     }
 }
 
+/// Updates the tracked popup tree and completes the initial configure
+/// handshake once an XDG popup has made its first surface commit.
+pub fn handle_commit(manager: &mut PopupManager, surface: &WlSurface) {
+    manager.commit(surface);
+
+    if let Some(PopupKind::Xdg(popup)) = manager.find_popup(surface)
+        && !popup.is_initial_configure_sent()
+    {
+        popup
+            .send_configure()
+            .expect("initial popup configure failed");
+    }
+}
+
 pub fn unconstrain_surface(wayland: &WaylandState, surface: PopupSurface) {
     unconstrain(wayland, &PopupKind::Xdg(surface));
 }

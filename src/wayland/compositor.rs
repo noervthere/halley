@@ -3,7 +3,7 @@ use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::wayland::compositor::{get_parent, is_sync_subsurface};
 
 use super::WaylandState;
-use super::{layer_shell, xdg_shell};
+use super::{layer_shell, popup, xdg_shell};
 
 /// Shared role-neutral commit pipeline for both session drivers.
 ///
@@ -28,7 +28,7 @@ pub fn commit<D: 'static>(
         root = parent;
     }
 
-    wayland.popup_manager.commit(surface);
+    popup::handle_commit(&mut wayland.popup_manager, surface);
 
     if layer_shell::handle_commit(wayland, &root) {
         return None;
