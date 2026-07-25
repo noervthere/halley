@@ -37,17 +37,17 @@ pub fn toplevel_destroyed(wayland: &mut WaylandState, surface: &ToplevelSurface)
 /// immediately in `new_toplevel` and relies on Smithay's render-element
 /// code silently skipping bufferless surfaces - here "mapped" means
 /// "actually visible," not "present in `Space` but incidentally invisible."
-pub fn handle_commit(wayland: &mut WaylandState, surface: &WlSurface) {
+pub fn handle_commit(wayland: &mut WaylandState, surface: &WlSurface) -> Option<WlSurface> {
     let Some(window) = wayland.unmapped.get(surface) else {
-        return;
+        return None;
     };
     let Some(toplevel) = window.toplevel() else {
-        return;
+        return None;
     };
 
     if !toplevel.is_initial_configure_sent() {
         toplevel.send_configure();
-        return;
+        return None;
     }
 
     let has_buffer =
@@ -63,7 +63,10 @@ pub fn handle_commit(wayland: &mut WaylandState, surface: &WlSurface) {
         // Also raises+activates via `focus_and_raise`, same as clicking a
         // window now does.
         focus_and_raise(wayland, &window);
+        return Some(surface.clone());
     }
+
+    None
 }
 
 /// Marks `window` as focused, raises it to the top of the stack, and sets

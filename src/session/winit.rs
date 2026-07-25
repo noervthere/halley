@@ -140,6 +140,7 @@ struct App {
     zoom: halley_config::Zoom,
     last_camera_tick: Instant,
     grab: crate::input::grab::Grab,
+    window_open_animations: crate::animation::WindowOpenAnimations,
 }
 
 /// Runs the nested (winit) session - a real window on the host desktop,
@@ -214,6 +215,9 @@ pub fn run() {
         zoom: halley_config::load_zoom(),
         last_camera_tick: Instant::now(),
         grab: crate::input::grab::Grab::None,
+        window_open_animations: crate::animation::WindowOpenAnimations::new(
+            halley_config::load_animations(),
+        ),
     };
     app.wayland.space.map_output(app.backend.output(), (0, 0));
 
@@ -232,6 +236,7 @@ pub fn run() {
             }
             WinitEvent::Redraw => {
                 let now = Instant::now();
+                let target_presentation_time = crate::frame_clock::monotonic_now();
                 let dt = now.duration_since(app.last_camera_tick).as_secs_f32();
                 app.last_camera_tick = now;
                 let output_name = app.backend.output().name();
@@ -249,11 +254,17 @@ pub fn run() {
                     pointer.frame(app);
                 }
 
+                let window_animating = app.wayland.space.elements().any(|window| {
+                    window.toplevel().is_some_and(|toplevel| {
+                        app.window_open_animations
+                            .is_animating(toplevel.wl_surface(), target_presentation_time)
+                    })
+                });
                 let position = app.pointer.position();
                 let output = app.backend.output().clone();
                 if let Err(err) = app.backend.render(
                     &output,
-                    crate::frame_clock::monotonic_now(),
+                    target_presentation_time,
                     backend::CLEAR_COLOR,
                     &app.cursor,
                     position,
@@ -278,8 +289,10 @@ pub fn run() {
                 wayland::layer_shell::send_frames(&output, elapsed);
                 app.wayland.space.refresh();
                 wayland::layer_shell::cleanup(&mut app.wayland);
+                app.window_open_animations
+                    .cleanup(target_presentation_time);
 
-                if animating {
+                if animating || window_animating {
                     app.backend.request_redraw();
                 }
             }
@@ -690,7 +703,10 @@ impl CompositorHandler for App {
     }
 
     fn commit(&mut self, surface: &WlSurface) {
-        wayland::compositor::commit::<Self>(&mut self.wayland, surface);
+        if let Some(mapped) = wayland::compositor::commit::<Self>(&mut self.wayland, surface) {
+            self.window_open_animations
+                .start(mapped, crate::frame_clock::monotonic_now());
+        }
         self.backend.request_redraw();
 
         sync_keyboard_focus(self, SERIAL_COUNTER.next_serial());
@@ -717,6 +733,7 @@ impl XdgShellHandler for App {
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
+        self.window_open_animations.remove(surface.wl_surface());
         wayland::xdg_shell::toplevel_destroyed(&mut self.wayland, &surface);
         self.backend.request_redraw();
     }

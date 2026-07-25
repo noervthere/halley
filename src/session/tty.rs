@@ -218,6 +218,7 @@ struct TtyApp {
     cameras: crate::camera::OutputCameras,
     zoom: halley_config::Zoom,
     grab: crate::input::grab::Grab,
+    window_open_animations: crate::animation::WindowOpenAnimations,
 }
 
 /// Runs the real-hardware (DRM/KMS) session - takes over the seat and a
@@ -305,6 +306,9 @@ pub fn run() {
         cameras: crate::camera::OutputCameras::default(),
         zoom: halley_config::load_zoom(),
         grab: crate::input::grab::Grab::None,
+        window_open_animations: crate::animation::WindowOpenAnimations::new(
+            halley_config::load_animations(),
+        ),
     };
     for output in outputs {
         app.wayland
@@ -850,10 +854,19 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
     let view_before = pointer_is_on_output
         .then(|| app.cameras.view(&output.name()))
         .flatten();
-    let animating = app
+    let camera_animating = app
         .cameras
         .get_mut(&output.name())
         .is_some_and(|camera| crate::input::zoom::tick(camera, &app.zoom, dt.as_secs_f32()).1);
+    let primary = app.backend.primary_output();
+    let window_animating = app.wayland.space.elements().any(|window| {
+        wayland::window_is_on_output(window, output, primary)
+            && window.toplevel().is_some_and(|toplevel| {
+                app.window_open_animations
+                    .is_animating(toplevel.wl_surface(), target_presentation_time)
+            })
+    });
+    let animating = camera_animating || window_animating;
     let view_after = pointer_is_on_output
         .then(|| app.cameras.view(&output.name()))
         .flatten();
@@ -883,6 +896,8 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
             RenderStatus::Skipped
         }
     };
+    app.window_open_animations
+        .cleanup(target_presentation_time);
 
     if status == RenderStatus::Submitted {
         let state = app
@@ -1033,7 +1048,10 @@ impl CompositorHandler for TtyApp {
     }
 
     fn commit(&mut self, surface: &WlSurface) {
-        wayland::compositor::commit::<Self>(&mut self.wayland, surface);
+        if let Some(mapped) = wayland::compositor::commit::<Self>(&mut self.wayland, surface) {
+            self.window_open_animations
+                .start(mapped, crate::frame_clock::monotonic_now());
+        }
         queue_redraw(self);
 
         sync_keyboard_focus(self, SERIAL_COUNTER.next_serial());
@@ -1060,6 +1078,7 @@ impl XdgShellHandler for TtyApp {
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
+        self.window_open_animations.remove(surface.wl_surface());
         wayland::xdg_shell::toplevel_destroyed(&mut self.wayland, &surface);
     }
 

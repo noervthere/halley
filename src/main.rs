@@ -1,3 +1,4 @@
+mod animation;
 mod backend;
 mod camera;
 mod cursor;

@@ -11,11 +11,14 @@ use super::{layer_shell, xdg_shell};
 /// updates the shared popup tree, then delegates role-specific lifecycle to
 /// `layer_shell` or `xdg_shell`. Rendering, focus policy, and backend redraw
 /// scheduling remain outside this protocol callback.
-pub fn commit<D: 'static>(wayland: &mut WaylandState, surface: &WlSurface) {
+pub fn commit<D: 'static>(
+    wayland: &mut WaylandState,
+    surface: &WlSurface,
+) -> Option<WlSurface> {
     on_commit_buffer_handler::<D>(surface);
 
     if is_sync_subsurface(surface) {
-        return;
+        return None;
     }
 
     // Subsurface commits should still refresh/potentially-map the root
@@ -28,7 +31,7 @@ pub fn commit<D: 'static>(wayland: &mut WaylandState, surface: &WlSurface) {
     wayland.popup_manager.commit(surface);
 
     if layer_shell::handle_commit(wayland, &root) {
-        return;
+        return None;
     }
 
     let owning_window = wayland
@@ -40,5 +43,5 @@ pub fn commit<D: 'static>(wayland: &mut WaylandState, surface: &WlSurface) {
         window.on_commit();
     }
 
-    xdg_shell::handle_commit(wayland, &root);
+    xdg_shell::handle_commit(wayland, &root)
 }
