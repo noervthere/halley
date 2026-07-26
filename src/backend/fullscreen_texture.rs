@@ -18,7 +18,7 @@ use smithay::backend::renderer::{Bind, Color32F, ContextId, Frame, Offscreen, Re
 use smithay::desktop::Window;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::user_data::UserDataMap;
-use smithay::utils::{Buffer, Physical, Rectangle, Scale, Transform};
+use smithay::utils::{Buffer, Logical, Physical, Rectangle, Scale, Size, Transform};
 
 const FULLSCREEN_BLEND_SHADER: &str = r#"
 //_DEFINES_
@@ -167,6 +167,7 @@ impl FullscreenTextureTransitions {
                 program
             }
         };
+        let (source, destination_size) = texture_mapping(previous.size(), destination.size);
         let previous_element = TextureRenderElement::from_static_texture(
             id,
             context,
@@ -175,8 +176,8 @@ impl FullscreenTextureTransitions {
             1,
             Transform::Normal,
             Some(1.0),
-            None,
-            Some(destination.size.to_logical(1)),
+            Some(source),
+            Some(destination_size),
             None,
             Kind::Unspecified,
         );
@@ -189,6 +190,16 @@ impl FullscreenTextureTransitions {
             progress: progress.clamp(0.0, 1.0) as f32,
         }))
     }
+}
+
+fn texture_mapping(
+    texture_size: Size<i32, Buffer>,
+    destination_size: Size<i32, Physical>,
+) -> (Rectangle<f64, Logical>, Size<i32, Logical>) {
+    (
+        Rectangle::from_size(texture_size.to_logical(1, Transform::Normal).to_f64()),
+        destination_size.to_logical(1),
+    )
 }
 
 impl Element for FullscreenBlendElement {
@@ -342,4 +353,22 @@ fn render_window(
     }
 
     Ok(WindowTexture { texture, context })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn growing_destination_does_not_expand_texture_source() {
+        let (source, destination) = texture_mapping((800, 600).into(), (1920, 1080).into());
+
+        assert_eq!(
+            source,
+            Rectangle::<f64, Logical>::from_size((800.0, 600.0).into())
+        );
+        assert_eq!(destination, Size::<i32, Logical>::from((1920, 1080)));
+        assert_eq!(source.size.w / 800.0, 1.0);
+        assert_eq!(source.size.h / 600.0, 1.0);
+    }
 }
