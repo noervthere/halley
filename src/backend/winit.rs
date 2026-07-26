@@ -10,7 +10,7 @@ use smithay::backend::winit::WinitGraphicsBackend;
 use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
 use smithay::utils::{Physical, Rectangle, Size, Transform};
 
-use super::{RenderRequest, RenderStatus, Renderable};
+use super::{RenderOutcome, RenderRequest, RenderStatus, Renderable};
 
 /// The winit (nested) backend - a real window on the host's desktop,
 /// standing in for real hardware output. Used for dev/testing; the tty
@@ -133,7 +133,7 @@ impl Renderable for WinitBackend {
         &mut self,
         output: &Output,
         request: RenderRequest<'_>,
-    ) -> Result<RenderStatus, Box<dyn Error>> {
+    ) -> Result<RenderOutcome, Box<dyn Error>> {
         if output != &self.output {
             return Err(format!("winit cannot render unknown output {:?}", output.name()).into());
         }
@@ -165,6 +165,6 @@ impl Renderable for WinitBackend {
 
         self.backend.submit(Some(&[damage]))?;
 
-        Ok(RenderStatus::Submitted)
+        Ok(RenderOutcome::new(RenderStatus::Submitted, None))
     }
 }

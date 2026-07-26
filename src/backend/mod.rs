@@ -2,16 +2,18 @@ pub mod dmabuf;
 pub mod rescale;
 pub mod scene;
 pub mod tty;
+mod tty_dmabuf;
 mod tty_output;
 pub mod winit;
 
 use halley_config::Decorations;
 use smithay::backend::renderer::Color32F;
+use smithay::backend::renderer::element::RenderElementStates;
 use smithay::backend::renderer::element::solid::SolidColorRenderElement;
 use smithay::backend::renderer::element::surface::{
     WaylandSurfaceRenderElement, render_elements_from_surface_tree,
 };
-use smithay::backend::renderer::element::{AsRenderElements, Id, Kind};
+use smithay::backend::renderer::element::{Id, Kind};
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::renderer::utils::CommitCounter;
 use smithay::desktop::{PopupManager, Space, Window, layer_map_for_output};
@@ -62,7 +64,7 @@ pub fn window_surface_elements(
                 surface_location + offset,
                 scale,
                 1.0,
-                Kind::Unspecified,
+                Kind::ScanoutCandidate,
             )
         })
         .collect();
@@ -72,7 +74,7 @@ pub fn window_surface_elements(
         surface_location,
         scale,
         1.0,
-        Kind::Unspecified,
+        Kind::ScanoutCandidate,
     );
 
     (popup_elements, surface_elements)
@@ -101,7 +103,31 @@ pub fn layer_surface_elements(
                 .to_f64()
                 .to_physical(scale)
                 .to_i32_round();
-            surface.render_elements(renderer, location, scale, 1.0)
+            let popup_elements = PopupManager::popups_for_surface(surface.wl_surface())
+                .flat_map(|(popup, popup_offset)| {
+                    let offset = (popup_offset - popup.geometry().loc)
+                        .to_f64()
+                        .to_physical(scale)
+                        .to_i32_round();
+                    render_elements_from_surface_tree(
+                        renderer,
+                        popup.wl_surface(),
+                        location + offset,
+                        scale,
+                        1.0,
+                        Kind::ScanoutCandidate,
+                    )
+                });
+            let mut elements: Vec<_> = popup_elements.collect();
+            elements.extend(render_elements_from_surface_tree(
+                renderer,
+                surface.wl_surface(),
+                location,
+                scale,
+                1.0,
+                Kind::ScanoutCandidate,
+            ));
+            elements
         })
         .collect()
 }
@@ -112,6 +138,29 @@ pub fn layer_surface_elements(
 pub enum RenderStatus {
     Submitted,
     Skipped,
+}
+
+#[derive(Debug)]
+pub struct RenderOutcome {
+    status: RenderStatus,
+    element_states: Option<RenderElementStates>,
+}
+
+impl RenderOutcome {
+    pub fn new(status: RenderStatus, element_states: Option<RenderElementStates>) -> Self {
+        Self {
+            status,
+            element_states,
+        }
+    }
+
+    pub fn status(&self) -> RenderStatus {
+        self.status
+    }
+
+    pub fn element_states(&self) -> Option<&RenderElementStates> {
+        self.element_states.as_ref()
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -139,7 +188,7 @@ pub trait Renderable {
         &mut self,
         output: &Output,
         request: RenderRequest<'_>,
-    ) -> Result<RenderStatus, Box<dyn std::error::Error>>;
+    ) -> Result<RenderOutcome, Box<dyn std::error::Error>>;
 }
 
 fn border_color(color: halley_config::BorderColor) -> Color32F {

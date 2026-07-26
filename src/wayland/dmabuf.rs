@@ -1,10 +1,15 @@
+use smithay::backend::renderer::element::RenderElementStates;
+use smithay::backend::renderer::element::utils::select_dmabuf_feedback;
+use smithay::desktop::layer_map_for_output;
+use smithay::output::Output;
 use smithay::reexports::wayland_protocols::wp::linux_dmabuf::zv1::server::zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1;
 use smithay::reexports::wayland_server::{DisplayHandle, GlobalDispatch};
 use smithay::wayland::dmabuf::{
     DmabufFeedbackBuilder, DmabufGlobal, DmabufGlobalData, DmabufHandler, DmabufState,
 };
 
-use crate::backend::dmabuf::DmabufCapabilities;
+use crate::backend::dmabuf::{DmabufCapabilities, SurfaceDmabufFeedback};
+use crate::wayland::{WaylandState, window_is_on_output};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Advertisement {
@@ -67,6 +72,44 @@ where
             );
             Some(state.create_global::<D>(display_handle, formats))
         }
+    }
+}
+
+pub fn send_output_feedback(
+    wayland: &WaylandState,
+    output: &Output,
+    primary_output: &Output,
+    feedback: &SurfaceDmabufFeedback,
+    element_states: &RenderElementStates,
+) {
+    wayland
+        .space
+        .elements()
+        .filter(|window| window_is_on_output(window, output, primary_output))
+        .for_each(|window| {
+            window.send_dmabuf_feedback(
+                output,
+                |_, _| Some(output.clone()),
+                |surface, _| {
+                    select_dmabuf_feedback(
+                        surface,
+                        element_states,
+                        &feedback.render,
+                        &feedback.scanout,
+                    )
+                },
+            );
+        });
+
+    let map = layer_map_for_output(output);
+    for layer in map.layers() {
+        layer.send_dmabuf_feedback(
+            output,
+            |_, _| Some(output.clone()),
+            |surface, _| {
+                select_dmabuf_feedback(surface, element_states, &feedback.render, &feedback.scanout)
+            },
+        );
     }
 }
 

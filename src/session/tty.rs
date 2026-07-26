@@ -14,7 +14,7 @@ use smithay::reexports::input::Libinput;
 use smithay::reexports::wayland_server::Display;
 
 use crate::backend::tty::TtyBackend;
-use crate::backend::{CLEAR_COLOR, RenderRequest, RenderStatus, Renderable};
+use crate::backend::{CLEAR_COLOR, RenderOutcome, RenderRequest, RenderStatus, Renderable};
 use crate::cursor::CursorImage;
 use crate::input::{Keyboard, SuppressedButtons};
 use crate::input::keybinds::BackendKind;
@@ -23,6 +23,7 @@ use crate::ipc::OutputInfoSource;
 use crate::wayland;
 
 use super::tty_frame::{EstimatedVblankTimer, OutputFrameState};
+use super::SessionDriver;
 
 struct TtyDriver {
     backend: TtyBackend,
@@ -48,6 +49,13 @@ impl super::SessionDriver for TtyDriver {
         dmabuf: &smithay::backend::allocator::dmabuf::Dmabuf,
     ) -> bool {
         self.backend.import_dmabuf(dmabuf)
+    }
+
+    fn dmabuf_feedback(
+        &self,
+        output: &Output,
+    ) -> Option<&crate::backend::dmabuf::SurfaceDmabufFeedback> {
+        self.backend.dmabuf_feedback(output)
     }
 
     fn request_redraw(&mut self, output: Option<&Output>) {
@@ -438,7 +446,7 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
         pointer.frame(app);
     }
 
-    let status = match app.driver.backend.render(
+    let outcome = match app.driver.backend.render(
         output,
         RenderRequest {
             target_presentation_time,
@@ -452,16 +460,30 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
             window_open_animations: &app.window_open_animations,
         },
     ) {
-        Ok(status) => status,
+        Ok(outcome) => outcome,
         Err(err) => {
             eventline::error!("render failed for {:?}: {err}", output.name());
-            RenderStatus::Skipped
+            RenderOutcome::new(RenderStatus::Skipped, None)
         }
     };
     app.window_open_animations
         .cleanup(target_presentation_time);
 
-    if status == RenderStatus::Submitted {
+    let feedback = app.driver.dmabuf_feedback(output).cloned();
+    if let (Some(feedback), Some(element_states)) =
+        (feedback.as_ref(), outcome.element_states())
+    {
+        let primary_output = app.driver.backend.primary_output().clone();
+        wayland::dmabuf::send_output_feedback(
+            &app.wayland,
+            output,
+            &primary_output,
+            feedback,
+            element_states,
+        );
+    }
+
+    if outcome.status() == RenderStatus::Submitted {
         let state = app
             .driver
             .output_frames

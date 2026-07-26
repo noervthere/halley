@@ -4,7 +4,7 @@ use std::time::Duration;
 use smithay::backend::allocator::gbm::{GbmAllocator, GbmBufferFlags, GbmDevice};
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::allocator::{Format, Fourcc};
-use smithay::backend::drm::compositor::FrameFlags;
+use smithay::backend::drm::compositor::PrimaryPlaneElement;
 use smithay::backend::drm::exporter::gbm::{GbmFramebufferExporter, NodeFilter};
 use smithay::backend::drm::output::{DrmOutput, DrmOutputManager, DrmOutputRenderElements};
 use smithay::backend::drm::{
@@ -28,7 +28,7 @@ use super::tty_output::{
     OutputState, connector_name, connector_output_info, default_mode, drm_output_mode, output_diff,
     output_target,
 };
-use super::{FrameSubmission, RenderRequest, RenderStatus, Renderable};
+use super::{FrameSubmission, RenderOutcome, RenderRequest, RenderStatus, Renderable};
 
 type TtyDrmOutputManager = DrmOutputManager<
     GbmAllocator<DrmDeviceFd>,
@@ -37,7 +37,7 @@ type TtyDrmOutputManager = DrmOutputManager<
     DrmDeviceFd,
 >;
 
-type TtyDrmOutput = DrmOutput<
+pub(super) type TtyDrmOutput = DrmOutput<
     GbmAllocator<DrmDeviceFd>,
     GbmFramebufferExporter<DrmDeviceFd>,
     FrameSubmission,
@@ -59,6 +59,7 @@ struct DrmOutputEntry {
     configured_vrr: halley_config::Vrr,
     output: Output,
     drm_output: TtyDrmOutput,
+    dmabuf_feedback: Option<super::dmabuf::SurfaceDmabufFeedback>,
     pending: bool,
 }
 
@@ -232,6 +233,20 @@ impl TtyBackend {
 
             match result {
                 Ok(drm_output) => {
+                    let dmabuf_feedback = match super::tty_dmabuf::surface_feedback(
+                        &drm_output,
+                        renderer.dmabuf_formats(),
+                        render_node,
+                        primary_node,
+                    ) {
+                        Ok(feedback) => Some(feedback),
+                        Err(err) => {
+                            eventline::warn!(
+                                "output {name:?}: failed to build DMA-BUF scan-out feedback: {err}"
+                            );
+                            None
+                        }
+                    };
                     if vrr == halley_config::Vrr::On {
                         eventline::warn!(
                             "output {name:?}: vrr \"on\" is configured but not wired to real hardware VRR yet \
@@ -255,6 +270,7 @@ impl TtyBackend {
                         configured_vrr: vrr,
                         output,
                         drm_output,
+                        dmabuf_feedback,
                         pending: false,
                     });
                 }
@@ -321,6 +337,16 @@ impl TtyBackend {
                 false
             }
         }
+    }
+
+    pub fn dmabuf_feedback(
+        &self,
+        output: &Output,
+    ) -> Option<&super::dmabuf::SurfaceDmabufFeedback> {
+        self.drm_outputs
+            .iter()
+            .find(|entry| &entry.output == output)
+            .and_then(|entry| entry.dmabuf_feedback.as_ref())
     }
 
     /// One output's refresh interval, used to time its estimated-VBlank
@@ -514,7 +540,7 @@ impl Renderable for TtyBackend {
         &mut self,
         output: &Output,
         request: RenderRequest<'_>,
-    ) -> Result<RenderStatus, Box<dyn Error>> {
+    ) -> Result<RenderOutcome, Box<dyn Error>> {
         let primary_output = self.primary_output.clone();
         let entry = self
             .drm_outputs
@@ -525,7 +551,7 @@ impl Renderable for TtyBackend {
         // pending. The next VBlank clears this flag and schedules another
         // render, so skipping here does not lose scene changes.
         if entry.pending {
-            return Ok(RenderStatus::Skipped);
+            return Ok(RenderOutcome::new(RenderStatus::Skipped, None));
         }
         let output_geometry = request
             .space
@@ -542,17 +568,34 @@ impl Renderable for TtyBackend {
             &mut self.renderer,
             &elements,
             request.clear,
-            FrameFlags::empty(),
+            super::tty_dmabuf::frame_flags(),
         )?;
 
+        let element_states = result.states.clone();
+        if result.needs_sync()
+            && let PrimaryPlaneElement::Swapchain(element) = &result.primary_element
+            && let Err(err) = element.sync.wait()
+        {
+            eventline::warn!(
+                "output {:?}: failed waiting for rendered frame completion: {err}",
+                entry.output.name()
+            );
+        }
+
         if result.is_empty {
-            return Ok(RenderStatus::Skipped);
+            return Ok(RenderOutcome::new(
+                RenderStatus::Skipped,
+                Some(element_states),
+            ));
         }
 
         entry.drm_output.queue_frame(FrameSubmission {
             target_presentation_time: request.target_presentation_time,
         })?;
         entry.pending = true;
-        Ok(RenderStatus::Submitted)
+        Ok(RenderOutcome::new(
+            RenderStatus::Submitted,
+            Some(element_states),
+        ))
     }
 }

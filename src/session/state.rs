@@ -33,6 +33,10 @@ pub trait SessionDriver: 'static {
     fn primary_output(&self) -> &Output;
     fn dmabuf_capabilities(&mut self) -> crate::backend::dmabuf::DmabufCapabilities;
     fn import_dmabuf(&mut self, dmabuf: &Dmabuf) -> bool;
+    fn dmabuf_feedback(
+        &self,
+        output: &Output,
+    ) -> Option<&crate::backend::dmabuf::SurfaceDmabufFeedback>;
     fn request_redraw(&mut self, output: Option<&Output>);
     fn stop(&mut self);
 }

@@ -43,6 +43,13 @@ impl SessionDriver for WinitDriver {
         self.backend.import_dmabuf(dmabuf)
     }
 
+    fn dmabuf_feedback(
+        &self,
+        _output: &smithay::output::Output,
+    ) -> Option<&crate::backend::dmabuf::SurfaceDmabufFeedback> {
+        None
+    }
+
     fn request_redraw(&mut self, _output: Option<&smithay::output::Output>) {
         self.backend.request_redraw();
     }
