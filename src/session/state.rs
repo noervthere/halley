@@ -28,7 +28,7 @@ use crate::wayland::WaylandState;
 /// The narrow contract shared compositor policy needs from a session driver.
 /// Hardware setup, rendering, output reconfiguration, and event sources stay
 /// inside the concrete driver modules.
-pub trait SessionDriver: 'static {
+pub trait SessionDriver: crate::ipc::OutputInfoSource + 'static {
     const BACKEND_KIND: crate::input::keybinds::BackendKind;
 
     fn primary_output(&self) -> &Output;

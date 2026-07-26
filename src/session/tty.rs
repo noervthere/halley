@@ -32,6 +32,12 @@ struct TtyDriver {
     pending_output_config: Option<Vec<halley_config::OutputConfig>>,
 }
 
+impl crate::ipc::OutputInfoSource for TtyDriver {
+    fn output_info(&self) -> Vec<halley_ipc::OutputInfo> {
+        crate::ipc::OutputInfoSource::output_info(&self.backend)
+    }
+}
+
 impl super::SessionDriver for TtyDriver {
     const BACKEND_KIND: BackendKind = BackendKind::Tty;
 
@@ -188,7 +194,7 @@ pub fn run(session_mode: bool) {
 
     if let Err(err) =
         crate::ipc::init_ipc_listener(&event_loop.handle(), |app: &mut TtyApp, request| {
-            crate::ipc::reply_to_query(&app.driver.backend, request);
+            crate::ipc::handle_request(app, request);
         })
     {
         eventline::error!("ipc: failed to start listener: {err}");

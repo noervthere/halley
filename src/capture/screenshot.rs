@@ -5,11 +5,15 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use smithay::backend::allocator::Fourcc;
+use smithay::backend::renderer::element::Kind;
+use smithay::backend::renderer::element::surface::{
+    WaylandSurfaceRenderElement, render_elements_from_surface_tree,
+};
 use smithay::backend::renderer::gles::{GlesRenderer, GlesTexture};
 use smithay::backend::renderer::utils::draw_render_elements;
-use smithay::backend::renderer::{Bind, ExportMem, Frame, Offscreen, Renderer};
+use smithay::backend::renderer::{Bind, Color32F, ExportMem, Frame, Offscreen, Renderer};
 use smithay::output::Output;
-use smithay::utils::{Buffer, Logical, Physical, Rectangle, Transform};
+use smithay::utils::{Buffer, Logical, Physical, Rectangle, Scale, Transform};
 
 use crate::backend::{self, RenderRequest};
 use crate::session::{Session, SessionDriver};
@@ -83,14 +87,102 @@ pub fn save_region<D: SessionDriver>(
     })?;
 
     let pixels = composite_region(region, &images)?;
-    let directory = expand_directory(&session.screenshot.directory);
+    save_pixels(
+        &session.screenshot.directory,
+        region.size.w as u32,
+        region.size.h as u32,
+        &pixels,
+    )
+}
+
+pub fn save_window<D: SessionDriver>(
+    session: &mut Session<D>,
+    surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+) -> Result<PathBuf, Box<dyn Error>> {
+    let window = session
+        .wayland
+        .space
+        .elements()
+        .find(|window| {
+            window
+                .toplevel()
+                .is_some_and(|toplevel| toplevel.wl_surface() == surface)
+        })
+        .ok_or_else(|| io::Error::other("selected window is not mapped"))?;
+    let toplevel = window
+        .toplevel()
+        .ok_or_else(|| io::Error::other("selected window has no toplevel"))?;
+    let geometry = window.geometry();
+    if geometry.size.w <= 0 || geometry.size.h <= 0 {
+        return Err(io::Error::other("selected window has empty geometry").into());
+    }
+    let surface = toplevel.wl_surface().clone();
+    let pixels = session
+        .driver
+        .with_renderer(|renderer| capture_surface_tree(renderer, &surface, geometry))?;
+    save_pixels(
+        &session.screenshot.directory,
+        geometry.size.w as u32,
+        geometry.size.h as u32,
+        &pixels,
+    )
+}
+
+fn save_pixels(
+    configured_directory: &str,
+    width: u32,
+    height: u32,
+    pixels: &[u8],
+) -> Result<PathBuf, Box<dyn Error>> {
+    let directory = expand_directory(configured_directory);
     fs::create_dir_all(&directory)?;
     let (path, file) = create_unique_file(&directory)?;
-    if let Err(err) = write_png(file, region.size.w as u32, region.size.h as u32, &pixels) {
+    if let Err(err) = write_png(file, width, height, pixels) {
         let _ = fs::remove_file(&path);
         return Err(err.into());
     }
     Ok(path)
+}
+
+fn capture_surface_tree(
+    renderer: &mut GlesRenderer,
+    surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+    geometry: Rectangle<i32, Logical>,
+) -> Result<Vec<u8>, Box<dyn Error>> {
+    let size = geometry.size.to_physical(1);
+    let location = smithay::utils::Point::from((-geometry.loc.x, -geometry.loc.y)).to_physical(1);
+    let elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
+        render_elements_from_surface_tree(
+            renderer,
+            surface,
+            location,
+            Scale::from(1.0),
+            1.0,
+            Kind::Unspecified,
+        );
+    if elements.is_empty() {
+        return Err(io::Error::other("selected window surface tree is empty").into());
+    }
+    let buffer_size = geometry.size.to_buffer(1, Transform::Normal);
+    let mut texture = <GlesRenderer as Offscreen<GlesTexture>>::create_buffer(
+        renderer,
+        Fourcc::Abgr8888,
+        buffer_size,
+    )?;
+    let damage = Rectangle::<i32, Physical>::from_size(size);
+    {
+        let mut target = renderer.bind(&mut texture)?;
+        let mut frame = renderer.render(&mut target, size, Transform::Normal)?;
+        frame.clear(Color32F::TRANSPARENT, &[damage])?;
+        draw_render_elements(&mut frame, 1.0, &elements, &[damage])?;
+        let _ = frame.finish()?;
+    }
+    let mapping = renderer.copy_texture(
+        &texture,
+        Rectangle::<i32, Buffer>::from_size(buffer_size),
+        Fourcc::Abgr8888,
+    )?;
+    Ok(renderer.map_texture(&mapping)?.to_vec())
 }
 
 fn capture_output(

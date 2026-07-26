@@ -35,6 +35,7 @@ pub struct PointerRoute {
     pub location: Point<f64, Logical>,
     pub focus: Option<SurfaceFocus>,
     pub target: PointerTarget,
+    pub visual_geometry: Option<Rectangle<i32, Logical>>,
 }
 
 /// Screen-space cursor tracking. Client-facing focus, buttons, implicit
@@ -252,6 +253,7 @@ pub fn route_to_client(
             location: screen_location,
             focus: Some(focus),
             target: PointerTarget::Layer(layer),
+            visual_geometry: None,
         });
     }
 
@@ -268,6 +270,7 @@ pub fn route_to_client(
             location: screen_location,
             focus: Some(focus),
             target: PointerTarget::Layer(layer),
+            visual_geometry: None,
         });
     }
 
@@ -299,6 +302,7 @@ pub fn route_to_client(
             location: screen_location,
             focus: Some(focus),
             target: PointerTarget::Layer(layer),
+            visual_geometry: None,
         });
     }
 
@@ -307,6 +311,7 @@ pub fn route_to_client(
         location,
         focus: None,
         target: PointerTarget::Background,
+        visual_geometry: None,
     })
 }
 
@@ -373,7 +378,8 @@ fn window_under(
         let Some(source_geometry) = space.element_geometry(window) else {
             continue;
         };
-        let (location, hit) = match fullscreen.presentation(toplevel.wl_surface(), output, now) {
+        let (location, hit, visual_geometry) =
+            match fullscreen.presentation(toplevel.wl_surface(), output, now) {
             Some(presentation) => {
                 let windowed_geometry = presentation
                     .windowed_geometry
@@ -389,13 +395,23 @@ fn window_under(
                 (
                     inverse_map_point(output_local, visual, source_geometry),
                     visual.to_f64().contains(output_local.to_physical(1.0)),
+                    visual,
                 )
             }
             None => {
                 let Some(bbox) = space.element_bbox(window) else {
                     continue;
                 };
-                (normal_location, bbox.to_f64().contains(normal_location))
+                (
+                    normal_location,
+                    bbox.to_f64().contains(normal_location),
+                    crate::backend::camera_rect(
+                        source_geometry.to_physical(1),
+                        camera_center,
+                        output_size,
+                        view.scale,
+                    ),
+                )
             }
         };
         if !hit {
@@ -422,6 +438,10 @@ fn window_under(
             location,
             focus,
             target: PointerTarget::Window(window.clone()),
+            visual_geometry: Some(Rectangle::new(
+                output_geometry.loc + visual_geometry.loc.to_logical(1),
+                visual_geometry.size.to_logical(1),
+            )),
         });
     }
     None

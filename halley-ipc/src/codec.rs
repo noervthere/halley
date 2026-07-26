@@ -276,11 +276,31 @@ mod tests {
 
     #[test]
     fn request_round_trips_through_postcard() {
-        for req in [Request::Outputs, Request::Version] {
+        for req in [
+            Request::Outputs,
+            Request::Version,
+            Request::Screenshot(crate::ScreenshotRequest {
+                request_handle: "/org/freedesktop/portal/request/1".to_string(),
+                target: crate::ScreenshotTarget::Area,
+            }),
+            Request::CancelScreenshot {
+                request_handle: "/org/freedesktop/portal/request/1".to_string(),
+            },
+        ] {
             let bytes = encode_request(&req).unwrap();
             let decoded = decode_request(&bytes).unwrap();
             assert_eq!(format!("{decoded:?}"), format!("{req:?}"));
         }
+    }
+
+    #[test]
+    fn screenshot_response_round_trips_through_postcard() {
+        let response = Response::Screenshot(crate::ScreenshotResponse::Saved {
+            path: "/tmp/halley screenshot.png".to_string(),
+        });
+        let bytes = encode_response(&response).unwrap();
+        let decoded = decode_response(&bytes).unwrap();
+        assert_eq!(format!("{decoded:?}"), format!("{response:?}"));
     }
 
     #[test]

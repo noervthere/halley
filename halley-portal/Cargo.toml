@@ -1,0 +1,14 @@
+[package]
+name = "halley-portal"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "xdg-desktop-portal-halley"
+path = "src/main.rs"
+
+[dependencies]
+eventline = "0.9.0"
+halley-ipc = { path = "../halley-ipc" }
+pollster = "0.4"
+zbus = "5.16"

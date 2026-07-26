@@ -201,7 +201,10 @@ pub fn init_ipc_listener<App: 'static>(
     Ok(())
 }
 
-pub fn reply_to_query<App: OutputInfoSource>(app: &App, request: RequestEnvelope) {
+pub fn handle_request<D: crate::session::SessionDriver>(
+    app: &mut crate::session::Session<D>,
+    request: RequestEnvelope,
+) {
     let RequestEnvelope {
         request,
         fds,
@@ -219,10 +222,21 @@ pub fn reply_to_query<App: OutputInfoSource>(app: &App, request: RequestEnvelope
     let response = match request {
         halley_ipc::Request::Outputs => {
             halley_ipc::Response::Outputs(halley_ipc::OutputsResponse {
-                outputs: app.output_info(),
+                outputs: app.driver.output_info(),
             })
         }
         halley_ipc::Request::Version => halley_ipc::Response::Version(version_info()),
+        halley_ipc::Request::Screenshot(request) => {
+            crate::capture::request_screenshot(app, request, reply);
+            return;
+        }
+        halley_ipc::Request::CancelScreenshot { request_handle } => {
+            if crate::capture::cancel_portal(app, &request_handle) {
+                halley_ipc::Response::Ack
+            } else {
+                halley_ipc::Response::Error("screenshot request is not active".to_string())
+            }
+        }
     };
     let _ = reply.send(response, Vec::new());
 }

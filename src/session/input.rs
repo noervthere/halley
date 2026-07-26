@@ -171,17 +171,30 @@ pub fn handle<D, B>(
     if session.capture.is_active() {
         match event {
             InputEvent::PointerMotion { .. } | InputEvent::PointerMotionAbsolute { .. } => {
-                session.capture.motion(proposed_position);
+                update_capture_pointer(session, proposed_position);
                 session.request_redraw();
                 return;
             }
             InputEvent::PointerButton { event } => {
                 if event.button_code() == BTN_LEFT {
+                    update_capture_pointer(session, proposed_position);
                     match event.state() {
                         ButtonState::Pressed => {
+                            session.suppressed_buttons.suppress(BTN_LEFT);
                             session.capture.press(proposed_position);
+                            if session.capture.selects_window()
+                                && crate::capture::accept_selected(session)
+                            {
+                                super::sync_keyboard_focus(
+                                    session,
+                                    SERIAL_COUNTER.next_serial(),
+                                );
+                            }
                         }
                         ButtonState::Released => {
+                            session
+                                .suppressed_buttons
+                                .release_is_suppressed(BTN_LEFT);
                             session.capture.release();
                         }
                     }
@@ -613,20 +626,13 @@ pub fn handle<D, B>(
                 dispatch_action(session, action, socket_name, pointer_output.as_deref());
             }
             Some(KeyboardOutcome::CaptureAccept) => {
-                if let Some(region) = session.capture.accept() {
-                    match crate::capture::save_region(session, region) {
-                        Ok(path) => {
-                            session.capture.remember_successful(region);
-                            eventline::info!("screenshot saved to {}", path.display());
-                        }
-                        Err(err) => eventline::error!("screenshot failed: {err}"),
-                    }
+                if crate::capture::accept_selected(session) {
                     super::sync_keyboard_focus(session, SERIAL_COUNTER.next_serial());
                     session.request_redraw();
                 }
             }
             Some(KeyboardOutcome::CaptureCancel) => {
-                if session.capture.cancel() {
+                if crate::capture::cancel_selected(session) {
                     super::sync_keyboard_focus(session, SERIAL_COUNTER.next_serial());
                     session.request_redraw();
                 }
@@ -634,6 +640,27 @@ pub fn handle<D, B>(
             Some(KeyboardOutcome::CaptureIntercept) | None => {}
         }
     }
+}
+
+fn update_capture_pointer<D: SessionDriver>(
+    session: &mut Session<D>,
+    position: (f64, f64),
+) {
+    if !session.capture.selects_window() {
+        session.capture.motion(position);
+        return;
+    }
+    let hovered = route_client_pointer(session).and_then(|route| {
+        let crate::input::pointer::PointerTarget::Window(window) = route.target else {
+            return None;
+        };
+        let surface = window.toplevel()?.wl_surface().clone();
+        Some((surface, route.visual_geometry?))
+    });
+    let (surface, geometry) = hovered
+        .map(|(surface, geometry)| (Some(surface), Some(geometry)))
+        .unwrap_or((None, None));
+    session.capture.hover_window(surface, geometry);
 }
 
 #[cfg(test)]
