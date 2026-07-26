@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use halley_config::{AnimationMotion, Animations, EasingMotion, WindowOpenAnimationType};
+use halley_config::{Animations, WindowOpenAnimationType};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Physical, Rectangle, Size};
 
@@ -167,7 +167,7 @@ fn scale_rect_from_center(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use halley_config::AnimationCurve;
+    use halley_config::{AnimationCurve, AnimationMotion, EasingMotion};
 
     fn timeline(
         animation_type: WindowOpenAnimationType,

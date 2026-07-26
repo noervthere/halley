@@ -63,6 +63,7 @@ pub struct Session<D: SessionDriver> {
     pub suppressed_buttons: SuppressedButtons,
     pub wheel_accumulator: WheelAccumulator,
     pub window_open_animations: crate::animation::WindowOpenAnimations,
+    pub fullscreen: crate::wayland::fullscreen::FullscreenManager,
 }
 
 impl<D: SessionDriver> Session<D> {

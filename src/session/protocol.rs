@@ -99,12 +99,16 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
     }
 
     fn commit(&mut self, surface: &WlSurface) {
+        let root = wayland::compositor::root_surface(surface);
         if let Some(mapped) =
             wayland::compositor::commit::<Self>(&mut self.wayland, &self.cameras, surface)
+                .filter(|mapped| !self.fullscreen.is_fullscreen_or_pending(mapped))
         {
             self.window_open_animations
                 .start(mapped, crate::frame_clock::monotonic_now());
         }
+        self.fullscreen
+            .handle_commit(&mut self.wayland, &self.cameras, &root);
         crate::input::grab::finish_resize_commit(
             &mut self.resize_anchor,
             &mut self.wayland.space,
@@ -157,8 +161,23 @@ impl<D: SessionDriver> XdgShellHandler for Session<D> {
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         self.window_open_animations.remove(surface.wl_surface());
+        self.fullscreen.remove(surface.wl_surface());
         crate::input::grab::forget_resize_anchor(&mut self.resize_anchor, surface.wl_surface());
         wayland::xdg_shell::toplevel_destroyed(&mut self.wayland, &surface);
+        self.request_redraw();
+    }
+
+    fn fullscreen_request(
+        &mut self,
+        surface: ToplevelSurface,
+        output: Option<smithay::reexports::wayland_server::protocol::wl_output::WlOutput>,
+    ) {
+        self.fullscreen.request(&mut self.wayland, &surface, output);
+        self.request_redraw();
+    }
+
+    fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
+        self.fullscreen.unrequest(&self.wayland, &surface);
         self.request_redraw();
     }
 

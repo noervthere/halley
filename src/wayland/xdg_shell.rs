@@ -127,7 +127,7 @@ pub fn close_focused(wayland: &WaylandState) {
 
 /// Centers a newly-mapped window on the selected output's live camera.
 /// Existing freeform windows stay where they are when the camera later moves.
-fn centered_location(
+pub(crate) fn centered_location(
     wayland: &WaylandState,
     cameras: &OutputCameras,
     output: &Output,

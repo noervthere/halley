@@ -24,10 +24,7 @@ pub fn commit<D: 'static>(
 
     // Subsurface commits should still refresh/potentially-map the root
     // toplevel they belong to, not just direct toplevel-surface commits.
-    let mut root = surface.clone();
-    while let Some(parent) = get_parent(&root) {
-        root = parent;
-    }
+    let root = root_surface(surface);
 
     popup::handle_commit(&mut wayland.popup_manager, surface);
 
@@ -45,4 +42,12 @@ pub fn commit<D: 'static>(
     }
 
     xdg_shell::handle_commit(wayland, cameras, &root)
+}
+
+pub fn root_surface(surface: &WlSurface) -> WlSurface {
+    let mut root = surface.clone();
+    while let Some(parent) = get_parent(&root) {
+        root = parent;
+    }
+    root
 }

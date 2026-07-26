@@ -2,6 +2,7 @@ pub mod compositor;
 pub mod decoration;
 pub mod dmabuf;
 pub mod focus;
+pub mod fullscreen;
 pub mod layer_shell;
 pub mod popup;
 pub mod selection;
@@ -40,6 +41,16 @@ pub fn set_window_output(window: &Window, output: &Output) {
         .user_data()
         .get_or_insert_threadsafe(|| WindowOutput(RwLock::new(output.name())));
     *owner.0.write().expect("window output lock poisoned") = output.name();
+}
+
+pub fn window_output_name(window: &Window) -> Option<String> {
+    window.user_data().get::<WindowOutput>().map(|owner| {
+        owner
+            .0
+            .read()
+            .expect("window output lock poisoned")
+            .clone()
+    })
 }
 
 pub fn window_is_on_output(window: &Window, output: &Output, primary: &Output) -> bool {

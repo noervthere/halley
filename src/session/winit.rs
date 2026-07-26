@@ -129,6 +129,7 @@ pub fn run() {
         window_open_animations: crate::animation::WindowOpenAnimations::new(
             runtime_config.animations,
         ),
+        fullscreen: crate::wayland::fullscreen::FullscreenManager::new(),
     };
     app.wayland
         .space

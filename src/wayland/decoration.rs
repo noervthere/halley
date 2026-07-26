@@ -33,6 +33,10 @@ fn set_mode(toplevel: &ToplevelSurface, mode: Mode) {
 }
 
 pub fn apply_tiled_hint(state: &mut ToplevelState) {
+    if state.states.contains(State::Fullscreen) {
+        clear_tiled_hint(state);
+        return;
+    }
     for edge in [
         State::TiledTop,
         State::TiledBottom,
@@ -40,6 +44,17 @@ pub fn apply_tiled_hint(state: &mut ToplevelState) {
         State::TiledRight,
     ] {
         state.states.set(edge);
+    }
+}
+
+pub fn clear_tiled_hint(state: &mut ToplevelState) {
+    for edge in [
+        State::TiledTop,
+        State::TiledBottom,
+        State::TiledLeft,
+        State::TiledRight,
+    ] {
+        state.states.unset(edge);
     }
 }
 
@@ -60,6 +75,24 @@ mod tests {
             State::TiledRight,
         ] {
             assert!(state.states.contains(edge));
+        }
+    }
+
+    #[test]
+    fn fullscreen_clears_tiled_edges() {
+        let mut state = ToplevelState::default();
+        apply_tiled_hint(&mut state);
+        state.states.set(State::Fullscreen);
+
+        apply_tiled_hint(&mut state);
+
+        for edge in [
+            State::TiledTop,
+            State::TiledBottom,
+            State::TiledLeft,
+            State::TiledRight,
+        ] {
+            assert!(!state.states.contains(edge));
         }
     }
 }
