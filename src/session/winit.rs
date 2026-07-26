@@ -129,7 +129,9 @@ pub fn run() {
         window_open_animations: crate::animation::WindowOpenAnimations::new(
             runtime_config.animations,
         ),
-        fullscreen: crate::wayland::fullscreen::FullscreenManager::new(),
+        fullscreen: crate::wayland::fullscreen::FullscreenManager::new(
+            runtime_config.animations,
+        ),
     };
     app.wayland
         .space
@@ -186,8 +188,22 @@ pub fn run() {
                             .is_animating(toplevel.wl_surface(), target_presentation_time)
                     })
                 });
-                let position = app.pointer.position();
                 let output = app.driver.backend.output().clone();
+                let fullscreen_animating = app
+                    .fullscreen
+                    .is_animating_on_output(&output, target_presentation_time);
+                if fullscreen_animating {
+                    super::input::update_client_pointer_focus(
+                        app,
+                        app.start_time.elapsed().as_millis() as u32,
+                    );
+                    let pointer = app
+                        .seat
+                        .get_pointer()
+                        .expect("pointer capability added at seat setup");
+                    pointer.frame(app);
+                }
+                let position = app.pointer.position();
                 if let Err(err) = app.driver.backend.render(
                     &output,
                     RenderRequest {
@@ -200,6 +216,7 @@ pub fn run() {
                         decorations: &app.decorations,
                         cameras: &app.cameras,
                         window_open_animations: &app.window_open_animations,
+                        fullscreen: &app.fullscreen,
                     },
                 ) {
                     eventline::error!("render failed: {err}");
@@ -220,8 +237,11 @@ pub fn run() {
                 wayland::layer_shell::cleanup(&mut app.wayland);
                 app.window_open_animations
                     .cleanup(target_presentation_time);
+                if app.fullscreen.cleanup(target_presentation_time) {
+                    super::sync_keyboard_focus(app, smithay::utils::SERIAL_COUNTER.next_serial());
+                }
 
-                if animating || window_animating {
+                if animating || window_animating || fullscreen_animating {
                     app.request_redraw();
                 }
             }
@@ -240,6 +260,8 @@ pub fn run() {
                 let output_size = app.driver.backend.window_size();
                 app.cameras
                     .reset(app.driver.backend.output().name(), output_size);
+                app.fullscreen
+                    .reconfigure_output(&app.wayland, app.driver.backend.output());
                 super::input::update_client_pointer_focus(
                     app,
                     app.start_time.elapsed().as_millis() as u32,

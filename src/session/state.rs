@@ -117,6 +117,7 @@ impl<D: SessionDriver> Session<D> {
         self.decorations = config.decorations;
         self.zoom = config.zoom;
         self.window_open_animations.reload(config.animations);
+        self.fullscreen.reload(config.animations);
         if redraw {
             self.request_redraw();
         }

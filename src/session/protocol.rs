@@ -108,7 +108,12 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
                 .start(mapped, crate::frame_clock::monotonic_now());
         }
         self.fullscreen
-            .handle_commit(&mut self.wayland, &self.cameras, &root);
+            .handle_commit(
+                &mut self.wayland,
+                &self.cameras,
+                &root,
+                crate::frame_clock::monotonic_now(),
+            );
         crate::input::grab::finish_resize_commit(
             &mut self.resize_anchor,
             &mut self.wayland.space,
@@ -172,6 +177,13 @@ impl<D: SessionDriver> XdgShellHandler for Session<D> {
         surface: ToplevelSurface,
         output: Option<smithay::reexports::wayland_server::protocol::wl_output::WlOutput>,
     ) {
+        if crate::input::grab::belongs_to_surface(&self.grab, surface.wl_surface()) {
+            self.grab = crate::input::grab::Grab::None;
+            crate::input::grab::forget_resize_anchor(
+                &mut self.resize_anchor,
+                surface.wl_surface(),
+            );
+        }
         self.fullscreen.request(&mut self.wayland, &surface, output);
         self.request_redraw();
     }

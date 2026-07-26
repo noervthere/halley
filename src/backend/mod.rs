@@ -180,6 +180,7 @@ pub struct RenderRequest<'a> {
     pub decorations: &'a Decorations,
     pub cameras: &'a crate::camera::OutputCameras,
     pub window_open_animations: &'a crate::animation::WindowOpenAnimations,
+    pub fullscreen: &'a crate::wayland::fullscreen::FullscreenManager,
 }
 
 /// A presentation backend for one already-described scene.

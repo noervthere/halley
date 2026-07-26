@@ -62,7 +62,12 @@ fn dispatch_action(
 }
 
 fn sync_keyboard_focus<D: SessionDriver>(session: &mut Session<D>, serial: smithay::utils::Serial) {
-    let focused = wayland::focus::current(&session.wayland).map(|focus| focus.surface());
+    let focused = wayland::focus::current(
+        &session.wayland,
+        &session.fullscreen,
+        crate::frame_clock::monotonic_now(),
+    )
+    .map(|focus| focus.surface());
     let keyboard = session
         .seat
         .get_keyboard()

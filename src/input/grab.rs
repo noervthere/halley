@@ -25,6 +25,19 @@ pub enum Grab {
     ResizeWindow(ResizeState),
 }
 
+pub fn belongs_to_surface(grab: &Grab, surface: &WlSurface) -> bool {
+    let window = match grab {
+        Grab::MoveWindow { window, .. } => Some(window),
+        Grab::ResizeWindow(resize) => Some(&resize.window),
+        Grab::None | Grab::Pan { .. } => None,
+    };
+    window.is_some_and(|window| {
+        window
+            .toplevel()
+            .is_some_and(|toplevel| toplevel.wl_surface() == surface)
+    })
+}
+
 /// Which edges a resize drag moves. The opposite edges stay anchored, so
 /// dragging the left edge grows the window leftward rather than sliding it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

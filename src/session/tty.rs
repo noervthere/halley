@@ -158,7 +158,9 @@ pub fn run() {
         window_open_animations: crate::animation::WindowOpenAnimations::new(
             runtime_config.animations,
         ),
-        fullscreen: crate::wayland::fullscreen::FullscreenManager::new(),
+        fullscreen: crate::wayland::fullscreen::FullscreenManager::new(
+            runtime_config.animations,
+        ),
     };
     for output in outputs {
         app.wayland
@@ -364,6 +366,8 @@ fn apply_tty_output_config(
         {
             app.cameras
                 .reset(change.output.name(), geometry.size.to_physical(1));
+            app.fullscreen
+                .reconfigure_output(&app.wayland, &change.output);
         }
 
         if change.mode_changed || change.layout_changed {
@@ -431,7 +435,21 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
                     .is_animating(toplevel.wl_surface(), target_presentation_time)
             })
     });
-    let animating = camera_animating || window_animating;
+    let fullscreen_animating = app
+        .fullscreen
+        .is_animating_on_output(output, target_presentation_time);
+    let animating = camera_animating || window_animating || fullscreen_animating;
+    if fullscreen_animating && pointer_is_on_output {
+        super::input::update_client_pointer_focus(
+            app,
+            app.start_time.elapsed().as_millis() as u32,
+        );
+        let pointer = app
+            .seat
+            .get_pointer()
+            .expect("pointer capability added at seat setup");
+        pointer.frame(app);
+    }
     let view_after = pointer_is_on_output
         .then(|| app.cameras.view(&output.name()))
         .flatten();
@@ -459,6 +477,7 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
             decorations: &app.decorations,
             cameras: &app.cameras,
             window_open_animations: &app.window_open_animations,
+            fullscreen: &app.fullscreen,
         },
     ) {
         Ok(outcome) => outcome,
@@ -469,6 +488,9 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
     };
     app.window_open_animations
         .cleanup(target_presentation_time);
+    if app.fullscreen.cleanup(target_presentation_time) {
+        super::sync_keyboard_focus(app, smithay::utils::SERIAL_COUNTER.next_serial());
+    }
 
     let feedback = app.driver.dmabuf_feedback(output).cloned();
     if let (Some(feedback), Some(element_states)) =

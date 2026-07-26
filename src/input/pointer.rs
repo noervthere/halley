@@ -230,6 +230,9 @@ pub fn route_to_client(
     space: &Space<Window>,
     cameras: &OutputCameras,
     primary: &Output,
+    fullscreen: &crate::wayland::fullscreen::FullscreenManager,
+    focused: Option<&WlSurface>,
+    now: std::time::Duration,
     screen_position: (f64, f64),
 ) -> Option<PointerRoute> {
     let output = space.output_under(screen_position).next()?;
@@ -241,7 +244,7 @@ pub fn route_to_client(
         output,
         output_geometry.loc,
         output_local,
-        [Layer::Overlay, Layer::Top],
+        [Layer::Overlay],
     ) {
         return Some(PointerRoute {
             output: output.clone(),
@@ -249,6 +252,34 @@ pub fn route_to_client(
             focus: Some(focus),
             target: PointerTarget::Layer(layer),
         });
+    }
+
+    if !fullscreen.covers_top(focused, output, now)
+        && let Some((layer, focus)) = layer_under(
+            output,
+            output_geometry.loc,
+            output_local,
+            [Layer::Top],
+        )
+    {
+        return Some(PointerRoute {
+            output: output.clone(),
+            location: screen_location,
+            focus: Some(focus),
+            target: PointerTarget::Layer(layer),
+        });
+    }
+
+    if let Some(route) = fullscreen_window_under(
+        space,
+        cameras,
+        primary,
+        fullscreen,
+        output,
+        output_local,
+        now,
+    ) {
+        return Some(route);
     }
 
     let camera = cameras.get(&output.name())?;
@@ -300,7 +331,7 @@ fn layer_under(
     output: &Output,
     output_location: Point<i32, Logical>,
     output_local: Point<f64, Logical>,
-    layers: [Layer; 2],
+    layers: impl IntoIterator<Item = Layer>,
 ) -> Option<LayerHit> {
     let map = layer_map_for_output(output);
     for layer_kind in layers {
@@ -318,6 +349,85 @@ fn layer_under(
         }
     }
     None
+}
+
+fn fullscreen_window_under(
+    space: &Space<Window>,
+    cameras: &OutputCameras,
+    primary: &Output,
+    fullscreen: &crate::wayland::fullscreen::FullscreenManager,
+    output: &Output,
+    output_local: Point<f64, Logical>,
+    now: std::time::Duration,
+) -> Option<PointerRoute> {
+    let output_geometry = space.output_geometry(output)?;
+    let view = cameras.view(&output.name())?;
+    let camera_center = crate::camera::global_center(view.center, output_geometry);
+    let output_size = output_geometry.size.to_physical(1);
+
+    for window in space.elements().rev() {
+        if !crate::wayland::window_is_on_output(window, output, primary) {
+            continue;
+        }
+        let Some(toplevel) = window.toplevel() else {
+            continue;
+        };
+        let Some(presentation) = fullscreen.presentation(toplevel.wl_surface(), output, now) else {
+            continue;
+        };
+        let Some(source_geometry) = space.element_geometry(window) else {
+            continue;
+        };
+        let windowed_geometry = presentation
+            .windowed_geometry
+            .unwrap_or(source_geometry)
+            .to_physical(1);
+        let windowed_screen = crate::backend::camera_rect(
+            windowed_geometry,
+            camera_center,
+            output_size,
+            view.scale,
+        );
+        let visual = presentation.client_rect(windowed_screen, output_size);
+        if !visual.to_f64().contains(output_local.to_physical(1.0)) {
+            continue;
+        }
+
+        let source = inverse_map_point(output_local, visual, source_geometry);
+        let element_location = space.element_location(window)?;
+        let render_location = element_location - window.geometry().loc;
+        let focus = window
+            .surface_under(
+                source - render_location.to_f64(),
+                WindowSurfaceType::ALL,
+            )
+            .map(|(surface, surface_location)| {
+                (surface, (surface_location + render_location).to_f64())
+            });
+        if focus.is_some() {
+            return Some(PointerRoute {
+                output: output.clone(),
+                location: source,
+                focus,
+                target: PointerTarget::Window(window.clone()),
+            });
+        }
+    }
+    None
+}
+
+fn inverse_map_point(
+    point: Point<f64, Logical>,
+    visual: Rectangle<i32, smithay::utils::Physical>,
+    source: Rectangle<i32, Logical>,
+) -> Point<f64, Logical> {
+    let scale_x = f64::from(source.size.w) / f64::from(visual.size.w.max(1));
+    let scale_y = f64::from(source.size.h) / f64::from(visual.size.h.max(1));
+    (
+        f64::from(source.loc.x) + (point.x - f64::from(visual.loc.x)) * scale_x,
+        f64::from(source.loc.y) + (point.y - f64::from(visual.loc.y)) * scale_y,
+    )
+        .into()
 }
 
 /// Converts one backend scroll event into the complete Smithay/Wayland axis
@@ -423,11 +533,11 @@ mod tests {
         Axis, AxisRelativeDirection, AxisSource, Device, DeviceCapability, Event, InputBackend,
         PointerAxisEvent, UnusedEvent,
     };
-    use smithay::utils::Rectangle;
+    use smithay::utils::{Logical, Physical, Rectangle};
 
     use super::{
         WheelAccumulator, axis_frame, axis_frame_filtered, clamp_to_outputs, desktop_bounds,
-        process_wheel_bindings, wheel_delta_v120, wheel_direction,
+        inverse_map_point, process_wheel_bindings, wheel_delta_v120, wheel_direction,
     };
     use crate::input::keybinds::WheelDirection;
 
@@ -543,6 +653,19 @@ mod tests {
         assert_eq!(
             clamp_to_outputs((3000.0, 800.0), &outputs),
             (3000.0, 800.0)
+        );
+    }
+
+    #[test]
+    fn fullscreen_pointer_coordinates_invert_the_visual_transform() {
+        let visual =
+            Rectangle::<i32, Physical>::new((100, 50).into(), (1600, 1200).into());
+        let source =
+            Rectangle::<i32, Logical>::new((400, 200).into(), (800, 600).into());
+
+        assert_eq!(
+            inverse_map_point((900.0, 650.0).into(), visual, source),
+            (800.0, 500.0).into()
         );
     }
 

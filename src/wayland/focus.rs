@@ -30,14 +30,29 @@ impl KeyboardFocus {
 /// focused-window state. Higher visual layers win; on-demand lower layers
 /// selected by a click still precede the remembered window, while exclusive
 /// Bottom/Background surfaces only win when no window is focused.
-pub fn current(wayland: &WaylandState) -> Option<KeyboardFocus> {
-    for layer in [Layer::Overlay, Layer::Top] {
+pub fn current(
+    wayland: &WaylandState,
+    fullscreen: &super::fullscreen::FullscreenManager,
+    now: std::time::Duration,
+) -> Option<KeyboardFocus> {
+    if let Some(surface) = first_interactive(
+        wayland,
+        Layer::Overlay,
+        KeyboardInteractivity::Exclusive,
+        None,
+    ) {
+        return Some(KeyboardFocus::ExclusiveLayer(surface));
+    }
+    if let Some(surface) = selected_on_demand(wayland, Layer::Overlay) {
+        return Some(KeyboardFocus::OnDemandLayer(surface));
+    }
+    if !fullscreen.covers_any_top(wayland, wayland.focused_window.as_ref(), now) {
         if let Some(surface) =
-            first_interactive(wayland, layer, KeyboardInteractivity::Exclusive, None)
+            first_interactive(wayland, Layer::Top, KeyboardInteractivity::Exclusive, None)
         {
             return Some(KeyboardFocus::ExclusiveLayer(surface));
         }
-        if let Some(surface) = selected_on_demand(wayland, layer) {
+        if let Some(surface) = selected_on_demand(wayland, Layer::Top) {
             return Some(KeyboardFocus::OnDemandLayer(surface));
         }
     }

@@ -10,18 +10,38 @@ pub struct MotionTimeline {
     started_at: Duration,
     motion: AnimationMotion,
     duration: Duration,
+    start: f64,
+    target: f64,
+    initial_velocity: f64,
 }
 
 impl MotionTimeline {
     pub fn new(motion: AnimationMotion, started_at: Duration) -> Self {
+        Self::between(motion, started_at, 0.0, 1.0, 0.0)
+    }
+
+    pub fn between(
+        motion: AnimationMotion,
+        started_at: Duration,
+        start: f64,
+        target: f64,
+        initial_velocity: f64,
+    ) -> Self {
         let duration = match motion {
-            AnimationMotion::Easing(easing) => Duration::from_millis(u64::from(easing.duration_ms)),
-            AnimationMotion::Spring(spring) => spring_duration(spring),
+            AnimationMotion::Easing(easing) => {
+                Duration::from_millis(u64::from(easing.duration_ms))
+            }
+            AnimationMotion::Spring(spring) => {
+                spring_duration(spring, start - target, initial_velocity)
+            }
         };
         Self {
             started_at,
             motion,
             duration,
+            start,
+            target,
+            initial_velocity,
         }
     }
 
@@ -30,18 +50,46 @@ impl MotionTimeline {
         match self.motion {
             AnimationMotion::Easing(easing) => {
                 if self.duration.is_zero() {
-                    return 1.0;
+                    return self.target;
                 }
-                let linear = (elapsed.as_secs_f64() / self.duration.as_secs_f64()).clamp(0.0, 1.0);
-                apply_curve(easing.curve, linear)
+                let linear =
+                    (elapsed.as_secs_f64() / self.duration.as_secs_f64()).clamp(0.0, 1.0);
+                self.start + (self.target - self.start) * apply_curve(easing.curve, linear)
             }
             AnimationMotion::Spring(spring) => {
                 if elapsed >= self.duration {
-                    1.0
+                    self.target
                 } else {
-                    spring_value(spring, elapsed.as_secs_f64())
+                    self.target
+                        + spring_displacement(
+                            spring,
+                            self.start - self.target,
+                            self.initial_velocity,
+                            elapsed.as_secs_f64(),
+                        )
                 }
             }
+        }
+    }
+
+    pub fn velocity_at(self, now: Duration) -> f64 {
+        let elapsed = now.saturating_sub(self.started_at);
+        if elapsed >= self.duration || self.duration.is_zero() {
+            return 0.0;
+        }
+        match self.motion {
+            AnimationMotion::Easing(_) => {
+                let step = Duration::from_micros(100);
+                let before = now.saturating_sub(step);
+                let after = now + step;
+                (self.value_at(after) - self.value_at(before)) / (step.as_secs_f64() * 2.0)
+            }
+            AnimationMotion::Spring(spring) => spring_velocity(
+                spring,
+                self.start - self.target,
+                self.initial_velocity,
+                elapsed.as_secs_f64(),
+            ),
         }
     }
 
@@ -66,34 +114,78 @@ pub fn apply_curve(curve: AnimationCurve, progress: f64) -> f64 {
     }
 }
 
-fn spring_value(spring: SpringMotion, seconds: f64) -> f64 {
+fn spring_displacement(
+    spring: SpringMotion,
+    initial_displacement: f64,
+    initial_velocity: f64,
+    seconds: f64,
+) -> f64 {
     let omega = spring.stiffness.sqrt();
     let damping = spring.damping_ratio;
     let displacement = if (damping - 1.0).abs() < 1e-7 {
-        (1.0 + omega * seconds) * (-omega * seconds).exp()
+        let coefficient = initial_velocity + omega * initial_displacement;
+        (initial_displacement + coefficient * seconds) * (-omega * seconds).exp()
     } else if damping < 1.0 {
         let damped = omega * (1.0 - damping * damping).sqrt();
-        let coefficient = damping * omega / damped;
+        let coefficient =
+            (initial_velocity + damping * omega * initial_displacement) / damped;
         (-damping * omega * seconds).exp()
-            * ((damped * seconds).cos() + coefficient * (damped * seconds).sin())
+            * (initial_displacement * (damped * seconds).cos()
+                + coefficient * (damped * seconds).sin())
     } else {
         let root = (damping * damping - 1.0).sqrt();
         let first = -omega * (damping - root);
         let second = -omega * (damping + root);
-        let first_coefficient = -second / (first - second);
-        let second_coefficient = first / (first - second);
-        first_coefficient * (first * seconds).exp() + second_coefficient * (second * seconds).exp()
+        let first_coefficient =
+            (initial_velocity - second * initial_displacement) / (first - second);
+        let second_coefficient =
+            (first * initial_displacement - initial_velocity) / (first - second);
+        first_coefficient * (first * seconds).exp()
+            + second_coefficient * (second * seconds).exp()
     };
 
-    let value = 1.0 - displacement;
-    if value.is_finite() { value } else { 1.0 }
+    if displacement.is_finite() {
+        displacement
+    } else {
+        0.0
+    }
 }
 
-fn spring_duration(spring: SpringMotion) -> Duration {
+fn spring_velocity(
+    spring: SpringMotion,
+    initial_displacement: f64,
+    initial_velocity: f64,
+    seconds: f64,
+) -> f64 {
+    let step = 0.0001;
+    let before = (seconds - step).max(0.0);
+    let divisor = if seconds < step { step } else { step * 2.0 };
+    (spring_displacement(
+        spring,
+        initial_displacement,
+        initial_velocity,
+        seconds + step,
+    ) - spring_displacement(spring, initial_displacement, initial_velocity, before))
+        / divisor
+}
+
+fn spring_duration(
+    spring: SpringMotion,
+    initial_displacement: f64,
+    initial_velocity: f64,
+) -> Duration {
     let mut elapsed = Duration::ZERO;
     let mut last_unsettled = Duration::ZERO;
     while elapsed <= MAX_SPRING_DURATION {
-        if (1.0 - spring_value(spring, elapsed.as_secs_f64())).abs() > spring.epsilon {
+        if spring_displacement(
+            spring,
+            initial_displacement,
+            initial_velocity,
+            elapsed.as_secs_f64(),
+        )
+        .abs()
+            > spring.epsilon
+        {
             last_unsettled = elapsed;
         }
         elapsed += SPRING_DURATION_STEP;
@@ -140,11 +232,9 @@ mod tests {
             damping_ratio: 0.4,
             ..SpringMotion::default()
         };
-        assert!(
-            (1..500)
-                .map(|millis| spring_value(spring, f64::from(millis) / 1000.0))
-                .any(|value| value > 1.0)
-        );
+        assert!((1..500).any(|millis| {
+            1.0 + spring_displacement(spring, -1.0, 0.0, f64::from(millis) / 1000.0) > 1.0
+        }));
     }
 
     #[test]
@@ -155,7 +245,10 @@ mod tests {
             epsilon: 0.00001,
         };
         for millis in 0..1_000 {
-            assert!(spring_value(spring, f64::from(millis) / 1000.0).is_finite());
+            assert!(
+                spring_displacement(spring, -1.0, 0.0, f64::from(millis) / 1000.0)
+                    .is_finite()
+            );
         }
     }
 
@@ -170,5 +263,21 @@ mod tests {
         );
         assert_eq!(timeline.value_at(Duration::ZERO), 1.0);
         assert!(timeline.is_finished_at(Duration::ZERO));
+    }
+
+    #[test]
+    fn retargeting_preserves_value_and_velocity() {
+        let motion = AnimationMotion::Spring(SpringMotion {
+            damping_ratio: 0.7,
+            ..SpringMotion::default()
+        });
+        let first = MotionTimeline::new(motion, Duration::ZERO);
+        let now = Duration::from_millis(80);
+        let value = first.value_at(now);
+        let velocity = first.velocity_at(now);
+        let reversed = MotionTimeline::between(motion, now, value, 0.0, velocity);
+
+        assert!((reversed.value_at(now) - value).abs() < 1e-9);
+        assert!((reversed.velocity_at(now) - velocity).abs() < 0.1);
     }
 }

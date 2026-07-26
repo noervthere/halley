@@ -4,8 +4,9 @@ use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement
 use smithay::backend::renderer::element::solid::SolidColorRenderElement;
 use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
 use smithay::backend::renderer::element::utils::CropRenderElement;
-use smithay::backend::renderer::element::{Element, Kind, render_elements};
+use smithay::backend::renderer::element::{Element, Id, Kind, render_elements};
 use smithay::backend::renderer::gles::GlesRenderer;
+use smithay::backend::renderer::utils::CommitCounter;
 use smithay::output::Output;
 use smithay::utils::{Logical, Physical, Point, Rectangle, Scale};
 use smithay::wayland::shell::wlr_layer::Layer;
@@ -44,11 +45,17 @@ pub fn build(
             .into_iter()
             .map(SceneElement::Layer)
             .collect();
-    elements.extend(
-        super::layer_surface_elements(renderer, output, Layer::Top)
-            .into_iter()
-            .map(SceneElement::Layer),
-    );
+    if !request.fullscreen.covers_top(
+        request.focused,
+        output,
+        request.target_presentation_time,
+    ) {
+        elements.extend(
+            super::layer_surface_elements(renderer, output, Layer::Top)
+                .into_iter()
+                .map(SceneElement::Layer),
+        );
+    }
 
     // Space iterates bottom-to-top while render element lists are
     // front-to-back. Reversing here preserves the compositor's window order.
@@ -79,6 +86,29 @@ pub fn build(
             })
             .unwrap_or_default();
         let animated_bbox = opening_visual.transform_rect(scaled_bbox, scaled_bbox);
+        let fullscreen = window.toplevel().and_then(|toplevel| {
+            request.fullscreen.presentation(
+                toplevel.wl_surface(),
+                output,
+                request.target_presentation_time,
+            )
+        });
+        let animated_bbox = fullscreen
+            .map(|presentation| {
+                let windowed_bbox = presentation
+                    .windowed_geometry
+                    .map(|geometry| {
+                        super::camera_rect(
+                            geometry.to_physical(1),
+                            camera_center,
+                            output_size,
+                            zoom_scale,
+                        )
+                    })
+                    .unwrap_or_else(|| presentation.fullscreen_rect(output_size));
+                presentation.client_rect(windowed_bbox, output_size)
+            })
+            .unwrap_or(animated_bbox);
         if animated_bbox.size.w == 0 || animated_bbox.size.h == 0 {
             continue;
         }
@@ -91,24 +121,40 @@ pub fn build(
             super::window_surface_elements(renderer, window, surface_location);
         elements.extend(popup_elements.into_iter().map(|surface_element| {
             let native_geometry = surface_element.geometry(Scale::from(1.0));
-            let final_destination =
-                super::camera_rect(native_geometry, camera_center, output_size, zoom_scale);
-            let destination = opening_visual.transform_rect(final_destination, scaled_bbox);
+            let destination = if fullscreen.is_some() {
+                map_rect(native_geometry, geometry.to_physical(1), animated_bbox)
+            } else {
+                let final_destination =
+                    super::camera_rect(native_geometry, camera_center, output_size, zoom_scale);
+                opening_visual.transform_rect(final_destination, scaled_bbox)
+            };
             SceneElement::Rescaled(super::rescale::RescaledElement::new(
                 surface_element,
                 destination,
-                opening_visual.alpha(),
+                if fullscreen.is_some() {
+                    1.0
+                } else {
+                    opening_visual.alpha()
+                },
             ))
         }));
         elements.extend(surface_elements.into_iter().filter_map(|surface_element| {
             let native_geometry = surface_element.geometry(Scale::from(1.0));
-            let final_destination =
-                super::camera_rect(native_geometry, camera_center, output_size, zoom_scale);
-            let destination = opening_visual.transform_rect(final_destination, scaled_bbox);
+            let destination = if fullscreen.is_some() {
+                map_rect(native_geometry, geometry.to_physical(1), animated_bbox)
+            } else {
+                let final_destination =
+                    super::camera_rect(native_geometry, camera_center, output_size, zoom_scale);
+                opening_visual.transform_rect(final_destination, scaled_bbox)
+            };
             let element = super::rescale::RescaledElement::new(
                 surface_element,
                 destination,
-                opening_visual.alpha(),
+                if fullscreen.is_some() {
+                    1.0
+                } else {
+                    opening_visual.alpha()
+                },
             );
             CropRenderElement::from_element(element, 1.0, animated_bbox).map(SceneElement::Cropped)
         }));
@@ -117,7 +163,11 @@ pub fn build(
             .toplevel()
             .is_some_and(|toplevel| Some(toplevel.wl_surface()) == request.focused);
         let border_color =
-            super::window_border_color(request.decorations, is_focused) * opening_visual.alpha();
+            super::window_border_color(request.decorations, is_focused)
+                * opening_visual.alpha()
+                * fullscreen
+                    .map(|presentation| (1.0 - presentation.progress) as f32)
+                    .unwrap_or(1.0);
         let border_width =
             ((request.decorations.border_width_px as f64 * zoom_scale as f64).round() as i32)
                 .max(1);
@@ -126,6 +176,20 @@ pub fn build(
                 .into_iter()
                 .map(SceneElement::Border),
         );
+        if let Some(fullscreen) = fullscreen {
+            elements.push(SceneElement::Border(SolidColorRenderElement::new(
+                Id::new(),
+                Rectangle::new((0, 0).into(), output_size),
+                CommitCounter::default(),
+                smithay::backend::renderer::Color32F::new(
+                    0.0,
+                    0.0,
+                    0.0,
+                    fullscreen.progress as f32,
+                ),
+                Kind::Unspecified,
+            )));
+        }
     }
 
     elements.extend(
@@ -154,6 +218,32 @@ pub fn build(
     }
 
     Ok(elements)
+}
+
+fn map_rect(
+    rect: Rectangle<i32, Physical>,
+    source: Rectangle<i32, Physical>,
+    destination: Rectangle<i32, Physical>,
+) -> Rectangle<i32, Physical> {
+    if source.size.w == 0 || source.size.h == 0 {
+        return destination;
+    }
+    let scale_x = f64::from(destination.size.w) / f64::from(source.size.w);
+    let scale_y = f64::from(destination.size.h) / f64::from(source.size.h);
+    let left = f64::from(destination.loc.x)
+        + f64::from(rect.loc.x - source.loc.x) * scale_x;
+    let top = f64::from(destination.loc.y)
+        + f64::from(rect.loc.y - source.loc.y) * scale_y;
+    let right = left + f64::from(rect.size.w) * scale_x;
+    let bottom = top + f64::from(rect.size.h) * scale_y;
+    Rectangle::new(
+        (left.round() as i32, top.round() as i32).into(),
+        (
+            (right - left).round().max(0.0) as i32,
+            (bottom - top).round().max(0.0) as i32,
+        )
+            .into(),
+    )
 }
 
 pub fn cursor_position_for_output(
@@ -206,6 +296,46 @@ mod tests {
                 0.5,
             ),
             Rectangle::new((910, 625).into(), (100, 50).into())
+        );
+    }
+
+    #[test]
+    fn fullscreen_rect_interpolates_position_and_size() {
+        let windowed = Rectangle::new((100, 50).into(), (800, 600).into());
+        let start = crate::wayland::fullscreen::FullscreenPresentation {
+            progress: 0.0,
+            windowed_geometry: None,
+            fullscreen_size: (1920, 1080).into(),
+        };
+        let end = crate::wayland::fullscreen::FullscreenPresentation {
+            progress: 1.0,
+            ..start
+        };
+        let middle = crate::wayland::fullscreen::FullscreenPresentation {
+            progress: 0.5,
+            ..start
+        };
+
+        assert_eq!(start.client_rect(windowed, (1920, 1080).into()), windowed);
+        assert_eq!(
+            end.client_rect(windowed, (1920, 1080).into()),
+            Rectangle::new((0, 0).into(), (1920, 1080).into())
+        );
+        assert_eq!(
+            middle.client_rect(windowed, (1920, 1080).into()),
+            Rectangle::new((50, 25).into(), (1360, 840).into())
+        );
+    }
+
+    #[test]
+    fn surface_rects_map_into_animated_client_bounds() {
+        assert_eq!(
+            map_rect(
+                Rectangle::new((120, 70).into(), (200, 100).into()),
+                Rectangle::new((100, 50).into(), (800, 600).into()),
+                Rectangle::new((0, 0).into(), (1600, 1200).into()),
+            ),
+            Rectangle::new((40, 40).into(), (400, 200).into())
         );
     }
 }

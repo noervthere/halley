@@ -29,7 +29,11 @@ fn shortcut_policy_allows_bindings(
 }
 
 fn bindings_enabled<D: SessionDriver>(session: &Session<D>) -> bool {
-    let focus = wayland::focus::current(&session.wayland);
+    let focus = wayland::focus::current(
+        &session.wayland,
+        &session.fullscreen,
+        crate::frame_clock::monotonic_now(),
+    );
     let bypasses_shortcuts = focus
         .as_ref()
         .is_some_and(|focus| focus.bypasses_shortcuts());
@@ -60,6 +64,9 @@ pub(super) fn route_client_pointer<D: SessionDriver>(
         &session.wayland.space,
         &session.cameras,
         session.driver.primary_output(),
+        &session.fullscreen,
+        session.wayland.focused_window.as_ref(),
+        crate::frame_clock::monotonic_now(),
         session.pointer.position(),
     )
 }
@@ -321,6 +328,11 @@ pub fn handle<D, B>(
                         location,
                         ..
                     }) = route.as_ref()
+                        && !window.toplevel().is_some_and(|toplevel| {
+                            session
+                                .fullscreen
+                                .is_fullscreen_or_pending(toplevel.wl_surface())
+                        })
                         && let Some(start_rect) =
                             session.wayland.space.element_geometry(window)
                     {
@@ -370,7 +382,12 @@ pub fn handle<D, B>(
                         crate::input::mod_key_held(&modifiers, session.keyboard.effective_mod);
                     match route.as_ref().map(|route| &route.target) {
                         Some(crate::input::pointer::PointerTarget::Window(window))
-                            if mod_held =>
+                            if mod_held
+                                && !window.toplevel().is_some_and(|toplevel| {
+                                    session
+                                        .fullscreen
+                                        .is_fullscreen_or_pending(toplevel.wl_surface())
+                                }) =>
                         {
                             let route = route.as_ref().expect("matched above");
                             let world = halley_core::field::Vec2 {
