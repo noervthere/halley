@@ -1,9 +1,7 @@
 use std::ffi::OsString;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use calloop::generic::Generic;
-use calloop::{EventLoop, Interest, Mode as CalloopMode, PostAction};
+use calloop::EventLoop;
 use smithay::backend::input::{
     ButtonState, Event, InputEvent, KeyState, KeyboardKeyEvent, PointerButtonEvent,
 };
@@ -11,39 +9,19 @@ use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::winit::{self as smithay_winit, WinitEvent};
 use smithay::input::keyboard::FilterResult;
 use smithay::input::pointer::{ButtonEvent, MotionEvent};
-use smithay::input::{Seat, SeatHandler, SeatState};
-use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode;
-use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
-use smithay::reexports::wayland_server::protocol::wl_seat::WlSeat;
-use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::reexports::wayland_server::{Client, Display};
+use smithay::input::{Seat, SeatState};
+use smithay::reexports::wayland_server::Display;
 use smithay::reexports::winit::dpi::LogicalSize;
 use smithay::reexports::winit::window::Window as WinitWindow;
-use smithay::utils::{Logical, Point, SERIAL_COUNTER, Serial};
-use smithay::wayland::buffer::BufferHandler;
-use smithay::wayland::compositor::{CompositorClientState, CompositorHandler, CompositorState};
-use smithay::wayland::output::{OutputHandler, OutputManagerState};
-use smithay::wayland::selection::SelectionHandler;
-use smithay::wayland::selection::data_device::{
-    DataDeviceHandler, DataDeviceState, WaylandDndGrabHandler,
-};
-use smithay::wayland::selection::primary_selection::{
-    PrimarySelectionHandler, PrimarySelectionState,
-};
-use smithay::wayland::shell::xdg::decoration::{XdgDecorationHandler, XdgDecorationState};
-use smithay::wayland::shell::xdg::{
-    PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
-};
-use smithay::wayland::shell::wlr_layer::{
-    Layer, LayerSurface as WlrLayerSurface, WlrLayerShellHandler, WlrLayerShellState,
-};
-use smithay::wayland::shm::{ShmHandler, ShmState};
-use smithay::wayland::socket::ListeningSocketSource;
-use smithay::{
-    delegate_compositor, delegate_data_device, delegate_layer_shell, delegate_output,
-    delegate_primary_selection, delegate_seat, delegate_shm, delegate_xdg_decoration,
-    delegate_xdg_shell,
-};
+use smithay::utils::{Logical, Point, SERIAL_COUNTER};
+use smithay::wayland::compositor::CompositorState;
+use smithay::wayland::output::OutputManagerState;
+use smithay::wayland::selection::data_device::DataDeviceState;
+use smithay::wayland::selection::primary_selection::PrimarySelectionState;
+use smithay::wayland::shell::wlr_layer::WlrLayerShellState;
+use smithay::wayland::shell::xdg::XdgShellState;
+use smithay::wayland::shell::xdg::decoration::XdgDecorationState;
+use smithay::wayland::shm::ShmState;
 
 use crate::backend::winit::WinitBackend;
 use crate::backend::{self, RenderRequest, Renderable};
@@ -55,7 +33,9 @@ use crate::input::pointer::{
     Pointer, WheelAccumulator, axis_frame_filtered, process_wheel_bindings,
 };
 use crate::ipc::OutputInfoSource;
-use crate::wayland::{self, ClientState, WaylandState};
+use crate::wayland::{self, WaylandState};
+
+use super::{Session, SessionDriver, focus_layer, focus_window};
 
 /// From `<linux/input-event-codes.h>` - the left mouse button's raw code.
 /// Compared against `button_code()` rather than using
@@ -72,7 +52,7 @@ fn route_client_pointer(app: &App) -> Option<crate::input::pointer::PointerRoute
     crate::input::pointer::route_to_client(
         &app.wayland.space,
         &app.cameras,
-        app.backend.output(),
+        app.driver.backend.output(),
         app.pointer.position(),
     )
 }
@@ -98,29 +78,6 @@ fn update_client_pointer_focus(
     Some(route)
 }
 
-fn sync_keyboard_focus(app: &mut App, serial: Serial) {
-    let focused = wayland::focus::current(&app.wayland).map(|focus| focus.surface());
-    let keyboard = app
-        .seat
-        .get_keyboard()
-        .expect("keyboard capability added at seat setup");
-    keyboard.set_focus(app, focused, serial);
-}
-
-fn focus_layer(
-    app: &mut App,
-    layer: Option<smithay::desktop::LayerSurface>,
-    serial: Serial,
-) {
-    wayland::focus::select_layer(&mut app.wayland, layer);
-    sync_keyboard_focus(app, serial);
-}
-
-fn focus_window(app: &mut App, window: &smithay::desktop::Window, serial: Serial) {
-    wayland::xdg_shell::focus_and_raise(&mut app.wayland, window);
-    sync_keyboard_focus(app, serial);
-}
-
 fn dispatch_action(
     app: &mut App,
     action: halley_config::Action,
@@ -140,39 +97,27 @@ fn dispatch_action(
         &app.zoom,
     ) == super::SessionControl::Quit
     {
-        app.exit = true;
+        app.driver.exit = true;
     }
 }
 
-/// Everything this milestone needs: a backend to render into, a way to match
-/// keypresses against configured actions, a cursor image to draw plus where
-/// to draw it, whether we should stop, and (new) the Wayland protocol state
-/// a client needs to connect and show a window. Deliberately not the old
-/// `Halley` mega-struct - grows exactly when a real feature needs it to;
-/// `wayland`/`seat_state`/`seat` are one field each, added for this one
-/// concrete reason, same as `cursor`/`keyboard`/`pointer` before them.
-struct App {
+struct WinitDriver {
     backend: WinitBackend,
-    keyboard: Keyboard,
-    pointer: Pointer,
-    cursor: CursorImage,
     exit: bool,
-    wayland: WaylandState,
-    seat_state: SeatState<App>,
-    seat: Seat<App>,
-    start_time: Instant,
-    decorations: halley_config::Decorations,
-    cameras: crate::camera::OutputCameras,
-    zoom: halley_config::Zoom,
     last_camera_tick: Instant,
-    grab: crate::input::grab::Grab,
-    /// Outlives `grab` on purpose - a released resize keeps anchoring until
-    /// the client answers the last configure. See `grab::ResizePhase`.
-    resize_anchor: Option<crate::input::grab::ResizeAnchor>,
-    suppressed_buttons: SuppressedButtons,
-    wheel_accumulator: WheelAccumulator,
-    window_open_animations: crate::animation::WindowOpenAnimations,
 }
+
+impl SessionDriver for WinitDriver {
+    fn primary_output(&self) -> &smithay::output::Output {
+        self.backend.output()
+    }
+
+    fn request_redraw(&mut self, _output: Option<&smithay::output::Output>) {
+        self.backend.request_redraw();
+    }
+}
+
+type App = Session<WinitDriver>;
 
 fn apply_runtime_config(app: &mut App, config: halley_config::RuntimeConfig) {
     app.keyboard
@@ -182,7 +127,7 @@ fn apply_runtime_config(app: &mut App, config: halley_config::RuntimeConfig) {
     app.zoom = config.zoom;
     app.window_open_animations.reload(config.animations);
     if redraw {
-        app.backend.request_redraw();
+        app.request_redraw();
     }
 }
 
@@ -235,11 +180,14 @@ pub fn run() {
     cameras.insert(winit_backend.output().name(), output_size);
 
     let mut app = App {
-        backend: winit_backend,
+        driver: WinitDriver {
+            backend: winit_backend,
+            exit: false,
+            last_camera_tick: Instant::now(),
+        },
         keyboard: Keyboard::from_config(&runtime_config.keybinds, BackendKind::Winit),
         pointer: Pointer::new((100.0, 100.0)),
         cursor: CursorImage::load(),
-        exit: false,
         wayland: WaylandState::new(
             dh,
             compositor_state,
@@ -257,7 +205,6 @@ pub fn run() {
         decorations: runtime_config.decorations,
         cameras,
         zoom: runtime_config.zoom,
-        last_camera_tick: Instant::now(),
         grab: crate::input::grab::Grab::None,
         resize_anchor: None,
         suppressed_buttons: SuppressedButtons::default(),
@@ -266,12 +213,16 @@ pub fn run() {
             runtime_config.animations,
         ),
     };
-    app.wayland.space.map_output(app.backend.output(), (0, 0));
+    app.wayland
+        .space
+        .map_output(app.driver.backend.output(), (0, 0));
 
-    let socket_name = init_wayland_listener(display, &mut event_loop);
+    let socket_name = super::protocol::init_wayland_listener(display, &mut event_loop);
     eventline::info!("halley (winit) starting, WAYLAND_DISPLAY={socket_name:?}");
 
-    if let Err(err) = crate::ipc::init_ipc_listener(&event_loop.handle(), |app: &App| app.backend.output_info()) {
+    if let Err(err) = crate::ipc::init_ipc_listener(&event_loop.handle(), |app: &App| {
+        app.driver.backend.output_info()
+    }) {
         eventline::error!("ipc: failed to start listener: {err}");
     }
     if let Some(path) = config_path
@@ -284,14 +235,16 @@ pub fn run() {
         .handle()
         .insert_source(winit_source, move |event, _, app| match event {
             WinitEvent::CloseRequested => {
-                app.exit = true;
+                app.driver.exit = true;
             }
             WinitEvent::Redraw => {
                 let now = Instant::now();
                 let target_presentation_time = crate::frame_clock::monotonic_now();
-                let dt = now.duration_since(app.last_camera_tick).as_secs_f32();
-                app.last_camera_tick = now;
-                let output_name = app.backend.output().name();
+                let dt = now
+                    .duration_since(app.driver.last_camera_tick)
+                    .as_secs_f32();
+                app.driver.last_camera_tick = now;
+                let output_name = app.driver.backend.output().name();
                 let view_before = app.cameras.view(&output_name);
                 let mut animating = false;
                 for camera in app.cameras.iter_mut() {
@@ -313,8 +266,8 @@ pub fn run() {
                     })
                 });
                 let position = app.pointer.position();
-                let output = app.backend.output().clone();
-                if let Err(err) = app.backend.render(
+                let output = app.driver.backend.output().clone();
+                if let Err(err) = app.driver.backend.render(
                     &output,
                     RenderRequest {
                         target_presentation_time,
@@ -334,7 +287,7 @@ pub fn run() {
                 // Lets clients know their last commit was actually
                 // presented, so they schedule their next frame - without
                 // this a client's redraw loop just stalls forever.
-                let output = app.backend.output().clone();
+                let output = app.driver.backend.output().clone();
                 let elapsed = app.start_time.elapsed();
                 app.wayland.space.elements().for_each(|window| {
                     window.send_frame(&output, elapsed, Some(Duration::ZERO), |_, _| {
@@ -348,7 +301,7 @@ pub fn run() {
                     .cleanup(target_presentation_time);
 
                 if animating || window_animating {
-                    app.backend.request_redraw();
+                    app.request_redraw();
                 }
             }
             WinitEvent::Resized { .. } => {
@@ -357,32 +310,33 @@ pub fn run() {
                 // already resizes the EGL surface internally when it
                 // differs from the last bound size. Just need a new frame,
                 // plus the advertised wl_output mode kept in sync.
-                app.backend.update_output_mode();
-                smithay::desktop::layer_map_for_output(app.backend.output()).arrange();
+                app.driver.backend.update_output_mode();
+                smithay::desktop::layer_map_for_output(app.driver.backend.output()).arrange();
                 // Simplification: snap zoom and pan back to rest at the new
                 // size rather than preserving the current state across a
                 // resize - resizing mid-zoom/pan is a rare dev-only edge
                 // case, not worth the extra math.
-                let output_size = app.backend.window_size();
-                app.cameras.reset(app.backend.output().name(), output_size);
+                let output_size = app.driver.backend.window_size();
+                app.cameras
+                    .reset(app.driver.backend.output().name(), output_size);
                 update_client_pointer_focus(app, app.start_time.elapsed().as_millis() as u32);
                 let pointer = app
                     .seat
                     .get_pointer()
                     .expect("pointer capability added at seat setup");
                 pointer.frame(app);
-                app.backend.request_redraw();
+                app.request_redraw();
             }
             WinitEvent::Input(event) => {
-                let output_size_physical = app.backend.window_size();
-                let output_name = app.backend.output().name();
+                let output_size_physical = app.driver.backend.window_size();
+                let output_name = app.driver.backend.output().name();
                 let position_before = app.pointer.position();
                 app.pointer.process_input_event(&event, &app.wayland.space);
                 let position_after = app.pointer.position();
                 // Motion alone doesn't trigger a Redraw - request one so the
                 // cursor visibly follows the mouse instead of only moving on
                 // the next unrelated redraw.
-                app.backend.request_redraw();
+                app.request_redraw();
 
                 // Apply whatever's being dragged, if anything - reuses the
                 // delta `Pointer` already computed (handles relative and
@@ -735,240 +689,10 @@ pub fn run() {
         })
         .expect("failed to insert winit event source");
 
-    while !app.exit {
+    while !app.driver.exit {
         event_loop
             .dispatch(None, &mut app)
             .expect("event loop dispatch failed");
         let _ = app.wayland.display_handle.flush_clients();
     }
 }
-
-/// Sets up the listening socket new clients connect to, and the source that
-/// actually pumps protocol requests from already-connected clients every
-/// loop iteration - without the latter, `Display<App>` just accumulates
-/// requests nobody reads.
-fn init_wayland_listener(display: Display<App>, event_loop: &mut EventLoop<App>) -> OsString {
-    let listening_socket =
-        ListeningSocketSource::new_auto().expect("failed to create wayland listening socket");
-    let socket_name = listening_socket.socket_name().to_os_string();
-
-    event_loop
-        .handle()
-        .insert_source(listening_socket, move |client_stream, _, app| {
-            if let Err(err) = app
-                .wayland
-                .display_handle
-                .insert_client(client_stream, Arc::new(ClientState::default()))
-            {
-                eventline::warn!("failed to insert new wayland client: {err}");
-            }
-        })
-        .expect("failed to insert wayland listening socket source");
-
-    event_loop
-        .handle()
-        .insert_source(
-            Generic::new(display, Interest::READ, CalloopMode::Level),
-            |_, display, app| {
-                // Safety: `display` is owned by this source for the event
-                // loop's lifetime and is never dropped out from under it.
-                unsafe {
-                    display.get_mut().dispatch_clients(app)?;
-                }
-                Ok(PostAction::Continue)
-            },
-        )
-        .expect("failed to insert wayland display dispatch source");
-
-    socket_name
-}
-
-impl CompositorHandler for App {
-    fn compositor_state(&mut self) -> &mut CompositorState {
-        &mut self.wayland.compositor_state
-    }
-
-    fn client_compositor_state<'a>(&self, client: &'a Client) -> &'a CompositorClientState {
-        &client.get_data::<ClientState>().unwrap().compositor_state
-    }
-
-    fn commit(&mut self, surface: &WlSurface) {
-        if let Some(mapped) =
-            wayland::compositor::commit::<Self>(&mut self.wayland, &self.cameras, surface)
-        {
-            self.window_open_animations
-                .start(mapped, crate::frame_clock::monotonic_now());
-        }
-        crate::input::grab::finish_resize_commit(
-            &mut self.resize_anchor,
-            &mut self.wayland.space,
-        );
-        self.backend.request_redraw();
-
-        sync_keyboard_focus(self, SERIAL_COUNTER.next_serial());
-    }
-}
-
-impl BufferHandler for App {
-    fn buffer_destroyed(&mut self, _buffer: &WlBuffer) {}
-}
-
-impl ShmHandler for App {
-    fn shm_state(&self) -> &ShmState {
-        &self.wayland.shm_state
-    }
-}
-
-impl XdgShellHandler for App {
-    fn xdg_shell_state(&mut self) -> &mut XdgShellState {
-        &mut self.wayland.xdg_shell_state
-    }
-
-    fn new_toplevel(&mut self, surface: ToplevelSurface) {
-        wayland::xdg_shell::new_toplevel(&mut self.wayland, surface);
-    }
-
-    fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
-        self.window_open_animations.remove(surface.wl_surface());
-        crate::input::grab::forget_resize_anchor(&mut self.resize_anchor, surface.wl_surface());
-        wayland::xdg_shell::toplevel_destroyed(&mut self.wayland, &surface);
-        self.backend.request_redraw();
-    }
-
-    fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
-        wayland::popup::track(&mut self.wayland, surface);
-        self.backend.request_redraw();
-    }
-
-    fn reposition_request(
-        &mut self,
-        surface: PopupSurface,
-        positioner: PositionerState,
-        token: u32,
-    ) {
-        wayland::popup::reposition(&self.wayland, surface, positioner, token);
-        self.backend.request_redraw();
-    }
-
-    fn grab(&mut self, surface: PopupSurface, seat: WlSeat, serial: Serial) {
-        let seat = Seat::<Self>::from_resource(&seat).expect("popup grab used an unknown wl_seat");
-        let grab =
-            wayland::popup::begin_grab(&mut self.wayland.popup_manager, &seat, surface, serial);
-        if let Some(grab) = grab {
-            wayland::popup::install_grab(self, &seat, grab, serial);
-        }
-    }
-}
-
-impl WlrLayerShellHandler for App {
-    fn shell_state(&mut self) -> &mut WlrLayerShellState {
-        &mut self.wayland.layer_shell_state
-    }
-
-    fn new_layer_surface(
-        &mut self,
-        surface: WlrLayerSurface,
-        output: Option<smithay::reexports::wayland_server::protocol::wl_output::WlOutput>,
-        _layer: Layer,
-        namespace: String,
-    ) {
-        let output = output
-            .as_ref()
-            .and_then(smithay::output::Output::from_resource)
-            .or_else(|| Some(self.backend.output().clone()));
-        wayland::layer_shell::new_surface(&mut self.wayland, surface, output, namespace);
-        self.backend.request_redraw();
-    }
-
-    fn layer_destroyed(&mut self, surface: WlrLayerSurface) {
-        wayland::layer_shell::destroyed(&mut self.wayland, &surface);
-        sync_keyboard_focus(self, SERIAL_COUNTER.next_serial());
-        self.backend.request_redraw();
-    }
-
-    fn new_popup(&mut self, _parent: WlrLayerSurface, popup: PopupSurface) {
-        wayland::popup::unconstrain_surface(&self.wayland, popup);
-        self.backend.request_redraw();
-    }
-}
-
-impl XdgDecorationHandler for App {
-    fn new_decoration(&mut self, toplevel: ToplevelSurface) {
-        wayland::decoration::new_decoration(toplevel);
-    }
-
-    fn request_mode(&mut self, toplevel: ToplevelSurface, mode: DecorationMode) {
-        wayland::decoration::request_mode(toplevel, mode);
-    }
-
-    fn unset_mode(&mut self, toplevel: ToplevelSurface) {
-        wayland::decoration::unset_mode(toplevel);
-    }
-}
-
-impl SeatHandler for App {
-    type KeyboardFocus = WlSurface;
-    type PointerFocus = WlSurface;
-    type TouchFocus = WlSurface;
-
-    fn seat_state(&mut self) -> &mut SeatState<Self> {
-        &mut self.seat_state
-    }
-
-    fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
-        let dh = self.wayland.display_handle.clone();
-        crate::wayland::selection::sync_selection_focus(&dh, seat, focused);
-    }
-}
-
-impl OutputHandler for App {}
-
-/// `()` - nothing here ever *sets* a selection on behalf of the compositor
-/// (no clipboard manager, no XWayland bridge yet), so there's no server-side
-/// selection to attach data to. Every selection in play is owned by a client,
-/// and Smithay passes those through without consulting this type.
-impl SelectionHandler for App {
-    type SelectionUserData = ();
-}
-
-impl DataDeviceHandler for App {
-    fn data_device_state(&mut self) -> &mut DataDeviceState {
-        &mut self.wayland.data_device_state
-    }
-}
-
-impl WaylandDndGrabHandler for App {
-    fn dnd_requested<S: smithay::input::dnd::Source>(
-        &mut self,
-        source: S,
-        _icon: Option<WlSurface>,
-        seat: Seat<Self>,
-        serial: Serial,
-        type_: smithay::input::dnd::GrabType,
-    ) {
-        // `_icon` ignored: rendering the drag icon that follows the cursor
-        // needs a render pass that knows about it, which is real work beyond
-        // making drags function. Drags work without it, just without visual
-        // feedback under the cursor.
-        let dh = self.wayland.display_handle.clone();
-        crate::wayland::selection::start_dnd_grab(self, &dh, source, seat, serial, type_);
-    }
-}
-
-impl smithay::input::dnd::DndGrabHandler for App {}
-
-impl PrimarySelectionHandler for App {
-    fn primary_selection_state(&mut self) -> &mut PrimarySelectionState {
-        &mut self.wayland.primary_selection_state
-    }
-}
-
-delegate_compositor!(App);
-delegate_shm!(App);
-delegate_xdg_shell!(App);
-delegate_layer_shell!(App);
-delegate_xdg_decoration!(App);
-delegate_seat!(App);
-delegate_output!(App);
-delegate_data_device!(App);
-delegate_primary_selection!(App);

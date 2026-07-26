@@ -6,8 +6,13 @@ use halley_core::camera::Camera;
 use crate::spawn;
 use crate::wayland::{self, WaylandState};
 
+mod protocol;
+mod state;
+
 pub mod tty;
 pub mod winit;
+
+pub use state::{Session, SessionDriver};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SessionControl {
@@ -51,4 +56,31 @@ fn dispatch_action(
         Action::Spawn(command) => spawn::spawn_detached(&command, socket_name),
     }
     SessionControl::Continue
+}
+
+fn sync_keyboard_focus<D: SessionDriver>(session: &mut Session<D>, serial: smithay::utils::Serial) {
+    let focused = wayland::focus::current(&session.wayland).map(|focus| focus.surface());
+    let keyboard = session
+        .seat
+        .get_keyboard()
+        .expect("keyboard capability added at seat setup");
+    keyboard.set_focus(session, focused, serial);
+}
+
+fn focus_layer<D: SessionDriver>(
+    session: &mut Session<D>,
+    layer: Option<smithay::desktop::LayerSurface>,
+    serial: smithay::utils::Serial,
+) {
+    wayland::focus::select_layer(&mut session.wayland, layer);
+    sync_keyboard_focus(session, serial);
+}
+
+fn focus_window<D: SessionDriver>(
+    session: &mut Session<D>,
+    window: &smithay::desktop::Window,
+    serial: smithay::utils::Serial,
+) {
+    wayland::xdg_shell::focus_and_raise(&mut session.wayland, window);
+    sync_keyboard_focus(session, serial);
 }

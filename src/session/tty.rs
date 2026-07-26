@@ -1,11 +1,9 @@
 use std::collections::HashMap;
 use std::ffi::OsString;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use calloop::generic::Generic;
 use calloop::timer::{TimeoutAction, Timer};
-use calloop::{EventLoop, Interest, LoopHandle, LoopSignal, Mode as CalloopMode, PostAction, RegistrationToken};
+use calloop::{EventLoop, LoopHandle, LoopSignal, RegistrationToken};
 use smithay::backend::drm::{DrmEvent, DrmEventMetadata, DrmEventTime};
 use smithay::backend::input::{
     ButtonState, Event, InputEvent, KeyState, KeyboardKeyEvent, PointerButtonEvent,
@@ -16,40 +14,20 @@ use smithay::backend::session::Session;
 use smithay::desktop::{Space, Window};
 use smithay::input::keyboard::FilterResult;
 use smithay::input::pointer::{ButtonEvent, MotionEvent};
-use smithay::input::{Seat, SeatHandler, SeatState};
+use smithay::input::{Seat, SeatState};
 use smithay::output::Output;
 use smithay::reexports::drm::control::crtc;
 use smithay::reexports::input::Libinput;
-use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
-use smithay::reexports::wayland_server::protocol::wl_seat::WlSeat;
-use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::reexports::wayland_server::{Client, Display};
-use smithay::utils::{Logical, Point, Rectangle, SERIAL_COUNTER, Serial};
-use smithay::wayland::buffer::BufferHandler;
-use smithay::wayland::compositor::{CompositorClientState, CompositorHandler, CompositorState};
-use smithay::wayland::output::{OutputHandler, OutputManagerState};
-use smithay::wayland::selection::SelectionHandler;
-use smithay::wayland::selection::data_device::{
-    DataDeviceHandler, DataDeviceState, WaylandDndGrabHandler,
-};
-use smithay::wayland::selection::primary_selection::{
-    PrimarySelectionHandler, PrimarySelectionState,
-};
-use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode;
-use smithay::wayland::shell::xdg::decoration::{XdgDecorationHandler, XdgDecorationState};
-use smithay::wayland::shell::xdg::{
-    PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
-};
-use smithay::wayland::shell::wlr_layer::{
-    Layer, LayerSurface as WlrLayerSurface, WlrLayerShellHandler, WlrLayerShellState,
-};
-use smithay::wayland::shm::{ShmHandler, ShmState};
-use smithay::wayland::socket::ListeningSocketSource;
-use smithay::{
-    delegate_compositor, delegate_data_device, delegate_layer_shell, delegate_output,
-    delegate_primary_selection, delegate_seat, delegate_shm, delegate_xdg_decoration,
-    delegate_xdg_shell,
-};
+use smithay::reexports::wayland_server::Display;
+use smithay::utils::{Logical, Point, Rectangle, SERIAL_COUNTER};
+use smithay::wayland::compositor::CompositorState;
+use smithay::wayland::output::OutputManagerState;
+use smithay::wayland::selection::data_device::DataDeviceState;
+use smithay::wayland::selection::primary_selection::PrimarySelectionState;
+use smithay::wayland::shell::wlr_layer::WlrLayerShellState;
+use smithay::wayland::shell::xdg::XdgShellState;
+use smithay::wayland::shell::xdg::decoration::XdgDecorationState;
+use smithay::wayland::shm::ShmState;
 
 use crate::backend::tty::TtyBackend;
 use crate::backend::{CLEAR_COLOR, RenderRequest, RenderStatus, Renderable};
@@ -62,7 +40,9 @@ use crate::input::pointer::{
     Pointer, WheelAccumulator, axis_frame_filtered, process_wheel_bindings,
 };
 use crate::ipc::OutputInfoSource;
-use crate::wayland::{self, ClientState, WaylandState};
+use crate::wayland::{self, WaylandState};
+
+use super::{focus_layer, focus_window};
 
 /// From `<linux/input-event-codes.h>` - the left mouse button's raw code,
 /// used instead of `PointerButtonEvent::button()`'s `MouseButton` enum
@@ -85,7 +65,7 @@ fn route_client_pointer(app: &TtyApp) -> Option<crate::input::pointer::PointerRo
     crate::input::pointer::route_to_client(
         &app.wayland.space,
         &app.cameras,
-        app.backend.primary_output(),
+        app.driver.backend.primary_output(),
         app.pointer.position(),
     )
 }
@@ -113,25 +93,6 @@ fn update_client_pointer_focus(
     Some(route)
 }
 
-fn sync_keyboard_focus(app: &mut TtyApp, serial: Serial) {
-    let focused = wayland::focus::current(&app.wayland).map(|focus| focus.surface());
-    let keyboard = app
-        .seat
-        .get_keyboard()
-        .expect("keyboard capability added at seat setup");
-    keyboard.set_focus(app, focused, serial);
-}
-
-fn focus_layer(app: &mut TtyApp, layer: Option<smithay::desktop::LayerSurface>, serial: Serial) {
-    wayland::focus::select_layer(&mut app.wayland, layer);
-    sync_keyboard_focus(app, serial);
-}
-
-fn focus_window(app: &mut TtyApp, window: &Window, serial: Serial) {
-    wayland::xdg_shell::focus_and_raise(&mut app.wayland, window);
-    sync_keyboard_focus(app, serial);
-}
-
 fn dispatch_action(
     app: &mut TtyApp,
     action: halley_config::Action,
@@ -148,7 +109,7 @@ fn dispatch_action(
         &app.zoom,
     ) == super::SessionControl::Quit
     {
-        app.loop_signal.stop();
+        app.driver.loop_signal.stop();
     }
 }
 
@@ -213,42 +174,33 @@ impl OutputFrameState {
     }
 }
 
-/// Mirrors `session::winit`'s `App` shape (backend + keyboard + pointer +
-/// cursor + wayland/seat_state/seat). Still a separate struct in a separate
-/// session module; full winit/tty unification is later, explicitly-deferred
-/// work.
-/// `loop_signal`/`output_frames` replace winit's `App`'s plain `exit: bool` +
-/// direct `render()` calls - the tty backend's redraw needs real scheduling
-/// (see `RedrawState`), which `event_loop.run()` + `LoopSignal` supports
-/// cleanly.
-struct TtyApp {
+struct TtyDriver {
     backend: TtyBackend,
-    keyboard: Keyboard,
-    pointer: Pointer,
-    cursor: CursorImage,
     loop_signal: LoopSignal,
-    wayland: WaylandState,
-    seat_state: SeatState<TtyApp>,
-    seat: Seat<TtyApp>,
-    start_time: Instant,
-    decorations: halley_config::Decorations,
     output_frames: HashMap<Output, OutputFrameState>,
-    /// Whether a VT switch away is currently in effect - `redraw()` must
-    /// not attempt to render while DRM master is dropped.
     paused: bool,
-    cameras: crate::camera::OutputCameras,
-    zoom: halley_config::Zoom,
-    grab: crate::input::grab::Grab,
-    /// Outlives `grab` on purpose - a released resize keeps anchoring until
-    /// the client answers the last configure. See `grab::ResizePhase`.
-    resize_anchor: Option<crate::input::grab::ResizeAnchor>,
-    suppressed_buttons: SuppressedButtons,
-    wheel_accumulator: WheelAccumulator,
-    window_open_animations: crate::animation::WindowOpenAnimations,
-    /// The latest valid output config received while DRM master is paused.
-    /// Hardware application waits until session resume.
     pending_output_config: Option<Vec<halley_config::OutputConfig>>,
 }
+
+impl super::SessionDriver for TtyDriver {
+    fn primary_output(&self) -> &Output {
+        self.backend.primary_output()
+    }
+
+    fn request_redraw(&mut self, output: Option<&Output>) {
+        if let Some(output) = output {
+            if let Some(state) = self.output_frames.get_mut(output) {
+                state.redraw = std::mem::take(&mut state.redraw).queue_redraw();
+            }
+            return;
+        }
+        for state in self.output_frames.values_mut() {
+            state.redraw = std::mem::take(&mut state.redraw).queue_redraw();
+        }
+    }
+}
+
+type TtyApp = super::Session<TtyDriver>;
 
 /// Runs the real-hardware (DRM/KMS) session - takes over the seat and a
 /// free VT. Returns (rather than panicking) if `TtyBackend::new()` fails,
@@ -314,11 +266,16 @@ pub fn run() {
         .collect();
 
     let mut app = TtyApp {
-        backend,
+        driver: TtyDriver {
+            backend,
+            loop_signal,
+            output_frames,
+            paused: false,
+            pending_output_config: None,
+        },
         keyboard: Keyboard::from_config(&runtime_config.keybinds, BackendKind::Tty),
         pointer: Pointer::new((100.0, 100.0)),
         cursor: CursorImage::load(),
-        loop_signal,
         wayland: WaylandState::new(
             dh,
             compositor_state,
@@ -334,8 +291,6 @@ pub fn run() {
         seat,
         start_time: Instant::now(),
         decorations: runtime_config.decorations,
-        output_frames,
-        paused: false,
         cameras: crate::camera::OutputCameras::default(),
         zoom: runtime_config.zoom,
         grab: crate::input::grab::Grab::None,
@@ -345,7 +300,6 @@ pub fn run() {
         window_open_animations: crate::animation::WindowOpenAnimations::new(
             runtime_config.animations,
         ),
-        pending_output_config: None,
     };
     for output in outputs {
         app.wayland
@@ -360,10 +314,12 @@ pub fn run() {
             .insert(output.name(), geometry.size.to_physical(1));
     }
 
-    let socket_name = init_wayland_listener(display, &mut event_loop);
+    let socket_name = super::protocol::init_wayland_listener(display, &mut event_loop);
     eventline::info!("wayland socket ready, WAYLAND_DISPLAY={socket_name:?}");
 
-    if let Err(err) = crate::ipc::init_ipc_listener(&event_loop.handle(), |app: &TtyApp| app.backend.output_info()) {
+    if let Err(err) = crate::ipc::init_ipc_listener(&event_loop.handle(), |app: &TtyApp| {
+        app.driver.backend.output_info()
+    }) {
         eventline::error!("ipc: failed to start listener: {err}");
     }
     if let Some(path) = config_path
@@ -434,7 +390,7 @@ pub fn run() {
                     }
                 }
                 crate::input::grab::Grab::ResizeWindow(state) => {
-                    let primary = app.backend.primary_output();
+                    let primary = app.driver.backend.primary_output();
                     let output = app
                         .wayland
                         .space
@@ -768,19 +724,19 @@ pub fn run() {
             move |event, _, app| match event {
                 SessionEvent::PauseSession => {
                     eventline::info!("session event: pause");
-                    app.paused = true;
-                    app.backend.pause();
+                    app.driver.paused = true;
+                    app.driver.backend.pause();
                 }
                 SessionEvent::ActivateSession => {
                     eventline::info!("session event: activate");
-                    app.paused = false;
-                    match app.backend.resume() {
+                    app.driver.paused = false;
+                    match app.driver.backend.resume() {
                         // The whole DRM pipeline (and any frame that was in
                         // flight before the switch away) is gone - reset
                         // clean rather than trusting whatever redraw states
                         // said before the switch.
                         Ok(()) => {
-                            if let Some(outputs) = app.pending_output_config.take() {
+                            if let Some(outputs) = app.driver.pending_output_config.take() {
                                 apply_tty_output_config(app, &outputs);
                             }
                             reset_redraw_state(app, &loop_handle);
@@ -805,7 +761,7 @@ pub fn run() {
     );
     event_loop
         .run(None, &mut app, |app| {
-            if !app.paused {
+            if !app.driver.paused {
                 redraw_queued_outputs(app, &loop_handle);
             }
             let _ = app.wayland.display_handle.flush_clients();
@@ -826,11 +782,11 @@ fn on_vblank(
     crtc: crtc::Handle,
     metadata: Option<&DrmEventMetadata>,
 ) {
-    let Some(output) = app.backend.output_for_crtc(crtc).cloned() else {
+    let Some(output) = app.driver.backend.output_for_crtc(crtc).cloned() else {
         eventline::warn!("vblank received for unknown CRTC {crtc:?}");
         return;
     };
-    let submission = match app.backend.frame_submitted(crtc) {
+    let submission = match app.driver.backend.frame_submitted(crtc) {
         Ok(submission) => submission,
         Err(err) => {
             eventline::warn!(
@@ -847,7 +803,7 @@ fn on_vblank(
         submission.map(|submission| submission.target_presentation_time);
 
     let presented = presentation_time(metadata);
-    let Some(state) = app.output_frames.get_mut(&output) else {
+    let Some(state) = app.driver.output_frames.get_mut(&output) else {
         return;
     };
     state.clock.presented(presented);
@@ -870,7 +826,7 @@ fn on_vblank(
     };
 
     let elapsed = app.start_time.elapsed();
-    let primary = app.backend.primary_output();
+    let primary = app.driver.backend.primary_output();
     app.wayland
         .space
         .elements()
@@ -890,15 +846,11 @@ fn on_vblank(
 /// `redraw_output()`, called from the `run()` tail once a redraw is actually
 /// `Queued`.
 fn queue_redraw(app: &mut TtyApp) {
-    for state in app.output_frames.values_mut() {
-        state.redraw = std::mem::take(&mut state.redraw).queue_redraw();
-    }
+    app.request_redraw();
 }
 
 fn queue_output_redraw(app: &mut TtyApp, output: &Output) {
-    if let Some(state) = app.output_frames.get_mut(output) {
-        state.redraw = std::mem::take(&mut state.redraw).queue_redraw();
-    }
+    app.request_output_redraw(output);
 }
 
 fn apply_runtime_config(app: &mut TtyApp, config: halley_config::RuntimeConfig) {
@@ -910,8 +862,8 @@ fn apply_runtime_config(app: &mut TtyApp, config: halley_config::RuntimeConfig) 
     app.zoom = config.zoom;
     app.window_open_animations.reload(config.animations);
 
-    if app.paused {
-        app.pending_output_config = Some(config.outputs);
+    if app.driver.paused {
+        app.driver.pending_output_config = Some(config.outputs);
     } else {
         apply_tty_output_config(app, &config.outputs);
     }
@@ -925,13 +877,16 @@ fn apply_tty_output_config(
     app: &mut TtyApp,
     outputs_config: &[halley_config::OutputConfig],
 ) {
-    let changes = app.backend.apply_output_config(outputs_config);
+    let changes = app.driver.backend.apply_output_config(outputs_config);
     let mut layout_changed = false;
 
     for change in changes {
         if change.mode_changed {
-            let interval = app.backend.refresh_interval_for_output(&change.output);
-            if let Some(state) = app.output_frames.get_mut(&change.output) {
+            let interval = app
+                .driver
+                .backend
+                .refresh_interval_for_output(&change.output);
+            if let Some(state) = app.driver.output_frames.get_mut(&change.output) {
                 state.clock = FrameClock::new(Some(interval));
                 state.last_camera_sample = crate::frame_clock::monotonic_now();
                 state.unfinished_animations = false;
@@ -971,6 +926,7 @@ fn apply_tty_output_config(
 
 fn redraw_queued_outputs(app: &mut TtyApp, loop_handle: &LoopHandle<'_, TtyApp>) {
     let outputs: Vec<_> = app
+        .driver
         .output_frames
         .iter()
         .filter(|(_, state)| {
@@ -991,6 +947,7 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
     let now = crate::frame_clock::monotonic_now();
     let (target_presentation_time, dt) = {
         let state = app
+            .driver
             .output_frames
             .get_mut(output)
             .expect("redraw output has frame state");
@@ -1013,7 +970,7 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
         .cameras
         .get_mut(&output.name())
         .is_some_and(|camera| crate::input::zoom::tick(camera, &app.zoom, dt.as_secs_f32()).1);
-    let primary = app.backend.primary_output();
+    let primary = app.driver.backend.primary_output();
     let window_animating = app.wayland.space.elements().any(|window| {
         wayland::window_is_on_output(window, output, primary)
             && window.toplevel().is_some_and(|toplevel| {
@@ -1034,7 +991,7 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
         pointer.frame(app);
     }
 
-    let status = match app.backend.render(
+    let status = match app.driver.backend.render(
         output,
         RenderRequest {
             target_presentation_time,
@@ -1059,6 +1016,7 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
 
     if status == RenderStatus::Submitted {
         let state = app
+            .driver
             .output_frames
             .get_mut(output)
             .expect("rendered output has frame state");
@@ -1075,7 +1033,8 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
         return;
     }
 
-    app.output_frames
+    app.driver
+        .output_frames
         .get_mut(output)
         .expect("rendered output has frame state")
         .unfinished_animations = animating;
@@ -1088,6 +1047,7 @@ fn queue_estimated_vblank_timer(
     loop_handle: &LoopHandle<'_, TtyApp>,
 ) {
     let state = app
+        .driver
         .output_frames
         .get_mut(output)
         .expect("estimated-vblank output has frame state");
@@ -1121,7 +1081,7 @@ fn queue_estimated_vblank_timer(
 }
 
 fn on_estimated_vblank_timer(app: &mut TtyApp, output: &Output) {
-    let Some(state) = app.output_frames.get_mut(output) else {
+    let Some(state) = app.driver.output_frames.get_mut(output) else {
         return;
     };
     match std::mem::take(&mut state.redraw) {
@@ -1143,7 +1103,7 @@ fn on_estimated_vblank_timer(app: &mut TtyApp, output: &Output) {
 
 fn reset_redraw_state(app: &mut TtyApp, loop_handle: &LoopHandle<'_, TtyApp>) {
     let now = crate::frame_clock::monotonic_now();
-    for state in app.output_frames.values_mut() {
+    for state in app.driver.output_frames.values_mut() {
         if let RedrawState::WaitingForEstimatedVBlank(token)
         | RedrawState::WaitingForEstimatedVBlankAndQueued(token) =
             std::mem::take(&mut state.redraw)
@@ -1156,230 +1116,3 @@ fn reset_redraw_state(app: &mut TtyApp, loop_handle: &LoopHandle<'_, TtyApp>) {
         state.redraw = RedrawState::Queued;
     }
 }
-
-/// Sets up the listening socket new clients connect to, and the source that
-/// actually pumps protocol requests from already-connected clients every
-/// loop iteration - mirrors `session::winit`'s `init_wayland_listener`.
-fn init_wayland_listener(display: Display<TtyApp>, event_loop: &mut EventLoop<TtyApp>) -> OsString {
-    let listening_socket =
-        ListeningSocketSource::new_auto().expect("failed to create wayland listening socket");
-    let socket_name = listening_socket.socket_name().to_os_string();
-
-    event_loop
-        .handle()
-        .insert_source(listening_socket, move |client_stream, _, app| {
-            if let Err(err) = app
-                .wayland
-                .display_handle
-                .insert_client(client_stream, Arc::new(ClientState::default()))
-            {
-                eventline::warn!("failed to insert new wayland client: {err}");
-            }
-        })
-        .expect("failed to insert wayland listening socket source");
-
-    event_loop
-        .handle()
-        .insert_source(
-            Generic::new(display, Interest::READ, CalloopMode::Level),
-            |_, display, app| {
-                // Safety: `display` is owned by this source for the event
-                // loop's lifetime and is never dropped out from under it.
-                unsafe {
-                    display.get_mut().dispatch_clients(app)?;
-                }
-                Ok(PostAction::Continue)
-            },
-        )
-        .expect("failed to insert wayland display dispatch source");
-
-    socket_name
-}
-
-impl CompositorHandler for TtyApp {
-    fn compositor_state(&mut self) -> &mut CompositorState {
-        &mut self.wayland.compositor_state
-    }
-
-    fn client_compositor_state<'a>(&self, client: &'a Client) -> &'a CompositorClientState {
-        &client.get_data::<ClientState>().unwrap().compositor_state
-    }
-
-    fn commit(&mut self, surface: &WlSurface) {
-        if let Some(mapped) =
-            wayland::compositor::commit::<Self>(&mut self.wayland, &self.cameras, surface)
-        {
-            self.window_open_animations
-                .start(mapped, crate::frame_clock::monotonic_now());
-        }
-        crate::input::grab::finish_resize_commit(&mut self.resize_anchor, &mut self.wayland.space);
-        queue_redraw(self);
-
-        sync_keyboard_focus(self, SERIAL_COUNTER.next_serial());
-    }
-}
-
-impl BufferHandler for TtyApp {
-    fn buffer_destroyed(&mut self, _buffer: &WlBuffer) {}
-}
-
-impl ShmHandler for TtyApp {
-    fn shm_state(&self) -> &ShmState {
-        &self.wayland.shm_state
-    }
-}
-
-impl XdgShellHandler for TtyApp {
-    fn xdg_shell_state(&mut self) -> &mut XdgShellState {
-        &mut self.wayland.xdg_shell_state
-    }
-
-    fn new_toplevel(&mut self, surface: ToplevelSurface) {
-        wayland::xdg_shell::new_toplevel(&mut self.wayland, surface);
-    }
-
-    fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
-        self.window_open_animations.remove(surface.wl_surface());
-        crate::input::grab::forget_resize_anchor(&mut self.resize_anchor, surface.wl_surface());
-        wayland::xdg_shell::toplevel_destroyed(&mut self.wayland, &surface);
-        queue_redraw(self);
-    }
-
-    fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
-        wayland::popup::track(&mut self.wayland, surface);
-        queue_redraw(self);
-    }
-
-    fn reposition_request(
-        &mut self,
-        surface: PopupSurface,
-        positioner: PositionerState,
-        token: u32,
-    ) {
-        wayland::popup::reposition(&self.wayland, surface, positioner, token);
-        queue_redraw(self);
-    }
-
-    fn grab(&mut self, surface: PopupSurface, seat: WlSeat, serial: Serial) {
-        let seat = Seat::<Self>::from_resource(&seat).expect("popup grab used an unknown wl_seat");
-        let grab =
-            wayland::popup::begin_grab(&mut self.wayland.popup_manager, &seat, surface, serial);
-        if let Some(grab) = grab {
-            wayland::popup::install_grab(self, &seat, grab, serial);
-        }
-    }
-}
-
-impl WlrLayerShellHandler for TtyApp {
-    fn shell_state(&mut self) -> &mut WlrLayerShellState {
-        &mut self.wayland.layer_shell_state
-    }
-
-    fn new_layer_surface(
-        &mut self,
-        surface: WlrLayerSurface,
-        output: Option<smithay::reexports::wayland_server::protocol::wl_output::WlOutput>,
-        _layer: Layer,
-        namespace: String,
-    ) {
-        let output = output
-            .as_ref()
-            .and_then(Output::from_resource)
-            .or_else(|| {
-                self.wayland
-                    .space
-                    .output_under(self.pointer.position())
-                    .next()
-                    .cloned()
-            })
-            .or_else(|| Some(self.backend.primary_output().clone()));
-        wayland::layer_shell::new_surface(&mut self.wayland, surface, output, namespace);
-        queue_redraw(self);
-    }
-
-    fn layer_destroyed(&mut self, surface: WlrLayerSurface) {
-        wayland::layer_shell::destroyed(&mut self.wayland, &surface);
-        sync_keyboard_focus(self, SERIAL_COUNTER.next_serial());
-        queue_redraw(self);
-    }
-
-    fn new_popup(&mut self, _parent: WlrLayerSurface, popup: PopupSurface) {
-        wayland::popup::unconstrain_surface(&self.wayland, popup);
-        queue_redraw(self);
-    }
-}
-
-impl XdgDecorationHandler for TtyApp {
-    fn new_decoration(&mut self, toplevel: ToplevelSurface) {
-        wayland::decoration::new_decoration(toplevel);
-    }
-
-    fn request_mode(&mut self, toplevel: ToplevelSurface, mode: DecorationMode) {
-        wayland::decoration::request_mode(toplevel, mode);
-    }
-
-    fn unset_mode(&mut self, toplevel: ToplevelSurface) {
-        wayland::decoration::unset_mode(toplevel);
-    }
-}
-
-impl SeatHandler for TtyApp {
-    type KeyboardFocus = WlSurface;
-    type PointerFocus = WlSurface;
-    type TouchFocus = WlSurface;
-
-    fn seat_state(&mut self) -> &mut SeatState<Self> {
-        &mut self.seat_state
-    }
-
-    fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
-        let dh = self.wayland.display_handle.clone();
-        crate::wayland::selection::sync_selection_focus(&dh, seat, focused);
-    }
-}
-
-impl OutputHandler for TtyApp {}
-
-/// See `App`'s own impl (`session::winit`) - `()` for the same reason: no
-/// compositor-owned selections exist yet for user data to hang off.
-impl SelectionHandler for TtyApp {
-    type SelectionUserData = ();
-}
-
-impl DataDeviceHandler for TtyApp {
-    fn data_device_state(&mut self) -> &mut DataDeviceState {
-        &mut self.wayland.data_device_state
-    }
-}
-
-impl WaylandDndGrabHandler for TtyApp {
-    fn dnd_requested<S: smithay::input::dnd::Source>(
-        &mut self,
-        source: S,
-        _icon: Option<WlSurface>,
-        seat: Seat<Self>,
-        serial: Serial,
-        type_: smithay::input::dnd::GrabType,
-    ) {
-        let dh = self.wayland.display_handle.clone();
-        crate::wayland::selection::start_dnd_grab(self, &dh, source, seat, serial, type_);
-    }
-}
-
-impl smithay::input::dnd::DndGrabHandler for TtyApp {}
-
-impl PrimarySelectionHandler for TtyApp {
-    fn primary_selection_state(&mut self) -> &mut PrimarySelectionState {
-        &mut self.wayland.primary_selection_state
-    }
-}
-
-delegate_compositor!(TtyApp);
-delegate_shm!(TtyApp);
-delegate_xdg_shell!(TtyApp);
-delegate_layer_shell!(TtyApp);
-delegate_xdg_decoration!(TtyApp);
-delegate_seat!(TtyApp);
-delegate_output!(TtyApp);
-delegate_data_device!(TtyApp);
-delegate_primary_selection!(TtyApp);
