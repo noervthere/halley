@@ -1,3 +1,4 @@
+mod capture_overlay;
 pub mod dmabuf;
 pub mod fullscreen_texture;
 pub mod rescale;

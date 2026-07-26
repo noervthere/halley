@@ -269,7 +269,7 @@ fn capture_overlay_elements(
             selected,
             hovered,
             window_available,
-        } if output.name() == output_name => crate::capture::menu::render_elements(
+        } if output.name() == output_name => super::capture_overlay::menu_elements(
             output_geometry,
             selected,
             hovered,
