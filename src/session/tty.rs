@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use calloop::timer::{TimeoutAction, Timer};
-use calloop::{EventLoop, LoopHandle, LoopSignal, RegistrationToken};
+use calloop::{EventLoop, LoopHandle, LoopSignal};
 use smithay::backend::drm::{DrmEvent, DrmEventMetadata, DrmEventTime};
 use smithay::backend::libinput::{LibinputInputBackend, LibinputSessionInterface};
 use smithay::backend::session::Event as SessionEvent;
@@ -24,74 +24,13 @@ use smithay::wayland::shm::ShmState;
 use crate::backend::tty::TtyBackend;
 use crate::backend::{CLEAR_COLOR, RenderRequest, RenderStatus, Renderable};
 use crate::cursor::CursorImage;
-use crate::frame_clock::FrameClock;
 use crate::input::{Keyboard, SuppressedButtons};
 use crate::input::keybinds::BackendKind;
 use crate::input::pointer::{Pointer, WheelAccumulator};
 use crate::ipc::OutputInfoSource;
 use crate::wayland::{self, WaylandState};
 
-
-/// Tracks the minimum state needed for correct DRM redraw scheduling. DRM
-/// only produces a VBlank event in response to a page flip it was actually
-/// asked to do, so a scene that settles into "nothing changed" naturally
-/// stops generating any further
-/// VBlank at all - and the kernel occasionally just drops a promised VBlank
-/// notification outright (a known amdgpu quirk area, per this project's own
-/// freeze history). This tracks whether a redraw is owed and whether one is
-/// already in flight, so a request is never silently lost either way.
-#[derive(Debug, Default)]
-enum RedrawState {
-    #[default]
-    Idle,
-    /// A redraw was requested and nothing is in flight.
-    Queued,
-    /// A frame was submitted; waiting for its VBlank. `redraw_needed`
-    /// remembers whether another redraw was requested since.
-    WaitingForVBlank {
-        redraw_needed: bool,
-    },
-    /// The last redraw attempt submitted nothing (no damage, or an error),
-    /// so a timer was armed for the estimated next VBlank instead of
-    /// waiting on a real one that might never come.
-    WaitingForEstimatedVBlank(RegistrationToken),
-    /// A redraw was requested on top of the above.
-    WaitingForEstimatedVBlankAndQueued(RegistrationToken),
-}
-
-impl RedrawState {
-    fn queue_redraw(self) -> Self {
-        match self {
-            RedrawState::Idle => RedrawState::Queued,
-            RedrawState::WaitingForEstimatedVBlank(token) => {
-                RedrawState::WaitingForEstimatedVBlankAndQueued(token)
-            }
-            // A redraw is already queued, one way or another.
-            value @ (RedrawState::Queued | RedrawState::WaitingForEstimatedVBlankAndQueued(_)) => value,
-            RedrawState::WaitingForVBlank { .. } => RedrawState::WaitingForVBlank {
-                redraw_needed: true,
-            },
-        }
-    }
-}
-
-struct OutputFrameState {
-    clock: FrameClock,
-    redraw: RedrawState,
-    last_camera_sample: Duration,
-    unfinished_animations: bool,
-}
-
-impl OutputFrameState {
-    fn new(refresh_interval: Duration) -> Self {
-        Self {
-            clock: FrameClock::new(Some(refresh_interval)),
-            redraw: RedrawState::default(),
-            last_camera_sample: crate::frame_clock::monotonic_now(),
-            unfinished_animations: false,
-        }
-    }
-}
+use super::tty_frame::{EstimatedVblankTimer, OutputFrameState};
 
 struct TtyDriver {
     backend: TtyBackend,
@@ -111,12 +50,12 @@ impl super::SessionDriver for TtyDriver {
     fn request_redraw(&mut self, output: Option<&Output>) {
         if let Some(output) = output {
             if let Some(state) = self.output_frames.get_mut(output) {
-                state.redraw = std::mem::take(&mut state.redraw).queue_redraw();
+                state.queue_redraw();
             }
             return;
         }
         for state in self.output_frames.values_mut() {
-            state.redraw = std::mem::take(&mut state.redraw).queue_redraw();
+            state.queue_redraw();
         }
     }
 
@@ -354,24 +293,12 @@ fn on_vblank(
     let Some(state) = app.driver.output_frames.get_mut(&output) else {
         return;
     };
-    state.clock.presented(presented);
-    let redraw_needed = match std::mem::take(&mut state.redraw) {
-        RedrawState::WaitingForVBlank { redraw_needed } => {
-            redraw_needed || state.unfinished_animations
-        }
-        other => {
-            eventline::warn!(
-                "unexpected redraw state on vblank for {:?}: {other:?}",
-                output.name()
-            );
-            true
-        }
-    };
-    state.redraw = if redraw_needed {
-        RedrawState::Queued
-    } else {
-        RedrawState::Idle
-    };
+    if let Some(unexpected) = state.on_vblank(presented) {
+        eventline::warn!(
+            "unexpected redraw state on vblank for {:?}: {unexpected}",
+            output.name()
+        );
+    }
 
     let elapsed = app.start_time.elapsed();
     let primary = app.driver.backend.primary_output();
@@ -425,9 +352,7 @@ fn apply_tty_output_config(
                 .backend
                 .refresh_interval_for_output(&change.output);
             if let Some(state) = app.driver.output_frames.get_mut(&change.output) {
-                state.clock = FrameClock::new(Some(interval));
-                state.last_camera_sample = crate::frame_clock::monotonic_now();
-                state.unfinished_animations = false;
+                state.replace_clock(interval);
             }
         }
 
@@ -470,12 +395,7 @@ fn redraw_queued_outputs(app: &mut TtyApp, loop_handle: &LoopHandle<'_, TtyApp>)
         .driver
         .output_frames
         .iter()
-        .filter(|(_, state)| {
-            matches!(
-                state.redraw,
-                RedrawState::Queued | RedrawState::WaitingForEstimatedVBlankAndQueued(_)
-            )
-        })
+        .filter(|(_, state)| state.is_redraw_queued())
         .map(|(output, _)| output.clone())
         .collect();
 
@@ -492,10 +412,7 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
             .output_frames
             .get_mut(output)
             .expect("redraw output has frame state");
-        let target = state.clock.next_presentation_time(now);
-        let dt = target.saturating_sub(state.last_camera_sample);
-        state.last_camera_sample = target;
-        (target, dt)
+        state.next_frame_sample(now)
     };
 
     let pointer_is_on_output = app
@@ -564,30 +481,19 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
             .output_frames
             .get_mut(output)
             .expect("rendered output has frame state");
-        if let RedrawState::WaitingForEstimatedVBlank(token)
-        | RedrawState::WaitingForEstimatedVBlankAndQueued(token) =
-            std::mem::take(&mut state.redraw)
-        {
+        if let Some(token) = state.frame_submitted(animating) {
             loop_handle.remove(token);
         }
-        state.unfinished_animations = animating;
-        state.redraw = RedrawState::WaitingForVBlank {
-            redraw_needed: animating,
-        };
         return;
     }
 
-    app.driver
-        .output_frames
-        .get_mut(output)
-        .expect("rendered output has frame state")
-        .unfinished_animations = animating;
-    queue_estimated_vblank_timer(app, output, loop_handle);
+    queue_estimated_vblank_timer(app, output, animating, loop_handle);
 }
 
 fn queue_estimated_vblank_timer(
     app: &mut TtyApp,
     output: &Output,
+    animating: bool,
     loop_handle: &LoopHandle<'_, TtyApp>,
 ) {
     let state = app
@@ -595,25 +501,10 @@ fn queue_estimated_vblank_timer(
         .output_frames
         .get_mut(output)
         .expect("estimated-vblank output has frame state");
-    match std::mem::take(&mut state.redraw) {
-        RedrawState::Idle | RedrawState::WaitingForVBlank { .. } => {
-            unreachable!("queue_estimated_vblank_timer called from an unexpected redraw state")
-        }
-        RedrawState::Queued => {}
-        // Already waiting on a timer - keep it rather than stacking a
-        // second one for the same missing VBlank.
-        RedrawState::WaitingForEstimatedVBlank(token)
-        | RedrawState::WaitingForEstimatedVBlankAndQueued(token) => {
-            state.redraw = RedrawState::WaitingForEstimatedVBlank(token);
-            return;
-        }
-    }
-
     let now = crate::frame_clock::monotonic_now();
-    let due = state.clock.next_presentation_time(now);
-    let delay = due
-        .saturating_sub(now)
-        .max(Duration::from_millis(1));
+    let EstimatedVblankTimer::ArmAfter(delay) = state.frame_skipped(animating, now) else {
+        return;
+    };
     let output = output.clone();
     let token = loop_handle
         .insert_source(Timer::from_duration(delay), move |_, _, app| {
@@ -621,42 +512,26 @@ fn queue_estimated_vblank_timer(
             TimeoutAction::Drop
         })
         .expect("failed to arm estimated-vblank timer");
-    state.redraw = RedrawState::WaitingForEstimatedVBlank(token);
+    state.timer_armed(token);
 }
 
 fn on_estimated_vblank_timer(app: &mut TtyApp, output: &Output) {
     let Some(state) = app.driver.output_frames.get_mut(output) else {
         return;
     };
-    match std::mem::take(&mut state.redraw) {
-        RedrawState::WaitingForEstimatedVBlank(_) if state.unfinished_animations => {
-            state.redraw = RedrawState::Queued;
-        }
-        RedrawState::WaitingForEstimatedVBlank(_) => {}
-        RedrawState::WaitingForEstimatedVBlankAndQueued(_) => {
-            state.redraw = RedrawState::Queued;
-        }
-        other => {
-            eventline::warn!(
-                "unexpected redraw state on estimated-vblank timer for {:?}: {other:?}",
-                output.name()
-            );
-        }
+    if let Some(unexpected) = state.estimated_vblank_fired() {
+        eventline::warn!(
+            "unexpected redraw state on estimated-vblank timer for {:?}: {unexpected}",
+            output.name()
+        );
     }
 }
 
 fn reset_redraw_state(app: &mut TtyApp, loop_handle: &LoopHandle<'_, TtyApp>) {
     let now = crate::frame_clock::monotonic_now();
     for state in app.driver.output_frames.values_mut() {
-        if let RedrawState::WaitingForEstimatedVBlank(token)
-        | RedrawState::WaitingForEstimatedVBlankAndQueued(token) =
-            std::mem::take(&mut state.redraw)
-        {
+        if let Some(token) = state.reset(now) {
             loop_handle.remove(token);
         }
-        state.clock.reset();
-        state.last_camera_sample = now;
-        state.unfinished_animations = false;
-        state.redraw = RedrawState::Queued;
     }
 }
