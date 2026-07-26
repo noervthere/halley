@@ -30,7 +30,7 @@ struct Interaction {
 ///
 /// It intentionally knows nothing about screenshots, IPC, or rendering.
 /// Callers draw `region()`, route pointer events here while `is_active()`,
-/// and remember a region only after their capture operation succeeds.
+/// and retain the last geometry whenever the selection finishes.
 #[derive(Debug, Default)]
 pub struct RegionPicker {
     bounds: Option<Rectangle<i32, Logical>>,
@@ -119,24 +119,22 @@ impl RegionPicker {
         true
     }
 
-    /// Finishes selection without changing session memory. The caller must
-    /// invoke `remember_successful` only once the screenshot is safely
-    /// written.
     pub fn accept(&mut self) -> Option<Rectangle<i32, Logical>> {
-        self.interaction = None;
-        self.region.take()
+        self.finish()
     }
 
     pub fn cancel(&mut self) -> bool {
-        self.interaction = None;
-        self.region.take().is_some()
+        self.finish().is_some()
     }
 
-    pub fn remember_successful(&mut self, region: Rectangle<i32, Logical>) {
+    fn finish(&mut self) -> Option<Rectangle<i32, Logical>> {
+        self.interaction = None;
+        let region = self.region.take()?;
         self.remembered = Some(match self.bounds {
             Some(bounds) => clamp_region(region, bounds),
             None => region,
         });
+        Some(region)
     }
 
     #[cfg(test)]
@@ -335,21 +333,17 @@ mod tests {
     }
 
     #[test]
-    fn accepting_does_not_remember_until_capture_succeeds() {
+    fn accepting_remembers_the_last_selection() {
         let mut picker = RegionPicker::default();
         let selected = picker.begin(bounds(), output());
         assert_eq!(picker.accept(), Some(selected));
-        assert_eq!(picker.remembered(), None);
-
-        picker.remember_successful(selected);
         assert_eq!(picker.remembered(), Some(selected));
     }
 
     #[test]
-    fn cancelling_clears_only_the_active_selection() {
+    fn cancelling_remembers_the_last_selection() {
         let mut picker = RegionPicker::default();
         let selected = picker.begin(bounds(), output());
-        picker.remember_successful(selected);
 
         assert!(picker.cancel());
         assert!(!picker.is_active());
@@ -361,7 +355,7 @@ mod tests {
     fn remembered_region_is_clamped_after_layout_changes() {
         let mut picker = RegionPicker::default();
         let selected = picker.begin(bounds(), output());
-        picker.remember_successful(selected);
+        assert_eq!(picker.accept(), Some(selected));
         picker.update_bounds(Rectangle::new((0, 0).into(), (800, 600).into()));
 
         assert_eq!(

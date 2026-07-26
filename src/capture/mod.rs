@@ -439,10 +439,6 @@ impl CaptureState {
         self.pending.take()
     }
 
-    pub fn remember_successful(&mut self, region: Rectangle<i32, Logical>) {
-        self.picker.remember_successful(region);
-    }
-
     fn local_menu(&self) -> Option<&ScreenshotMenu> {
         match self.pending.as_ref() {
             Some(PendingCapture::Local { menu }) => Some(menu),
@@ -594,17 +590,13 @@ pub fn accept_selected<D: SessionDriver>(session: &mut Session<D>) -> bool {
         }
         return true;
     }
-    let (result, remembered_region) = match accepted.target {
-        AcceptedTarget::Area(region) => (save_region(session, region), Some(region)),
-        AcceptedTarget::Screen(region) => (save_region(session, region), None),
-        AcceptedTarget::Window(surface) => (save_window(session, &surface), None),
+    let result = match accepted.target {
+        AcceptedTarget::Area(region) | AcceptedTarget::Screen(region) => {
+            save_region(session, region)
+        }
+        AcceptedTarget::Window(surface) => save_window(session, &surface),
         AcceptedTarget::Source(_) => unreachable!("handled above"),
     };
-    if result.is_ok()
-        && let Some(region) = remembered_region
-    {
-        session.capture.remember_successful(region);
-    }
     match accepted.pending {
         PendingCapture::Local { .. } => match result {
             Ok(path) => eventline::info!("screenshot saved to {}", path.display()),
