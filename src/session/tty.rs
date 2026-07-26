@@ -261,11 +261,11 @@ pub fn run() {
     let (backend, session_notifier, drm_notifier) = match TtyBackend::new(&runtime_config.outputs) {
         Ok(parts) => parts,
         Err(err) => {
-            println!("TtyBackend::new() failed: {err}");
+            eventline::error!("TtyBackend::new() failed: {err}");
             return;
         }
     };
-    println!("TtyBackend constructed successfully");
+    eventline::info!("TtyBackend constructed successfully");
 
     let mut libinput_context = Libinput::new_with_udev::<LibinputSessionInterface<_>>(
         backend.session().into(),
@@ -363,15 +363,15 @@ pub fn run() {
     }
 
     let socket_name = init_wayland_listener(display, &mut event_loop);
-    println!("wayland socket ready, WAYLAND_DISPLAY={socket_name:?}");
+    eventline::info!("wayland socket ready, WAYLAND_DISPLAY={socket_name:?}");
 
     if let Err(err) = crate::ipc::init_ipc_listener(&event_loop.handle(), |app: &TtyApp| app.backend.output_info()) {
-        eprintln!("ipc: failed to start listener: {err}");
+        eventline::error!("ipc: failed to start listener: {err}");
     }
     if let Some(path) = config_path
         && let Err(err) = crate::config::watch(&event_loop.handle(), path, apply_runtime_config)
     {
-        eprintln!("config: failed to start watcher: {err}");
+        eventline::warn!("config: failed to start watcher: {err}");
     }
 
     // Queue every output's first frame through the same state machine used
@@ -691,7 +691,7 @@ pub fn run() {
                     |direction| match_wheel_bind(&app.keyboard.binds, &mods, direction),
                 );
                 for (direction, action) in result.actions {
-                    eprintln!(
+                    eventline::debug!(
                         "keybinds: wheel {direction:?} + {mods:?} -> {action:?}"
                     );
                     dispatch_action(app, action, &socket_name, output_name.as_deref());
@@ -769,12 +769,12 @@ pub fn run() {
             let loop_handle = loop_handle.clone();
             move |event, _, app| match event {
                 SessionEvent::PauseSession => {
-                    println!("session event: pause");
+                    eventline::info!("session event: pause");
                     app.paused = true;
                     app.backend.pause();
                 }
                 SessionEvent::ActivateSession => {
-                    println!("session event: activate");
+                    eventline::info!("session event: activate");
                     app.paused = false;
                     match app.backend.resume() {
                         // The whole DRM pipeline (and any frame that was in
@@ -787,7 +787,7 @@ pub fn run() {
                             }
                             reset_redraw_state(app, &loop_handle);
                         }
-                        Err(err) => println!("resume failed: {err}"),
+                        Err(err) => eventline::error!("resume failed: {err}"),
                     }
                 }
             }
@@ -798,11 +798,13 @@ pub fn run() {
         .handle()
         .insert_source(drm_notifier, |event, metadata, app| match event {
             DrmEvent::VBlank(crtc) => on_vblank(app, crtc, metadata.as_ref()),
-            DrmEvent::Error(err) => println!("drm event: error {err:?}"),
+            DrmEvent::Error(err) => eventline::error!("drm event: error {err:?}"),
         })
         .expect("failed to insert drm notifier");
 
-    println!("dispatching - switch to this VT to see a solid color fill the screen, press the Quit chord to exit");
+    eventline::info!(
+        "dispatching - switch to this VT to see a solid color fill the screen, press the Quit chord to exit"
+    );
     event_loop
         .run(None, &mut app, |app| {
             if !app.paused {
@@ -811,7 +813,7 @@ pub fn run() {
             let _ = app.wayland.display_handle.flush_clients();
         })
         .expect("event loop run failed");
-    println!("quit requested, exiting cleanly");
+    eventline::info!("quit requested, exiting cleanly");
 }
 
 fn presentation_time(metadata: Option<&DrmEventMetadata>) -> Option<Duration> {
@@ -827,13 +829,16 @@ fn on_vblank(
     metadata: Option<&DrmEventMetadata>,
 ) {
     let Some(output) = app.backend.output_for_crtc(crtc).cloned() else {
-        println!("vblank received for unknown CRTC {crtc:?}");
+        eventline::warn!("vblank received for unknown CRTC {crtc:?}");
         return;
     };
     let submission = match app.backend.frame_submitted(crtc) {
         Ok(submission) => submission,
         Err(err) => {
-            println!("failed to acknowledge vblank for {:?}: {err}", output.name());
+            eventline::warn!(
+                "failed to acknowledge vblank for {:?}: {err}",
+                output.name()
+            );
             None
         }
     };
@@ -853,7 +858,7 @@ fn on_vblank(
             redraw_needed || state.unfinished_animations
         }
         other => {
-            println!(
+            eventline::warn!(
                 "unexpected redraw state on vblank for {:?}: {other:?}",
                 output.name()
             );
@@ -1045,7 +1050,7 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
     ) {
         Ok(status) => status,
         Err(err) => {
-            println!("render failed for {:?}: {err}", output.name());
+            eventline::error!("render failed for {:?}: {err}", output.name());
             RenderStatus::Skipped
         }
     };
@@ -1128,7 +1133,7 @@ fn on_estimated_vblank_timer(app: &mut TtyApp, output: &Output) {
             state.redraw = RedrawState::Queued;
         }
         other => {
-            println!(
+            eventline::warn!(
                 "unexpected redraw state on estimated-vblank timer for {:?}: {other:?}",
                 output.name()
             );
@@ -1168,7 +1173,7 @@ fn init_wayland_listener(display: Display<TtyApp>, event_loop: &mut EventLoop<Tt
                 .display_handle
                 .insert_client(client_stream, Arc::new(ClientState::default()))
             {
-                eprintln!("failed to insert new wayland client: {err}");
+                eventline::warn!("failed to insert new wayland client: {err}");
             }
         })
         .expect("failed to insert wayland listening socket source");

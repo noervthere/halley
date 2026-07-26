@@ -163,7 +163,10 @@ pub fn resolve_binds(keybinds: &Keybinds, backend: BackendKind) -> Vec<ResolvedB
             let trigger = match resolve_trigger_name(&bind.key) {
                 Some(trigger) => trigger,
                 None => {
-                    eprintln!("keybinds: unknown trigger name {:?}, skipping bind", bind.key);
+                    eventline::warn!(
+                        "keybinds: unknown trigger name {:?}, skipping bind",
+                        bind.key
+                    );
                     return None;
                 }
             };

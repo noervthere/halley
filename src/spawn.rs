@@ -17,13 +17,15 @@ pub fn spawn_detached(command_line: &str, wayland_display: &OsStr) {
             // The immediate child exits after its own fork. The command's
             // shell is already reparented and will be reaped independently.
             match child.wait() {
-                Ok(_) => eprintln!(
+                Ok(_) => eventline::debug!(
                     "spawn: launched {command_line:?} (WAYLAND_DISPLAY={wayland_display:?})"
                 ),
-                Err(err) => eprintln!("spawn: failed to reap intermediate process: {err}"),
+                Err(err) => {
+                    eventline::warn!("spawn: failed to reap intermediate process: {err}")
+                }
             }
         }
-        Err(err) => eprintln!("spawn: failed to launch {command_line:?}: {err}"),
+        Err(err) => eventline::error!("spawn: failed to launch {command_line:?}: {err}"),
     }
 }
 

@@ -16,7 +16,7 @@ pub fn track(wayland: &mut WaylandState, surface: PopupSurface) {
     let popup = PopupKind::Xdg(surface);
     unconstrain(wayland, &popup);
     if let Err(err) = wayland.popup_manager.track_popup(popup) {
-        eprintln!("xdg-shell: failed to track popup: {err}");
+        eventline::warn!("xdg-shell: failed to track popup: {err}");
     }
 }
 
@@ -133,7 +133,7 @@ where
     match manager.grab_popup(root, popup, seat, serial) {
         Ok(grab) => Some(grab),
         Err(err) => {
-            eprintln!("xdg-shell: rejected popup grab: {err}");
+            eventline::warn!("xdg-shell: rejected popup grab: {err}");
             None
         }
     }

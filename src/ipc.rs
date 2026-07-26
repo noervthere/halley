@@ -56,11 +56,11 @@ fn handle_client(mut stream: UnixStream, outputs: &[halley_ipc::OutputInfo]) {
     };
 
     let Ok(bytes) = halley_ipc::encode_response(&response) else {
-        eprintln!("ipc: failed to encode response");
+        eventline::error!("ipc: failed to encode response");
         return;
     };
     if let Err(err) = halley_ipc::write_frame(&mut stream, &bytes) {
-        eprintln!("ipc: failed to write response: {err}");
+        eventline::warn!("ipc: failed to write response: {err}");
     }
 }
 
@@ -101,7 +101,7 @@ pub fn init_ipc_listener<App: 'static>(
                 Ok((stream, _addr)) => handle_client(stream, &output_info(app)),
                 Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => break,
                 Err(err) => {
-                    eprintln!("ipc: accept failed: {err}");
+                    eventline::error!("ipc: accept failed: {err}");
                     break;
                 }
             }

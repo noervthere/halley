@@ -53,17 +53,17 @@ impl ConfigFileState {
 /// later valid save is still picked up by the watcher.
 pub fn load_initial() -> (Option<PathBuf>, halley_config::RuntimeConfig) {
     let Some(path) = halley_config::config_path() else {
-        eprintln!("config: no config path resolvable, using defaults");
+        eventline::warn!("config: no config path resolvable, using defaults");
         return (None, halley_config::RuntimeConfig::default());
     };
     if let Err(err) = halley_config::bootstrap_default_config_at(&path) {
-        eprintln!("config: failed to bootstrap default config: {err}");
+        eventline::warn!("config: failed to bootstrap default config: {err}");
     }
 
     let config = match halley_config::load_runtime_config_at(&path) {
         Ok(config) => config,
         Err(err) => {
-            eprintln!("config: failed to load {path:?}, using defaults: {err}");
+            eventline::warn!("config: failed to load {path:?}, using defaults: {err}");
             halley_config::RuntimeConfig::default()
         }
     };
@@ -99,7 +99,7 @@ pub fn watch<App: 'static>(
     loop_handle.insert_source(receiver, move |event, _, app| match event {
         Event::Msg(Ok(config)) => apply(app, config),
         Event::Msg(Err(err)) => {
-            eprintln!("config: reload rejected, keeping last valid config: {err}")
+            eventline::warn!("config: reload rejected, keeping last valid config: {err}")
         }
         Event::Closed => {}
     })?;

@@ -266,7 +266,7 @@ fn select_mode(connector: &connector::Info, configured: Option<&halley_config::O
                 })
                 .collect::<Vec<_>>()
                 .join(", ");
-            eprintln!(
+            eventline::warn!(
                 "output {name:?}: configured {}x{}{} not found on this connector; available modes: {available}",
                 cfg.width,
                 cfg.height,
@@ -389,12 +389,12 @@ impl TtyBackend {
             let vrr = target.vrr;
 
             if connector.modes().is_empty() {
-                eprintln!("output {name:?}: connected connector advertises no modes");
+                eventline::warn!("output {name:?}: connected connector advertises no modes");
                 ipc_output_info.push(connector_output_info(name, &connector, None, offset, vrr));
                 continue;
             }
             let Some(crtc) = crtc else {
-                eprintln!("output {name:?}: connected connector has no available CRTC");
+                eventline::warn!("output {name:?}: connected connector has no available CRTC");
                 ipc_output_info.push(connector_output_info(name, &connector, None, offset, vrr));
                 continue;
             };
@@ -437,7 +437,7 @@ impl TtyBackend {
             match result {
                 Ok(drm_output) => {
                     if vrr == halley_config::Vrr::On {
-                        eprintln!(
+                        eventline::warn!(
                             "output {name:?}: vrr \"on\" is configured but not wired to real hardware VRR yet \
                              (needs lower-level DRM compositor access this backend doesn't have) - ignored for now"
                         );
@@ -463,7 +463,7 @@ impl TtyBackend {
                     });
                 }
                 Err(err) => {
-                    eprintln!("failed to initialize output {name:?}: {err}");
+                    eventline::error!("failed to initialize output {name:?}: {err}");
                     ipc_output_info.push(connector_output_info(name, &connector, None, offset, vrr));
                 }
             }
@@ -585,7 +585,7 @@ impl TtyBackend {
                 };
                 if let Err(err) = result {
                     let name = self.drm_outputs[index].output.name();
-                    eprintln!(
+                    eventline::error!(
                         "output {name:?}: failed to apply configured mode, keeping previous state: {err}"
                     );
                     continue;

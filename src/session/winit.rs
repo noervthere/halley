@@ -269,15 +269,15 @@ pub fn run() {
     app.wayland.space.map_output(app.backend.output(), (0, 0));
 
     let socket_name = init_wayland_listener(display, &mut event_loop);
-    println!("halley (winit) starting, WAYLAND_DISPLAY={socket_name:?}");
+    eventline::info!("halley (winit) starting, WAYLAND_DISPLAY={socket_name:?}");
 
     if let Err(err) = crate::ipc::init_ipc_listener(&event_loop.handle(), |app: &App| app.backend.output_info()) {
-        eprintln!("ipc: failed to start listener: {err}");
+        eventline::error!("ipc: failed to start listener: {err}");
     }
     if let Some(path) = config_path
         && let Err(err) = crate::config::watch(&event_loop.handle(), path, apply_runtime_config)
     {
-        eprintln!("config: failed to start watcher: {err}");
+        eventline::warn!("config: failed to start watcher: {err}");
     }
 
     event_loop
@@ -326,7 +326,7 @@ pub fn run() {
                     &app.cameras,
                     &app.window_open_animations,
                 ) {
-                    eprintln!("render failed: {err}");
+                    eventline::error!("render failed: {err}");
                 }
 
                 // Lets clients know their last commit was actually
@@ -664,7 +664,7 @@ pub fn run() {
                         |direction| match_wheel_bind(&app.keyboard.binds, &mods, direction),
                     );
                     for (direction, action) in result.actions {
-                        eprintln!(
+                        eventline::debug!(
                             "keybinds: wheel {direction:?} + {mods:?} -> {action:?}"
                         );
                         dispatch_action(app, action, &socket_name, &output_name);
@@ -758,7 +758,7 @@ fn init_wayland_listener(display: Display<App>, event_loop: &mut EventLoop<App>)
                 .display_handle
                 .insert_client(client_stream, Arc::new(ClientState::default()))
             {
-                eprintln!("failed to insert new wayland client: {err}");
+                eventline::warn!("failed to insert new wayland client: {err}");
             }
         })
         .expect("failed to insert wayland listening socket source");

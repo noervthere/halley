@@ -72,7 +72,7 @@ pub fn match_keyboard_bind(
     // Low-frequency (only fires on an actual match, not every keystroke) and
     // genuinely useful - confirms which action a chord resolved to without
     // needing to reason about it from config alone.
-    eprintln!(
+    eventline::debug!(
         "keybinds: {:?} + {mods:?} -> {:?}",
         bind.trigger, bind.action
     );
@@ -90,7 +90,7 @@ pub fn match_pointer_bind(
             ResolvedTrigger::PointerButton(trigger) if trigger.matches(button)
         ) && modifiers_match(mods, bind.modifiers)
     })?;
-    eprintln!(
+    eventline::debug!(
         "keybinds: {:?} + {mods:?} -> {:?}",
         bind.trigger, bind.action
     );

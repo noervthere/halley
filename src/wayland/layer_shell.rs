@@ -30,7 +30,7 @@ pub fn new_surface(
             wayland.unmapped_layers.insert(wl_surface);
         }
         Err(err) => {
-            eprintln!(
+            eventline::warn!(
                 "layer-shell: failed to map surface to {}: {err}",
                 output.name()
             );

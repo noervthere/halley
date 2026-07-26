@@ -31,7 +31,7 @@ fn dispatch_action(
         Action::CloseFocusedWindow => wayland::xdg_shell::close_focused(wayland),
         Action::OpenTerminal => match terminal_command {
             Some(command) => spawn::spawn_detached(command, socket_name),
-            None => eprintln!("keybinds: no terminal configured or found on PATH"),
+            None => eventline::warn!("keybinds: no terminal configured or found on PATH"),
         },
         Action::ZoomOut => {
             if let Some(camera) = camera {
