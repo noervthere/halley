@@ -11,25 +11,13 @@ use crate::{
 /// One validated snapshot of every setting the running compositor currently
 /// understands. Loading the file once avoids independently parsing the same
 /// bytes for each subsystem and gives live reload a single atomic unit.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct RuntimeConfig {
     pub keybinds: Keybinds,
     pub decorations: Decorations,
     pub zoom: Zoom,
     pub animations: Animations,
     pub outputs: Vec<OutputConfig>,
-}
-
-impl Default for RuntimeConfig {
-    fn default() -> Self {
-        Self {
-            keybinds: Keybinds::default(),
-            decorations: Decorations::default(),
-            zoom: Zoom::default(),
-            animations: Animations::default(),
-            outputs: Vec::new(),
-        }
-    }
 }
 
 #[derive(Debug)]

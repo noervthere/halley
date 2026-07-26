@@ -153,7 +153,7 @@ pub fn build_visuals(
 ) -> Vec<NodeVisual> {
     let mut out = Vec::new();
 
-    for (&id, _) in field.nodes().iter() {
+    for &id in field.nodes().keys() {
         if !field.is_visible(id) {
             continue;
         }
@@ -178,7 +178,7 @@ pub fn build_visuals_in_view(
 ) -> Vec<NodeVisual> {
     let mut out = Vec::new();
 
-    for (&id, _) in field.nodes().iter() {
+    for &id in field.nodes().keys() {
         if !field.is_visible(id) {
             continue;
         }

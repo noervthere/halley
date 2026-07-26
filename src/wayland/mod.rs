@@ -63,9 +63,11 @@ pub struct WaylandState {
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
     pub layer_shell_state: WlrLayerShellState,
-    pub xdg_decoration_state: XdgDecorationState,
+    // Retained for the lifetime of its advertised global.
+    _xdg_decoration_state: XdgDecorationState,
     pub shm_state: ShmState,
-    pub output_manager_state: OutputManagerState,
+    // Retained alongside the wl_output globals it serves.
+    _output_manager_state: OutputManagerState,
     /// Clipboard (ctrl+c/ctrl+v) and drag-and-drop. Smithay owns the actual
     /// transfer - it hands the source client's fd straight to the receiving
     /// client - so this is only the global's state, with no compositor-side
@@ -129,9 +131,9 @@ impl WaylandState {
             compositor_state,
             xdg_shell_state,
             layer_shell_state,
-            xdg_decoration_state,
+            _xdg_decoration_state: xdg_decoration_state,
             shm_state,
-            output_manager_state,
+            _output_manager_state: output_manager_state,
             data_device_state,
             primary_selection_state,
             popup_manager: PopupManager::default(),
