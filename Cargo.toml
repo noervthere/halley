@@ -28,4 +28,5 @@ halley-config = { path = "halley-config" }
 halley-core = { path = "halley-core" }
 halley-ipc = { path = "halley-ipc" }
 libc = "0.2"
+png = "0.17"
 xcursor = "0.3"

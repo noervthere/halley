@@ -55,6 +55,7 @@ fn parse_action(s: &str) -> Action {
         "zoom-in" | "zoom_in" => Action::ZoomIn,
         "zoom-out" | "zoom_out" => Action::ZoomOut,
         "zoom-reset" | "zoom_reset" => Action::ZoomReset,
+        "screenshot" => Action::Screenshot,
         command => Action::Spawn(command.to_string()),
     }
 }
@@ -203,6 +204,23 @@ end
             .unwrap();
         assert_eq!(zoom_reset.key, "click-middle");
         assert!(zoom_reset.modifiers.super_key);
+    }
+
+    #[test]
+    fn accepts_screenshot_action() {
+        let kb = parse(
+            r#"
+keybinds:
+  mod "super"
+  "Print" "screenshot"
+end
+"#,
+        );
+        assert!(kb.binds.iter().any(|bind| {
+            bind.key == "Print"
+                && bind.modifiers == crate::Modifiers::default()
+                && bind.action == Action::Screenshot
+        }));
     }
 
     #[test]

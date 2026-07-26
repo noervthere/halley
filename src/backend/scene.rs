@@ -41,11 +41,19 @@ pub fn build(
     let camera_center = crate::camera::global_center(view.center, output_geometry);
     let zoom_scale = view.scale;
 
-    let mut elements: Vec<SceneElement> =
+    let mut elements: Vec<SceneElement> = request
+        .capture_region
+        .map(|region| capture_picker_elements(output_geometry, region))
+        .unwrap_or_default()
+        .into_iter()
+        .rev()
+        .map(SceneElement::Border)
+        .collect();
+    elements.extend(
         super::layer_surface_elements(renderer, output, Layer::Overlay)
             .into_iter()
-            .map(SceneElement::Layer)
-            .collect();
+            .map(SceneElement::Layer),
+    );
     if !request
         .fullscreen
         .covers_top(request.focused, output, request.target_presentation_time)
@@ -223,7 +231,10 @@ pub fn build(
             .map(SceneElement::Layer),
     );
 
-    if let Some(position) = cursor_position_for_output(output_geometry, request.cursor_position) {
+    if request.show_cursor
+        && let Some(position) =
+            cursor_position_for_output(output_geometry, request.cursor_position)
+    {
         let cursor = MemoryRenderBufferRenderElement::from_buffer(
             renderer,
             position,
@@ -238,6 +249,75 @@ pub fn build(
     }
 
     Ok(elements)
+}
+
+fn capture_picker_elements(
+    output: Rectangle<i32, Logical>,
+    selection: Rectangle<i32, Logical>,
+) -> Vec<SolidColorRenderElement> {
+    let output_local = Rectangle::<i32, Physical>::from_size(output.size.to_physical(1));
+    let selected = output
+        .intersection(selection)
+        .map(|intersection| {
+            Rectangle::<i32, Physical>::new(
+                (intersection.loc - output.loc).to_physical(1),
+                intersection.size.to_physical(1),
+            )
+        });
+    let dim = smithay::backend::renderer::Color32F::new(0.0, 0.0, 0.0, 0.48);
+    let white = smithay::backend::renderer::Color32F::new(1.0, 1.0, 1.0, 1.0);
+    let make = |geometry, color| {
+        SolidColorRenderElement::new(
+            Id::new(),
+            geometry,
+            CommitCounter::default(),
+            color,
+            Kind::Unspecified,
+        )
+    };
+
+    let Some(selected) = selected else {
+        return vec![make(output_local, dim)];
+    };
+    let mut elements = Vec::with_capacity(12);
+    let right = selected.loc.x + selected.size.w;
+    let bottom = selected.loc.y + selected.size.h;
+    for rect in [
+        Rectangle::new((0, 0).into(), (output_local.size.w, selected.loc.y.max(0)).into()),
+        Rectangle::new(
+            (0, bottom).into(),
+            (output_local.size.w, (output_local.size.h - bottom).max(0)).into(),
+        ),
+        Rectangle::new(
+            (0, selected.loc.y).into(),
+            (selected.loc.x.max(0), selected.size.h).into(),
+        ),
+        Rectangle::new(
+            (right, selected.loc.y).into(),
+            ((output_local.size.w - right).max(0), selected.size.h).into(),
+        ),
+    ] {
+        if rect.size.w > 0 && rect.size.h > 0 {
+            elements.push(make(rect, dim));
+        }
+    }
+    elements.extend(super::border_strips(selected, 2, white));
+    let handle_size = 12;
+    for point in [
+        selected.loc,
+        (right, selected.loc.y).into(),
+        (selected.loc.x, bottom).into(),
+        (right, bottom).into(),
+    ] {
+        elements.push(make(
+            Rectangle::new(
+                (point.x - handle_size / 2, point.y - handle_size / 2).into(),
+                (handle_size, handle_size).into(),
+            ),
+            white,
+        ));
+    }
+    elements
 }
 
 fn map_rect(

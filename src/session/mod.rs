@@ -22,6 +22,7 @@ pub use state::{Session, SessionDriver};
 enum SessionControl {
     Continue,
     Quit,
+    Screenshot,
 }
 
 /// Interprets every configured action once for both session backends.
@@ -57,6 +58,7 @@ fn dispatch_action(
                 camera.reset_zoom_target();
             }
         }
+        Action::Screenshot => return SessionControl::Screenshot,
         Action::Spawn(command) => spawn::spawn_detached(&command, socket_name),
     }
     SessionControl::Continue

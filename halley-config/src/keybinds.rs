@@ -41,6 +41,7 @@ pub enum Action {
     ZoomIn,
     ZoomOut,
     ZoomReset,
+    Screenshot,
     /// A user-provided command line. This is the fallback for every action
     /// string that is not one of Halley's compositor actions.
     Spawn(String),
@@ -137,6 +138,11 @@ impl Default for Keybinds {
                     key: "0".to_string(),
                     action: Action::ZoomReset,
                 },
+                Keybind {
+                    modifiers: Modifiers::default(),
+                    key: "Print".to_string(),
+                    action: Action::Screenshot,
+                },
             ],
         }
     }
@@ -147,11 +153,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_has_the_six_starting_binds() {
+    fn default_has_the_seven_starting_binds() {
         let kb = Keybinds::default();
         assert_eq!(kb.modifier, ModifierKey::Super);
         assert_eq!(kb.default_terminal, DefaultTerminal::Auto);
-        assert_eq!(kb.binds.len(), 6);
+        assert_eq!(kb.binds.len(), 7);
 
         let quit = kb.binds.iter().find(|b| b.action == Action::Quit).unwrap();
         assert!(quit.modifiers.super_key);
@@ -194,5 +200,13 @@ mod tests {
             .unwrap();
         assert!(zoom_reset.modifiers.super_key);
         assert_eq!(zoom_reset.key, "0");
+
+        let screenshot = kb
+            .binds
+            .iter()
+            .find(|b| b.action == Action::Screenshot)
+            .unwrap();
+        assert_eq!(screenshot.modifiers, Modifiers::default());
+        assert_eq!(screenshot.key, "Print");
     }
 }

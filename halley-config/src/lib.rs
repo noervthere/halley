@@ -6,6 +6,7 @@ pub mod keybinds;
 pub mod output;
 pub mod parse;
 pub mod runtime;
+pub mod screenshot;
 pub mod terminal;
 pub mod zoom;
 
@@ -26,6 +27,7 @@ pub use parse::{ParseError, parse_keybinds};
 pub use runtime::{
     RuntimeConfig, RuntimeConfigError, load_runtime_config_at, parse_runtime_config,
 };
+pub use screenshot::{Screenshot, parse_screenshot};
 pub use terminal::{
     TERMINAL_PRIORITY, resolve_default_terminal, resolve_default_terminal_from_path,
 };

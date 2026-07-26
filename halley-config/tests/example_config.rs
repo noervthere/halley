@@ -13,7 +13,7 @@ fn example_config_parses_end_to_end() {
 
     assert_eq!(keybinds.modifier, ModifierKey::Super);
     assert_eq!(keybinds.default_terminal, DefaultTerminal::Auto);
-    assert_eq!(keybinds.binds.len(), 6);
+    assert_eq!(keybinds.binds.len(), 7);
 
     let quit = keybinds
         .binds
@@ -64,6 +64,14 @@ fn example_config_parses_end_to_end() {
         .expect("zoom-reset bind present");
     assert_eq!(zoom_reset.key, "0");
     assert!(zoom_reset.modifiers.super_key);
+
+    let screenshot = keybinds
+        .binds
+        .iter()
+        .find(|b| b.action == Action::Screenshot)
+        .expect("screenshot bind present");
+    assert_eq!(screenshot.key, "Print");
+    assert_eq!(screenshot.modifiers, halley_config::Modifiers::default());
 }
 
 /// Confirms the shipped example's `zoom:` section parses to non-default

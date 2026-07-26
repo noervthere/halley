@@ -43,6 +43,11 @@ decorations:
   end
 end
 
+# Screenshots are written here after an interactive area selection.
+screenshot:
+  directory "$env.HOME/Pictures/Screenshots/"
+end
+
 # A "zoom out" effect - visually shrinks everything toward the screen
 # center, and back in again. Capped at 1.0x - zooming in only ever walks
 # zoom-out steps back, it never magnifies past normal size.
@@ -107,10 +112,12 @@ keybinds:
   "$var.mod+equal" "zoom-in"
   "$var.mod+0" "zoom-reset"
 
+  # Open the native area selector.
+  "Print" "screenshot"
+
   # Other keyboard, mouse, and physical-wheel triggers use the same chord
   # syntax. These are examples only; uncomment only the bindings you want.
   #
-  # "Print" "grim ~/Pictures/screenshot.png"
   # "$var.mod+Page_Up" "some-command"
   # "$var.mod+click-forward" "some-command"
   # "$var.mod+scroll-up" "zoom-in"

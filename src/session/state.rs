@@ -60,6 +60,8 @@ pub struct Session<D: SessionDriver> {
     pub decorations: halley_config::Decorations,
     pub cameras: OutputCameras,
     pub zoom: halley_config::Zoom,
+    pub screenshot: halley_config::Screenshot,
+    pub capture: crate::capture::CaptureState,
     pub grab: Grab,
     pub resize_anchor: Option<ResizeAnchor>,
     pub suppressed_buttons: SuppressedButtons,
@@ -114,6 +116,7 @@ impl<D: SessionDriver> Session<D> {
         let redraw = self.decorations != config.decorations || self.zoom != config.zoom;
         self.decorations = config.decorations;
         self.zoom = config.zoom;
+        self.screenshot = config.screenshot.clone();
         self.window_open_animations.reload(config.animations);
         if self.fullscreen.reload(config.animations) {
             self.fullscreen_textures.clear();

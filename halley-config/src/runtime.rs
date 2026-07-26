@@ -4,8 +4,9 @@ use std::path::Path;
 use rune_cfg::RuneConfig;
 
 use crate::{
-    Animations, Decorations, Keybinds, OutputConfig, OutputParseError, Zoom, parse_animations,
-    parse_decorations, parse_keybinds, parse_outputs_checked, parse_zoom,
+    Animations, Decorations, Keybinds, OutputConfig, OutputParseError, Screenshot, Zoom,
+    parse_animations, parse_decorations, parse_keybinds, parse_outputs_checked, parse_screenshot,
+    parse_zoom,
 };
 
 /// One validated snapshot of every setting the running compositor currently
@@ -16,6 +17,7 @@ pub struct RuntimeConfig {
     pub keybinds: Keybinds,
     pub decorations: Decorations,
     pub zoom: Zoom,
+    pub screenshot: Screenshot,
     pub animations: Animations,
     pub outputs: Vec<OutputConfig>,
 }
@@ -62,6 +64,7 @@ pub fn parse_runtime_config(config: &RuneConfig) -> Result<RuntimeConfig, Runtim
         keybinds: parse_keybinds(config)?,
         decorations: parse_decorations(config),
         zoom: parse_zoom(config),
+        screenshot: parse_screenshot(config),
         animations: parse_animations(config),
         outputs: parse_outputs_checked(config)?,
     })
@@ -90,6 +93,10 @@ zoom:
   enabled false
 end
 
+screenshot:
+  directory "/tmp/screenshots"
+end
+
 decorations:
   border:
     size 7
@@ -111,6 +118,7 @@ end
         let runtime = parse_runtime_config(&config).unwrap();
         assert_eq!(runtime.outputs.len(), 1);
         assert!(!runtime.zoom.enabled);
+        assert_eq!(runtime.screenshot.directory, "/tmp/screenshots");
         assert_eq!(runtime.decorations.border_width_px, 7);
         assert!(!runtime.animations.enabled);
         assert_eq!(runtime.keybinds.binds.len(), 1);

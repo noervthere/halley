@@ -172,6 +172,8 @@ pub struct RenderRequest<'a> {
     pub clear: Color32F,
     pub cursor: &'a CursorImage,
     pub cursor_position: (f64, f64),
+    pub show_cursor: bool,
+    pub capture_region: Option<Rectangle<i32, Logical>>,
     pub space: &'a Space<Window>,
     pub focused: Option<&'a WlSurface>,
     pub decorations: &'a Decorations,

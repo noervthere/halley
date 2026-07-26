@@ -5,7 +5,7 @@ use smithay::backend::input::{
     PointerMotionEvent,
 };
 use smithay::desktop::{Space, Window};
-use smithay::input::keyboard::FilterResult;
+use smithay::input::keyboard::{FilterResult, Keysym};
 use smithay::input::pointer::{ButtonEvent, MotionEvent, RelativeMotionEvent};
 use smithay::output::Output;
 use smithay::utils::{Logical, Point, Rectangle, SERIAL_COUNTER};
@@ -99,17 +99,38 @@ fn dispatch_action<D: SessionDriver>(
     output_name: Option<&str>,
 ) {
     let camera = output_name.and_then(|name| session.cameras.get_mut(name));
-    if super::dispatch_action(
+    match super::dispatch_action(
         action,
         &session.wayland,
         session.keyboard.terminal_command(),
         socket_name,
         camera,
         &session.zoom,
-    ) == super::SessionControl::Quit
-    {
-        session.driver.stop();
+    ) {
+        super::SessionControl::Continue => {}
+        super::SessionControl::Quit => session.driver.stop(),
+        super::SessionControl::Screenshot => {
+            if session
+                .capture
+                .begin_region(&session.wayland.space, output_name)
+            {
+                session.grab = crate::input::grab::Grab::None;
+                let keyboard = session
+                    .seat
+                    .get_keyboard()
+                    .expect("keyboard capability added at seat setup");
+                keyboard.set_focus(session, None, SERIAL_COUNTER.next_serial());
+                session.request_redraw();
+            }
+        }
     }
+}
+
+enum KeyboardOutcome {
+    Action(halley_config::Action),
+    CaptureAccept,
+    CaptureCancel,
+    CaptureIntercept,
 }
 
 pub fn handle<D, B>(
@@ -147,6 +168,31 @@ pub fn handle<D, B>(
         }
         _ => None,
     };
+    if session.capture.is_active() {
+        match event {
+            InputEvent::PointerMotion { .. } | InputEvent::PointerMotionAbsolute { .. } => {
+                session.capture.motion(proposed_position);
+                session.request_redraw();
+                return;
+            }
+            InputEvent::PointerButton { event } => {
+                if event.button_code() == BTN_LEFT {
+                    match event.state() {
+                        ButtonState::Pressed => {
+                            session.capture.press(proposed_position);
+                        }
+                        ButtonState::Released => {
+                            session.capture.release();
+                        }
+                    }
+                }
+                session.request_redraw();
+                return;
+            }
+            InputEvent::PointerAxis { .. } => return,
+            _ => {}
+        }
+    }
     let confined_position_allowed = active_constraint.as_ref().is_none_or(|constraint| {
         constraint.kind != super::pointer_constraints::ConstraintKind::Confined
             || super::pointer_constraints::allows_current_position(session, constraint)
@@ -518,13 +564,27 @@ pub fn handle<D, B>(
             .get_keyboard()
             .expect("keyboard capability added at seat setup");
         let bindings_enabled = bindings_enabled(session);
-        let action = keyboard.input::<halley_config::Action, _>(
+        let action = keyboard.input::<KeyboardOutcome, _>(
             session,
             keycode,
             state,
             SERIAL_COUNTER.next_serial(),
             time,
             |data, modifiers, handle| {
+                if data.capture.is_active() {
+                    if state != KeyState::Pressed {
+                        return FilterResult::Intercept(KeyboardOutcome::CaptureIntercept);
+                    }
+                    return match handle.raw_latin_sym_or_raw_current_sym() {
+                        Some(Keysym::Escape) => {
+                            FilterResult::Intercept(KeyboardOutcome::CaptureCancel)
+                        }
+                        Some(Keysym::Return | Keysym::KP_Enter) => {
+                            FilterResult::Intercept(KeyboardOutcome::CaptureAccept)
+                        }
+                        _ => FilterResult::Intercept(KeyboardOutcome::CaptureIntercept),
+                    };
+                }
                 if state != KeyState::Pressed || !bindings_enabled {
                     return FilterResult::Forward;
                 }
@@ -534,7 +594,9 @@ pub fn handle<D, B>(
                     handle.raw_latin_sym_or_raw_current_sym(),
                     keycode,
                 ) {
-                    Some(action) => FilterResult::Intercept(action),
+                    Some(action) => {
+                        FilterResult::Intercept(KeyboardOutcome::Action(action))
+                    }
                     None => FilterResult::Forward,
                 }
             },
@@ -546,8 +608,30 @@ pub fn handle<D, B>(
             .next()
             .map(Output::name);
 
-        if let Some(action) = action {
-            dispatch_action(session, action, socket_name, pointer_output.as_deref());
+        match action {
+            Some(KeyboardOutcome::Action(action)) => {
+                dispatch_action(session, action, socket_name, pointer_output.as_deref());
+            }
+            Some(KeyboardOutcome::CaptureAccept) => {
+                if let Some(region) = session.capture.accept() {
+                    match crate::capture::save_region(session, region) {
+                        Ok(path) => {
+                            session.capture.remember_successful(region);
+                            eventline::info!("screenshot saved to {}", path.display());
+                        }
+                        Err(err) => eventline::error!("screenshot failed: {err}"),
+                    }
+                    super::sync_keyboard_focus(session, SERIAL_COUNTER.next_serial());
+                    session.request_redraw();
+                }
+            }
+            Some(KeyboardOutcome::CaptureCancel) => {
+                if session.capture.cancel() {
+                    super::sync_keyboard_focus(session, SERIAL_COUNTER.next_serial());
+                    session.request_redraw();
+                }
+            }
+            Some(KeyboardOutcome::CaptureIntercept) | None => {}
         }
     }
 }

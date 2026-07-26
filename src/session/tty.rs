@@ -154,6 +154,8 @@ pub fn run(session_mode: bool) {
         decorations: runtime_config.decorations,
         cameras: crate::camera::OutputCameras::default(),
         zoom: runtime_config.zoom,
+        screenshot: runtime_config.screenshot,
+        capture: crate::capture::CaptureState::default(),
         grab: crate::input::grab::Grab::None,
         resize_anchor: None,
         suppressed_buttons: SuppressedButtons::default(),
@@ -378,6 +380,7 @@ fn apply_tty_output_config(app: &mut TtyApp, outputs_config: &[halley_config::Ou
 
     if layout_changed {
         app.wayland.space.refresh();
+        app.capture.update_layout(&app.wayland.space);
         super::input::update_client_pointer_focus(app, app.start_time.elapsed().as_millis() as u32);
         let pointer = app
             .seat
@@ -464,6 +467,8 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
             clear: CLEAR_COLOR,
             cursor: &app.cursor,
             cursor_position: app.pointer.position(),
+            show_cursor: true,
+            capture_region: app.capture.region(),
             space: &app.wayland.space,
             focused: app.wayland.focused_window.as_ref(),
             decorations: &app.decorations,

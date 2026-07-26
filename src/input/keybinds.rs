@@ -225,7 +225,7 @@ mod tests {
         let keybinds = Keybinds::default();
         let resolved = resolve_binds(&keybinds, BackendKind::Winit);
 
-        assert_eq!(resolved.len(), 6);
+        assert_eq!(resolved.len(), 7);
         let quit = resolved.iter().find(|bind| bind.action == Action::Quit).unwrap();
         assert!(quit.modifiers.alt);
         assert!(!quit.modifiers.super_key);
@@ -241,7 +241,7 @@ mod tests {
         let keybinds = Keybinds::default();
         let resolved = resolve_binds(&keybinds, BackendKind::Tty);
 
-        assert_eq!(resolved.len(), 6);
+        assert_eq!(resolved.len(), 7);
         let quit = resolved.iter().find(|bind| bind.action == Action::Quit).unwrap();
         assert!(quit.modifiers.super_key);
         assert!(!quit.modifiers.alt);
@@ -275,6 +275,7 @@ mod tests {
         assert!(resolved.iter().any(|bind| bind.action == Action::ZoomIn));
         assert!(resolved.iter().any(|bind| bind.action == Action::ZoomOut));
         assert!(resolved.iter().any(|bind| bind.action == Action::ZoomReset));
+        assert!(resolved.iter().any(|bind| bind.action == Action::Screenshot));
     }
 
     #[test]
