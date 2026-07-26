@@ -145,6 +145,27 @@ enum KeyboardOutcome {
     CaptureIntercept,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CaptureKeyRouting {
+    Evaluate,
+    RetireUnfocusedRelease,
+    SuppressRelease,
+}
+
+fn capture_key_routing(
+    capture_active: bool,
+    state: KeyState,
+    release_is_suppressed: bool,
+) -> CaptureKeyRouting {
+    if state == KeyState::Released && release_is_suppressed {
+        CaptureKeyRouting::SuppressRelease
+    } else if capture_active && state == KeyState::Released {
+        CaptureKeyRouting::RetireUnfocusedRelease
+    } else {
+        CaptureKeyRouting::Evaluate
+    }
+}
+
 pub fn handle<D, B>(
     session: &mut Session<D>,
     event: &InputEvent<B>,
@@ -594,6 +615,8 @@ pub fn handle<D, B>(
         let keycode = key_event.key_code();
         let state = key_event.state();
         let time = key_event.time_msec();
+        let release_is_suppressed =
+            state == KeyState::Released && session.suppressed_keys.release_is_suppressed(keycode);
         let keyboard = session
             .seat
             .get_keyboard()
@@ -606,10 +629,19 @@ pub fn handle<D, B>(
             SERIAL_COUNTER.next_serial(),
             time,
             |data, modifiers, handle| {
-                if data.capture.is_active() {
-                    if state != KeyState::Pressed {
+                match capture_key_routing(data.capture.is_active(), state, release_is_suppressed) {
+                    CaptureKeyRouting::SuppressRelease => {
                         return FilterResult::Intercept(KeyboardOutcome::CaptureIntercept);
                     }
+                    CaptureKeyRouting::RetireUnfocusedRelease => {
+                        // Focus is cleared for the lifetime of the overlay. Forwarding
+                        // releases here reaches no client, but lets Smithay retire keys
+                        // whose presses were forwarded before the modal opened.
+                        return FilterResult::Forward;
+                    }
+                    CaptureKeyRouting::Evaluate => {}
+                }
+                if data.capture.is_active() {
                     return match handle.raw_latin_sym_or_raw_current_sym() {
                         Some(Keysym::Escape) => {
                             FilterResult::Intercept(KeyboardOutcome::CaptureCancel)
@@ -669,6 +701,7 @@ pub fn handle<D, B>(
                         session.request_redraw();
                     }
                 } else if crate::capture::accept_selected(session) {
+                    session.suppressed_keys.suppress(keycode);
                     super::sync_keyboard_focus(session, SERIAL_COUNTER.next_serial());
                     session.request_redraw();
                 }
@@ -677,6 +710,7 @@ pub fn handle<D, B>(
                 if session.capture.return_to_menu() {
                     session.request_redraw();
                 } else if crate::capture::cancel_selected(session) {
+                    session.suppressed_keys.suppress(keycode);
                     super::sync_keyboard_focus(session, SERIAL_COUNTER.next_serial());
                     session.request_redraw();
                 }
@@ -765,7 +799,9 @@ fn update_capture_pointer<D: SessionDriver>(
 
 #[cfg(test)]
 mod tests {
-    use super::shortcut_policy_allows_bindings;
+    use smithay::backend::input::KeyState;
+
+    use super::{CaptureKeyRouting, capture_key_routing, shortcut_policy_allows_bindings};
 
     #[test]
     fn shortcut_policy_respects_shell_and_client_inhibition() {
@@ -773,5 +809,21 @@ mod tests {
         assert!(!shortcut_policy_allows_bindings(true, false));
         assert!(!shortcut_policy_allows_bindings(false, true));
         assert!(!shortcut_policy_allows_bindings(true, true));
+    }
+
+    #[test]
+    fn modal_releases_retire_preexisting_forwarded_keys() {
+        assert_eq!(
+            capture_key_routing(true, KeyState::Released, false),
+            CaptureKeyRouting::RetireUnfocusedRelease
+        );
+        assert_eq!(
+            capture_key_routing(false, KeyState::Released, true),
+            CaptureKeyRouting::SuppressRelease
+        );
+        assert_eq!(
+            capture_key_routing(true, KeyState::Pressed, false),
+            CaptureKeyRouting::Evaluate
+        );
     }
 }

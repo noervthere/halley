@@ -22,7 +22,7 @@ use crate::camera::OutputCameras;
 use crate::cursor::CursorImage;
 use crate::input::grab::{Grab, ResizeAnchor};
 use crate::input::pointer::{Pointer, WheelAccumulator};
-use crate::input::{Keyboard, SuppressedButtons};
+use crate::input::{Keyboard, SuppressedButtons, SuppressedKeys};
 use crate::wayland::WaylandState;
 
 /// The narrow contract shared compositor policy needs from a session driver.
@@ -66,6 +66,7 @@ pub struct Session<D: SessionDriver> {
     pub grab: Grab,
     pub resize_anchor: Option<ResizeAnchor>,
     pub suppressed_buttons: SuppressedButtons,
+    pub suppressed_keys: SuppressedKeys,
     pub wheel_accumulator: WheelAccumulator,
     pub window_open_animations: crate::animation::WindowOpenAnimations,
     pub fullscreen: crate::wayland::fullscreen::FullscreenManager,

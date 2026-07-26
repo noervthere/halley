@@ -13,7 +13,7 @@ use crate::backend::{self, RenderRequest, Renderable};
 use crate::cursor::CursorImage;
 use crate::input::keybinds::BackendKind;
 use crate::input::pointer::{Pointer, WheelAccumulator};
-use crate::input::{Keyboard, SuppressedButtons};
+use crate::input::{Keyboard, SuppressedButtons, SuppressedKeys};
 use crate::wayland;
 
 use super::{Session, SessionDriver};
@@ -134,6 +134,7 @@ pub fn run() {
         grab: crate::input::grab::Grab::None,
         resize_anchor: None,
         suppressed_buttons: SuppressedButtons::default(),
+        suppressed_keys: SuppressedKeys::default(),
         wheel_accumulator: WheelAccumulator::default(),
         window_open_animations: crate::animation::WindowOpenAnimations::new(
             runtime_config.animations,

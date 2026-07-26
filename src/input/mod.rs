@@ -4,6 +4,7 @@ pub mod pointer;
 pub mod zoom;
 
 use std::collections::HashSet;
+use std::hash::Hash;
 
 use halley_config::{Action, ModifierKey, Modifiers};
 use smithay::backend::input::{ButtonState, Keycode};
@@ -113,20 +114,30 @@ fn no_modifiers_held(state: &ModifiersState) -> bool {
     !state.ctrl && !state.alt && !state.shift && !state.logo
 }
 
-#[derive(Default)]
-pub struct SuppressedButtons {
-    buttons: HashSet<u32>,
+pub struct SuppressedReleases<T> {
+    inputs: HashSet<T>,
 }
 
-impl SuppressedButtons {
-    pub fn suppress(&mut self, button: u32) {
-        self.buttons.insert(button);
-    }
-
-    pub fn release_is_suppressed(&mut self, button: u32) -> bool {
-        self.buttons.remove(&button)
+impl<T> Default for SuppressedReleases<T> {
+    fn default() -> Self {
+        Self {
+            inputs: HashSet::new(),
+        }
     }
 }
+
+impl<T: Eq + Hash> SuppressedReleases<T> {
+    pub fn suppress(&mut self, input: T) {
+        self.inputs.insert(input);
+    }
+
+    pub fn release_is_suppressed(&mut self, input: T) -> bool {
+        self.inputs.remove(&input)
+    }
+}
+
+pub type SuppressedButtons = SuppressedReleases<u32>;
+pub type SuppressedKeys = SuppressedReleases<Keycode>;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum PointerBindingResult {
