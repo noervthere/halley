@@ -75,6 +75,7 @@ fn dispatch_action<D: SessionDriver>(
     ) {
         super::SessionControl::Continue => {}
         super::SessionControl::Quit => session.driver.stop(),
+        super::SessionControl::ToggleFullscreen => super::toggle_focused_fullscreen(session),
         super::SessionControl::Screenshot => {
             let window_available = session.wayland.space.elements().any(|window| {
                 window.wl_surface().is_some()

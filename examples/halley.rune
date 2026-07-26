@@ -102,6 +102,9 @@ keybinds:
   # Close the focused window.
   "$var.mod+c" "close-focused"
 
+  # Toggle the focused window between windowed and fullscreen.
+  "$var.mod+f" "toggle-fullscreen"
+
   # Open a terminal. "auto" detects an installed terminal from a priority
   # list (alacritty, kitty, ghostty, wezterm, ...); set an explicit command
   # here instead to skip detection.

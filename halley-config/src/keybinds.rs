@@ -37,6 +37,7 @@ pub struct Modifiers {
 pub enum Action {
     Quit,
     CloseFocusedWindow,
+    ToggleFullscreen,
     OpenTerminal,
     ZoomIn,
     ZoomOut,
@@ -75,76 +76,12 @@ pub struct Keybinds {
 }
 
 impl Default for Keybinds {
-    /// Matches `examples/halley.rune` exactly - this is the fallback used
-    /// when no user config exists yet (see `bootstrap.rs`), not an
-    /// independently-maintained second copy of the same three binds.
+    /// Parse the same template written by the bootstrap path so the runtime
+    /// fallback and fresh-install config cannot drift apart.
     fn default() -> Self {
-        Self {
-            modifier: ModifierKey::Super,
-            default_terminal: DefaultTerminal::Auto,
-            binds: vec![
-                Keybind {
-                    modifiers: Modifiers {
-                        shift: true,
-                        super_key: true,
-                        ..Modifiers::default()
-                    },
-                    key: "e".to_string(),
-                    action: Action::Quit,
-                },
-                Keybind {
-                    modifiers: Modifiers {
-                        super_key: true,
-                        ..Modifiers::default()
-                    },
-                    key: "c".to_string(),
-                    action: Action::CloseFocusedWindow,
-                },
-                Keybind {
-                    modifiers: Modifiers {
-                        super_key: true,
-                        ..Modifiers::default()
-                    },
-                    key: "t".to_string(),
-                    action: Action::OpenTerminal,
-                },
-                Keybind {
-                    modifiers: Modifiers {
-                        super_key: true,
-                        ..Modifiers::default()
-                    },
-                    key: "minus".to_string(),
-                    action: Action::ZoomOut,
-                },
-                // Bound to the unshifted "=" key (same physical key "+"
-                // lives on), not literal shift+plus - matches "minus"'s own
-                // no-shift ergonomics and the common Ctrl+=/Ctrl+- app
-                // convention for zoom. A chord requiring shift would need
-                // `shift: true` here too, since the produced keysym would be
-                // "plus" only while shift is actually held.
-                Keybind {
-                    modifiers: Modifiers {
-                        super_key: true,
-                        ..Modifiers::default()
-                    },
-                    key: "equal".to_string(),
-                    action: Action::ZoomIn,
-                },
-                Keybind {
-                    modifiers: Modifiers {
-                        super_key: true,
-                        ..Modifiers::default()
-                    },
-                    key: "0".to_string(),
-                    action: Action::ZoomReset,
-                },
-                Keybind {
-                    modifiers: Modifiers::default(),
-                    key: "Print".to_string(),
-                    action: Action::Screenshot,
-                },
-            ],
-        }
+        let config = rune_cfg::RuneConfig::from_str(crate::bootstrap::DEFAULT_CONFIG)
+            .expect("embedded default config must remain valid");
+        crate::parse::parse_keybinds(&config).expect("embedded default keybinds must remain valid")
     }
 }
 
@@ -153,11 +90,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_has_the_seven_starting_binds() {
+    fn default_matches_the_shipped_keybinds() {
         let kb = Keybinds::default();
         assert_eq!(kb.modifier, ModifierKey::Super);
         assert_eq!(kb.default_terminal, DefaultTerminal::Auto);
-        assert_eq!(kb.binds.len(), 7);
+        assert_eq!(kb.binds.len(), 11);
 
         let quit = kb.binds.iter().find(|b| b.action == Action::Quit).unwrap();
         assert!(quit.modifiers.super_key);
@@ -172,6 +109,14 @@ mod tests {
         assert!(close.modifiers.super_key);
         assert!(!close.modifiers.shift);
         assert_eq!(close.key, "c");
+
+        let fullscreen = kb
+            .binds
+            .iter()
+            .find(|b| b.action == Action::ToggleFullscreen)
+            .unwrap();
+        assert!(fullscreen.modifiers.super_key);
+        assert_eq!(fullscreen.key, "f");
 
         let term = kb
             .binds

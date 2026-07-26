@@ -51,6 +51,7 @@ fn parse_action(s: &str) -> Action {
         "close-focused" | "close_focused" | "close-window" | "close_window" => {
             Action::CloseFocusedWindow
         }
+        "toggle-fullscreen" | "toggle_fullscreen" | "fullscreen" => Action::ToggleFullscreen,
         "open-terminal" | "open_terminal" => Action::OpenTerminal,
         "zoom-in" | "zoom_in" => Action::ZoomIn,
         "zoom-out" | "zoom_out" => Action::ZoomOut,
@@ -179,6 +180,20 @@ end
         assert_eq!(close.key, "q");
         assert!(close.modifiers.alt);
         assert!(!close.modifiers.super_key);
+    }
+
+    #[test]
+    fn accepts_fullscreen_action_aliases() {
+        for action in ["toggle-fullscreen", "toggle_fullscreen", "fullscreen"] {
+            let kb = parse(&format!(
+                "keybinds:\n  mod \"super\"\n  \"$var.mod+f\" \"{action}\"\nend\n"
+            ));
+            assert!(kb.binds.iter().any(|bind| {
+                bind.key == "f"
+                    && bind.modifiers.super_key
+                    && bind.action == Action::ToggleFullscreen
+            }));
+        }
     }
 
     #[test]

@@ -13,7 +13,7 @@ fn example_config_parses_end_to_end() {
 
     assert_eq!(keybinds.modifier, ModifierKey::Super);
     assert_eq!(keybinds.default_terminal, DefaultTerminal::Auto);
-    assert_eq!(keybinds.binds.len(), 10);
+    assert_eq!(keybinds.binds.len(), 11);
 
     let quit = keybinds
         .binds
@@ -32,6 +32,15 @@ fn example_config_parses_end_to_end() {
     assert_eq!(close.key, "c");
     assert!(close.modifiers.super_key);
     assert!(!close.modifiers.shift);
+
+    let fullscreen = keybinds
+        .binds
+        .iter()
+        .find(|b| b.action == Action::ToggleFullscreen)
+        .expect("toggle-fullscreen bind present");
+    assert_eq!(fullscreen.key, "f");
+    assert!(fullscreen.modifiers.super_key);
+    assert!(!fullscreen.modifiers.shift);
 
     let terminal = keybinds
         .binds

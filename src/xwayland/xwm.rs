@@ -104,6 +104,21 @@ fn leave_fullscreen<D: SessionDriver>(session: &mut Session<D>, surface: &X11Sur
     }
 }
 
+pub(super) fn set_window_fullscreen<D: SessionDriver>(
+    session: &mut Session<D>,
+    window: &Window,
+    fullscreen: bool,
+) {
+    let Some(surface) = window.x11_surface().cloned() else {
+        return;
+    };
+    if fullscreen {
+        enter_fullscreen(session, &surface);
+    } else {
+        leave_fullscreen(session, &surface);
+    }
+}
+
 fn maximize_window<D: SessionDriver>(session: &mut Session<D>, surface: &X11Surface) {
     let Some(window) = window_for_surface(session, surface) else {
         return;

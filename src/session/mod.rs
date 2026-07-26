@@ -24,6 +24,7 @@ enum SessionControl {
     Continue,
     Quit,
     Screenshot,
+    ToggleFullscreen,
 }
 
 /// Interprets every configured action once for both session backends.
@@ -41,6 +42,7 @@ fn dispatch_action(
     match action {
         Action::Quit => return SessionControl::Quit,
         Action::CloseFocusedWindow => crate::window::close_focused(wayland),
+        Action::ToggleFullscreen => return SessionControl::ToggleFullscreen,
         Action::OpenTerminal => match terminal_command {
             Some(command) => spawn::spawn_detached(command, socket_name, x11_display),
             None => eventline::warn!("keybinds: no terminal configured or found on PATH"),
@@ -64,6 +66,50 @@ fn dispatch_action(
         Action::Spawn(command) => spawn::spawn_detached(&command, socket_name, x11_display),
     }
     SessionControl::Continue
+}
+
+fn cancel_grab_for_surface<D: SessionDriver>(
+    session: &mut Session<D>,
+    surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+) {
+    if crate::input::grab::belongs_to_surface(&session.grab, surface) {
+        session.grab = crate::input::grab::Grab::None;
+        crate::input::grab::forget_resize_anchor(&mut session.resize_anchor, surface);
+    }
+}
+
+fn toggle_focused_fullscreen<D: SessionDriver>(session: &mut Session<D>) {
+    let Some(focused) = session.wayland.focused_window.clone() else {
+        return;
+    };
+    let Some(window) = session
+        .wayland
+        .space
+        .elements()
+        .find(|window| {
+            window
+                .wl_surface()
+                .is_some_and(|surface| surface.as_ref() == &focused)
+        })
+        .cloned()
+    else {
+        return;
+    };
+
+    cancel_grab_for_surface(session, &focused);
+    let entering = !session.fullscreen.is_fullscreen_or_pending(&focused);
+    if let Some(toplevel) = window.toplevel() {
+        if entering {
+            session
+                .fullscreen
+                .request(&mut session.wayland, toplevel, None);
+        } else {
+            session.fullscreen.unrequest(&session.wayland, toplevel);
+        }
+    } else {
+        crate::xwayland::set_window_fullscreen(session, &window, entering);
+    }
+    session.request_redraw();
 }
 
 pub(crate) fn sync_keyboard_focus<D: SessionDriver>(

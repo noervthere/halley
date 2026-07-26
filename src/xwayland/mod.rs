@@ -163,6 +163,14 @@ pub fn configure_window(
     xwm::configure_window(window, geometry);
 }
 
+pub fn set_window_fullscreen<D: SessionDriver>(
+    session: &mut Session<D>,
+    window: &smithay::desktop::Window,
+    fullscreen: bool,
+) {
+    xwm::set_window_fullscreen(session, window, fullscreen);
+}
+
 pub fn is_override_redirect(window: &smithay::desktop::Window) -> bool {
     window
         .x11_surface()

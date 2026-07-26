@@ -191,6 +191,6 @@ resolving `keycode-N`.
 
 ## Actions
 
-The built-in action strings are `quit`, `close-focused`, `open-terminal`,
-`zoom-in`, `zoom-out`, and `zoom-reset`. Any other action string is launched
-as a command line.
+The built-in action strings are `quit`, `close-focused`, `toggle-fullscreen`,
+`open-terminal`, `zoom-in`, `zoom-out`, `zoom-reset`, and `screenshot`. Any
+other action string is launched as a command line.
