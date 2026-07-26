@@ -23,6 +23,101 @@ impl AnimationCurve {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EasingMotion {
+    pub duration_ms: u32,
+    pub curve: AnimationCurve,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SpringMotion {
+    pub damping_ratio: f64,
+    pub stiffness: f64,
+    pub epsilon: f64,
+}
+
+impl Default for SpringMotion {
+    fn default() -> Self {
+        Self {
+            damping_ratio: 1.0,
+            stiffness: 800.0,
+            epsilon: 0.0001,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum AnimationMotion {
+    Easing(EasingMotion),
+    Spring(SpringMotion),
+}
+
+impl AnimationMotion {
+    fn parse(config: &RuneConfig, path: &str, default: Self) -> Self {
+        let kind = config
+            .get_optional::<String>(&format!("{path}.motion"))
+            .ok()
+            .flatten();
+
+        match kind.as_deref() {
+            Some("spring") => {
+                let defaults = match default {
+                    Self::Spring(defaults) => defaults,
+                    Self::Easing(_) => SpringMotion::default(),
+                };
+                Self::Spring(SpringMotion {
+                    damping_ratio: finite_clamp(
+                        config.get_or(&format!("{path}.damping-ratio"), defaults.damping_ratio),
+                        0.1,
+                        10.0,
+                        defaults.damping_ratio,
+                    ),
+                    stiffness: finite_clamp(
+                        config.get_or(&format!("{path}.stiffness"), defaults.stiffness),
+                        1.0,
+                        100_000.0,
+                        defaults.stiffness,
+                    ),
+                    epsilon: finite_clamp(
+                        config.get_or(&format!("{path}.epsilon"), defaults.epsilon),
+                        0.00001,
+                        0.1,
+                        defaults.epsilon,
+                    ),
+                })
+            }
+            Some("easing") => {
+                let defaults = match default {
+                    Self::Easing(defaults) => defaults,
+                    Self::Spring(_) => EasingMotion {
+                        duration_ms: 250,
+                        curve: AnimationCurve::EaseOutCubic,
+                    },
+                };
+                Self::Easing(EasingMotion {
+                    duration_ms: config
+                        .get_or(&format!("{path}.duration-ms"), defaults.duration_ms),
+                    curve: config
+                        .get_optional::<String>(&format!("{path}.curve"))
+                        .ok()
+                        .flatten()
+                        .and_then(|curve| AnimationCurve::parse(&curve))
+                        .unwrap_or(defaults.curve),
+                })
+            }
+            _ => default,
+        }
+    }
+}
+
+fn finite_clamp(value: f64, min: f64, max: f64, fallback: f64) -> f64 {
+    if value.is_finite() {
+        value.clamp(min, max)
+    } else {
+        fallback
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum WindowOpenAnimationType {
     #[default]
@@ -40,12 +135,13 @@ impl WindowOpenAnimationType {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WindowOpenAnimation {
     pub enabled: bool,
     pub animation_type: WindowOpenAnimationType,
     pub duration_ms: u32,
     pub curve: AnimationCurve,
+    pub motion: AnimationMotion,
 }
 
 impl WindowOpenAnimation {
@@ -56,12 +152,20 @@ impl WindowOpenAnimation {
                 animation_type,
                 duration_ms: 300,
                 curve: AnimationCurve::Linear,
+                motion: AnimationMotion::Easing(EasingMotion {
+                    duration_ms: 300,
+                    curve: AnimationCurve::Linear,
+                }),
             },
             WindowOpenAnimationType::Elastic => Self {
                 enabled: true,
                 animation_type,
                 duration_ms: 620,
                 curve: AnimationCurve::EaseOutBack,
+                motion: AnimationMotion::Easing(EasingMotion {
+                    duration_ms: 620,
+                    curve: AnimationCurve::EaseOutBack,
+                }),
             },
         }
     }
@@ -73,10 +177,26 @@ impl Default for WindowOpenAnimation {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FullscreenAnimation {
+    pub enabled: bool,
+    pub motion: AnimationMotion,
+}
+
+impl Default for FullscreenAnimation {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            motion: AnimationMotion::Spring(SpringMotion::default()),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Animations {
     pub enabled: bool,
     pub window_open: WindowOpenAnimation,
+    pub fullscreen: FullscreenAnimation,
 }
 
 impl Default for Animations {
@@ -84,6 +204,7 @@ impl Default for Animations {
         Self {
             enabled: true,
             window_open: WindowOpenAnimation::default(),
+            fullscreen: FullscreenAnimation::default(),
         }
     }
 }
@@ -103,6 +224,15 @@ pub fn parse_animations(config: &RuneConfig) -> Animations {
         .flatten()
         .and_then(|curve| AnimationCurve::parse(&curve))
         .unwrap_or(type_defaults.curve);
+    let legacy_motion = AnimationMotion::Easing(EasingMotion {
+        duration_ms: config.get_or(
+            "animations.window-open.duration-ms",
+            type_defaults.duration_ms,
+        ),
+        curve,
+    });
+    let window_open_motion =
+        AnimationMotion::parse(config, "animations.window-open", legacy_motion);
 
     Animations {
         enabled: config.get_or("animations.enabled", defaults.enabled),
@@ -112,11 +242,20 @@ pub fn parse_animations(config: &RuneConfig) -> Animations {
                 defaults.window_open.enabled,
             ),
             animation_type,
-            duration_ms: config.get_or(
-                "animations.window-open.duration-ms",
-                type_defaults.duration_ms,
-            ),
+            duration_ms: match window_open_motion {
+                AnimationMotion::Easing(motion) => motion.duration_ms,
+                AnimationMotion::Spring(_) => type_defaults.duration_ms,
+            },
             curve,
+            motion: window_open_motion,
+        },
+        fullscreen: FullscreenAnimation {
+            enabled: config.get_or("animations.fullscreen.enabled", defaults.fullscreen.enabled),
+            motion: AnimationMotion::parse(
+                config,
+                "animations.fullscreen",
+                defaults.fullscreen.motion,
+            ),
         },
     }
 }
@@ -170,7 +309,12 @@ end
                     animation_type: WindowOpenAnimationType::Elastic,
                     duration_ms: 450,
                     curve: AnimationCurve::EaseOutCubic,
+                    motion: AnimationMotion::Easing(EasingMotion {
+                        duration_ms: 450,
+                        curve: AnimationCurve::EaseOutCubic,
+                    }),
                 },
+                fullscreen: FullscreenAnimation::default(),
             }
         );
     }
@@ -251,5 +395,84 @@ end
         assert_eq!(animation.animation_type, WindowOpenAnimationType::CenterOut);
         assert_eq!(animation.duration_ms, 300);
         assert_eq!(animation.curve, AnimationCurve::Linear);
+    }
+
+    #[test]
+    fn fullscreen_defaults_to_critical_spring() {
+        let config = RuneConfig::from_str(
+            r#"
+animations:
+  fullscreen:
+    enabled false
+    motion "spring"
+    damping-ratio 0.8
+    stiffness 600.0
+    epsilon 0.001
+  end
+end
+"#,
+        )
+        .expect("valid rune-cfg source");
+
+        let fullscreen = parse_animations(&config).fullscreen;
+        assert!(!fullscreen.enabled);
+        assert_eq!(
+            fullscreen.motion,
+            AnimationMotion::Spring(SpringMotion {
+                damping_ratio: 0.8,
+                stiffness: 600.0,
+                epsilon: 0.001,
+            })
+        );
+    }
+
+    #[test]
+    fn fullscreen_can_use_easing_motion() {
+        let config = RuneConfig::from_str(
+            r#"
+animations:
+  fullscreen:
+    motion "easing"
+    duration-ms 180
+    curve "ease-out-expo"
+  end
+end
+"#,
+        )
+        .expect("valid rune-cfg source");
+
+        assert_eq!(
+            parse_animations(&config).fullscreen.motion,
+            AnimationMotion::Easing(EasingMotion {
+                duration_ms: 180,
+                curve: AnimationCurve::EaseOutExpo,
+            })
+        );
+    }
+
+    #[test]
+    fn spring_values_are_constrained_to_stable_ranges() {
+        let config = RuneConfig::from_str(
+            r#"
+animations:
+  fullscreen:
+    motion "spring"
+    damping-ratio 0.0
+    stiffness 999999.0
+    epsilon 1.0
+  end
+end
+"#,
+        )
+        .expect("valid rune-cfg source");
+
+        assert_eq!(
+            parse_animations(&config).fullscreen.motion,
+            AnimationMotion::Spring(SpringMotion {
+                damping_ratio: 0.1,
+                stiffness: 100_000.0,
+                epsilon: 0.1,
+            })
+        );
     }
 }

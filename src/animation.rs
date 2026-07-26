@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use halley_config::{AnimationCurve, Animations, WindowOpenAnimationType};
+use halley_config::{AnimationMotion, Animations, EasingMotion, WindowOpenAnimationType};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Physical, Rectangle, Size};
 
@@ -9,29 +9,19 @@ const ELASTIC_PROXY_SIZE: f64 = 220.0;
 const ELASTIC_MIN_SCALE: f64 = 0.24;
 const MAX_OVERSHOOT_SCALE: f64 = 1.08;
 
+mod motion;
+
+pub(crate) use motion::MotionTimeline;
+
 #[derive(Clone, Copy, Debug)]
 struct WindowOpenTimeline {
-    started_at: Duration,
-    duration: Duration,
-    curve: AnimationCurve,
+    motion: MotionTimeline,
     animation_type: WindowOpenAnimationType,
 }
 
 impl WindowOpenTimeline {
-    fn linear_progress_at(self, now: Duration) -> f64 {
-        if now <= self.started_at {
-            return 0.0;
-        }
-        if self.duration.is_zero() {
-            return 1.0;
-        }
-
-        let elapsed = now.saturating_sub(self.started_at);
-        (elapsed.as_secs_f64() / self.duration.as_secs_f64()).clamp(0.0, 1.0)
-    }
-
     fn visual_at(self, now: Duration, bounds: Size<i32, Physical>) -> WindowOpenVisual {
-        let progress = apply_curve(self.curve, self.linear_progress_at(now));
+        let progress = self.motion.value_at(now);
         match self.animation_type {
             WindowOpenAnimationType::CenterOut => WindowOpenVisual {
                 scale: progress.clamp(0.0, MAX_OVERSHOOT_SCALE),
@@ -53,7 +43,7 @@ impl WindowOpenTimeline {
     }
 
     fn is_finished_at(self, now: Duration) -> bool {
-        now.saturating_sub(self.started_at) >= self.duration
+        self.motion.is_finished_at(now)
     }
 }
 
@@ -101,16 +91,14 @@ impl WindowOpenAnimations {
 
     pub fn start(&mut self, surface: WlSurface, now: Duration) {
         let config = self.config.window_open;
-        if !self.config.enabled || !config.enabled || config.duration_ms == 0 {
+        if !self.config.enabled || !config.enabled {
             return;
         }
 
         self.active.insert(
             surface,
             WindowOpenTimeline {
-                started_at: now,
-                duration: Duration::from_millis(config.duration_ms.into()),
-                curve: config.curve,
+                motion: MotionTimeline::new(config.motion, now),
                 animation_type: config.animation_type,
             },
         );
@@ -149,22 +137,6 @@ impl WindowOpenAnimations {
     }
 }
 
-fn apply_curve(curve: AnimationCurve, progress: f64) -> f64 {
-    let progress = progress.clamp(0.0, 1.0);
-    match curve {
-        AnimationCurve::Linear => progress,
-        AnimationCurve::EaseOutQuad => 1.0 - (1.0 - progress).powi(2),
-        AnimationCurve::EaseOutCubic => 1.0 - (1.0 - progress).powi(3),
-        AnimationCurve::EaseOutExpo if progress == 1.0 => 1.0,
-        AnimationCurve::EaseOutExpo => 1.0 - 2.0_f64.powf(-10.0 * progress),
-        AnimationCurve::EaseOutBack => {
-            let overshoot = 1.42;
-            let shifted = progress - 1.0;
-            1.0 + shifted * shifted * ((overshoot + 1.0) * shifted + overshoot)
-        }
-    }
-}
-
 fn scale_rect_from_center(
     rect: Rectangle<i32, Physical>,
     bounds: Rectangle<i32, Physical>,
@@ -195,15 +167,20 @@ fn scale_rect_from_center(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use halley_config::AnimationCurve;
 
     fn timeline(
         animation_type: WindowOpenAnimationType,
         curve: AnimationCurve,
     ) -> WindowOpenTimeline {
         WindowOpenTimeline {
-            started_at: Duration::from_secs(1),
-            duration: Duration::from_millis(300),
-            curve,
+            motion: MotionTimeline::new(
+                AnimationMotion::Easing(EasingMotion {
+                    duration_ms: 300,
+                    curve,
+                }),
+                Duration::from_secs(1),
+            ),
             animation_type,
         }
     }
@@ -212,15 +189,9 @@ mod tests {
     fn timeline_uses_configured_duration() {
         let animation = timeline(WindowOpenAnimationType::CenterOut, AnimationCurve::Linear);
 
-        assert_eq!(animation.linear_progress_at(Duration::from_secs(1)), 0.0);
-        assert_eq!(
-            animation.linear_progress_at(Duration::from_millis(1150)),
-            0.5
-        );
-        assert_eq!(
-            animation.linear_progress_at(Duration::from_millis(1300)),
-            1.0
-        );
+        assert_eq!(animation.motion.value_at(Duration::from_secs(1)), 0.0);
+        assert_eq!(animation.motion.value_at(Duration::from_millis(1150)), 0.5);
+        assert_eq!(animation.motion.value_at(Duration::from_millis(1300)), 1.0);
     }
 
     #[test]
@@ -232,17 +203,17 @@ mod tests {
             AnimationCurve::EaseOutExpo,
             AnimationCurve::EaseOutBack,
         ] {
-            assert_eq!(apply_curve(curve, 0.0), 0.0);
-            assert_eq!(apply_curve(curve, 1.0), 1.0);
+            assert_eq!(motion::apply_curve(curve, 0.0), 0.0);
+            assert_eq!(motion::apply_curve(curve, 1.0), 1.0);
         }
     }
 
     #[test]
     fn ease_out_curves_advance_faster_than_linear() {
-        let linear = apply_curve(AnimationCurve::Linear, 0.5);
-        assert!(apply_curve(AnimationCurve::EaseOutQuad, 0.5) > linear);
-        assert!(apply_curve(AnimationCurve::EaseOutCubic, 0.5) > linear);
-        assert!(apply_curve(AnimationCurve::EaseOutExpo, 0.5) > linear);
+        let linear = motion::apply_curve(AnimationCurve::Linear, 0.5);
+        assert!(motion::apply_curve(AnimationCurve::EaseOutQuad, 0.5) > linear);
+        assert!(motion::apply_curve(AnimationCurve::EaseOutCubic, 0.5) > linear);
+        assert!(motion::apply_curve(AnimationCurve::EaseOutExpo, 0.5) > linear);
     }
 
     #[test]
