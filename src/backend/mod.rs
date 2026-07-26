@@ -173,7 +173,7 @@ pub struct RenderRequest<'a> {
     pub cursor: &'a CursorImage,
     pub cursor_position: (f64, f64),
     pub show_cursor: bool,
-    pub capture_region: Option<Rectangle<i32, Logical>>,
+    pub capture_overlay: crate::capture::CaptureOverlay<'a>,
     pub space: &'a Space<Window>,
     pub focused: Option<&'a WlSurface>,
     pub decorations: &'a Decorations,

@@ -1,3 +1,4 @@
+pub mod menu;
 pub mod picker;
 mod screenshot;
 
@@ -7,6 +8,7 @@ use smithay::desktop::{Space, Window};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point, Rectangle};
 
+use menu::{ScreenshotMenu, ScreenshotMode};
 use picker::RegionPicker;
 pub(crate) use screenshot::{capture_source_pixels, render_source_dmabuf};
 pub use screenshot::{save_region, save_window};
@@ -21,7 +23,11 @@ pub struct CaptureState {
 }
 
 enum Selection {
+    Menu,
     Area,
+    Screen {
+        geometry: Rectangle<i32, Logical>,
+    },
     Window {
         surface: Option<WlSurface>,
         geometry: Option<Rectangle<i32, Logical>>,
@@ -34,7 +40,9 @@ enum Selection {
 }
 
 enum PendingCapture {
-    Local,
+    Local {
+        menu: ScreenshotMenu,
+    },
     Screenshot {
         request_handle: String,
         reply: crate::ipc::ReplySender,
@@ -52,8 +60,37 @@ struct AcceptedCapture {
 
 enum AcceptedTarget {
     Area(Rectangle<i32, Logical>),
+    Screen(Rectangle<i32, Logical>),
     Window(WlSurface),
     Source(halley_ipc::CaptureSource),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CaptureKind {
+    Menu,
+    Area,
+    Screen,
+    Window,
+    Source,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CapturePress {
+    Consumed,
+    Activate(ScreenshotMode),
+    Accept,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum CaptureOverlay<'a> {
+    None,
+    Selection(Rectangle<i32, Logical>),
+    Menu {
+        output_name: &'a str,
+        selected: usize,
+        hovered: Option<usize>,
+        window_available: bool,
+    },
 }
 
 impl CaptureState {
@@ -61,25 +98,68 @@ impl CaptureState {
         self.selection.is_some()
     }
 
-    pub fn selects_window(&self) -> bool {
-        matches!(self.selection, Some(Selection::Window { .. }))
-    }
-
-    pub fn selects_source(&self) -> bool {
-        matches!(self.selection, Some(Selection::Source { .. }))
-    }
-
-    pub fn region(&self) -> Option<Rectangle<i32, Logical>> {
+    pub fn kind(&self) -> Option<CaptureKind> {
         match self.selection.as_ref()? {
-            Selection::Area => self.picker.region(),
-            Selection::Window { geometry, .. } => *geometry,
-            Selection::Source { geometry, .. } => *geometry,
+            Selection::Menu => Some(CaptureKind::Menu),
+            Selection::Area => Some(CaptureKind::Area),
+            Selection::Screen { .. } => Some(CaptureKind::Screen),
+            Selection::Window { .. } => Some(CaptureKind::Window),
+            Selection::Source { .. } => Some(CaptureKind::Source),
         }
     }
 
-    pub fn begin_region(&mut self, space: &Space<Window>, preferred_output: Option<&str>) -> bool {
-        self.begin_area(space, preferred_output, PendingCapture::Local)
-            .is_ok()
+    pub fn overlay(&self) -> CaptureOverlay<'_> {
+        match self.selection.as_ref() {
+            Some(Selection::Menu) => {
+                let Some(menu) = self.local_menu() else {
+                    return CaptureOverlay::None;
+                };
+                CaptureOverlay::Menu {
+                    output_name: menu.output_name(),
+                    selected: menu.selected(),
+                    hovered: menu.hovered(),
+                    window_available: menu.window_available(),
+                }
+            }
+            Some(Selection::Area) => self
+                .picker
+                .region()
+                .map(CaptureOverlay::Selection)
+                .unwrap_or(CaptureOverlay::None),
+            Some(Selection::Screen { geometry, .. }) => {
+                CaptureOverlay::Selection(*geometry)
+            }
+            Some(Selection::Window { geometry, .. }
+            | Selection::Source { geometry, .. }) => geometry
+                .map(CaptureOverlay::Selection)
+                .unwrap_or(CaptureOverlay::None),
+            None => CaptureOverlay::None,
+        }
+    }
+
+    pub fn begin_menu(
+        &mut self,
+        space: &Space<Window>,
+        preferred_output: Option<&str>,
+        window_available: bool,
+    ) -> bool {
+        if self.pending.is_some() {
+            return false;
+        }
+        let output = preferred_output
+            .and_then(|name| space.outputs().find(|output| output.name() == name))
+            .or_else(|| space.outputs().next());
+        let Some(output) = output else {
+            return false;
+        };
+        let Some(geometry) = space.output_geometry(output) else {
+            return false;
+        };
+        self.selection = Some(Selection::Menu);
+        self.pending = Some(PendingCapture::Local {
+            menu: ScreenshotMenu::new(output.name(), geometry, window_available),
+        });
+        true
     }
 
     fn begin_area(
@@ -156,28 +236,124 @@ impl CaptureState {
         }
     }
 
-    pub fn press(&mut self, position: (f64, f64)) -> bool {
-        match self.selection {
-            Some(Selection::Area) => self.picker.press(Point::from(position)),
-            Some(Selection::Window { .. } | Selection::Source { .. }) => true,
-            None => false,
+    pub fn press(&mut self, position: (f64, f64)) -> Option<CapturePress> {
+        match self.kind()? {
+            CaptureKind::Menu => {
+                let mode = self
+                    .local_menu()
+                    .and_then(|menu| menu.hit_test(Point::from(position)))
+                    .map(|index| ScreenshotMode::ALL[index]);
+                Some(
+                    mode.map(CapturePress::Activate)
+                        .unwrap_or(CapturePress::Consumed),
+                )
+            }
+            CaptureKind::Area => {
+                self.picker.press(Point::from(position));
+                Some(CapturePress::Consumed)
+            }
+            CaptureKind::Screen | CaptureKind::Window | CaptureKind::Source => {
+                Some(CapturePress::Accept)
+            }
         }
     }
 
     pub fn motion(&mut self, position: (f64, f64)) -> bool {
+        if matches!(self.selection, Some(Selection::Menu)) {
+            return self
+                .local_menu_mut()
+                .is_some_and(|menu| menu.hover(Point::from(position)));
+        }
         match self.selection {
             Some(Selection::Area) => self.picker.motion(Point::from(position)),
-            Some(Selection::Window { .. } | Selection::Source { .. }) => true,
+            Some(
+                Selection::Screen { .. }
+                | Selection::Window { .. }
+                | Selection::Source { .. },
+            ) => true,
+            Some(Selection::Menu) => unreachable!("handled above"),
             None => false,
         }
     }
 
     pub fn release(&mut self) -> bool {
         match self.selection {
+            Some(Selection::Menu) => true,
             Some(Selection::Area) => self.picker.release(),
-            Some(Selection::Window { .. } | Selection::Source { .. }) => true,
+            Some(
+                Selection::Screen { .. }
+                | Selection::Window { .. }
+                | Selection::Source { .. },
+            ) => true,
             None => false,
         }
+    }
+
+    pub fn move_menu_selection(&mut self, delta: i32) -> bool {
+        matches!(self.selection, Some(Selection::Menu))
+            && self
+                .local_menu_mut()
+                .is_some_and(|menu| menu.move_selection(delta))
+    }
+
+    pub fn activate_selected_menu(&mut self, space: &Space<Window>) -> bool {
+        let Some(mode) = self.local_menu().map(ScreenshotMenu::selected_mode) else {
+            return false;
+        };
+        self.activate_menu(mode, space)
+    }
+
+    pub fn activate_menu(&mut self, mode: ScreenshotMode, space: &Space<Window>) -> bool {
+        if !matches!(self.selection, Some(Selection::Menu)) {
+            return false;
+        }
+        let Some(menu) = self.local_menu().cloned() else {
+            return false;
+        };
+        match mode {
+            ScreenshotMode::Region => {
+                let Some(bounds) = desktop_bounds(space) else {
+                    return false;
+                };
+                self.picker.begin(bounds, menu.output_geometry());
+                self.selection = Some(Selection::Area);
+            }
+            ScreenshotMode::Screen => {
+                self.selection = Some(Selection::Screen {
+                    geometry: menu.output_geometry(),
+                });
+            }
+            ScreenshotMode::Window if menu.window_available() => {
+                self.selection = Some(Selection::Window {
+                    surface: None,
+                    geometry: None,
+                });
+            }
+            ScreenshotMode::Window => return false,
+        }
+        true
+    }
+
+    pub fn return_to_menu(&mut self) -> bool {
+        if matches!(self.selection, Some(Selection::Menu)) || self.local_menu().is_none() {
+            return false;
+        }
+        if matches!(self.selection, Some(Selection::Area)) {
+            self.picker.cancel();
+        }
+        self.selection = Some(Selection::Menu);
+        true
+    }
+
+    pub fn hover_screen(&mut self, geometry: Rectangle<i32, Logical>) -> bool {
+        let Some(Selection::Screen {
+            geometry: selected_geometry,
+        }) = self.selection.as_mut()
+        else {
+            return false;
+        };
+        *selected_geometry = geometry;
+        true
     }
 
     pub fn hover_window(
@@ -226,7 +402,12 @@ impl CaptureState {
 
     fn accept(&mut self) -> Option<AcceptedCapture> {
         let target = match self.selection.take()? {
+            Selection::Menu => {
+                self.selection = Some(Selection::Menu);
+                return None;
+            }
             Selection::Area => AcceptedTarget::Area(self.picker.accept()?),
+            Selection::Screen { geometry, .. } => AcceptedTarget::Screen(geometry),
             Selection::Window {
                 surface: Some(surface),
                 ..
@@ -259,6 +440,20 @@ impl CaptureState {
 
     pub fn remember_successful(&mut self, region: Rectangle<i32, Logical>) {
         self.picker.remember_successful(region);
+    }
+
+    fn local_menu(&self) -> Option<&ScreenshotMenu> {
+        match self.pending.as_ref() {
+            Some(PendingCapture::Local { menu }) => Some(menu),
+            _ => None,
+        }
+    }
+
+    fn local_menu_mut(&mut self) -> Option<&mut ScreenshotMenu> {
+        match self.pending.as_mut() {
+            Some(PendingCapture::Local { menu }) => Some(menu),
+            _ => None,
+        }
     }
 }
 
@@ -400,6 +595,7 @@ pub fn accept_selected<D: SessionDriver>(session: &mut Session<D>) -> bool {
     }
     let (result, remembered_region) = match accepted.target {
         AcceptedTarget::Area(region) => (save_region(session, region), Some(region)),
+        AcceptedTarget::Screen(region) => (save_region(session, region), None),
         AcceptedTarget::Window(surface) => (save_window(session, &surface), None),
         AcceptedTarget::Source(_) => unreachable!("handled above"),
     };
@@ -409,7 +605,7 @@ pub fn accept_selected<D: SessionDriver>(session: &mut Session<D>) -> bool {
         session.capture.remember_successful(region);
     }
     match accepted.pending {
-        PendingCapture::Local => match result {
+        PendingCapture::Local { .. } => match result {
             Ok(path) => eventline::info!("screenshot saved to {}", path.display()),
             Err(err) => eventline::error!("screenshot failed: {err}"),
         },
@@ -438,7 +634,7 @@ pub fn cancel_selected<D: SessionDriver>(session: &mut Session<D>) -> bool {
                 Vec::new(),
             );
         }
-        PendingCapture::Local => {}
+        PendingCapture::Local { .. } => {}
     }
     true
 }
@@ -472,4 +668,85 @@ fn begin_modal_capture<D: SessionDriver>(session: &mut Session<D>) {
         .expect("keyboard capability added at seat setup");
     keyboard.set_focus(session, None, smithay::utils::SERIAL_COUNTER.next_serial());
     session.request_redraw();
+}
+
+#[cfg(test)]
+mod tests {
+    use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
+    use smithay::utils::{Physical, Size, Transform};
+
+    use super::*;
+
+    fn output(name: &str, size: Size<i32, Physical>) -> Output {
+        let output = Output::new(
+            name.to_string(),
+            PhysicalProperties {
+                size: (0, 0).into(),
+                subpixel: Subpixel::Unknown,
+                make: "halley-next".into(),
+                model: "test".into(),
+                serial_number: "test".into(),
+            },
+        );
+        let mode = Mode {
+            size,
+            refresh: 60_000,
+        };
+        output.change_current_state(
+            Some(mode),
+            Some(Transform::Normal),
+            None,
+            Some((0, 0).into()),
+        );
+        output
+    }
+
+    fn outputs() -> Space<Window> {
+        let left = output("DP-1", (1920, 1080).into());
+        let right = output("DP-2", (2560, 1440).into());
+        let mut space = Space::default();
+        space.map_output(&left, (0, 0));
+        space.map_output(&right, (1920, 0));
+        space
+    }
+
+    #[test]
+    fn local_menu_opens_on_the_preferred_output() {
+        let space = outputs();
+        let mut capture = CaptureState::default();
+        assert!(capture.begin_menu(&space, Some("DP-2"), true));
+        assert!(matches!(
+            capture.overlay(),
+            CaptureOverlay::Menu {
+                output_name: "DP-2",
+                selected: 0,
+                window_available: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn escape_from_a_local_selector_returns_to_the_menu() {
+        let space = outputs();
+        let mut capture = CaptureState::default();
+        assert!(capture.begin_menu(&space, Some("DP-2"), true));
+        assert!(capture.activate_menu(ScreenshotMode::Region, &space));
+        assert_eq!(capture.kind(), Some(CaptureKind::Area));
+        assert!(capture.return_to_menu());
+        assert_eq!(capture.kind(), Some(CaptureKind::Menu));
+        assert!(!capture.return_to_menu());
+    }
+
+    #[test]
+    fn screen_selection_accepts_the_output_last_hovered() {
+        let space = outputs();
+        let mut capture = CaptureState::default();
+        assert!(capture.begin_menu(&space, Some("DP-2"), true));
+        assert!(capture.activate_menu(ScreenshotMode::Screen, &space));
+        let left = Rectangle::new((0, 0).into(), (1920, 1080).into());
+        assert!(capture.hover_screen(left));
+        let accepted = capture.accept().expect("screen capture should be ready");
+        assert!(matches!(accepted.target, AcceptedTarget::Screen(region) if region == left));
+    }
 }

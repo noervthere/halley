@@ -41,10 +41,12 @@ pub fn build(
     let camera_center = crate::camera::global_center(view.center, output_geometry);
     let zoom_scale = view.scale;
 
-    let mut elements: Vec<SceneElement> = request
-        .capture_region
-        .map(|region| capture_picker_elements(output_geometry, region))
-        .unwrap_or_default()
+    let mut elements: Vec<SceneElement> = capture_overlay_elements(
+        output,
+        output_geometry,
+        request.capture_overlay,
+        request.decorations,
+    )
         .into_iter()
         .rev()
         .map(SceneElement::Border)
@@ -249,6 +251,33 @@ pub fn build(
     }
 
     Ok(elements)
+}
+
+fn capture_overlay_elements(
+    output: &Output,
+    output_geometry: Rectangle<i32, Logical>,
+    overlay: crate::capture::CaptureOverlay<'_>,
+    decorations: &halley_config::Decorations,
+) -> Vec<SolidColorRenderElement> {
+    match overlay {
+        crate::capture::CaptureOverlay::None => Vec::new(),
+        crate::capture::CaptureOverlay::Selection(region) => {
+            capture_picker_elements(output_geometry, region)
+        }
+        crate::capture::CaptureOverlay::Menu {
+            output_name,
+            selected,
+            hovered,
+            window_available,
+        } if output.name() == output_name => crate::capture::menu::render_elements(
+            output_geometry,
+            selected,
+            hovered,
+            window_available,
+            super::window_border_color(decorations, true),
+        ),
+        crate::capture::CaptureOverlay::Menu { .. } => Vec::new(),
+    }
 }
 
 fn capture_picker_elements(

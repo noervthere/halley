@@ -223,7 +223,7 @@ pub fn run() {
                         cursor: &app.cursor,
                         cursor_position: position,
                         show_cursor: true,
-                        capture_region: app.capture.region(),
+                        capture_overlay: app.capture.overlay(),
                         space: &app.wayland.space,
                         focused: app.wayland.focused_window.as_ref(),
                         decorations: &app.decorations,

@@ -111,9 +111,18 @@ fn dispatch_action<D: SessionDriver>(
         super::SessionControl::Continue => {}
         super::SessionControl::Quit => session.driver.stop(),
         super::SessionControl::Screenshot => {
+            let window_available = session.wayland.space.elements().any(|window| {
+                window.toplevel().is_some()
+                    && crate::wayland::window_output_name(window)
+                        .map(|name| Some(name.as_str()) == output_name)
+                        .unwrap_or_else(|| {
+                            output_name
+                                .is_some_and(|name| name == session.driver.primary_output().name())
+                        })
+            });
             if session
                 .capture
-                .begin_region(&session.wayland.space, output_name)
+                .begin_menu(&session.wayland.space, output_name, window_available)
             {
                 session.grab = crate::input::grab::Grab::None;
                 let keyboard = session
@@ -131,6 +140,8 @@ enum KeyboardOutcome {
     Action(halley_config::Action),
     CaptureAccept,
     CaptureCancel,
+    CapturePrevious,
+    CaptureNext,
     CaptureIntercept,
 }
 
@@ -182,15 +193,24 @@ pub fn handle<D, B>(
                     match event.state() {
                         ButtonState::Pressed => {
                             session.suppressed_buttons.suppress(BTN_LEFT);
-                            session.capture.press(proposed_position);
-                            if (session.capture.selects_window()
-                                || session.capture.selects_source())
-                                && crate::capture::accept_selected(session)
-                            {
-                                super::sync_keyboard_focus(
-                                    session,
-                                    SERIAL_COUNTER.next_serial(),
-                                );
+                            match session.capture.press(proposed_position) {
+                                Some(crate::capture::CapturePress::Activate(mode)) => {
+                                    if session
+                                        .capture
+                                        .activate_menu(mode, &session.wayland.space)
+                                    {
+                                        update_capture_pointer(session, proposed_position);
+                                    }
+                                }
+                                Some(crate::capture::CapturePress::Accept) => {
+                                    if crate::capture::accept_selected(session) {
+                                        super::sync_keyboard_focus(
+                                            session,
+                                            SERIAL_COUNTER.next_serial(),
+                                        );
+                                    }
+                                }
+                                Some(crate::capture::CapturePress::Consumed) | None => {}
                             }
                         }
                         ButtonState::Released => {
@@ -597,6 +617,18 @@ pub fn handle<D, B>(
                         Some(Keysym::Return | Keysym::KP_Enter) => {
                             FilterResult::Intercept(KeyboardOutcome::CaptureAccept)
                         }
+                        Some(Keysym::Left)
+                            if data.capture.kind()
+                                == Some(crate::capture::CaptureKind::Menu) =>
+                        {
+                            FilterResult::Intercept(KeyboardOutcome::CapturePrevious)
+                        }
+                        Some(Keysym::Right)
+                            if data.capture.kind()
+                                == Some(crate::capture::CaptureKind::Menu) =>
+                        {
+                            FilterResult::Intercept(KeyboardOutcome::CaptureNext)
+                        }
                         _ => FilterResult::Intercept(KeyboardOutcome::CaptureIntercept),
                     };
                 }
@@ -628,14 +660,34 @@ pub fn handle<D, B>(
                 dispatch_action(session, action, socket_name, pointer_output.as_deref());
             }
             Some(KeyboardOutcome::CaptureAccept) => {
-                if crate::capture::accept_selected(session) {
+                if session.capture.kind() == Some(crate::capture::CaptureKind::Menu) {
+                    if session
+                        .capture
+                        .activate_selected_menu(&session.wayland.space)
+                    {
+                        update_capture_pointer(session, session.pointer.position());
+                        session.request_redraw();
+                    }
+                } else if crate::capture::accept_selected(session) {
                     super::sync_keyboard_focus(session, SERIAL_COUNTER.next_serial());
                     session.request_redraw();
                 }
             }
             Some(KeyboardOutcome::CaptureCancel) => {
-                if crate::capture::cancel_selected(session) {
+                if session.capture.return_to_menu() {
+                    session.request_redraw();
+                } else if crate::capture::cancel_selected(session) {
                     super::sync_keyboard_focus(session, SERIAL_COUNTER.next_serial());
+                    session.request_redraw();
+                }
+            }
+            Some(KeyboardOutcome::CapturePrevious) => {
+                if session.capture.move_menu_selection(-1) {
+                    session.request_redraw();
+                }
+            }
+            Some(KeyboardOutcome::CaptureNext) => {
+                if session.capture.move_menu_selection(1) {
                     session.request_redraw();
                 }
             }
@@ -648,8 +700,18 @@ fn update_capture_pointer<D: SessionDriver>(
     session: &mut Session<D>,
     position: (f64, f64),
 ) {
-    if !session.capture.selects_window() {
-        if session.capture.selects_source() {
+    match session.capture.kind() {
+        Some(crate::capture::CaptureKind::Menu | crate::capture::CaptureKind::Area) => {
+            session.capture.motion(position);
+        }
+        Some(crate::capture::CaptureKind::Screen) => {
+            if let Some((_, geometry)) =
+                output_at_pointer(&session.wayland.space, position)
+            {
+                session.capture.hover_screen(geometry);
+            }
+        }
+        Some(crate::capture::CaptureKind::Source) => {
             let Some(route) = route_client_pointer(session) else {
                 return;
             };
@@ -683,22 +745,22 @@ fn update_capture_pointer<D: SessionDriver>(
             session
                 .capture
                 .hover_source(monitor, window, output_geometry);
-            return;
         }
-        session.capture.motion(position);
-        return;
+        Some(crate::capture::CaptureKind::Window) => {
+            let hovered = route_client_pointer(session).and_then(|route| {
+                let crate::input::pointer::PointerTarget::Window(window) = route.target else {
+                    return None;
+                };
+                let surface = window.toplevel()?.wl_surface().clone();
+                Some((surface, route.visual_geometry?))
+            });
+            let (surface, geometry) = hovered
+                .map(|(surface, geometry)| (Some(surface), Some(geometry)))
+                .unwrap_or((None, None));
+            session.capture.hover_window(surface, geometry);
+        }
+        None => {}
     }
-    let hovered = route_client_pointer(session).and_then(|route| {
-        let crate::input::pointer::PointerTarget::Window(window) = route.target else {
-            return None;
-        };
-        let surface = window.toplevel()?.wl_surface().clone();
-        Some((surface, route.visual_geometry?))
-    });
-    let (surface, geometry) = hovered
-        .map(|(surface, geometry)| (Some(surface), Some(geometry)))
-        .unwrap_or((None, None));
-    session.capture.hover_window(surface, geometry);
 }
 
 #[cfg(test)]
