@@ -2,10 +2,11 @@ use std::ffi::OsStr;
 
 use smithay::backend::input::{
     ButtonState, Event, InputBackend, InputEvent, KeyState, KeyboardKeyEvent, PointerButtonEvent,
+    PointerMotionEvent,
 };
 use smithay::desktop::{Space, Window};
 use smithay::input::keyboard::FilterResult;
-use smithay::input::pointer::{ButtonEvent, MotionEvent};
+use smithay::input::pointer::{ButtonEvent, MotionEvent, RelativeMotionEvent};
 use smithay::output::Output;
 use smithay::utils::{Logical, Point, Rectangle, SERIAL_COUNTER};
 
@@ -28,7 +29,7 @@ fn output_at_pointer(
     Some((output, geometry))
 }
 
-fn route_client_pointer<D: SessionDriver>(
+pub(super) fn route_client_pointer<D: SessionDriver>(
     session: &Session<D>,
 ) -> Option<crate::input::pointer::PointerRoute> {
     crate::input::pointer::route_to_client(
@@ -89,9 +90,62 @@ pub fn handle<D, B>(
     B: InputBackend,
 {
     let position_before = session.pointer.position();
+    let pointer_handle = session
+        .seat
+        .get_pointer()
+        .expect("pointer capability added at seat setup");
+    let active_constraint =
+        super::pointer_constraints::active(session, &pointer_handle);
     session
         .pointer
         .process_input_event(event, &session.wayland.space);
+    let proposed_position = session.pointer.position();
+    let motion = match event {
+        InputEvent::PointerMotion { event } => Some((
+            event.delta(),
+            event.delta_unaccel(),
+            event.time(),
+            event.time_msec(),
+        )),
+        InputEvent::PointerMotionAbsolute { event } => {
+            let delta = Point::<f64, Logical>::from((
+                proposed_position.0 - position_before.0,
+                proposed_position.1 - position_before.1,
+            ));
+            Some((delta, delta, event.time(), event.time_msec()))
+        }
+        _ => None,
+    };
+    let confined_position_allowed = active_constraint.as_ref().is_none_or(|constraint| {
+        constraint.kind != super::pointer_constraints::ConstraintKind::Confined
+            || super::pointer_constraints::allows_current_position(session, constraint)
+    });
+    let motion_disposition = super::pointer_constraints::motion_disposition(
+        active_constraint.as_ref().map(|constraint| constraint.kind),
+        confined_position_allowed,
+    );
+
+    if motion_disposition == super::pointer_constraints::MotionDisposition::RelativeOnly
+        && let Some(constraint) = active_constraint.as_ref()
+        && let Some((delta, delta_unaccel, time, _)) = motion
+    {
+        session.pointer.set_position(position_before);
+        pointer_handle.relative_motion(
+            session,
+            Some((constraint.surface.clone(), constraint.origin)),
+            &RelativeMotionEvent {
+                delta,
+                delta_unaccel,
+                utime: time,
+            },
+        );
+        pointer_handle.frame(session);
+        return;
+    }
+
+    if motion_disposition == super::pointer_constraints::MotionDisposition::Hold {
+        session.pointer.set_position(position_before);
+    }
     let position_after = session.pointer.position();
     session.request_redraw();
 
@@ -170,18 +224,18 @@ pub fn handle<D, B>(
         crate::input::grab::Grab::None => {}
     }
 
-    let motion_time = match event {
-        InputEvent::PointerMotion { event } => Some(event.time_msec()),
-        InputEvent::PointerMotionAbsolute { event } => Some(event.time_msec()),
-        _ => None,
-    };
-    if let Some(time) = motion_time {
-        update_client_pointer_focus(session, time);
-        let pointer = session
-            .seat
-            .get_pointer()
-            .expect("pointer capability added at seat setup");
-        pointer.frame(session);
+    if let Some((delta, delta_unaccel, time, time_msec)) = motion {
+        let route = update_client_pointer_focus(session, time_msec);
+        pointer_handle.relative_motion(
+            session,
+            route.and_then(|route| route.focus),
+            &RelativeMotionEvent {
+                delta,
+                delta_unaccel,
+                utime: time,
+            },
+        );
+        pointer_handle.frame(session);
     }
 
     if let InputEvent::PointerButton {

@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use calloop::generic::Generic;
 use calloop::{EventLoop, Interest, Mode as CalloopMode, PostAction};
+use smithay::input::pointer::PointerHandle;
 use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::output::Output;
 use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode;
@@ -10,13 +11,14 @@ use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
 use smithay::reexports::wayland_server::protocol::wl_seat::WlSeat;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{Client, Display};
-use smithay::utils::{SERIAL_COUNTER, Serial};
+use smithay::utils::{Logical, Point, SERIAL_COUNTER, Serial};
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::{
     CompositorClientState, CompositorHandler, CompositorState, with_states,
 };
 use smithay::wayland::fractional_scale::{FractionalScaleHandler, with_fractional_scale};
 use smithay::wayland::output::OutputHandler;
+use smithay::wayland::pointer_constraints::PointerConstraintsHandler;
 use smithay::wayland::selection::SelectionHandler;
 use smithay::wayland::selection::data_device::{
     DataDeviceHandler, DataDeviceState, WaylandDndGrabHandler,
@@ -35,8 +37,9 @@ use smithay::wayland::shm::{ShmHandler, ShmState};
 use smithay::wayland::socket::ListeningSocketSource;
 use smithay::{
     delegate_compositor, delegate_data_device, delegate_fractional_scale, delegate_layer_shell,
-    delegate_output, delegate_primary_selection, delegate_seat, delegate_shm,
-    delegate_viewporter, delegate_xdg_decoration, delegate_xdg_shell,
+    delegate_output, delegate_pointer_constraints, delegate_primary_selection,
+    delegate_relative_pointer, delegate_seat, delegate_shm, delegate_viewporter,
+    delegate_xdg_decoration, delegate_xdg_shell,
 };
 
 use super::state::{Session, SessionDriver};
@@ -238,6 +241,21 @@ impl<D: SessionDriver> FractionalScaleHandler for Session<D> {
     }
 }
 
+impl<D: SessionDriver> PointerConstraintsHandler for Session<D> {
+    fn new_constraint(&mut self, surface: &WlSurface, pointer: &PointerHandle<Self>) {
+        super::pointer_constraints::activate_new(self, surface, pointer);
+    }
+
+    fn cursor_position_hint(
+        &mut self,
+        surface: &WlSurface,
+        pointer: &PointerHandle<Self>,
+        location: Point<f64, Logical>,
+    ) {
+        super::pointer_constraints::apply_position_hint(self, surface, pointer, location);
+    }
+}
+
 impl<D: SessionDriver> SelectionHandler for Session<D> {
     type SelectionUserData = ();
 }
@@ -279,5 +297,7 @@ delegate_seat!(@<D: SessionDriver> Session<D>);
 delegate_output!(@<D: SessionDriver> Session<D>);
 delegate_viewporter!(@<D: SessionDriver> Session<D>);
 delegate_fractional_scale!(@<D: SessionDriver> Session<D>);
+delegate_relative_pointer!(@<D: SessionDriver> Session<D>);
+delegate_pointer_constraints!(@<D: SessionDriver> Session<D>);
 delegate_data_device!(@<D: SessionDriver> Session<D>);
 delegate_primary_selection!(@<D: SessionDriver> Session<D>);

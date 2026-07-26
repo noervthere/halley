@@ -17,6 +17,8 @@ use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::wayland::compositor::{CompositorClientState, CompositorState};
 use smithay::wayland::fractional_scale::FractionalScaleManagerState;
 use smithay::wayland::output::OutputManagerState;
+use smithay::wayland::pointer_constraints::PointerConstraintsState;
+use smithay::wayland::relative_pointer::RelativePointerManagerState;
 use smithay::wayland::selection::data_device::DataDeviceState;
 use smithay::wayland::selection::primary_selection::PrimarySelectionState;
 use smithay::wayland::shell::xdg::XdgShellState;
@@ -59,7 +61,7 @@ pub fn window_is_on_output(window: &Window, output: &Output, primary: &Output) -
 ///
 /// Backend rendering, cameras, input devices, and redraw scheduling stay out
 /// of this type. That keeps the Smithay globals and shell lifecycle together
-/// without recreating old Halley's compositor-wide god object.
+/// without creating a compositor-wide god object.
 pub struct WaylandState {
     pub display_handle: DisplayHandle,
     pub compositor_state: CompositorState,
@@ -69,6 +71,8 @@ pub struct WaylandState {
     _xdg_decoration_state: XdgDecorationState,
     _viewporter_state: ViewporterState,
     _fractional_scale_manager_state: FractionalScaleManagerState,
+    _relative_pointer_manager_state: RelativePointerManagerState,
+    _pointer_constraints_state: PointerConstraintsState,
     pub shm_state: ShmState,
     // Retained alongside the wl_output globals it serves.
     _output_manager_state: OutputManagerState,
@@ -113,11 +117,8 @@ pub struct WaylandState {
 }
 
 impl WaylandState {
-    // One parameter per protocol global, each constructed by the caller
-    // because `State::new::<D>` needs the concrete app type (`App` vs
-    // `TtyApp`) that only the session driver knows. Grouping them into a
-    // struct would just move the same list somewhere else; this grows by
-    // exactly one line per protocol added, which is the point.
+    // Protocol construction is centralized by the generic session. This
+    // constructor only assembles the resulting globals with shell state.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         display_handle: DisplayHandle,
@@ -127,6 +128,8 @@ impl WaylandState {
         xdg_decoration_state: XdgDecorationState,
         viewporter_state: ViewporterState,
         fractional_scale_manager_state: FractionalScaleManagerState,
+        relative_pointer_manager_state: RelativePointerManagerState,
+        pointer_constraints_state: PointerConstraintsState,
         shm_state: ShmState,
         output_manager_state: OutputManagerState,
         data_device_state: DataDeviceState,
@@ -140,6 +143,8 @@ impl WaylandState {
             _xdg_decoration_state: xdg_decoration_state,
             _viewporter_state: viewporter_state,
             _fractional_scale_manager_state: fractional_scale_manager_state,
+            _relative_pointer_manager_state: relative_pointer_manager_state,
+            _pointer_constraints_state: pointer_constraints_state,
             shm_state,
             _output_manager_state: output_manager_state,
             data_device_state,

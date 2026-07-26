@@ -4,6 +4,8 @@ use smithay::reexports::wayland_server::DisplayHandle;
 use smithay::wayland::compositor::CompositorState;
 use smithay::wayland::fractional_scale::FractionalScaleManagerState;
 use smithay::wayland::output::OutputManagerState;
+use smithay::wayland::pointer_constraints::PointerConstraintsState;
+use smithay::wayland::relative_pointer::RelativePointerManagerState;
 use smithay::wayland::selection::data_device::DataDeviceState;
 use smithay::wayland::selection::primary_selection::PrimarySelectionState;
 use smithay::wayland::shell::wlr_layer::WlrLayerShellState;
@@ -64,6 +66,8 @@ impl<D: SessionDriver> Session<D> {
             XdgDecorationState::new::<Self>(&display_handle),
             ViewporterState::new::<Self>(&display_handle),
             FractionalScaleManagerState::new::<Self>(&display_handle),
+            RelativePointerManagerState::new::<Self>(&display_handle),
+            PointerConstraintsState::new::<Self>(&display_handle),
             ShmState::new::<Self>(&display_handle, vec![]),
             OutputManagerState::new_with_xdg_output::<Self>(&display_handle),
             DataDeviceState::new::<Self>(&display_handle),

@@ -175,6 +175,10 @@ impl Pointer {
         self.position
     }
 
+    pub fn set_position(&mut self, position: (f64, f64)) {
+        self.position = position;
+    }
+
     /// Absolute events (winit's host window mouse, or absolute-mode tty
     /// devices like touchpads/tablets) set the position directly; relative
     /// events (a typical tty/libinput mouse) accumulate a delta. Both are

@@ -9,6 +9,7 @@ use crate::wayland::{self, WaylandState};
 mod protocol;
 mod state;
 mod input;
+mod pointer_constraints;
 mod tty_frame;
 
 pub mod tty;
