@@ -69,6 +69,26 @@ pub fn global_center(
     ))
 }
 
+/// Returns the portion of global world space currently visible through an
+/// output camera. XDG popup constraints are expressed in the same world
+/// coordinates as `Space`, so their target must follow this inverse of the
+/// render transform rather than the output's fixed layout rectangle.
+pub fn world_viewport(
+    view: OutputView,
+    output_geometry: Rectangle<i32, Logical>,
+) -> Rectangle<i32, Logical> {
+    let center = global_center(view.center, output_geometry);
+    let scale = view.scale.max(f32::EPSILON);
+    let half_width = output_geometry.size.w as f32 / scale / 2.0;
+    let half_height = output_geometry.size.h as f32 / scale / 2.0;
+    let left = (center.x - half_width).floor() as i32;
+    let top = (center.y - half_height).floor() as i32;
+    let right = (center.x + half_width).ceil() as i32;
+    let bottom = (center.y + half_height).ceil() as i32;
+
+    Rectangle::new((left, top).into(), (right - left, bottom - top).into())
+}
+
 fn camera_at_rest(output_size: Size<i32, Physical>) -> Camera {
     Camera::new(
         Vec2 {
@@ -121,6 +141,31 @@ mod tests {
         assert_eq!(
             global_center(Point::from((1060.0, 550.0)), secondary),
             Point::from((3620.0, 550.0))
+        );
+    }
+
+    #[test]
+    fn resting_camera_viewport_matches_output_layout() {
+        let secondary = Rectangle::<i32, Logical>::new((2560, 0).into(), (1920, 1200).into());
+        let view = OutputView {
+            center: Point::from((960.0, 600.0)),
+            scale: 1.0,
+        };
+
+        assert_eq!(world_viewport(view, secondary), secondary);
+    }
+
+    #[test]
+    fn zoomed_camera_viewport_expands_around_global_center() {
+        let secondary = Rectangle::<i32, Logical>::new((2560, 0).into(), (1920, 1200).into());
+        let view = OutputView {
+            center: Point::from((1060.0, 550.0)),
+            scale: 0.5,
+        };
+
+        assert_eq!(
+            world_viewport(view, secondary),
+            Rectangle::new((1700, -650).into(), (3840, 2400).into())
         );
     }
 }

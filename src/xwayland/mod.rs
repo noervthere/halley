@@ -156,11 +156,11 @@ pub fn close_window(window: &smithay::desktop::Window) {
     }
 }
 
-pub fn resize_window(
+pub fn configure_window(
     window: &smithay::desktop::Window,
     geometry: smithay::utils::Rectangle<i32, smithay::utils::Logical>,
 ) {
-    xwm::resize_window(window, geometry);
+    xwm::configure_window(window, geometry);
 }
 
 pub fn is_override_redirect(window: &smithay::desktop::Window) -> bool {

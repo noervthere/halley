@@ -210,12 +210,12 @@ pub(super) fn reconfigure_fullscreen(windows: Vec<(Window, Rectangle<i32, Logica
     }
 }
 
-pub(super) fn resize_window(window: &Window, geometry: Rectangle<i32, Logical>) {
+pub(super) fn configure_window(window: &Window, geometry: Rectangle<i32, Logical>) {
     let Some(surface) = window.x11_surface() else {
         return;
     };
     if let Err(err) = surface.configure(geometry) {
-        eventline::warn!("xwayland: failed to resize window: {err}");
+        eventline::warn!("xwayland: failed to configure window geometry: {err}");
     }
 }
 

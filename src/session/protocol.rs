@@ -229,7 +229,7 @@ impl<D: SessionDriver> XdgShellHandler for Session<D> {
     }
 
     fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
-        wayland::popup::track(&mut self.wayland, surface);
+        wayland::popup::track(&mut self.wayland, &self.cameras, surface);
         self.request_redraw();
     }
 
@@ -239,7 +239,7 @@ impl<D: SessionDriver> XdgShellHandler for Session<D> {
         positioner: PositionerState,
         token: u32,
     ) {
-        wayland::popup::reposition(&self.wayland, surface, positioner, token);
+        wayland::popup::reposition(&self.wayland, &self.cameras, surface, positioner, token);
         self.request_redraw();
     }
 
@@ -287,7 +287,7 @@ impl<D: SessionDriver> WlrLayerShellHandler for Session<D> {
     }
 
     fn new_popup(&mut self, _parent: WlrLayerSurface, popup: PopupSurface) {
-        wayland::popup::unconstrain_surface(&self.wayland, popup);
+        wayland::popup::unconstrain_surface(&self.wayland, &self.cameras, popup);
         self.request_redraw();
     }
 }

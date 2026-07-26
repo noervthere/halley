@@ -252,11 +252,27 @@ where
                     (world.x + world_offset.x).round() as i32,
                     (world.y + world_offset.y).round() as i32,
                 ));
+                let output_name = output.name();
+                let output_changed =
+                    wayland::window_output_name(window).as_deref() != Some(output_name.as_str());
                 wayland::set_window_output(window, &output);
                 session
                     .wayland
                     .space
                     .map_element(window.clone(), new_location, false);
+                if let Some(geometry) = session.wayland.space.element_geometry(window) {
+                    crate::xwayland::configure_window(
+                        window,
+                        Rectangle::new(new_location, geometry.size),
+                    );
+                }
+                if output_changed {
+                    wayland::popup::update_reactive_for_window(
+                        &session.wayland,
+                        &session.cameras,
+                        window,
+                    );
+                }
             }
         }
         crate::input::grab::Grab::Pan { output } => {
@@ -307,7 +323,7 @@ where
                     state.start_rect.size,
                     size,
                 );
-                crate::xwayland::resize_window(&state.window, Rectangle::new(location, size));
+                crate::xwayland::configure_window(&state.window, Rectangle::new(location, size));
             }
         }
         crate::input::grab::Grab::None => {}

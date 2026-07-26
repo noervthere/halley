@@ -10,11 +10,13 @@ use smithay::utils::{Rectangle, Serial};
 use smithay::wayland::seat::WaylandFocus;
 use smithay::wayland::shell::xdg::{PopupSurface, PositionerState};
 
+use crate::camera::OutputCameras;
+
 use super::WaylandState;
 
-pub fn track(wayland: &mut WaylandState, surface: PopupSurface) {
+pub fn track(wayland: &mut WaylandState, cameras: &OutputCameras, surface: PopupSurface) {
     let popup = PopupKind::Xdg(surface);
-    unconstrain(wayland, &popup);
+    unconstrain(wayland, cameras, &popup);
     if let Err(err) = wayland.popup_manager.track_popup(popup) {
         eventline::warn!("xdg-shell: failed to track popup: {err}");
     }
@@ -34,12 +36,13 @@ pub fn handle_commit(manager: &mut PopupManager, surface: &WlSurface) {
     }
 }
 
-pub fn unconstrain_surface(wayland: &WaylandState, surface: PopupSurface) {
-    unconstrain(wayland, &PopupKind::Xdg(surface));
+pub fn unconstrain_surface(wayland: &WaylandState, cameras: &OutputCameras, surface: PopupSurface) {
+    unconstrain(wayland, cameras, &PopupKind::Xdg(surface));
 }
 
 pub fn reposition(
     wayland: &WaylandState,
+    cameras: &OutputCameras,
     surface: PopupSurface,
     positioner: PositionerState,
     token: u32,
@@ -48,15 +51,37 @@ pub fn reposition(
         state.geometry = positioner.get_geometry();
         state.positioner = positioner;
     });
-    unconstrain(wayland, &PopupKind::Xdg(surface.clone()));
+    unconstrain(wayland, cameras, &PopupKind::Xdg(surface.clone()));
     surface.send_repositioned(token);
 }
 
+pub fn update_reactive_for_window(
+    wayland: &WaylandState,
+    cameras: &OutputCameras,
+    window: &smithay::desktop::Window,
+) {
+    let Some(toplevel) = window.toplevel() else {
+        return;
+    };
+    for (popup, _) in PopupManager::popups_for_surface(toplevel.wl_surface()) {
+        let PopupKind::Xdg(surface) = &popup else {
+            continue;
+        };
+        if !surface.with_pending_state(|state| state.positioner.reactive) {
+            continue;
+        }
+        unconstrain(wayland, cameras, &popup);
+        if let Err(err) = surface.send_pending_configure() {
+            eventline::warn!("xdg-shell: failed to reconfigure reactive popup: {err}");
+        }
+    }
+}
+
 /// Constrains a popup in the coordinate system of its root. Windows use
-/// their owning output's global `Space` rectangle; layer roots use their
-/// output-local `LayerMap` geometry because layers never pass through a
-/// workspace camera.
-fn unconstrain(wayland: &WaylandState, popup: &PopupKind) {
+/// their owning output camera's visible world rectangle; layer roots use
+/// their output-local `LayerMap` geometry because layers never pass through
+/// a workspace camera.
+fn unconstrain(wayland: &WaylandState, cameras: &OutputCameras, popup: &PopupKind) {
     let Ok(root) = find_popup_root_surface(popup) else {
         return;
     };
@@ -79,9 +104,13 @@ fn unconstrain(wayland: &WaylandState, popup: &PopupKind) {
         else {
             return;
         };
-        let Some(mut target) = wayland.space.output_geometry(output) else {
+        let Some(output_geometry) = wayland.space.output_geometry(output) else {
             return;
         };
+        let Some(view) = cameras.view(&output.name()) else {
+            return;
+        };
+        let mut target = crate::camera::world_viewport(view, output_geometry);
         target.loc -= window_geometry.loc;
         target.loc -= get_popup_toplevel_coords(popup);
         set_unconstrained_geometry(popup, target);
