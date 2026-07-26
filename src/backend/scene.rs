@@ -298,7 +298,7 @@ fn capture_overlay_elements(
 fn capture_picker_elements(
     output: Rectangle<i32, Logical>,
     selection: Rectangle<i32, Logical>,
-    show_handles: bool,
+    region_style: bool,
 ) -> Vec<SolidColorRenderElement> {
     let output_local = Rectangle::<i32, Physical>::from_size(output.size.to_physical(1));
     let selected = output
@@ -346,8 +346,12 @@ fn capture_picker_elements(
             elements.push(make(rect, dim));
         }
     }
-    elements.extend(super::border_strips(selected, 2, white));
-    if show_handles {
+    if region_style {
+        elements.extend(
+            dashed_border_rects(selected)
+                .into_iter()
+                .map(|rect| make(rect, white)),
+        );
         let handle_size = 12;
         for point in [
             selected.loc,
@@ -363,8 +367,50 @@ fn capture_picker_elements(
                 white,
             ));
         }
+    } else {
+        elements.extend(super::border_strips(selected, 2, white));
     }
     elements
+}
+
+fn dashed_border_rects(rect: Rectangle<i32, Physical>) -> Vec<Rectangle<i32, Physical>> {
+    const THICKNESS: i32 = 2;
+    const DASH_LENGTH: i32 = 10;
+    const GAP_LENGTH: i32 = 6;
+
+    let right = rect.loc.x + rect.size.w;
+    let bottom = rect.loc.y + rect.size.h;
+    let mut strips = Vec::new();
+
+    let mut x = rect.loc.x;
+    while x < right {
+        let length = (right - x).min(DASH_LENGTH);
+        strips.push(Rectangle::new(
+            (x, rect.loc.y).into(),
+            (length, THICKNESS).into(),
+        ));
+        strips.push(Rectangle::new(
+            (x, bottom - THICKNESS).into(),
+            (length, THICKNESS).into(),
+        ));
+        x += DASH_LENGTH + GAP_LENGTH;
+    }
+
+    let mut y = rect.loc.y;
+    while y < bottom {
+        let length = (bottom - y).min(DASH_LENGTH);
+        strips.push(Rectangle::new(
+            (rect.loc.x, y).into(),
+            (THICKNESS, length).into(),
+        ));
+        strips.push(Rectangle::new(
+            (right - THICKNESS, y).into(),
+            (THICKNESS, length).into(),
+        ));
+        y += DASH_LENGTH + GAP_LENGTH;
+    }
+
+    strips
 }
 
 fn map_rect(
@@ -435,7 +481,28 @@ mod tests {
         let region = capture_picker_elements(output, selection, true);
         let highlight = capture_picker_elements(output, selection, false);
 
-        assert_eq!(region.len(), highlight.len() + 4);
+        let handles = |elements: &[SolidColorRenderElement]| {
+            elements
+                .iter()
+                .filter(|element| element.geometry(Scale::from(1.0)).size == (12, 12).into())
+                .count()
+        };
+        assert_eq!(handles(&region), 4);
+        assert_eq!(handles(&highlight), 0);
+    }
+
+    #[test]
+    fn region_border_uses_ten_pixel_dashes_with_six_pixel_gaps() {
+        let selection = Rectangle::<i32, Physical>::new((320, 180).into(), (100, 80).into());
+        let strips = dashed_border_rects(selection);
+
+        assert!(strips.contains(&Rectangle::new((320, 180).into(), (10, 2).into())));
+        assert!(strips.contains(&Rectangle::new((336, 180).into(), (10, 2).into())));
+        assert!(!strips.iter().any(|strip| {
+            strip.loc.y == 180
+                && strip.loc.x < 336
+                && strip.loc.x + strip.size.w > 330
+        }));
     }
 
     #[test]
