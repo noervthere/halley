@@ -3,6 +3,7 @@ use smithay::output::Output;
 use smithay::reexports::wayland_server::DisplayHandle;
 use smithay::wayland::compositor::CompositorState;
 use smithay::wayland::fractional_scale::FractionalScaleManagerState;
+use smithay::wayland::keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitState;
 use smithay::wayland::output::OutputManagerState;
 use smithay::wayland::pointer_constraints::PointerConstraintsState;
 use smithay::wayland::relative_pointer::RelativePointerManagerState;
@@ -68,6 +69,7 @@ impl<D: SessionDriver> Session<D> {
             FractionalScaleManagerState::new::<Self>(&display_handle),
             RelativePointerManagerState::new::<Self>(&display_handle),
             PointerConstraintsState::new::<Self>(&display_handle),
+            KeyboardShortcutsInhibitState::new::<Self>(&display_handle),
             ShmState::new::<Self>(&display_handle, vec![]),
             OutputManagerState::new_with_xdg_output::<Self>(&display_handle),
             DataDeviceState::new::<Self>(&display_handle),

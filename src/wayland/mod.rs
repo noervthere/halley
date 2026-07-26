@@ -16,6 +16,7 @@ use smithay::reexports::wayland_server::backend::{ClientData, ClientId, Disconne
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::wayland::compositor::{CompositorClientState, CompositorState};
 use smithay::wayland::fractional_scale::FractionalScaleManagerState;
+use smithay::wayland::keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitState;
 use smithay::wayland::output::OutputManagerState;
 use smithay::wayland::pointer_constraints::PointerConstraintsState;
 use smithay::wayland::relative_pointer::RelativePointerManagerState;
@@ -73,6 +74,7 @@ pub struct WaylandState {
     _fractional_scale_manager_state: FractionalScaleManagerState,
     _relative_pointer_manager_state: RelativePointerManagerState,
     _pointer_constraints_state: PointerConstraintsState,
+    pub keyboard_shortcuts_inhibit_state: KeyboardShortcutsInhibitState,
     pub shm_state: ShmState,
     // Retained alongside the wl_output globals it serves.
     _output_manager_state: OutputManagerState,
@@ -130,6 +132,7 @@ impl WaylandState {
         fractional_scale_manager_state: FractionalScaleManagerState,
         relative_pointer_manager_state: RelativePointerManagerState,
         pointer_constraints_state: PointerConstraintsState,
+        keyboard_shortcuts_inhibit_state: KeyboardShortcutsInhibitState,
         shm_state: ShmState,
         output_manager_state: OutputManagerState,
         data_device_state: DataDeviceState,
@@ -145,6 +148,7 @@ impl WaylandState {
             _fractional_scale_manager_state: fractional_scale_manager_state,
             _relative_pointer_manager_state: relative_pointer_manager_state,
             _pointer_constraints_state: pointer_constraints_state,
+            keyboard_shortcuts_inhibit_state,
             shm_state,
             _output_manager_state: output_manager_state,
             data_device_state,

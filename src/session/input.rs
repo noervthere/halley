@@ -9,6 +9,7 @@ use smithay::input::keyboard::FilterResult;
 use smithay::input::pointer::{ButtonEvent, MotionEvent, RelativeMotionEvent};
 use smithay::output::Output;
 use smithay::utils::{Logical, Point, Rectangle, SERIAL_COUNTER};
+use smithay::wayland::keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitorSeat;
 
 use super::{Session, SessionDriver, focus_layer, focus_window};
 use crate::input::pointer::{axis_frame_filtered, process_wheel_bindings};
@@ -19,6 +20,29 @@ use crate::wayland;
 
 const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
+
+fn shortcut_policy_allows_bindings(
+    focus_bypasses_shortcuts: bool,
+    inhibitor_active: bool,
+) -> bool {
+    !focus_bypasses_shortcuts && !inhibitor_active
+}
+
+fn bindings_enabled<D: SessionDriver>(session: &Session<D>) -> bool {
+    let focus = wayland::focus::current(&session.wayland);
+    let bypasses_shortcuts = focus
+        .as_ref()
+        .is_some_and(|focus| focus.bypasses_shortcuts());
+    let inhibitor_active = focus
+        .map(|focus| focus.surface())
+        .and_then(|surface| {
+            session
+                .seat
+                .keyboard_shortcuts_inhibitor_for_surface(&surface)
+        })
+        .is_some_and(|inhibitor| inhibitor.is_active());
+    shortcut_policy_allows_bindings(bypasses_shortcuts, inhibitor_active)
+}
 
 fn output_at_pointer(
     space: &Space<Window>,
@@ -259,8 +283,7 @@ pub fn handle<D, B>(
             .get_keyboard()
             .expect("keyboard capability added at seat setup")
             .modifier_state();
-        let bindings_enabled = !wayland::focus::current(&session.wayland)
-            .is_some_and(|focus| focus.bypasses_shortcuts());
+        let bindings_enabled = bindings_enabled(session);
         let on_background = route.as_ref().is_some_and(|route| {
             matches!(
                 &route.target,
@@ -434,8 +457,7 @@ pub fn handle<D, B>(
         let output_name = route
             .as_ref()
             .map(|route| route.output.name().to_string());
-        let bindings_enabled = !wayland::focus::current(&session.wayland)
-            .is_some_and(|focus| focus.bypasses_shortcuts());
+        let bindings_enabled = bindings_enabled(session);
         let modifiers = session
             .seat
             .get_keyboard()
@@ -478,8 +500,7 @@ pub fn handle<D, B>(
             .seat
             .get_keyboard()
             .expect("keyboard capability added at seat setup");
-        let bindings_enabled = !wayland::focus::current(&session.wayland)
-            .is_some_and(|focus| focus.bypasses_shortcuts());
+        let bindings_enabled = bindings_enabled(session);
         let action = keyboard.input::<halley_config::Action, _>(
             session,
             keycode,
@@ -511,5 +532,18 @@ pub fn handle<D, B>(
         if let Some(action) = action {
             dispatch_action(session, action, socket_name, pointer_output.as_deref());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::shortcut_policy_allows_bindings;
+
+    #[test]
+    fn shortcut_policy_respects_shell_and_client_inhibition() {
+        assert!(shortcut_policy_allows_bindings(false, false));
+        assert!(!shortcut_policy_allows_bindings(true, false));
+        assert!(!shortcut_policy_allows_bindings(false, true));
+        assert!(!shortcut_policy_allows_bindings(true, true));
     }
 }
