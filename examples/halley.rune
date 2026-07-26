@@ -69,7 +69,9 @@ animations:
     # Enable or disable just the window-open animation.
     enabled true
 
-    # newm's original center-out opening lasts 300 ms and moves linearly.
+    # Types: "center-out" or "elastic".
+    type "center-out"
+
     duration-ms 300
     curve "linear"
   end

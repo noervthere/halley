@@ -87,6 +87,10 @@ fn example_config_window_open_animation_parses() {
 
     assert!(animations.enabled);
     assert!(animations.window_open.enabled);
+    assert_eq!(
+        animations.window_open.animation_type,
+        halley_config::WindowOpenAnimationType::CenterOut
+    );
     assert_eq!(animations.window_open.duration_ms, 300);
     assert_eq!(
         animations.window_open.curve,
