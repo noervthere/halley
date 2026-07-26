@@ -117,6 +117,10 @@ impl FullscreenTextureTransitions {
         self.windows.remove(surface);
     }
 
+    pub fn contains(&self, surface: &WlSurface) -> bool {
+        self.windows.contains_key(surface)
+    }
+
     pub fn clear(&mut self) {
         self.windows.clear();
     }

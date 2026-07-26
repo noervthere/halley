@@ -36,21 +36,36 @@ pub(super) fn handle_surface_commit<D: SessionDriver>(
     session: &mut Session<D>,
     wl_surface: &WlSurface,
 ) {
-    let surface = session
+    // Initial fullscreen placement stays in `surface_associated`, before focus
+    // and pointer locking. This commit hook may fill a missing texture only;
+    // it must never configure, relocate, or refocus the X11 window.
+    let window = session
         .wayland
         .space
         .elements()
         .find(|window| {
-            window
-                .wl_surface()
-                .is_some_and(|candidate| candidate.as_ref() == wl_surface)
+            window.x11_surface().is_some()
+                && window
+                    .wl_surface()
+                    .is_some_and(|candidate| candidate.as_ref() == wl_surface)
         })
-        .and_then(|window| window.x11_surface().cloned());
-    let Some(surface) = surface else {
+        .cloned();
+    let Some(window) = window else {
         return;
     };
-    if surface.is_fullscreen() && !session.fullscreen.is_fullscreen_or_pending(wl_surface) {
-        enter_fullscreen(session, &surface);
+    let now = crate::frame_clock::monotonic_now();
+    if session.fullscreen.is_transitioning(wl_surface, now)
+        && !session.fullscreen_textures.contains(wl_surface)
+        && with_renderer_surface_state(wl_surface, |state| state.buffer().is_some())
+            .unwrap_or(false)
+    {
+        let textures = &mut session.fullscreen_textures;
+        if let Err(err) = session
+            .driver
+            .with_renderer(|renderer| textures.capture_previous(renderer, &window))
+        {
+            eventline::warn!("fullscreen: failed to capture XWayland texture on commit: {err}");
+        }
     }
 }
 
@@ -113,10 +128,7 @@ fn update_fullscreen<D: SessionDriver>(
         return;
     };
     let now = crate::frame_clock::monotonic_now();
-    let snapshot = match capture_fullscreen_snapshot(session, &window, fullscreen) {
-        SnapshotCapture::Ready(snapshot) => snapshot,
-        SnapshotCapture::Deferred => return,
-    };
+    let snapshot = capture_fullscreen_snapshot(session, &window, fullscreen);
     if let Err(err) = surface.set_fullscreen(fullscreen) {
         let action = if fullscreen { "set" } else { "clear" };
         eventline::warn!("xwayland: failed to {action} fullscreen state: {err}");
@@ -145,39 +157,22 @@ fn update_fullscreen<D: SessionDriver>(
     }
 }
 
-enum SnapshotCapture {
-    Ready(Option<WlSurface>),
-    Deferred,
-}
-
 fn capture_fullscreen_snapshot<D: SessionDriver>(
     session: &mut Session<D>,
     window: &Window,
     fullscreen: bool,
-) -> SnapshotCapture {
-    let Some(surface) = window.wl_surface().map(|surface| surface.into_owned()) else {
-        return if fullscreen {
-            SnapshotCapture::Deferred
-        } else {
-            SnapshotCapture::Ready(None)
-        };
-    };
+) -> Option<WlSurface> {
+    let surface = window.wl_surface().map(|surface| surface.into_owned())?;
     if !session
         .fullscreen
         .should_capture_external_snapshot(&surface, fullscreen)
     {
-        return SnapshotCapture::Ready(None);
+        return None;
     }
     let ready =
         with_renderer_surface_state(&surface, |state| state.buffer().is_some()).unwrap_or(false);
     if !ready {
-        // Pre-map fullscreen state can arrive before XWayland's first buffer.
-        // The surface-commit path retries entry once there is content to capture.
-        return if fullscreen {
-            SnapshotCapture::Deferred
-        } else {
-            SnapshotCapture::Ready(None)
-        };
+        return None;
     }
 
     let textures = &mut session.fullscreen_textures;
@@ -185,10 +180,10 @@ fn capture_fullscreen_snapshot<D: SessionDriver>(
         .driver
         .with_renderer(|renderer| textures.capture_previous(renderer, window))
     {
-        Ok(()) => SnapshotCapture::Ready(Some(surface)),
+        Ok(()) => Some(surface),
         Err(err) => {
             eventline::warn!("fullscreen: failed to capture previous XWayland texture: {err}");
-            SnapshotCapture::Ready(None)
+            None
         }
     }
 }

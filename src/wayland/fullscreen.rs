@@ -276,6 +276,14 @@ impl FullscreenManager {
         animations_enabled(self.animations) && self.is_fullscreen_or_pending(surface) != fullscreen
     }
 
+    pub fn is_transitioning(&self, surface: &WlSurface, now: Duration) -> bool {
+        self.windows.get(surface).is_some_and(|entry| {
+            entry
+                .transition
+                .is_some_and(|transition| !transition.is_finished_at(now))
+        })
+    }
+
     pub fn handle_commit(
         &mut self,
         wayland: &mut WaylandState,
