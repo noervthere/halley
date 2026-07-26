@@ -1,15 +1,13 @@
 use std::error::Error;
 use std::time::Duration;
 
-use smithay::backend::allocator::gbm::{GbmAllocator, GbmBufferFlags, GbmDevice};
 use smithay::backend::allocator::dmabuf::Dmabuf;
+use smithay::backend::allocator::gbm::{GbmAllocator, GbmBufferFlags, GbmDevice};
 use smithay::backend::allocator::{Format, Fourcc};
 use smithay::backend::drm::compositor::PrimaryPlaneElement;
 use smithay::backend::drm::exporter::gbm::{GbmFramebufferExporter, NodeFilter};
 use smithay::backend::drm::output::{DrmOutput, DrmOutputManager, DrmOutputRenderElements};
-use smithay::backend::drm::{
-    DrmDevice, DrmDeviceFd, DrmDeviceNotifier, DrmNode, NodeType,
-};
+use smithay::backend::drm::{DrmDevice, DrmDeviceFd, DrmDeviceNotifier, DrmNode, NodeType};
 use smithay::backend::egl::{EGLContext, EGLDisplay};
 use smithay::backend::renderer::ImportDma;
 use smithay::backend::renderer::element::solid::SolidColorRenderElement;
@@ -511,6 +509,10 @@ impl TtyBackend {
         self.session.clone()
     }
 
+    pub fn renderer(&mut self) -> &mut GlesRenderer {
+        &mut self.renderer
+    }
+
     /// Acknowledge a page-flip completion for one output, called from the
     /// `DrmEvent::VBlank(crtc)` handler - the DRM-path equivalent of
     /// `WinitBackend::request_redraw()`. Takes a `crtc::Handle` since with
@@ -557,6 +559,8 @@ impl Renderable for TtyBackend {
             .space
             .output_geometry(&entry.output)
             .ok_or_else(|| format!("tty output {:?} is not mapped", entry.output.name()))?;
+        let clear = request.clear;
+        let target_presentation_time = request.target_presentation_time;
         let elements = super::scene::build(
             &mut self.renderer,
             &entry.output,
@@ -567,7 +571,7 @@ impl Renderable for TtyBackend {
         let result = entry.drm_output.render_frame::<_, SceneElement>(
             &mut self.renderer,
             &elements,
-            request.clear,
+            clear,
             super::tty_dmabuf::frame_flags(),
         )?;
 
@@ -590,7 +594,7 @@ impl Renderable for TtyBackend {
         }
 
         entry.drm_output.queue_frame(FrameSubmission {
-            target_presentation_time: request.target_presentation_time,
+            target_presentation_time,
         })?;
         entry.pending = true;
         Ok(RenderOutcome::new(

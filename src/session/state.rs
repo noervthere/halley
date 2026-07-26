@@ -1,4 +1,5 @@
 use smithay::backend::allocator::dmabuf::Dmabuf;
+use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::input::{Seat, SeatState};
 use smithay::output::Output;
 use smithay::reexports::wayland_server::DisplayHandle;
@@ -38,6 +39,7 @@ pub trait SessionDriver: 'static {
         output: &Output,
     ) -> Option<&crate::backend::dmabuf::SurfaceDmabufFeedback>;
     fn request_redraw(&mut self, output: Option<&Output>);
+    fn with_renderer<T>(&mut self, f: impl FnOnce(&mut GlesRenderer) -> T) -> T;
     fn stop(&mut self);
 }
 
@@ -64,13 +66,11 @@ pub struct Session<D: SessionDriver> {
     pub wheel_accumulator: WheelAccumulator,
     pub window_open_animations: crate::animation::WindowOpenAnimations,
     pub fullscreen: crate::wayland::fullscreen::FullscreenManager,
+    pub fullscreen_textures: crate::backend::fullscreen_texture::FullscreenTextureTransitions,
 }
 
 impl<D: SessionDriver> Session<D> {
-    pub fn create_wayland_state(
-        display_handle: DisplayHandle,
-        driver: &mut D,
-    ) -> WaylandState {
+    pub fn create_wayland_state(display_handle: DisplayHandle, driver: &mut D) -> WaylandState {
         let capabilities = driver.dmabuf_capabilities();
         let mut dmabuf_state = DmabufState::new();
         let dmabuf_global = crate::wayland::dmabuf::create_global::<Self>(
@@ -110,16 +110,24 @@ impl<D: SessionDriver> Session<D> {
     /// Applies every backend-independent setting from one validated config
     /// snapshot. Output hardware policy remains with the concrete driver.
     pub fn apply_common_config(&mut self, config: &halley_config::RuntimeConfig) {
-        self.keyboard
-            .reload(&config.keybinds, D::BACKEND_KIND);
-        let redraw =
-            self.decorations != config.decorations || self.zoom != config.zoom;
+        self.keyboard.reload(&config.keybinds, D::BACKEND_KIND);
+        let redraw = self.decorations != config.decorations || self.zoom != config.zoom;
         self.decorations = config.decorations;
         self.zoom = config.zoom;
         self.window_open_animations.reload(config.animations);
-        self.fullscreen.reload(config.animations);
+        if self.fullscreen.reload(config.animations) {
+            self.fullscreen_textures.clear();
+        }
         if redraw {
             self.request_redraw();
         }
+    }
+
+    pub fn cleanup_fullscreen(&mut self, now: std::time::Duration) -> bool {
+        let cleanup = self.fullscreen.cleanup(now);
+        for surface in cleanup.finished_surfaces {
+            self.fullscreen_textures.remove(&surface);
+        }
+        cleanup.visual_finished
     }
 }

@@ -15,7 +15,7 @@ use smithay::reexports::wayland_server::{Client, Display};
 use smithay::utils::{Logical, Point, SERIAL_COUNTER, Serial};
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::{
-    CompositorClientState, CompositorHandler, CompositorState, with_states,
+    CompositorClientState, CompositorHandler, CompositorState, add_pre_commit_hook, with_states,
 };
 use smithay::wayland::dmabuf::{DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier};
 use smithay::wayland::fractional_scale::{FractionalScaleHandler, with_fractional_scale};
@@ -37,6 +37,7 @@ use smithay::wayland::shell::wlr_layer::{
 use smithay::wayland::shell::xdg::decoration::XdgDecorationHandler;
 use smithay::wayland::shell::xdg::{
     PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
+    XdgToplevelSurfaceData,
 };
 use smithay::wayland::shm::{ShmHandler, ShmState};
 use smithay::wayland::socket::ListeningSocketSource;
@@ -107,17 +108,13 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
             self.window_open_animations
                 .start(mapped, crate::frame_clock::monotonic_now());
         }
-        self.fullscreen
-            .handle_commit(
-                &mut self.wayland,
-                &self.cameras,
-                &root,
-                crate::frame_clock::monotonic_now(),
-            );
-        crate::input::grab::finish_resize_commit(
-            &mut self.resize_anchor,
-            &mut self.wayland.space,
+        self.fullscreen.handle_commit(
+            &mut self.wayland,
+            &self.cameras,
+            &root,
+            crate::frame_clock::monotonic_now(),
         );
+        crate::input::grab::finish_resize_commit(&mut self.resize_anchor, &mut self.wayland.space);
         self.request_redraw();
         super::sync_keyboard_focus(self, SERIAL_COUNTER.next_serial());
     }
@@ -132,12 +129,7 @@ impl<D: SessionDriver> DmabufHandler for Session<D> {
         &mut self.wayland.dmabuf_state
     }
 
-    fn dmabuf_imported(
-        &mut self,
-        global: &DmabufGlobal,
-        dmabuf: Dmabuf,
-        notifier: ImportNotifier,
-    ) {
+    fn dmabuf_imported(&mut self, global: &DmabufGlobal, dmabuf: Dmabuf, notifier: ImportNotifier) {
         if self.wayland.dmabuf_global.as_ref() != Some(global)
             || !self.driver.import_dmabuf(&dmabuf)
         {
@@ -161,12 +153,51 @@ impl<D: SessionDriver> XdgShellHandler for Session<D> {
     }
 
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
+        let wl_surface = surface.wl_surface().clone();
         wayland::xdg_shell::new_toplevel(&mut self.wayland, surface);
+        add_pre_commit_hook::<Self, _>(&wl_surface, |session, _display, surface| {
+            let commit_serial = with_states(surface, |states| {
+                states
+                    .data_map
+                    .get::<XdgToplevelSurfaceData>()
+                    .and_then(|data| data.lock().ok()?.last_acked.as_ref().map(|ack| ack.serial))
+            });
+            let Some(commit_serial) = commit_serial else {
+                return;
+            };
+            if !session
+                .fullscreen
+                .should_capture_snapshot(surface, commit_serial)
+            {
+                return;
+            }
+            let window = session
+                .wayland
+                .space
+                .elements()
+                .find(|window| {
+                    window
+                        .toplevel()
+                        .is_some_and(|toplevel| toplevel.wl_surface() == surface)
+                })
+                .cloned();
+            let Some(window) = window else {
+                return;
+            };
+            let textures = &mut session.fullscreen_textures;
+            let capture = session
+                .driver
+                .with_renderer(|renderer| textures.capture_previous(renderer, &window));
+            if let Err(err) = capture {
+                eventline::warn!("fullscreen: failed to capture previous window texture: {err}");
+            }
+        });
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         self.window_open_animations.remove(surface.wl_surface());
         self.fullscreen.remove(surface.wl_surface());
+        self.fullscreen_textures.remove(surface.wl_surface());
         crate::input::grab::forget_resize_anchor(&mut self.resize_anchor, surface.wl_surface());
         wayland::xdg_shell::toplevel_destroyed(&mut self.wayland, &surface);
         self.request_redraw();
@@ -179,10 +210,7 @@ impl<D: SessionDriver> XdgShellHandler for Session<D> {
     ) {
         if crate::input::grab::belongs_to_surface(&self.grab, surface.wl_surface()) {
             self.grab = crate::input::grab::Grab::None;
-            crate::input::grab::forget_resize_anchor(
-                &mut self.resize_anchor,
-                surface.wl_surface(),
-            );
+            crate::input::grab::forget_resize_anchor(&mut self.resize_anchor, surface.wl_surface());
         }
         self.fullscreen.request(&mut self.wayland, &surface, output);
         self.request_redraw();
@@ -290,7 +318,11 @@ impl<D: SessionDriver> OutputHandler for Session<D> {}
 
 impl<D: SessionDriver> FractionalScaleHandler for Session<D> {
     fn new_fractional_scale(&mut self, surface: WlSurface) {
-        let scale = self.driver.primary_output().current_scale().fractional_scale();
+        let scale = self
+            .driver
+            .primary_output()
+            .current_scale()
+            .fractional_scale();
         with_states(&surface, |states| {
             with_fractional_scale(states, |fractional_scale| {
                 fractional_scale.set_preferred_scale(scale);

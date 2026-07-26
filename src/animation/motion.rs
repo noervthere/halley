@@ -28,9 +28,7 @@ impl MotionTimeline {
         initial_velocity: f64,
     ) -> Self {
         let duration = match motion {
-            AnimationMotion::Easing(easing) => {
-                Duration::from_millis(u64::from(easing.duration_ms))
-            }
+            AnimationMotion::Easing(easing) => Duration::from_millis(u64::from(easing.duration_ms)),
             AnimationMotion::Spring(spring) => {
                 spring_duration(spring, start - target, initial_velocity)
             }
@@ -52,8 +50,7 @@ impl MotionTimeline {
                 if self.duration.is_zero() {
                     return self.target;
                 }
-                let linear =
-                    (elapsed.as_secs_f64() / self.duration.as_secs_f64()).clamp(0.0, 1.0);
+                let linear = (elapsed.as_secs_f64() / self.duration.as_secs_f64()).clamp(0.0, 1.0);
                 self.start + (self.target - self.start) * apply_curve(easing.curve, linear)
             }
             AnimationMotion::Spring(spring) => {
@@ -93,6 +90,14 @@ impl MotionTimeline {
         }
     }
 
+    pub fn completion_at(self, now: Duration) -> f64 {
+        let distance = self.target - self.start;
+        if distance.abs() < f64::EPSILON {
+            return 1.0;
+        }
+        ((self.value_at(now) - self.start) / distance).clamp(0.0, 1.0)
+    }
+
     pub fn is_finished_at(self, now: Duration) -> bool {
         now.saturating_sub(self.started_at) >= self.duration
     }
@@ -127,8 +132,7 @@ fn spring_displacement(
         (initial_displacement + coefficient * seconds) * (-omega * seconds).exp()
     } else if damping < 1.0 {
         let damped = omega * (1.0 - damping * damping).sqrt();
-        let coefficient =
-            (initial_velocity + damping * omega * initial_displacement) / damped;
+        let coefficient = (initial_velocity + damping * omega * initial_displacement) / damped;
         (-damping * omega * seconds).exp()
             * (initial_displacement * (damped * seconds).cos()
                 + coefficient * (damped * seconds).sin())
@@ -140,8 +144,7 @@ fn spring_displacement(
             (initial_velocity - second * initial_displacement) / (first - second);
         let second_coefficient =
             (first * initial_displacement - initial_velocity) / (first - second);
-        first_coefficient * (first * seconds).exp()
-            + second_coefficient * (second * seconds).exp()
+        first_coefficient * (first * seconds).exp() + second_coefficient * (second * seconds).exp()
     };
 
     if displacement.is_finite() {
@@ -245,10 +248,7 @@ mod tests {
             epsilon: 0.00001,
         };
         for millis in 0..1_000 {
-            assert!(
-                spring_displacement(spring, -1.0, 0.0, f64::from(millis) / 1000.0)
-                    .is_finite()
-            );
+            assert!(spring_displacement(spring, -1.0, 0.0, f64::from(millis) / 1000.0).is_finite());
         }
     }
 
@@ -279,5 +279,38 @@ mod tests {
 
         assert!((reversed.value_at(now) - value).abs() < 1e-9);
         assert!((reversed.velocity_at(now) - velocity).abs() < 0.1);
+    }
+
+    #[test]
+    fn completion_always_runs_forward() {
+        let motion = AnimationMotion::Easing(EasingMotion {
+            duration_ms: 100,
+            curve: AnimationCurve::Linear,
+        });
+        let forward = MotionTimeline::between(motion, Duration::ZERO, 0.0, 1.0, 0.0);
+        let reverse = MotionTimeline::between(motion, Duration::ZERO, 1.0, 0.0, 0.0);
+        let halfway = Duration::from_millis(50);
+
+        assert_eq!(forward.completion_at(Duration::ZERO), 0.0);
+        assert_eq!(reverse.completion_at(Duration::ZERO), 0.0);
+        assert_eq!(forward.completion_at(halfway), 0.5);
+        assert_eq!(reverse.completion_at(halfway), 0.5);
+        assert_eq!(forward.completion_at(Duration::from_millis(100)), 1.0);
+        assert_eq!(reverse.completion_at(Duration::from_millis(100)), 1.0);
+    }
+
+    #[test]
+    fn spring_completion_is_clamped() {
+        let timeline = MotionTimeline::new(
+            AnimationMotion::Spring(SpringMotion {
+                damping_ratio: 0.3,
+                ..SpringMotion::default()
+            }),
+            Duration::ZERO,
+        );
+
+        for millis in 0..2_000 {
+            assert!((0.0..=1.0).contains(&timeline.completion_at(Duration::from_millis(millis))));
+        }
     }
 }

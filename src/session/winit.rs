@@ -11,9 +11,9 @@ use smithay::reexports::winit::window::Window as WinitWindow;
 use crate::backend::winit::WinitBackend;
 use crate::backend::{self, RenderRequest, Renderable};
 use crate::cursor::CursorImage;
-use crate::input::{Keyboard, SuppressedButtons};
 use crate::input::keybinds::BackendKind;
 use crate::input::pointer::{Pointer, WheelAccumulator};
+use crate::input::{Keyboard, SuppressedButtons};
 use crate::ipc::OutputInfoSource;
 use crate::wayland;
 
@@ -36,10 +36,7 @@ impl SessionDriver for WinitDriver {
         self.backend.dmabuf_capabilities()
     }
 
-    fn import_dmabuf(
-        &mut self,
-        dmabuf: &smithay::backend::allocator::dmabuf::Dmabuf,
-    ) -> bool {
+    fn import_dmabuf(&mut self, dmabuf: &smithay::backend::allocator::dmabuf::Dmabuf) -> bool {
         self.backend.import_dmabuf(dmabuf)
     }
 
@@ -52,6 +49,10 @@ impl SessionDriver for WinitDriver {
 
     fn request_redraw(&mut self, _output: Option<&smithay::output::Output>) {
         self.backend.request_redraw();
+    }
+
+    fn with_renderer<T>(&mut self, f: impl FnOnce(&mut GlesRenderer) -> T) -> T {
+        f(self.backend.renderer())
     }
 
     fn stop(&mut self) {
@@ -129,9 +130,9 @@ pub fn run() {
         window_open_animations: crate::animation::WindowOpenAnimations::new(
             runtime_config.animations,
         ),
-        fullscreen: crate::wayland::fullscreen::FullscreenManager::new(
-            runtime_config.animations,
-        ),
+        fullscreen: crate::wayland::fullscreen::FullscreenManager::new(runtime_config.animations),
+        fullscreen_textures:
+            crate::backend::fullscreen_texture::FullscreenTextureTransitions::default(),
     };
     app.wayland
         .space
@@ -217,6 +218,7 @@ pub fn run() {
                         cameras: &app.cameras,
                         window_open_animations: &app.window_open_animations,
                         fullscreen: &app.fullscreen,
+                        fullscreen_textures: &mut app.fullscreen_textures,
                     },
                 ) {
                     eventline::error!("render failed: {err}");
@@ -235,9 +237,8 @@ pub fn run() {
                 wayland::layer_shell::send_frames(&output, elapsed);
                 app.wayland.space.refresh();
                 wayland::layer_shell::cleanup(&mut app.wayland);
-                app.window_open_animations
-                    .cleanup(target_presentation_time);
-                if app.fullscreen.cleanup(target_presentation_time) {
+                app.window_open_animations.cleanup(target_presentation_time);
+                if app.cleanup_fullscreen(target_presentation_time) {
                     super::sync_keyboard_focus(app, smithay::utils::SERIAL_COUNTER.next_serial());
                     super::input::update_client_pointer_focus(
                         app,

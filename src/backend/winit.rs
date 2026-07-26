@@ -98,12 +98,20 @@ impl WinitBackend {
         }
     }
 
+    pub fn renderer(&mut self) -> &mut GlesRenderer {
+        self.backend.renderer()
+    }
+
     /// Keeps the advertised wl_output mode in sync with the real window
     /// size after a resize - stale output geometry would mislead clients
     /// about how large they're allowed to be.
     pub fn update_output_mode(&self) {
-        self.output
-            .change_current_state(Some(output_mode(self.backend.window_size())), None, None, None);
+        self.output.change_current_state(
+            Some(output_mode(self.backend.window_size())),
+            None,
+            None,
+            None,
+        );
     }
 }
 
@@ -143,22 +151,18 @@ impl Renderable for WinitBackend {
             .space
             .output_geometry(output)
             .ok_or_else(|| format!("winit output {:?} is not mapped", output.name()))?;
+        let clear = request.clear;
 
         // Scoped so `renderer`/`framebuffer` (both borrowed from
         // `self.backend`) are dropped before `submit()` needs its own
         // mutable borrow.
         {
             let (renderer, mut framebuffer) = self.backend.bind()?;
-            let elements = super::scene::build(
-                renderer,
-                output,
-                &self.output,
-                output_geometry,
-                request,
-            )?;
+            let elements =
+                super::scene::build(renderer, output, &self.output, output_geometry, request)?;
 
             let mut frame = renderer.render(&mut framebuffer, size, Transform::Flipped180)?;
-            frame.clear(request.clear, &[damage])?;
+            frame.clear(clear, &[damage])?;
             draw_render_elements(&mut frame, 1.0, &elements, &[damage])?;
             let _ = frame.finish()?;
         }

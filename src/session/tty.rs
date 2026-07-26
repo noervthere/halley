@@ -16,14 +16,14 @@ use smithay::reexports::wayland_server::Display;
 use crate::backend::tty::TtyBackend;
 use crate::backend::{CLEAR_COLOR, RenderOutcome, RenderRequest, RenderStatus, Renderable};
 use crate::cursor::CursorImage;
-use crate::input::{Keyboard, SuppressedButtons};
 use crate::input::keybinds::BackendKind;
 use crate::input::pointer::{Pointer, WheelAccumulator};
+use crate::input::{Keyboard, SuppressedButtons};
 use crate::ipc::OutputInfoSource;
 use crate::wayland;
 
-use super::tty_frame::{EstimatedVblankTimer, OutputFrameState};
 use super::SessionDriver;
+use super::tty_frame::{EstimatedVblankTimer, OutputFrameState};
 
 struct TtyDriver {
     backend: TtyBackend,
@@ -44,10 +44,7 @@ impl super::SessionDriver for TtyDriver {
         self.backend.dmabuf_capabilities()
     }
 
-    fn import_dmabuf(
-        &mut self,
-        dmabuf: &smithay::backend::allocator::dmabuf::Dmabuf,
-    ) -> bool {
+    fn import_dmabuf(&mut self, dmabuf: &smithay::backend::allocator::dmabuf::Dmabuf) -> bool {
         self.backend.import_dmabuf(dmabuf)
     }
 
@@ -68,6 +65,13 @@ impl super::SessionDriver for TtyDriver {
         for state in self.output_frames.values_mut() {
             state.queue_redraw();
         }
+    }
+
+    fn with_renderer<T>(
+        &mut self,
+        f: impl FnOnce(&mut smithay::backend::renderer::gles::GlesRenderer) -> T,
+    ) -> T {
+        f(self.backend.renderer())
     }
 
     fn stop(&mut self) {
@@ -92,15 +96,15 @@ pub fn run() {
     };
     eventline::info!("TtyBackend constructed successfully");
 
-    let mut libinput_context = Libinput::new_with_udev::<LibinputSessionInterface<_>>(
-        backend.session().into(),
-    );
+    let mut libinput_context =
+        Libinput::new_with_udev::<LibinputSessionInterface<_>>(backend.session().into());
     libinput_context
         .udev_assign_seat(&backend.session().seat())
         .expect("failed to assign udev seat for libinput");
     let libinput_backend = LibinputInputBackend::new(libinput_context);
 
-    let mut event_loop: EventLoop<TtyApp> = EventLoop::try_new().expect("failed to create event loop");
+    let mut event_loop: EventLoop<TtyApp> =
+        EventLoop::try_new().expect("failed to create event loop");
     let loop_signal = event_loop.get_signal();
     let loop_handle = event_loop.handle();
 
@@ -158,9 +162,9 @@ pub fn run() {
         window_open_animations: crate::animation::WindowOpenAnimations::new(
             runtime_config.animations,
         ),
-        fullscreen: crate::wayland::fullscreen::FullscreenManager::new(
-            runtime_config.animations,
-        ),
+        fullscreen: crate::wayland::fullscreen::FullscreenManager::new(runtime_config.animations),
+        fullscreen_textures:
+            crate::backend::fullscreen_texture::FullscreenTextureTransitions::default(),
     };
     for output in outputs {
         app.wayland
@@ -261,11 +265,7 @@ fn presentation_time(metadata: Option<&DrmEventMetadata>) -> Option<Duration> {
     }
 }
 
-fn on_vblank(
-    app: &mut TtyApp,
-    crtc: crtc::Handle,
-    metadata: Option<&DrmEventMetadata>,
-) {
+fn on_vblank(app: &mut TtyApp, crtc: crtc::Handle, metadata: Option<&DrmEventMetadata>) {
     let Some(output) = app.driver.backend.output_for_crtc(crtc).cloned() else {
         eventline::warn!("vblank received for unknown CRTC {crtc:?}");
         return;
@@ -335,10 +335,7 @@ fn apply_runtime_config(app: &mut TtyApp, config: halley_config::RuntimeConfig) 
     }
 }
 
-fn apply_tty_output_config(
-    app: &mut TtyApp,
-    outputs_config: &[halley_config::OutputConfig],
-) {
+fn apply_tty_output_config(app: &mut TtyApp, outputs_config: &[halley_config::OutputConfig]) {
     let changes = app.driver.backend.apply_output_config(outputs_config);
     let mut layout_changed = false;
 
@@ -377,10 +374,7 @@ fn apply_tty_output_config(
 
     if layout_changed {
         app.wayland.space.refresh();
-        super::input::update_client_pointer_focus(
-            app,
-            app.start_time.elapsed().as_millis() as u32,
-        );
+        super::input::update_client_pointer_focus(app, app.start_time.elapsed().as_millis() as u32);
         let pointer = app
             .seat
             .get_pointer()
@@ -440,10 +434,7 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
         .is_animating_on_output(output, target_presentation_time);
     let animating = camera_animating || window_animating || fullscreen_animating;
     if fullscreen_animating && pointer_is_on_output {
-        super::input::update_client_pointer_focus(
-            app,
-            app.start_time.elapsed().as_millis() as u32,
-        );
+        super::input::update_client_pointer_focus(app, app.start_time.elapsed().as_millis() as u32);
         let pointer = app
             .seat
             .get_pointer()
@@ -454,10 +445,7 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
         .then(|| app.cameras.view(&output.name()))
         .flatten();
     if view_before != view_after {
-        super::input::update_client_pointer_focus(
-            app,
-            app.start_time.elapsed().as_millis() as u32,
-        );
+        super::input::update_client_pointer_focus(app, app.start_time.elapsed().as_millis() as u32);
         let pointer = app
             .seat
             .get_pointer()
@@ -478,6 +466,7 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
             cameras: &app.cameras,
             window_open_animations: &app.window_open_animations,
             fullscreen: &app.fullscreen,
+            fullscreen_textures: &mut app.fullscreen_textures,
         },
     ) {
         Ok(outcome) => outcome,
@@ -486,14 +475,10 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
             RenderOutcome::new(RenderStatus::Skipped, None)
         }
     };
-    app.window_open_animations
-        .cleanup(target_presentation_time);
-    if app.fullscreen.cleanup(target_presentation_time) {
+    app.window_open_animations.cleanup(target_presentation_time);
+    if app.cleanup_fullscreen(target_presentation_time) {
         super::sync_keyboard_focus(app, smithay::utils::SERIAL_COUNTER.next_serial());
-        super::input::update_client_pointer_focus(
-            app,
-            app.start_time.elapsed().as_millis() as u32,
-        );
+        super::input::update_client_pointer_focus(app, app.start_time.elapsed().as_millis() as u32);
         let pointer = app
             .seat
             .get_pointer()
@@ -502,9 +487,7 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
     }
 
     let feedback = app.driver.dmabuf_feedback(output).cloned();
-    if let (Some(feedback), Some(element_states)) =
-        (feedback.as_ref(), outcome.element_states())
-    {
+    if let (Some(feedback), Some(element_states)) = (feedback.as_ref(), outcome.element_states()) {
         let primary_output = app.driver.backend.primary_output().clone();
         wayland::dmabuf::send_output_feedback(
             &app.wayland,

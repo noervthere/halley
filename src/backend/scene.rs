@@ -21,6 +21,7 @@ render_elements! {
     Cursor=MemoryRenderBufferRenderElement<GlesRenderer>,
     Rescaled=super::rescale::RescaledElement,
     Cropped=CropRenderElement<super::rescale::RescaledElement>,
+    FullscreenBlend=super::fullscreen_texture::FullscreenBlendElement,
     Border=SolidColorRenderElement,
     Layer=WaylandSurfaceRenderElement<GlesRenderer>,
 }
@@ -45,11 +46,10 @@ pub fn build(
             .into_iter()
             .map(SceneElement::Layer)
             .collect();
-    if !request.fullscreen.covers_top(
-        request.focused,
-        output,
-        request.target_presentation_time,
-    ) {
+    if !request
+        .fullscreen
+        .covers_top(request.focused, output, request.target_presentation_time)
+    {
         elements.extend(
             super::layer_surface_elements(renderer, output, Layer::Top)
                 .into_iter()
@@ -138,36 +138,56 @@ pub fn build(
                 },
             ))
         }));
-        elements.extend(surface_elements.into_iter().filter_map(|surface_element| {
-            let native_geometry = surface_element.geometry(Scale::from(1.0));
-            let destination = if fullscreen.is_some() {
-                map_rect(native_geometry, geometry.to_physical(1), animated_bbox)
-            } else {
-                let final_destination =
-                    super::camera_rect(native_geometry, camera_center, output_size, zoom_scale);
-                opening_visual.transform_rect(final_destination, scaled_bbox)
-            };
-            let element = super::rescale::RescaledElement::new(
-                surface_element,
-                destination,
-                if fullscreen.is_some() {
-                    1.0
+        let fullscreen_blend = if let Some(presentation) = fullscreen {
+            match request.fullscreen_textures.blend_element(
+                renderer,
+                window,
+                animated_bbox,
+                presentation.transition_completion,
+            ) {
+                Ok(blend) => blend,
+                Err(err) => {
+                    eventline::warn!("fullscreen: failed to blend window textures: {err}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        if let Some(blend) = fullscreen_blend {
+            elements.push(SceneElement::FullscreenBlend(blend));
+        } else {
+            elements.extend(surface_elements.into_iter().filter_map(|surface_element| {
+                let native_geometry = surface_element.geometry(Scale::from(1.0));
+                let destination = if fullscreen.is_some() {
+                    map_rect(native_geometry, geometry.to_physical(1), animated_bbox)
                 } else {
-                    opening_visual.alpha()
-                },
-            );
-            CropRenderElement::from_element(element, 1.0, animated_bbox).map(SceneElement::Cropped)
-        }));
+                    let final_destination =
+                        super::camera_rect(native_geometry, camera_center, output_size, zoom_scale);
+                    opening_visual.transform_rect(final_destination, scaled_bbox)
+                };
+                let element = super::rescale::RescaledElement::new(
+                    surface_element,
+                    destination,
+                    if fullscreen.is_some() {
+                        1.0
+                    } else {
+                        opening_visual.alpha()
+                    },
+                );
+                CropRenderElement::from_element(element, 1.0, animated_bbox)
+                    .map(SceneElement::Cropped)
+            }));
+        }
 
         let is_focused = window
             .toplevel()
             .is_some_and(|toplevel| Some(toplevel.wl_surface()) == request.focused);
-        let border_color =
-            super::window_border_color(request.decorations, is_focused)
-                * opening_visual.alpha()
-                * fullscreen
-                    .map(|presentation| (1.0 - presentation.progress) as f32)
-                    .unwrap_or(1.0);
+        let border_color = super::window_border_color(request.decorations, is_focused)
+            * opening_visual.alpha()
+            * fullscreen
+                .map(|presentation| (1.0 - presentation.progress) as f32)
+                .unwrap_or(1.0);
         let border_width =
             ((request.decorations.border_width_px as f64 * zoom_scale as f64).round() as i32)
                 .max(1);
@@ -230,10 +250,8 @@ fn map_rect(
     }
     let scale_x = f64::from(destination.size.w) / f64::from(source.size.w);
     let scale_y = f64::from(destination.size.h) / f64::from(source.size.h);
-    let left = f64::from(destination.loc.x)
-        + f64::from(rect.loc.x - source.loc.x) * scale_x;
-    let top = f64::from(destination.loc.y)
-        + f64::from(rect.loc.y - source.loc.y) * scale_y;
+    let left = f64::from(destination.loc.x) + f64::from(rect.loc.x - source.loc.x) * scale_x;
+    let top = f64::from(destination.loc.y) + f64::from(rect.loc.y - source.loc.y) * scale_y;
     let right = left + f64::from(rect.size.w) * scale_x;
     let bottom = top + f64::from(rect.size.h) * scale_y;
     Rectangle::new(
@@ -304,6 +322,7 @@ mod tests {
         let windowed = Rectangle::new((100, 50).into(), (800, 600).into());
         let start = crate::wayland::fullscreen::FullscreenPresentation {
             progress: 0.0,
+            transition_completion: 0.0,
             windowed_geometry: None,
             fullscreen_size: (1920, 1080).into(),
         };

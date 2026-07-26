@@ -7,7 +7,7 @@ use smithay::output::Output;
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State;
 use smithay::reexports::wayland_server::protocol::wl_output::WlOutput;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::utils::{Logical, Physical, Point, Rectangle, Size};
+use smithay::utils::{Logical, Physical, Point, Rectangle, Serial, Size};
 use smithay::wayland::shell::xdg::ToplevelSurface;
 
 use crate::animation::MotionTimeline;
@@ -30,20 +30,19 @@ struct FullscreenWindow {
     restore: Option<WindowedPlacement>,
     fullscreen_size: Size<i32, Logical>,
     transition: Option<MotionTimeline>,
+    snapshot_serials: Vec<Serial>,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub struct FullscreenPresentation {
     pub progress: f64,
+    pub transition_completion: f64,
     pub windowed_geometry: Option<Rectangle<i32, Logical>>,
     pub fullscreen_size: Size<i32, Logical>,
 }
 
 impl FullscreenPresentation {
-    pub fn fullscreen_rect(
-        self,
-        output_size: Size<i32, Physical>,
-    ) -> Rectangle<i32, Physical> {
+    pub fn fullscreen_rect(self, output_size: Size<i32, Physical>) -> Rectangle<i32, Physical> {
         let fullscreen_size = self.fullscreen_size.to_physical(1);
         Rectangle::new(
             (
@@ -78,8 +77,17 @@ impl FullscreenManager {
         }
     }
 
-    pub fn reload(&mut self, animations: Animations) {
+    pub fn reload(&mut self, animations: Animations) -> bool {
         self.animations = animations;
+        if animations_enabled(animations) {
+            return false;
+        }
+        self.windows.retain(|_, entry| {
+            entry.transition = None;
+            entry.snapshot_serials.clear();
+            entry.active || entry.desired
+        });
+        true
     }
 
     pub fn request(
@@ -93,9 +101,7 @@ impl FullscreenManager {
             Output::from_resource(resource)
                 .is_some_and(|output| wayland.space.outputs().any(|known| known == &output))
         });
-        let requested_output = requested
-            .as_ref()
-            .and_then(Output::from_resource);
+        let requested_output = requested.as_ref().and_then(Output::from_resource);
         let target = requested_output
             .or_else(|| {
                 window
@@ -130,7 +136,9 @@ impl FullscreenManager {
                 }),
                 fullscreen_size: output_geometry.size,
                 transition: None,
+                snapshot_serials: Vec::new(),
             });
+        let transition_requested = !entry.active;
         entry.desired = true;
         entry.target_output = target.name();
 
@@ -142,20 +150,29 @@ impl FullscreenManager {
             state.bounds = Some(output_geometry.size);
             state.fullscreen_output = requested;
         });
-        send_required_configure(toplevel);
+        if let Some(serial) = send_required_configure(toplevel)
+            && animations_enabled(self.animations)
+            && transition_requested
+        {
+            entry.snapshot_serials.push(serial);
+        }
     }
 
     pub fn unrequest(&mut self, wayland: &WaylandState, toplevel: &ToplevelSurface) {
-        let restore_size = self
+        let (restore_size, transition_requested) = self
             .windows
             .get_mut(toplevel.wl_surface())
-            .and_then(|entry| {
+            .map(|entry| {
                 entry.desired = false;
                 if let Some(window) = find_window(wayland, toplevel.wl_surface()) {
                     entry.fullscreen_size = window.geometry().size;
                 }
-                entry.restore.as_ref().map(|restore| restore.geometry.size)
-            });
+                (
+                    entry.restore.as_ref().map(|restore| restore.geometry.size),
+                    entry.active,
+                )
+            })
+            .unwrap_or((None, false));
         let bounds = self
             .windows
             .get(toplevel.wl_surface())
@@ -170,7 +187,13 @@ impl FullscreenManager {
             state.fullscreen_output = None;
             super::decoration::apply_tiled_hint(state);
         });
-        send_required_configure(toplevel);
+        if let Some(serial) = send_required_configure(toplevel)
+            && animations_enabled(self.animations)
+            && transition_requested
+            && let Some(entry) = self.windows.get_mut(toplevel.wl_surface())
+        {
+            entry.snapshot_serials.push(serial);
+        }
     }
 
     pub fn handle_commit(
@@ -294,19 +317,19 @@ impl FullscreenManager {
             .map(|transition| transition.value_at(now))
             .unwrap_or_else(|| if entry.active { 1.0 } else { 0.0 })
             .clamp(0.0, 1.0);
+        let transition_completion = entry
+            .transition
+            .map(|transition| transition.completion_at(now))
+            .unwrap_or(1.0);
         (progress > 0.0).then_some(FullscreenPresentation {
             progress,
+            transition_completion,
             windowed_geometry: entry.restore.as_ref().map(|restore| restore.geometry),
             fullscreen_size: entry.fullscreen_size,
         })
     }
 
-    pub fn covers_top(
-        &self,
-        focused: Option<&WlSurface>,
-        output: &Output,
-        now: Duration,
-    ) -> bool {
+    pub fn covers_top(&self, focused: Option<&WlSurface>, output: &Output, now: Duration) -> bool {
         focused
             .and_then(|surface| self.windows.get(surface))
             .is_some_and(|entry| {
@@ -345,6 +368,22 @@ impl FullscreenManager {
             .is_some_and(|entry| entry.active || entry.desired)
     }
 
+    pub fn should_capture_snapshot(&mut self, surface: &WlSurface, commit_serial: Serial) -> bool {
+        let Some(entry) = self.windows.get_mut(surface) else {
+            return false;
+        };
+        let mut capture = false;
+        entry.snapshot_serials.retain(|serial| {
+            if commit_serial.is_no_older_than(serial) {
+                capture = true;
+                false
+            } else {
+                true
+            }
+        });
+        capture
+    }
+
     pub fn reconfigure_output(&self, wayland: &WaylandState, output: &Output) {
         let Some(geometry) = wayland.space.output_geometry(output) else {
             return;
@@ -369,19 +408,24 @@ impl FullscreenManager {
         }
     }
 
-    pub fn cleanup(&mut self, now: Duration) -> bool {
+    pub fn cleanup(&mut self, now: Duration) -> FullscreenCleanup {
         let mut finished = false;
-        self.windows.retain(|_, entry| {
+        let mut finished_surfaces = Vec::new();
+        self.windows.retain(|surface, entry| {
             if entry
                 .transition
                 .is_some_and(|transition| transition.is_finished_at(now))
             {
                 entry.transition = None;
                 finished = true;
+                finished_surfaces.push(surface.clone());
             }
             entry.active || entry.desired || entry.transition.is_some()
         });
-        finished
+        FullscreenCleanup {
+            visual_finished: finished,
+            finished_surfaces,
+        }
     }
 
     pub fn remove(&mut self, surface: &WlSurface) {
@@ -389,14 +433,20 @@ impl FullscreenManager {
     }
 }
 
+pub struct FullscreenCleanup {
+    pub visual_finished: bool,
+    pub finished_surfaces: Vec<WlSurface>,
+}
+
 fn animations_enabled(animations: Animations) -> bool {
     animations.enabled && animations.fullscreen.enabled
 }
 
-fn send_required_configure(toplevel: &ToplevelSurface) {
+fn send_required_configure(toplevel: &ToplevelSurface) -> Option<Serial> {
     if toplevel.is_initial_configure_sent() {
-        toplevel.send_configure();
+        return Some(toplevel.send_configure());
     }
+    None
 }
 
 fn find_window<'a>(wayland: &'a WaylandState, surface: &WlSurface) -> Option<&'a Window> {
@@ -436,9 +486,8 @@ fn interpolate_rect(
     to: Rectangle<i32, Physical>,
     progress: f64,
 ) -> Rectangle<i32, Physical> {
-    let interpolate = |from: i32, to: i32| {
-        (f64::from(from) + f64::from(to - from) * progress).round() as i32
-    };
+    let interpolate =
+        |from: i32, to: i32| (f64::from(from) + f64::from(to - from) * progress).round() as i32;
     Rectangle::new(
         (
             interpolate(from.loc.x, to.loc.x),

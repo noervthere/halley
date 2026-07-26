@@ -1,4 +1,5 @@
 pub mod dmabuf;
+pub mod fullscreen_texture;
 pub mod rescale;
 pub mod scene;
 pub mod tty;
@@ -98,13 +99,9 @@ pub fn layer_surface_elements(
             let Some(geometry) = map.layer_geometry(surface) else {
                 return Vec::new();
             };
-            let location = geometry
-                .loc
-                .to_f64()
-                .to_physical(scale)
-                .to_i32_round();
-            let popup_elements = PopupManager::popups_for_surface(surface.wl_surface())
-                .flat_map(|(popup, popup_offset)| {
+            let location = geometry.loc.to_f64().to_physical(scale).to_i32_round();
+            let popup_elements = PopupManager::popups_for_surface(surface.wl_surface()).flat_map(
+                |(popup, popup_offset)| {
                     let offset = (popup_offset - popup.geometry().loc)
                         .to_f64()
                         .to_physical(scale)
@@ -117,7 +114,8 @@ pub fn layer_surface_elements(
                         1.0,
                         Kind::ScanoutCandidate,
                     )
-                });
+                },
+            );
             let mut elements: Vec<_> = popup_elements.collect();
             elements.extend(render_elements_from_surface_tree(
                 renderer,
@@ -169,7 +167,6 @@ pub struct FrameSubmission {
 }
 
 /// Immutable scene data needed to construct one output frame.
-#[derive(Clone, Copy)]
 pub struct RenderRequest<'a> {
     pub target_presentation_time: std::time::Duration,
     pub clear: Color32F,
@@ -181,6 +178,8 @@ pub struct RenderRequest<'a> {
     pub cameras: &'a crate::camera::OutputCameras,
     pub window_open_animations: &'a crate::animation::WindowOpenAnimations,
     pub fullscreen: &'a crate::wayland::fullscreen::FullscreenManager,
+    pub fullscreen_textures:
+        &'a mut crate::backend::fullscreen_texture::FullscreenTextureTransitions,
 }
 
 /// A presentation backend for one already-described scene.
@@ -218,7 +217,13 @@ pub fn border_strips(
     color: Color32F,
 ) -> [SolidColorRenderElement; 4] {
     let make = |rect: Rectangle<i32, Physical>| {
-        SolidColorRenderElement::new(Id::new(), rect, CommitCounter::default(), color, Kind::Unspecified)
+        SolidColorRenderElement::new(
+            Id::new(),
+            rect,
+            CommitCounter::default(),
+            color,
+            Kind::Unspecified,
+        )
     };
     let top = Rectangle::new(
         (bbox.loc.x - width, bbox.loc.y - width).into(),
@@ -254,7 +259,8 @@ pub fn camera_rect(
     output_size: Size<i32, Physical>,
     scale: f32,
 ) -> Rectangle<i32, Physical> {
-    let output_center = Point::<f32, Physical>::from((output_size.w as f32 / 2.0, output_size.h as f32 / 2.0));
+    let output_center =
+        Point::<f32, Physical>::from((output_size.w as f32 / 2.0, output_size.h as f32 / 2.0));
     let rect_center = Point::<f32, Physical>::from((
         rect.loc.x as f32 + rect.size.w as f32 / 2.0,
         rect.loc.y as f32 + rect.size.h as f32 / 2.0,
@@ -270,7 +276,11 @@ pub fn camera_rect(
     ));
 
     Rectangle::new(
-        (scaled_center.x - scaled_size.w / 2, scaled_center.y - scaled_size.h / 2).into(),
+        (
+            scaled_center.x - scaled_size.w / 2,
+            scaled_center.y - scaled_size.h / 2,
+        )
+            .into(),
         scaled_size,
     )
 }
