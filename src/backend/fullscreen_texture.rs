@@ -21,13 +21,16 @@ use smithay::utils::user_data::UserDataMap;
 use smithay::utils::{Buffer, Physical, Rectangle, Scale, Transform};
 
 const FULLSCREEN_BLEND_SHADER: &str = r#"
-precision highp float;
 //_DEFINES_
-
-varying vec2 v_coords;
 
 #if defined(EXTERNAL)
 #extension GL_OES_EGL_image_external : require
+#endif
+
+precision highp float;
+varying vec2 v_coords;
+
+#if defined(EXTERNAL)
 uniform samplerExternalOES tex;
 #else
 uniform sampler2D tex;
