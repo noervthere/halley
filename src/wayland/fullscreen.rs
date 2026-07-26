@@ -201,6 +201,7 @@ impl FullscreenManager {
         &mut self,
         wayland: &mut WaylandState,
         window: &Window,
+        now: Duration,
     ) -> Option<Rectangle<i32, Logical>> {
         let wl_surface = window.wl_surface().map(|surface| surface.into_owned())?;
         let window = find_window(wayland, &wl_surface).cloned()?;
@@ -209,18 +210,12 @@ impl FullscreenManager {
             .or_else(|| super::focus::selected_output(wayland).cloned());
         let target = target?;
         let output_geometry = wayland.space.output_geometry(&target)?;
-        self.windows
+        let entry = self
+            .windows
             .entry(wl_surface)
-            .and_modify(|entry| {
-                entry.desired = true;
-                entry.active = true;
-                entry.target_output = target.name();
-                entry.fullscreen_size = output_geometry.size;
-                entry.transition = None;
-            })
             .or_insert_with(|| FullscreenWindow {
-                desired: true,
-                active: true,
+                desired: false,
+                active: false,
                 target_output: target.name(),
                 restore: Some(WindowedPlacement {
                     location: wayland
@@ -237,6 +232,13 @@ impl FullscreenManager {
                 transition: None,
                 snapshot_serials: Vec::new(),
             });
+        let transition_requested = !entry.active;
+        entry.desired = true;
+        entry.target_output = target.name();
+        entry.fullscreen_size = output_geometry.size;
+        if transition_requested {
+            retarget_transition(entry, self.animations, now, true);
+        }
         super::set_window_output(&window, &target);
         wayland.space.map_element(window, output_geometry.loc, true);
         Some(output_geometry)
@@ -246,12 +248,17 @@ impl FullscreenManager {
         &mut self,
         wayland: &mut WaylandState,
         window: &Window,
+        now: Duration,
     ) -> Option<Rectangle<i32, Logical>> {
         let wl_surface = window.wl_surface().map(|surface| surface.into_owned())?;
-        let restore = self
-            .windows
-            .remove(&wl_surface)
-            .and_then(|entry| entry.restore)?;
+        let entry = self.windows.get_mut(&wl_surface)?;
+        let restore = entry.restore.clone()?;
+        let transition_requested = entry.active || entry.desired;
+        entry.desired = false;
+        entry.fullscreen_size = window.geometry().size;
+        if transition_requested {
+            retarget_transition(entry, self.animations, now, false);
+        }
         if let Some(output) = restore
             .output
             .as_deref()
@@ -263,6 +270,10 @@ impl FullscreenManager {
             .space
             .map_element(window.clone(), restore.location, true);
         Some(restore.geometry)
+    }
+
+    pub fn should_capture_external_snapshot(&self, surface: &WlSurface, fullscreen: bool) -> bool {
+        animations_enabled(self.animations) && self.is_fullscreen_or_pending(surface) != fullscreen
     }
 
     pub fn handle_commit(
@@ -351,23 +362,10 @@ impl FullscreenManager {
                 output: Some(output.name()),
             });
         }
-        let (current, velocity) = entry
-            .transition
-            .map(|transition| (transition.value_at(now), transition.velocity_at(now)))
-            .unwrap_or_else(|| (if entry.active { 1.0 } else { 0.0 }, 0.0));
-        entry.active = committed;
         if committed {
             entry.fullscreen_size = window.geometry().size;
         }
-        entry.transition = animations_enabled(self.animations).then(|| {
-            MotionTimeline::between(
-                self.animations.fullscreen.motion,
-                now,
-                current,
-                if committed { 1.0 } else { 0.0 },
-                velocity,
-            )
-        });
+        retarget_transition(entry, self.animations, now, committed);
         true
     }
 
@@ -519,6 +517,28 @@ fn animations_enabled(animations: Animations) -> bool {
     animations.enabled && animations.fullscreen.enabled
 }
 
+fn retarget_transition(
+    entry: &mut FullscreenWindow,
+    animations: Animations,
+    now: Duration,
+    active: bool,
+) {
+    let (current, velocity) = entry
+        .transition
+        .map(|transition| (transition.value_at(now), transition.velocity_at(now)))
+        .unwrap_or_else(|| (if entry.active { 1.0 } else { 0.0 }, 0.0));
+    entry.active = active;
+    entry.transition = animations_enabled(animations).then(|| {
+        MotionTimeline::between(
+            animations.fullscreen.motion,
+            now,
+            current,
+            if active { 1.0 } else { 0.0 },
+            velocity,
+        )
+    });
+}
+
 fn send_required_configure(toplevel: &ToplevelSurface) -> Option<Serial> {
     if toplevel.is_initial_configure_sent() {
         return Some(toplevel.send_configure());
@@ -581,7 +601,21 @@ fn interpolate_rect(
 
 #[cfg(test)]
 mod tests {
+    use halley_config::{AnimationCurve, AnimationMotion, EasingMotion};
+
     use super::*;
+
+    fn test_entry(active: bool) -> FullscreenWindow {
+        FullscreenWindow {
+            desired: active,
+            active,
+            target_output: "DP-1".to_string(),
+            restore: None,
+            fullscreen_size: (1920, 1080).into(),
+            transition: None,
+            snapshot_serials: Vec::new(),
+        }
+    }
 
     #[test]
     fn centers_undersized_client_in_output() {
@@ -596,5 +630,43 @@ mod tests {
         let mut animations = Animations::default();
         animations.fullscreen.enabled = false;
         assert!(!animations_enabled(animations));
+    }
+
+    #[test]
+    fn fullscreen_motion_retargets_without_discontinuity() {
+        let mut animations = Animations::default();
+        animations.fullscreen.motion = AnimationMotion::Easing(EasingMotion {
+            duration_ms: 400,
+            curve: AnimationCurve::Linear,
+        });
+        let mut entry = test_entry(false);
+        let started = Duration::from_secs(1);
+
+        retarget_transition(&mut entry, animations, started, true);
+        let forward = entry.transition.expect("forward transition");
+        let reversed_at = started + Duration::from_millis(100);
+        let value_before_reverse = forward.value_at(reversed_at);
+
+        retarget_transition(&mut entry, animations, reversed_at, false);
+        let reverse = entry.transition.expect("reverse transition");
+
+        assert!(!entry.active);
+        assert!((reverse.value_at(reversed_at) - value_before_reverse).abs() < f64::EPSILON);
+        assert_eq!(
+            reverse.value_at(reversed_at + Duration::from_millis(400)),
+            0.0
+        );
+    }
+
+    #[test]
+    fn fullscreen_motion_killswitch_still_applies_state() {
+        let mut animations = Animations::default();
+        animations.fullscreen.enabled = false;
+        let mut entry = test_entry(false);
+
+        retarget_transition(&mut entry, animations, Duration::ZERO, true);
+
+        assert!(entry.active);
+        assert!(entry.transition.is_none());
     }
 }

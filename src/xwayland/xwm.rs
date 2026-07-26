@@ -1,8 +1,10 @@
 use std::os::fd::OwnedFd;
 use std::sync::Mutex;
 
+use smithay::backend::renderer::utils::with_renderer_surface_state;
 use smithay::desktop::Window;
 use smithay::output::Output;
+use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point, Rectangle, SERIAL_COUNTER};
 use smithay::wayland::seat::WaylandFocus;
 use smithay::wayland::selection::SelectionTarget;
@@ -28,6 +30,28 @@ fn window_for_surface<D: SessionDriver>(
                 .is_some_and(|candidate| candidate == surface)
         })
         .cloned()
+}
+
+pub(super) fn handle_surface_commit<D: SessionDriver>(
+    session: &mut Session<D>,
+    wl_surface: &WlSurface,
+) {
+    let surface = session
+        .wayland
+        .space
+        .elements()
+        .find(|window| {
+            window
+                .wl_surface()
+                .is_some_and(|candidate| candidate.as_ref() == wl_surface)
+        })
+        .and_then(|window| window.x11_surface().cloned());
+    let Some(surface) = surface else {
+        return;
+    };
+    if surface.is_fullscreen() && !session.fullscreen.is_fullscreen_or_pending(wl_surface) {
+        enter_fullscreen(session, &surface);
+    }
 }
 
 pub(super) fn surface_associated<D: SessionDriver>(
@@ -73,34 +97,99 @@ fn output_for_geometry<D: SessionDriver>(
 }
 
 fn enter_fullscreen<D: SessionDriver>(session: &mut Session<D>, surface: &X11Surface) {
-    let Some(window) = window_for_surface(session, surface) else {
-        return;
-    };
-    if let Err(err) = surface.set_fullscreen(true) {
-        eventline::warn!("xwayland: failed to set fullscreen state: {err}");
-    }
-    if let Some(geometry) = session
-        .fullscreen
-        .request_external(&mut session.wayland, &window)
-        && let Err(err) = surface.configure(geometry)
-    {
-        eventline::warn!("xwayland: failed to configure fullscreen window: {err}");
-    }
+    update_fullscreen(session, surface, true);
 }
 
 fn leave_fullscreen<D: SessionDriver>(session: &mut Session<D>, surface: &X11Surface) {
+    update_fullscreen(session, surface, false);
+}
+
+fn update_fullscreen<D: SessionDriver>(
+    session: &mut Session<D>,
+    surface: &X11Surface,
+    fullscreen: bool,
+) {
     let Some(window) = window_for_surface(session, surface) else {
         return;
     };
-    if let Err(err) = surface.set_fullscreen(false) {
-        eventline::warn!("xwayland: failed to clear fullscreen state: {err}");
+    let now = crate::frame_clock::monotonic_now();
+    let snapshot = match capture_fullscreen_snapshot(session, &window, fullscreen) {
+        SnapshotCapture::Ready(snapshot) => snapshot,
+        SnapshotCapture::Deferred => return,
+    };
+    if let Err(err) = surface.set_fullscreen(fullscreen) {
+        let action = if fullscreen { "set" } else { "clear" };
+        eventline::warn!("xwayland: failed to {action} fullscreen state: {err}");
     }
-    if let Some(geometry) = session
+
+    let geometry = if fullscreen {
+        session
+            .fullscreen
+            .request_external(&mut session.wayland, &window, now)
+    } else {
+        session
+            .fullscreen
+            .unrequest_external(&mut session.wayland, &window, now)
+    };
+    match geometry {
+        Some(geometry) => {
+            if let Err(err) = surface.configure(geometry) {
+                eventline::warn!("xwayland: failed to configure fullscreen transition: {err}");
+            }
+        }
+        None => {
+            if let Some(snapshot) = snapshot {
+                session.fullscreen_textures.remove(&snapshot);
+            }
+        }
+    }
+}
+
+enum SnapshotCapture {
+    Ready(Option<WlSurface>),
+    Deferred,
+}
+
+fn capture_fullscreen_snapshot<D: SessionDriver>(
+    session: &mut Session<D>,
+    window: &Window,
+    fullscreen: bool,
+) -> SnapshotCapture {
+    let Some(surface) = window.wl_surface().map(|surface| surface.into_owned()) else {
+        return if fullscreen {
+            SnapshotCapture::Deferred
+        } else {
+            SnapshotCapture::Ready(None)
+        };
+    };
+    if !session
         .fullscreen
-        .unrequest_external(&mut session.wayland, &window)
-        && let Err(err) = surface.configure(geometry)
+        .should_capture_external_snapshot(&surface, fullscreen)
     {
-        eventline::warn!("xwayland: failed to restore fullscreen window: {err}");
+        return SnapshotCapture::Ready(None);
+    }
+    let ready =
+        with_renderer_surface_state(&surface, |state| state.buffer().is_some()).unwrap_or(false);
+    if !ready {
+        // Pre-map fullscreen state can arrive before XWayland's first buffer.
+        // The surface-commit path retries entry once there is content to capture.
+        return if fullscreen {
+            SnapshotCapture::Deferred
+        } else {
+            SnapshotCapture::Ready(None)
+        };
+    }
+
+    let textures = &mut session.fullscreen_textures;
+    match session
+        .driver
+        .with_renderer(|renderer| textures.capture_previous(renderer, window))
+    {
+        Ok(()) => SnapshotCapture::Ready(Some(surface)),
+        Err(err) => {
+            eventline::warn!("fullscreen: failed to capture previous XWayland texture: {err}");
+            SnapshotCapture::Ready(None)
+        }
     }
 }
 

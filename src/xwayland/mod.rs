@@ -171,6 +171,13 @@ pub fn set_window_fullscreen<D: SessionDriver>(
     xwm::set_window_fullscreen(session, window, fullscreen);
 }
 
+pub fn handle_surface_commit<D: SessionDriver>(
+    session: &mut Session<D>,
+    surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+) {
+    xwm::handle_surface_commit(session, surface);
+}
+
 pub fn is_override_redirect(window: &smithay::desktop::Window) -> bool {
     window
         .x11_surface()
