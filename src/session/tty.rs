@@ -85,7 +85,7 @@ type TtyApp = super::Session<TtyDriver>;
 /// free VT. Returns (rather than panicking) if `TtyBackend::new()` fails,
 /// since that's expected when nested under a host compositor that already
 /// holds exclusive session control.
-pub fn run() {
+pub fn run(session_mode: bool) {
     let (config_path, runtime_config) = crate::config::load_initial();
     let (backend, session_notifier, drm_notifier) = match TtyBackend::new(&runtime_config.outputs) {
         Ok(parts) => parts,
@@ -181,6 +181,9 @@ pub fn run() {
 
     let socket_name = super::protocol::init_wayland_listener(display, &mut event_loop);
     eventline::info!("wayland socket ready, WAYLAND_DISPLAY={socket_name:?}");
+    if session_mode {
+        super::environment::activate_session(&socket_name);
+    }
 
     if let Err(err) = crate::ipc::init_ipc_listener(&event_loop.handle(), |app: &TtyApp| {
         app.driver.backend.output_info()

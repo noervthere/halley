@@ -1,0 +1,37 @@
+#!/bin/sh
+
+export XDG_SESSION_TYPE=wayland
+export XDG_CURRENT_DESKTOP=Halley
+export XDG_SESSION_DESKTOP=Halley
+export DESKTOP_SESSION=Halley
+
+if [ -n "${HOME:-}" ] && [ -d "$HOME/.local/bin" ]; then
+    case ":$PATH:" in
+        *":$HOME/.local/bin:"*) ;;
+        *) PATH="$HOME/.local/bin${PATH:+:$PATH}" ;;
+    esac
+    export PATH
+fi
+
+HALLEY_BIN=${HALLEY_BIN:-"$HOME/.local/bin/halley"}
+
+if [ -d /run/systemd/system ] \
+    && command -v systemctl >/dev/null 2>&1 \
+    && systemctl --user list-unit-files halley.service >/dev/null 2>&1; then
+    cleanup() {
+        systemctl --user stop halley.service >/dev/null 2>&1 || true
+    }
+    trap cleanup INT TERM HUP EXIT
+
+    systemctl --user import-environment \
+        XDG_SESSION_TYPE XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP \
+        DESKTOP_SESSION PATH HALLEY_BIN >/dev/null 2>&1 || true
+    if systemctl --user start halley.service; then
+        while systemctl --user is-active --quiet halley.service; do
+            sleep 1
+        done
+        exit 0
+    fi
+fi
+
+exec "$HALLEY_BIN" --session "$@"

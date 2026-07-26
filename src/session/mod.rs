@@ -6,12 +6,13 @@ use halley_core::camera::Camera;
 use crate::spawn;
 use crate::wayland::{self, WaylandState};
 
-mod protocol;
-mod state;
 mod input;
 mod pointer_constraints;
+mod protocol;
+mod state;
 mod tty_frame;
 
+pub mod environment;
 pub mod tty;
 pub mod winit;
 
