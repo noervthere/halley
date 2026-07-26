@@ -2,6 +2,7 @@ use smithay::backend::input::{
     AbsolutePositionEvent, Axis, AxisSource, InputBackend, InputEvent, PointerAxisEvent,
     PointerMotionEvent,
 };
+use smithay::desktop::space::SpaceElement;
 use smithay::desktop::{layer_map_for_output, LayerSurface, Space, Window, WindowSurfaceType};
 use smithay::input::pointer::AxisFrame;
 use smithay::output::Output;
@@ -270,7 +271,7 @@ pub fn route_to_client(
         });
     }
 
-    if let Some(route) = fullscreen_window_under(
+    if let Some(route) = window_under(
         space,
         cameras,
         primary,
@@ -286,24 +287,6 @@ pub fn route_to_client(
     let world =
         crate::input::grab::screen_to_world_on_output(screen_position, camera, output_geometry);
     let location = Point::<f64, Logical>::from((world.x as f64, world.y as f64));
-
-    let window_and_origin =
-        crate::input::grab::window_under_on_output(space, output, primary, world);
-    if let Some((window, render_location)) = window_and_origin {
-        let focus = window
-            .surface_under(location - render_location.to_f64(), WindowSurfaceType::ALL)
-            .map(|(surface, surface_location)| {
-                (surface, (surface_location + render_location).to_f64())
-            });
-        if focus.is_some() {
-            return Some(PointerRoute {
-                output: output.clone(),
-                location,
-                focus,
-                target: PointerTarget::Window(window),
-            });
-        }
-    }
 
     if let Some((layer, focus)) = layer_under(
         output,
@@ -351,7 +334,12 @@ fn layer_under(
     None
 }
 
-fn fullscreen_window_under(
+/// Resolves normal and fullscreen windows in one front-to-back pass.
+///
+/// Presentation transforms differ, but stacking order does not. A separate
+/// fullscreen-first pass lets a fullscreen surface underneath a newly
+/// raised normal window steal axes and clicks through that window.
+fn window_under(
     space: &Space<Window>,
     cameras: &OutputCameras,
     primary: &Output,
@@ -364,6 +352,16 @@ fn fullscreen_window_under(
     let view = cameras.view(&output.name())?;
     let camera_center = crate::camera::global_center(view.center, output_geometry);
     let output_size = output_geometry.size.to_physical(1);
+    let screen_position = (
+        output_geometry.loc.x as f64 + output_local.x,
+        output_geometry.loc.y as f64 + output_local.y,
+    );
+    let world = crate::input::grab::screen_to_world_on_output(
+        screen_position,
+        cameras.get(&output.name())?,
+        output_geometry,
+    );
+    let normal_location = Point::<f64, Logical>::from((world.x as f64, world.y as f64));
 
     for window in space.elements().rev() {
         if !crate::wayland::window_is_on_output(window, output, primary) {
@@ -372,46 +370,59 @@ fn fullscreen_window_under(
         let Some(toplevel) = window.toplevel() else {
             continue;
         };
-        let Some(presentation) = fullscreen.presentation(toplevel.wl_surface(), output, now) else {
-            continue;
-        };
         let Some(source_geometry) = space.element_geometry(window) else {
             continue;
         };
-        let windowed_geometry = presentation
-            .windowed_geometry
-            .unwrap_or(source_geometry)
-            .to_physical(1);
-        let windowed_screen = crate::backend::camera_rect(
-            windowed_geometry,
-            camera_center,
-            output_size,
-            view.scale,
-        );
-        let visual = presentation.client_rect(windowed_screen, output_size);
-        if !visual.to_f64().contains(output_local.to_physical(1.0)) {
+        let (location, hit) = match fullscreen.presentation(toplevel.wl_surface(), output, now) {
+            Some(presentation) => {
+                let windowed_geometry = presentation
+                    .windowed_geometry
+                    .unwrap_or(source_geometry)
+                    .to_physical(1);
+                let windowed_screen = crate::backend::camera_rect(
+                    windowed_geometry,
+                    camera_center,
+                    output_size,
+                    view.scale,
+                );
+                let visual = presentation.client_rect(windowed_screen, output_size);
+                (
+                    inverse_map_point(output_local, visual, source_geometry),
+                    visual.to_f64().contains(output_local.to_physical(1.0)),
+                )
+            }
+            None => {
+                let Some(bbox) = space.element_bbox(window) else {
+                    continue;
+                };
+                (normal_location, bbox.to_f64().contains(normal_location))
+            }
+        };
+        if !hit {
             continue;
         }
 
-        let source = inverse_map_point(output_local, visual, source_geometry);
-        let element_location = space.element_location(window)?;
+        let Some(element_location) = space.element_location(window) else {
+            continue;
+        };
         let render_location = element_location - window.geometry().loc;
+        if !window.is_in_input_region(&(location - render_location.to_f64())) {
+            continue;
+        }
         let focus = window
             .surface_under(
-                source - render_location.to_f64(),
+                location - render_location.to_f64(),
                 WindowSurfaceType::ALL,
             )
             .map(|(surface, surface_location)| {
                 (surface, (surface_location + render_location).to_f64())
             });
-        if focus.is_some() {
-            return Some(PointerRoute {
-                output: output.clone(),
-                location: source,
-                focus,
-                target: PointerTarget::Window(window.clone()),
-            });
-        }
+        return Some(PointerRoute {
+            output: output.clone(),
+            location,
+            focus,
+            target: PointerTarget::Window(window.clone()),
+        });
     }
     None
 }

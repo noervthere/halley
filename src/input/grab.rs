@@ -1,8 +1,6 @@
 use halley_core::camera::Camera;
 use halley_core::field::Vec2;
-use smithay::desktop::space::SpaceElement;
 use smithay::desktop::{Space, Window};
-use smithay::output::Output;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point, Rectangle, Serial, Size};
 #[cfg(test)]
@@ -399,34 +397,6 @@ pub fn screen_offset_to_world(offset: Vec2, camera: &Camera) -> Vec2 {
         x: offset.x / scale,
         y: offset.y / scale,
     }
-}
-
-/// Output-owned variant of Smithay's `Space::element_under`. The hit-test
-/// itself follows Smithay's implementation; the only added predicate is
-/// Halley's whole-window output ownership, so a window owned by the other
-/// monitor cannot intercept clicks here.
-pub fn window_under_on_output(
-    space: &Space<Window>,
-    output: &Output,
-    primary: &Output,
-    world: Vec2,
-) -> Option<(Window, Point<i32, Logical>)> {
-    let point = Point::<f64, Logical>::from((world.x as f64, world.y as f64));
-
-    space.elements().rev().find_map(|window| {
-        if !crate::wayland::window_is_on_output(window, output, primary) {
-            return None;
-        }
-        let bbox = space.element_bbox(window)?;
-        if !bbox.to_f64().contains(point) {
-            return None;
-        }
-        let location = space.element_location(window)?;
-        let render_location = location - window.geometry().loc;
-        window
-            .is_in_input_region(&(point - render_location.to_f64()))
-            .then(|| (window.clone(), render_location))
-    })
 }
 
 #[cfg(test)]
