@@ -732,6 +732,27 @@ mod tests {
     }
 
     #[test]
+    fn returning_to_menu_retains_the_adjusted_region() {
+        let space = outputs();
+        let mut capture = CaptureState::default();
+        assert!(capture.begin_menu(&space, Some("DP-2"), true));
+        assert!(capture.activate_menu(ScreenshotMode::Region, &space));
+        capture.press((3000.0, 700.0));
+        capture.motion((3100.0, 750.0));
+        capture.release();
+        let CaptureOverlay::Region(adjusted) = capture.overlay() else {
+            panic!("region selector should be active");
+        };
+
+        assert!(capture.return_to_menu());
+        assert!(capture.activate_menu(ScreenshotMode::Region, &space));
+        assert!(matches!(
+            capture.overlay(),
+            CaptureOverlay::Region(region) if region == adjusted
+        ));
+    }
+
+    #[test]
     fn screen_selection_accepts_the_output_last_hovered() {
         let space = outputs();
         let mut capture = CaptureState::default();
