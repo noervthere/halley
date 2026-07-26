@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use calloop::generic::Generic;
 use calloop::{EventLoop, Interest, Mode as CalloopMode, PostAction};
+use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::input::pointer::PointerHandle;
 use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::output::Output;
@@ -16,6 +17,7 @@ use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::{
     CompositorClientState, CompositorHandler, CompositorState, with_states,
 };
+use smithay::wayland::dmabuf::{DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier};
 use smithay::wayland::fractional_scale::{FractionalScaleHandler, with_fractional_scale};
 use smithay::wayland::keyboard_shortcuts_inhibit::{
     KeyboardShortcutsInhibitHandler, KeyboardShortcutsInhibitState, KeyboardShortcutsInhibitor,
@@ -39,7 +41,7 @@ use smithay::wayland::shell::xdg::{
 use smithay::wayland::shm::{ShmHandler, ShmState};
 use smithay::wayland::socket::ListeningSocketSource;
 use smithay::{
-    delegate_compositor, delegate_data_device, delegate_fractional_scale,
+    delegate_compositor, delegate_data_device, delegate_dmabuf, delegate_fractional_scale,
     delegate_keyboard_shortcuts_inhibit, delegate_layer_shell, delegate_output,
     delegate_pointer_constraints, delegate_primary_selection, delegate_relative_pointer,
     delegate_seat, delegate_shm, delegate_viewporter, delegate_xdg_decoration, delegate_xdg_shell,
@@ -114,6 +116,28 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
 
 impl<D: SessionDriver> BufferHandler for Session<D> {
     fn buffer_destroyed(&mut self, _buffer: &WlBuffer) {}
+}
+
+impl<D: SessionDriver> DmabufHandler for Session<D> {
+    fn dmabuf_state(&mut self) -> &mut DmabufState {
+        &mut self.wayland.dmabuf_state
+    }
+
+    fn dmabuf_imported(
+        &mut self,
+        global: &DmabufGlobal,
+        dmabuf: Dmabuf,
+        notifier: ImportNotifier,
+    ) {
+        if self.wayland.dmabuf_global.as_ref() != Some(global)
+            || !self.driver.import_dmabuf(&dmabuf)
+        {
+            notifier.failed();
+            return;
+        }
+
+        let _ = notifier.successful::<Self>();
+    }
 }
 
 impl<D: SessionDriver> ShmHandler for Session<D> {
@@ -302,6 +326,7 @@ impl<D: SessionDriver> PrimarySelectionHandler for Session<D> {
 }
 
 delegate_compositor!(@<D: SessionDriver> Session<D>);
+delegate_dmabuf!(@<D: SessionDriver> Session<D>);
 delegate_shm!(@<D: SessionDriver> Session<D>);
 delegate_xdg_shell!(@<D: SessionDriver> Session<D>);
 delegate_layer_shell!(@<D: SessionDriver> Session<D>);

@@ -1,5 +1,8 @@
 use std::error::Error;
 
+use smithay::backend::allocator::dmabuf::Dmabuf;
+use smithay::backend::egl::EGLDevice;
+use smithay::backend::renderer::ImportDma;
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::renderer::utils::draw_render_elements;
 use smithay::backend::renderer::{Frame, Renderer};
@@ -71,6 +74,28 @@ impl WinitBackend {
 
     pub fn output(&self) -> &Output {
         &self.output
+    }
+
+    pub fn dmabuf_capabilities(&mut self) -> super::dmabuf::DmabufCapabilities {
+        let renderer = self.backend.renderer();
+        let formats = renderer.dmabuf_formats();
+        let main_device = EGLDevice::device_for_display(renderer.egl_context().display())
+            .and_then(|device| device.try_get_render_node())
+            .ok()
+            .flatten()
+            .map(|node| node.dev_id());
+
+        super::dmabuf::DmabufCapabilities::new(main_device, formats)
+    }
+
+    pub fn import_dmabuf(&mut self, dmabuf: &Dmabuf) -> bool {
+        match self.backend.renderer().import_dmabuf(dmabuf, None) {
+            Ok(_) => true,
+            Err(err) => {
+                eventline::debug!("winit: failed to import DMA-BUF: {err}");
+                false
+            }
+        }
     }
 
     /// Keeps the advertised wl_output mode in sync with the real window

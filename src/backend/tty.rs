@@ -2,12 +2,16 @@ use std::error::Error;
 use std::time::Duration;
 
 use smithay::backend::allocator::gbm::{GbmAllocator, GbmBufferFlags, GbmDevice};
+use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::allocator::{Format, Fourcc};
 use smithay::backend::drm::compositor::FrameFlags;
 use smithay::backend::drm::exporter::gbm::{GbmFramebufferExporter, NodeFilter};
 use smithay::backend::drm::output::{DrmOutput, DrmOutputManager, DrmOutputRenderElements};
-use smithay::backend::drm::{DrmDevice, DrmDeviceFd, DrmDeviceNotifier};
+use smithay::backend::drm::{
+    DrmDevice, DrmDeviceFd, DrmDeviceNotifier, DrmNode, NodeType,
+};
 use smithay::backend::egl::{EGLContext, EGLDisplay};
+use smithay::backend::renderer::ImportDma;
 use smithay::backend::renderer::element::solid::SolidColorRenderElement;
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::session::Session;
@@ -92,6 +96,7 @@ pub struct TtyBackend {
     /// Connected outputs are discovered at startup; active entries are
     /// updated as configuration changes are applied.
     ipc_output_info: Vec<halley_ipc::OutputInfo>,
+    render_node: DrmNode,
 }
 
 impl TtyBackend {
@@ -109,6 +114,11 @@ impl TtyBackend {
             .into_iter()
             .next()
             .ok_or("no GPU found on seat")?;
+        let primary_node = DrmNode::from_path(&gpu_path)?;
+        let render_node = primary_node
+            .node_with_type(NodeType::Render)
+            .and_then(Result::ok)
+            .unwrap_or(primary_node);
 
         let flags = OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOCTTY | OFlags::NONBLOCK;
         let fd = session.open(&gpu_path, flags)?;
@@ -268,6 +278,7 @@ impl TtyBackend {
             primary_output,
             outputs,
             ipc_output_info,
+            render_node,
         };
 
         Ok((backend, session_notifier, drm_notifier))
@@ -290,6 +301,26 @@ impl TtyBackend {
             .iter()
             .find(|entry| entry.crtc == crtc)
             .map(|entry| &entry.output)
+    }
+
+    pub fn dmabuf_capabilities(&self) -> super::dmabuf::DmabufCapabilities {
+        super::dmabuf::DmabufCapabilities::new(
+            Some(self.render_node.dev_id()),
+            self.renderer.dmabuf_formats(),
+        )
+    }
+
+    pub fn import_dmabuf(&mut self, dmabuf: &Dmabuf) -> bool {
+        match self.renderer.import_dmabuf(dmabuf, None) {
+            Ok(_) => {
+                dmabuf.set_node(Some(self.render_node));
+                true
+            }
+            Err(err) => {
+                eventline::debug!("tty: failed to import DMA-BUF: {err}");
+                false
+            }
+        }
     }
 
     /// One output's refresh interval, used to time its estimated-VBlank

@@ -1,7 +1,9 @@
+use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::input::{Seat, SeatState};
 use smithay::output::Output;
 use smithay::reexports::wayland_server::DisplayHandle;
 use smithay::wayland::compositor::CompositorState;
+use smithay::wayland::dmabuf::DmabufState;
 use smithay::wayland::fractional_scale::FractionalScaleManagerState;
 use smithay::wayland::keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitState;
 use smithay::wayland::output::OutputManagerState;
@@ -29,6 +31,8 @@ pub trait SessionDriver: 'static {
     const BACKEND_KIND: crate::input::keybinds::BackendKind;
 
     fn primary_output(&self) -> &Output;
+    fn dmabuf_capabilities(&mut self) -> crate::backend::dmabuf::DmabufCapabilities;
+    fn import_dmabuf(&mut self, dmabuf: &Dmabuf) -> bool;
     fn request_redraw(&mut self, output: Option<&Output>);
     fn stop(&mut self);
 }
@@ -58,10 +62,23 @@ pub struct Session<D: SessionDriver> {
 }
 
 impl<D: SessionDriver> Session<D> {
-    pub fn create_wayland_state(display_handle: DisplayHandle) -> WaylandState {
+    pub fn create_wayland_state(
+        display_handle: DisplayHandle,
+        driver: &mut D,
+    ) -> WaylandState {
+        let capabilities = driver.dmabuf_capabilities();
+        let mut dmabuf_state = DmabufState::new();
+        let dmabuf_global = crate::wayland::dmabuf::create_global::<Self>(
+            &mut dmabuf_state,
+            &display_handle,
+            &capabilities,
+        );
+
         WaylandState::new(
             display_handle.clone(),
             CompositorState::new::<Self>(&display_handle),
+            dmabuf_state,
+            dmabuf_global,
             XdgShellState::new::<Self>(&display_handle),
             WlrLayerShellState::new::<Self>(&display_handle),
             XdgDecorationState::new::<Self>(&display_handle),

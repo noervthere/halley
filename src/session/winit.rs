@@ -32,6 +32,17 @@ impl SessionDriver for WinitDriver {
         self.backend.output()
     }
 
+    fn dmabuf_capabilities(&mut self) -> crate::backend::dmabuf::DmabufCapabilities {
+        self.backend.dmabuf_capabilities()
+    }
+
+    fn import_dmabuf(
+        &mut self,
+        dmabuf: &smithay::backend::allocator::dmabuf::Dmabuf,
+    ) -> bool {
+        self.backend.import_dmabuf(dmabuf)
+    }
+
     fn request_redraw(&mut self, _output: Option<&smithay::output::Output>) {
         self.backend.request_redraw();
     }
@@ -86,16 +97,18 @@ pub fn run() {
     let mut cameras = crate::camera::OutputCameras::default();
     cameras.insert(winit_backend.output().name(), output_size);
 
+    let mut driver = WinitDriver {
+        backend: winit_backend,
+        exit: false,
+        last_camera_tick: Instant::now(),
+    };
+    let wayland = App::create_wayland_state(dh, &mut driver);
     let mut app = App {
-        driver: WinitDriver {
-            backend: winit_backend,
-            exit: false,
-            last_camera_tick: Instant::now(),
-        },
+        driver,
         keyboard: Keyboard::from_config(&runtime_config.keybinds, BackendKind::Winit),
         pointer: Pointer::new((100.0, 100.0)),
         cursor: CursorImage::load(),
-        wayland: App::create_wayland_state(dh),
+        wayland,
         seat_state,
         seat,
         start_time: Instant::now(),

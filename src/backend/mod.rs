@@ -1,3 +1,4 @@
+pub mod dmabuf;
 pub mod rescale;
 pub mod scene;
 pub mod tty;

@@ -39,6 +39,17 @@ impl super::SessionDriver for TtyDriver {
         self.backend.primary_output()
     }
 
+    fn dmabuf_capabilities(&mut self) -> crate::backend::dmabuf::DmabufCapabilities {
+        self.backend.dmabuf_capabilities()
+    }
+
+    fn import_dmabuf(
+        &mut self,
+        dmabuf: &smithay::backend::allocator::dmabuf::Dmabuf,
+    ) -> bool {
+        self.backend.import_dmabuf(dmabuf)
+    }
+
     fn request_redraw(&mut self, output: Option<&Output>) {
         if let Some(output) = output {
             if let Some(state) = self.output_frames.get_mut(output) {
@@ -112,18 +123,20 @@ pub fn run() {
         })
         .collect();
 
+    let mut driver = TtyDriver {
+        backend,
+        loop_signal,
+        output_frames,
+        paused: false,
+        pending_output_config: None,
+    };
+    let wayland = TtyApp::create_wayland_state(dh, &mut driver);
     let mut app = TtyApp {
-        driver: TtyDriver {
-            backend,
-            loop_signal,
-            output_frames,
-            paused: false,
-            pending_output_config: None,
-        },
+        driver,
         keyboard: Keyboard::from_config(&runtime_config.keybinds, BackendKind::Tty),
         pointer: Pointer::new((100.0, 100.0)),
         cursor: CursorImage::load(),
-        wayland: TtyApp::create_wayland_state(dh),
+        wayland,
         seat_state,
         seat,
         start_time: Instant::now(),

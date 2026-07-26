@@ -1,5 +1,6 @@
 pub mod compositor;
 pub mod decoration;
+pub mod dmabuf;
 pub mod focus;
 pub mod layer_shell;
 pub mod popup;
@@ -15,6 +16,7 @@ use smithay::reexports::wayland_server::DisplayHandle;
 use smithay::reexports::wayland_server::backend::{ClientData, ClientId, DisconnectReason};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::wayland::compositor::{CompositorClientState, CompositorState};
+use smithay::wayland::dmabuf::{DmabufGlobal, DmabufState};
 use smithay::wayland::fractional_scale::FractionalScaleManagerState;
 use smithay::wayland::keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitState;
 use smithay::wayland::output::OutputManagerState;
@@ -66,6 +68,8 @@ pub fn window_is_on_output(window: &Window, output: &Output, primary: &Output) -
 pub struct WaylandState {
     pub display_handle: DisplayHandle,
     pub compositor_state: CompositorState,
+    pub dmabuf_state: DmabufState,
+    pub dmabuf_global: Option<DmabufGlobal>,
     pub xdg_shell_state: XdgShellState,
     pub layer_shell_state: WlrLayerShellState,
     // Retained for the lifetime of its advertised global.
@@ -125,6 +129,8 @@ impl WaylandState {
     pub fn new(
         display_handle: DisplayHandle,
         compositor_state: CompositorState,
+        dmabuf_state: DmabufState,
+        dmabuf_global: Option<DmabufGlobal>,
         xdg_shell_state: XdgShellState,
         layer_shell_state: WlrLayerShellState,
         xdg_decoration_state: XdgDecorationState,
@@ -141,6 +147,8 @@ impl WaylandState {
         Self {
             display_handle,
             compositor_state,
+            dmabuf_state,
+            dmabuf_global,
             xdg_shell_state,
             layer_shell_state,
             _xdg_decoration_state: xdg_decoration_state,
