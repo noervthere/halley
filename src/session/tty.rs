@@ -397,7 +397,7 @@ fn apply_tty_output_config(app: &mut TtyApp, outputs_config: &[halley_config::Ou
     if layout_changed {
         app.wayland.space.refresh();
         app.capture.update_layout(&app.wayland.space);
-        super::input::update_client_pointer_state(app, app.start_time.elapsed().as_millis() as u32);
+        super::pointer::update_client_state(app, app.start_time.elapsed().as_millis() as u32);
     }
 }
 
@@ -452,16 +452,16 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
         .is_animating_on_output(output, target_presentation_time);
     let animating = camera_animating || window_animating || fullscreen_animating;
     if fullscreen_animating && pointer_is_on_output {
-        super::input::update_client_pointer_state(app, app.start_time.elapsed().as_millis() as u32);
+        super::pointer::update_client_state(app, app.start_time.elapsed().as_millis() as u32);
     }
     let view_after = pointer_is_on_output
         .then(|| app.cameras.view(&output.name()))
         .flatten();
     if view_before != view_after {
-        super::input::update_client_pointer_state(app, app.start_time.elapsed().as_millis() as u32);
+        super::pointer::update_client_state(app, app.start_time.elapsed().as_millis() as u32);
     }
 
-    let show_cursor = super::pointer_constraints::cursor_visible(app);
+    let show_cursor = super::pointer::cursor_visible(app);
     let outcome = match app.driver.backend.render(
         output,
         RenderRequest {
@@ -489,7 +489,7 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
     app.window_open_animations.cleanup(target_presentation_time);
     if app.cleanup_fullscreen(target_presentation_time) {
         super::sync_keyboard_focus(app, smithay::utils::SERIAL_COUNTER.next_serial());
-        super::input::update_client_pointer_state(app, app.start_time.elapsed().as_millis() as u32);
+        super::pointer::update_client_state(app, app.start_time.elapsed().as_millis() as u32);
     }
 
     let feedback = app.driver.dmabuf_feedback(output).cloned();

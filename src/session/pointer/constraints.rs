@@ -6,7 +6,7 @@ use smithay::wayland::compositor::{
 };
 use smithay::wayland::pointer_constraints::{PointerConstraint, with_pointer_constraint};
 
-use super::{Session, SessionDriver};
+use crate::session::{Session, SessionDriver};
 
 type SurfaceOrigin = (WlSurface, Point<f64, Logical>);
 type SurfaceChain = Vec<SurfaceOrigin>;
@@ -65,7 +65,7 @@ fn surface_chain(surface: WlSurface, origin: Point<f64, Logical>) -> SurfaceChai
 }
 
 fn routed_surface_chain<D: SessionDriver>(session: &Session<D>) -> SurfaceChain {
-    super::input::route_client_pointer(session)
+    super::route_client(session)
         .and_then(|route| route.focus)
         .map_or_else(Vec::new, |(surface, origin)| surface_chain(surface, origin))
 }
@@ -74,7 +74,7 @@ fn focused_route_chain<D: SessionDriver>(
     session: &Session<D>,
     pointer: &PointerHandle<Session<D>>,
 ) -> Option<(Point<f64, Logical>, SurfaceChain)> {
-    let route = super::input::route_client_pointer(session)?;
+    let route = super::route_client(session)?;
     let (surface, origin) = route.focus?;
     if pointer.current_focus().as_ref() != Some(&surface) {
         return None;
@@ -216,7 +216,7 @@ pub(super) fn allows_current_position<D: SessionDriver>(
     session: &Session<D>,
     constraint: &ActiveConstraint,
 ) -> bool {
-    let Some(route) = super::input::route_client_pointer(session) else {
+    let Some(route) = super::route_client(session) else {
         return false;
     };
     let Some((focus, origin)) = route.focus else {

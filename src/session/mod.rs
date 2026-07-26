@@ -8,7 +8,7 @@ use crate::spawn;
 use crate::wayland::{self, WaylandState};
 
 mod input;
-mod pointer_constraints;
+mod pointer;
 mod protocol;
 mod state;
 mod tty_frame;
@@ -151,7 +151,7 @@ pub(crate) fn begin_pointer_resize<D: SessionDriver>(
     handle: crate::input::grab::ResizeHandle,
     button: u32,
 ) -> bool {
-    let Some(route) = input::route_client_pointer(session) else {
+    let Some(route) = pointer::route_client(session) else {
         return false;
     };
     if !matches!(

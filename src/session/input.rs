@@ -6,7 +6,7 @@ use smithay::backend::input::{
 };
 use smithay::desktop::{Space, Window};
 use smithay::input::keyboard::{FilterResult, Keysym};
-use smithay::input::pointer::{ButtonEvent, MotionEvent, RelativeMotionEvent};
+use smithay::input::pointer::{ButtonEvent, RelativeMotionEvent};
 use smithay::output::Output;
 use smithay::reexports::wayland_server::Resource;
 use smithay::utils::{Logical, Point, Rectangle, SERIAL_COUNTER};
@@ -54,90 +54,6 @@ fn output_at_pointer(
     let output = space.output_under(position).next()?.clone();
     let geometry = space.output_geometry(&output)?;
     Some((output, geometry))
-}
-
-pub(super) fn route_client_pointer<D: SessionDriver>(
-    session: &Session<D>,
-) -> Option<crate::input::pointer::PointerRoute> {
-    crate::input::pointer::route_to_client(
-        &session.wayland.space,
-        &session.cameras,
-        session.driver.primary_output(),
-        &session.fullscreen,
-        session.wayland.focused_window.as_ref(),
-        crate::frame_clock::monotonic_now(),
-        session.pointer.position(),
-    )
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PointerFocusUpdate {
-    Always,
-    WhenSurfaceChanges,
-}
-
-fn should_emit_pointer_motion(
-    update: PointerFocusUpdate,
-    surface_changed: bool,
-    locked: bool,
-) -> bool {
-    !locked
-        && match update {
-            PointerFocusUpdate::Always => true,
-            PointerFocusUpdate::WhenSurfaceChanges => surface_changed,
-        }
-}
-
-fn route_and_update_client_pointer_focus<D: SessionDriver>(
-    session: &mut Session<D>,
-    time: u32,
-    update: PointerFocusUpdate,
-) -> Option<crate::input::pointer::PointerRoute> {
-    let route = route_client_pointer(session)?;
-    let pointer = session
-        .seat
-        .get_pointer()
-        .expect("pointer capability added at seat setup");
-    let routed_surface = route.focus.as_ref().map(|(surface, _)| surface);
-    let current_surface = pointer.current_focus();
-    let surface_changed = current_surface.as_ref() != routed_surface;
-    let locked = super::pointer_constraints::has_active_lock(&pointer);
-    if should_emit_pointer_motion(update, surface_changed, locked) {
-        pointer.motion(
-            session,
-            route.focus.clone(),
-            &MotionEvent {
-                location: route.location,
-                serial: SERIAL_COUNTER.next_serial(),
-                time,
-            },
-        );
-    }
-    Some(route)
-}
-
-fn finish_pointer_frame<D: SessionDriver>(
-    session: &mut Session<D>,
-    pointer: &smithay::input::pointer::PointerHandle<Session<D>>,
-) {
-    pointer.frame(session);
-    super::pointer_constraints::activate_focused(session, pointer);
-}
-
-pub(super) fn update_client_pointer_state<D: SessionDriver>(session: &mut Session<D>, time: u32) {
-    let pointer = session
-        .seat
-        .get_pointer()
-        .expect("pointer capability added at seat setup");
-    route_and_update_client_pointer_focus(session, time, PointerFocusUpdate::Always);
-    finish_pointer_frame(session, &pointer);
-}
-
-fn refresh_client_pointer_focus<D: SessionDriver>(
-    session: &mut Session<D>,
-    time: u32,
-) -> Option<crate::input::pointer::PointerRoute> {
-    route_and_update_client_pointer_focus(session, time, PointerFocusUpdate::WhenSurfaceChanges)
 }
 
 fn dispatch_action<D: SessionDriver>(
@@ -225,7 +141,7 @@ where
         .seat
         .get_pointer()
         .expect("pointer capability added at seat setup");
-    let active_constraint = super::pointer_constraints::active(session, &pointer_handle);
+    let constraint = super::pointer::constraint_snapshot(session, &pointer_handle);
     session
         .pointer
         .process_input_event(event, &session.wayland.space);
@@ -289,34 +205,26 @@ where
             _ => {}
         }
     }
-    let confined_position_allowed = active_constraint.as_ref().is_none_or(|constraint| {
-        constraint.kind != super::pointer_constraints::ConstraintKind::Confined
-            || super::pointer_constraints::allows_current_position(session, constraint)
-    });
-    let motion_disposition = super::pointer_constraints::motion_disposition(
-        active_constraint.as_ref().map(|constraint| constraint.kind),
-        confined_position_allowed,
-    );
+    let constrained_motion = super::pointer::constrain_motion(session, &constraint);
 
-    if motion_disposition == super::pointer_constraints::MotionDisposition::RelativeOnly
-        && let Some(constraint) = active_constraint.as_ref()
+    if let super::pointer::ConstrainedMotion::RelativeOnly { surface, origin } = &constrained_motion
         && let Some((delta, delta_unaccel, time, _)) = motion
     {
         session.pointer.set_position(position_before);
         pointer_handle.relative_motion(
             session,
-            Some((constraint.surface.clone(), constraint.origin)),
+            Some((surface.clone(), *origin)),
             &RelativeMotionEvent {
                 delta,
                 delta_unaccel,
                 utime: time,
             },
         );
-        finish_pointer_frame(session, &pointer_handle);
+        super::pointer::finish_frame(session, &pointer_handle);
         return;
     }
 
-    if motion_disposition == super::pointer_constraints::MotionDisposition::Hold {
+    if matches!(constrained_motion, super::pointer::ConstrainedMotion::Hold) {
         session.pointer.set_position(position_before);
     }
     let position_after = session.pointer.position();
@@ -406,8 +314,7 @@ where
     }
 
     if let Some((delta, delta_unaccel, time, time_msec)) = motion {
-        let route =
-            route_and_update_client_pointer_focus(session, time_msec, PointerFocusUpdate::Always);
+        let route = super::pointer::route_for_motion(session, time_msec);
         pointer_handle.relative_motion(
             session,
             route.and_then(|route| route.focus),
@@ -417,7 +324,7 @@ where
                 utime: time,
             },
         );
-        finish_pointer_frame(session, &pointer_handle);
+        super::pointer::finish_frame(session, &pointer_handle);
     }
 
     if let InputEvent::PointerButton {
@@ -428,7 +335,7 @@ where
         let state = button_event.state();
         let time = button_event.time_msec();
         let serial = SERIAL_COUNTER.next_serial();
-        let route = refresh_client_pointer_focus(session, time);
+        let route = super::pointer::route_for_discrete_input(session, time);
         if button == BTN_LEFT
             && state == ButtonState::Pressed
             && let Some(route) = route.as_ref()
@@ -587,11 +494,11 @@ where
                 },
             );
         }
-        finish_pointer_frame(session, &pointer_handle);
+        super::pointer::finish_frame(session, &pointer_handle);
     }
 
     if let InputEvent::PointerAxis { event: axis_event } = event {
-        let route = refresh_client_pointer_focus(session, axis_event.time_msec());
+        let route = super::pointer::route_for_discrete_input(session, axis_event.time_msec());
         let output_name = route.as_ref().map(|route| route.output.name().to_string());
         let bindings_enabled = bindings_enabled(session);
         let modifiers = session
@@ -618,7 +525,7 @@ where
             );
             pointer_handle.axis(session, frame);
         }
-        finish_pointer_frame(session, &pointer_handle);
+        super::pointer::finish_frame(session, &pointer_handle);
     }
 
     if let InputEvent::Keyboard { event: key_event } = event {
@@ -748,7 +655,7 @@ fn update_capture_pointer<D: SessionDriver>(session: &mut Session<D>, position: 
             }
         }
         Some(crate::capture::CaptureKind::Source) => {
-            let Some(route) = route_client_pointer(session) else {
+            let Some(route) = super::pointer::route_client(session) else {
                 return;
             };
             let Some(output_geometry) = session.wayland.space.output_geometry(&route.output) else {
@@ -783,7 +690,7 @@ fn update_capture_pointer<D: SessionDriver>(session: &mut Session<D>, position: 
                 .hover_source(monitor, window, output_geometry);
         }
         Some(crate::capture::CaptureKind::Window) => {
-            let hovered = route_client_pointer(session).and_then(|route| {
+            let hovered = super::pointer::route_client(session).and_then(|route| {
                 let crate::input::pointer::PointerTarget::Window(window) = route.target else {
                     return None;
                 };
@@ -803,10 +710,7 @@ fn update_capture_pointer<D: SessionDriver>(session: &mut Session<D>, position: 
 mod tests {
     use smithay::backend::input::KeyState;
 
-    use super::{
-        CaptureKeyRouting, PointerFocusUpdate, capture_key_routing,
-        shortcut_policy_allows_bindings, should_emit_pointer_motion,
-    };
+    use super::{CaptureKeyRouting, capture_key_routing, shortcut_policy_allows_bindings};
 
     #[test]
     fn shortcut_policy_respects_shell_and_client_inhibition() {
@@ -830,38 +734,5 @@ mod tests {
             capture_key_routing(true, KeyState::Pressed, false),
             CaptureKeyRouting::Evaluate
         );
-    }
-
-    #[test]
-    fn locked_pointer_never_receives_absolute_focus_motion() {
-        assert!(!should_emit_pointer_motion(
-            PointerFocusUpdate::Always,
-            true,
-            true
-        ));
-        assert!(!should_emit_pointer_motion(
-            PointerFocusUpdate::WhenSurfaceChanges,
-            true,
-            true
-        ));
-    }
-
-    #[test]
-    fn passive_refresh_only_moves_when_the_surface_changes() {
-        assert!(!should_emit_pointer_motion(
-            PointerFocusUpdate::WhenSurfaceChanges,
-            false,
-            false
-        ));
-        assert!(should_emit_pointer_motion(
-            PointerFocusUpdate::WhenSurfaceChanges,
-            true,
-            false
-        ));
-        assert!(should_emit_pointer_motion(
-            PointerFocusUpdate::Always,
-            false,
-            false
-        ));
     }
 }

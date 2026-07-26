@@ -345,7 +345,7 @@ impl<D: SessionDriver> FractionalScaleHandler for Session<D> {
 
 impl<D: SessionDriver> PointerConstraintsHandler for Session<D> {
     fn new_constraint(&mut self, surface: &WlSurface, pointer: &PointerHandle<Self>) {
-        super::pointer_constraints::activate_new(self, surface, pointer);
+        super::pointer::activate_new(self, surface, pointer);
     }
 
     fn cursor_position_hint(
@@ -354,7 +354,7 @@ impl<D: SessionDriver> PointerConstraintsHandler for Session<D> {
         pointer: &PointerHandle<Self>,
         location: Point<f64, Logical>,
     ) {
-        super::pointer_constraints::apply_position_hint(self, surface, pointer, location);
+        super::pointer::apply_position_hint(self, surface, pointer, location);
     }
 }
 

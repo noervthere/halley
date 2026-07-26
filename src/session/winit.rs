@@ -189,7 +189,7 @@ pub fn run() {
                     animating |= crate::input::zoom::tick(camera, &app.zoom, dt).1;
                 }
                 if view_before != app.cameras.view(&output_name) {
-                    super::input::update_client_pointer_state(
+                    super::pointer::update_client_state(
                         app,
                         app.start_time.elapsed().as_millis() as u32,
                     );
@@ -206,13 +206,13 @@ pub fn run() {
                     .fullscreen
                     .is_animating_on_output(&output, target_presentation_time);
                 if fullscreen_animating {
-                    super::input::update_client_pointer_state(
+                    super::pointer::update_client_state(
                         app,
                         app.start_time.elapsed().as_millis() as u32,
                     );
                 }
                 let position = app.pointer.position();
-                let show_cursor = super::pointer_constraints::cursor_visible(app);
+                let show_cursor = super::pointer::cursor_visible(app);
                 if let Err(err) = app.driver.backend.render(
                     &output,
                     RenderRequest {
@@ -250,7 +250,7 @@ pub fn run() {
                 app.window_open_animations.cleanup(target_presentation_time);
                 if app.cleanup_fullscreen(target_presentation_time) {
                     super::sync_keyboard_focus(app, smithay::utils::SERIAL_COUNTER.next_serial());
-                    super::input::update_client_pointer_state(
+                    super::pointer::update_client_state(
                         app,
                         app.start_time.elapsed().as_millis() as u32,
                     );
@@ -279,7 +279,7 @@ pub fn run() {
                     .fullscreen
                     .reconfigure_output(&app.wayland, app.driver.backend.output());
                 crate::xwayland::reconfigure_fullscreen(external);
-                super::input::update_client_pointer_state(
+                super::pointer::update_client_state(
                     app,
                     app.start_time.elapsed().as_millis() as u32,
                 );
