@@ -8,27 +8,19 @@ use smithay::backend::drm::exporter::gbm::{GbmFramebufferExporter, NodeFilter};
 use smithay::backend::drm::output::{DrmOutput, DrmOutputManager, DrmOutputRenderElements};
 use smithay::backend::drm::{DrmDevice, DrmDeviceFd, DrmDeviceNotifier};
 use smithay::backend::egl::{EGLContext, EGLDisplay};
-use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
 use smithay::backend::renderer::element::solid::SolidColorRenderElement;
-use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
-use smithay::backend::renderer::element::utils::CropRenderElement;
-use smithay::backend::renderer::element::{Element, Kind, render_elements};
 use smithay::backend::renderer::gles::GlesRenderer;
-use smithay::backend::renderer::Color32F;
 use smithay::backend::session::Session;
 use smithay::backend::session::libseat::{LibSeatSession, LibSeatSessionNotifier};
 use smithay::backend::udev;
-use smithay::desktop::{Space, Window};
 use smithay::output::{Mode as OutputMode, Output, PhysicalProperties, Subpixel};
 use smithay::reexports::drm::control::{Mode, ModeTypeFlags, connector, crtc};
 use smithay::reexports::rustix::fs::OFlags;
-use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::utils::{DeviceFd, Logical, Physical, Point, Rectangle, Scale, Transform};
-use smithay::wayland::shell::wlr_layer::Layer;
+use smithay::utils::{DeviceFd, Transform};
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
 
-use super::{FrameSubmission, RenderStatus, Renderable};
-use crate::cursor::CursorImage;
+use super::scene::SceneElement;
+use super::{FrameSubmission, RenderRequest, RenderStatus, Renderable};
 
 type TtyDrmOutputManager =
     DrmOutputManager<GbmAllocator<DrmDeviceFd>, GbmFramebufferExporter<DrmDeviceFd>, FrameSubmission, DrmDeviceFd>;
@@ -96,22 +88,6 @@ fn output_diff(
         transform_changed: current_transform != target_transform,
         vrr_changed: current_vrr != target_vrr,
     }
-}
-
-render_elements! {
-    /// Combines layer, window, border, and cursor elements into one list -
-    /// `DrmOutput::render_frame` takes a single element type per call, unlike
-    /// the winit backend's `Frame`, which can be drawn into with several
-    /// separate calls. Concrete over `GlesRenderer` (not generic over `R`) -
-    /// this codebase only ever has one renderer, and `RescaledElement`
-    /// itself is only implemented for `GlesRenderer`, so the old `<R>`
-    /// generic bought nothing.
-    TtyRenderElement<=GlesRenderer>;
-    Rescaled=super::rescale::RescaledElement,
-    Cropped=CropRenderElement<super::rescale::RescaledElement>,
-    Border=SolidColorRenderElement,
-    Layer=WaylandSurfaceRenderElement<GlesRenderer>,
-    Cursor=MemoryRenderBufferRenderElement<GlesRenderer>,
 }
 
 /// The tty (DRM/KMS) backend - real hardware output, no host compositor
@@ -697,15 +673,7 @@ impl Renderable for TtyBackend {
     fn render(
         &mut self,
         output: &Output,
-        target_presentation_time: Duration,
-        clear: Color32F,
-        cursor: &CursorImage,
-        cursor_position: (f64, f64),
-        space: &Space<Window>,
-        focused: Option<&WlSurface>,
-        decorations: &halley_config::Decorations,
-        cameras: &crate::camera::OutputCameras,
-        window_open_animations: &crate::animation::WindowOpenAnimations,
+        request: RenderRequest<'_>,
     ) -> Result<RenderStatus, Box<dyn Error>> {
         let primary_output = self.primary_output.clone();
         let entry = self
@@ -713,224 +681,46 @@ impl Renderable for TtyBackend {
             .iter_mut()
             .find(|entry| &entry.output == output)
             .ok_or_else(|| format!("unknown tty output {:?}", output.name()))?;
-            // A page flip is already queued for this output and hasn't
-            // landed yet - DRM won't accept a second commit before that
-            // happens. Nothing is lost: `frame_submitted()` clears `pending`
-            // on the next VBlank, and the driving code always re-renders
-            // right after, picking up whatever changed in the meantime.
-            if entry.pending {
-                return Ok(RenderStatus::Skipped);
-            }
-            let output_geometry = space
-                .output_geometry(&entry.output)
-                .ok_or_else(|| format!("tty output {:?} is not mapped", entry.output.name()))?;
-            let output_size = output_geometry.size.to_physical(1);
-            let view = cameras
-                .view(&entry.output.name())
-                .expect("tty output camera initialized at startup");
-            let output_camera_center = crate::camera::global_center(view.center, output_geometry);
-            let zoom_scale = view.scale;
-            let cursor_position =
-                cursor_position_for_output(output_geometry, cursor_position);
-            let drm_output = &mut entry.drm_output;
+        // DRM rejects a second commit while the previous page flip is still
+        // pending. The next VBlank clears this flag and schedules another
+        // render, so skipping here does not lose scene changes.
+        if entry.pending {
+            return Ok(RenderStatus::Skipped);
+        }
+        let output_geometry = request
+            .space
+            .output_geometry(&entry.output)
+            .ok_or_else(|| format!("tty output {:?} is not mapped", entry.output.name()))?;
+        let elements = super::scene::build(
+            &mut self.renderer,
+            &entry.output,
+            &primary_output,
+            output_geometry,
+            request,
+        )?;
+        let result = entry.drm_output.render_frame::<_, SceneElement>(
+            &mut self.renderer,
+            &elements,
+            request.clear,
+            FrameFlags::empty(),
+        )?;
 
-            // The cursor and screen-fixed layers use output-local
-            // coordinates. Windows are separately camera-transformed and
-            // filtered by Halley's single owning output.
-            let mut elements: Vec<TtyRenderElement> =
-                super::layer_surface_elements(&mut self.renderer, &entry.output, Layer::Overlay)
-                    .into_iter()
-                    .map(TtyRenderElement::Layer)
-                    .collect();
-            elements.extend(
-                super::layer_surface_elements(&mut self.renderer, &entry.output, Layer::Top)
-                    .into_iter()
-                    .map(TtyRenderElement::Layer),
-            );
-            // Built directly per mapped window rather than via
-            // `space_render_elements` - nesting `SpaceRenderElements`
-            // inside this file's own combined element enum runs into an
-            // internal bound mismatch in the render_elements! macro
-            // (SpaceRenderElements's own generated impl wants
-            // `ImportMemWl`/`ImportDmaWl`, which its own declared
-            // `where` clause doesn't actually list); going straight to
-            // `Window`'s `AsRenderElements` avoids nesting the macro output
-            // of one render_elements! invocation inside another.
-            //
-            // `.rev()` is load-bearing: `Space::elements()` iterates z-order
-            // back to front, but render element lists are front-to-back.
-            for window in space.elements().rev() {
-                if !crate::wayland::window_is_on_output(
-                    window,
-                    &entry.output,
-                    &primary_output,
-                ) {
-                    continue;
-                }
-                let Some(geometry) = space.element_geometry(window) else {
-                    continue;
-                };
-                let Some(location) = space.element_location(window) else {
-                    continue;
-                };
-                let scaled_bbox = super::camera_rect(
-                    geometry.to_physical(1),
-                    output_camera_center,
-                    output_size,
-                    zoom_scale,
-                );
-                let opening_progress = window
-                    .toplevel()
-                    .and_then(|toplevel| {
-                        window_open_animations
-                            .progress(toplevel.wl_surface(), target_presentation_time)
-                    })
-                    .unwrap_or(1.0);
-                let animated_bbox = crate::animation::window_open_rect(
-                    scaled_bbox,
-                    scaled_bbox,
-                    opening_progress,
-                );
-                if animated_bbox.size.w == 0 || animated_bbox.size.h == 0 {
-                    continue;
-                }
+        if result.is_empty {
+            return Ok(RenderStatus::Skipped);
+        }
 
-                // `Space` locations refer to window geometry, while Smithay
-                // renders from the underlying surface origin. GTK, Qt and
-                // Firefox commonly use a non-zero geometry offset for CSD.
-                let surface_location =
-                    super::window_surface_location(location, window.geometry());
-                let (popup_elements, surface_elements) = super::window_surface_elements(
-                    &mut self.renderer,
-                    window,
-                    surface_location,
-                );
-                elements.extend(popup_elements.into_iter().map(|surface_element| {
-                    let native_geo = surface_element.geometry(Scale::from(1.0));
-                    let final_dst = super::camera_rect(
-                        native_geo,
-                        output_camera_center,
-                        output_size,
-                        zoom_scale,
-                    );
-                    // Scaled about the *window's* center like every other
-                    // surface in the tree, so a popup that is already up when
-                    // its toplevel maps rides the open animation instead of
-                    // hanging full-size next to a window that is still a
-                    // sliver. Not cropped to `animated_bbox` - popups
-                    // legitimately extend past their parent's geometry.
-                    let dst = crate::animation::window_open_rect(
-                        final_dst,
-                        scaled_bbox,
-                        opening_progress,
-                    );
-                    TtyRenderElement::Rescaled(super::rescale::RescaledElement::new(
-                        surface_element,
-                        dst,
-                    ))
-                }));
-                elements.extend(surface_elements.into_iter().filter_map(|surface_element| {
-                    let native_geo = surface_element.geometry(Scale::from(1.0));
-                    let final_dst = super::camera_rect(
-                        native_geo,
-                        output_camera_center,
-                        output_size,
-                        zoom_scale,
-                    );
-                    let dst = crate::animation::window_open_rect(
-                        final_dst,
-                        scaled_bbox,
-                        opening_progress,
-                    );
-                    let element =
-                        super::rescale::RescaledElement::new(surface_element, dst);
-                    CropRenderElement::from_element(element, 1.0, animated_bbox)
-                        .map(TtyRenderElement::Cropped)
-                }));
-
-                let is_focused = window
-                    .toplevel()
-                    .is_some_and(|t| Some(t.wl_surface()) == focused);
-                let color = super::window_border_color(decorations, is_focused);
-                // Deliberately *not* scaled by `opening_progress` - see the
-                // matching comment in `winit.rs`.
-                let border_width =
-                    ((decorations.border_width_px as f64 * zoom_scale as f64).round() as i32).max(1);
-                elements.extend(
-                    super::border_strips(animated_bbox, border_width, color)
-                        .into_iter()
-                        .map(TtyRenderElement::Border),
-                );
-            }
-
-            elements.extend(
-                super::layer_surface_elements(&mut self.renderer, &entry.output, Layer::Bottom)
-                    .into_iter()
-                    .map(TtyRenderElement::Layer),
-            );
-            elements.extend(
-                super::layer_surface_elements(
-                    &mut self.renderer,
-                    &entry.output,
-                    Layer::Background,
-                )
-                .into_iter()
-                .map(TtyRenderElement::Layer),
-            );
-
-            if let Some(cursor_position) = cursor_position {
-                // Built before render_frame() borrows the renderer again -
-                // from_buffer() only needs it transiently to import the texture.
-                let element = MemoryRenderBufferRenderElement::from_buffer(
-                    &mut self.renderer,
-                    cursor_position,
-                    &cursor.buffer,
-                    None,
-                    None,
-                    None,
-                    Kind::Cursor,
-                )?;
-                // Inserted at the *front*, not pushed: this list is
-                // front-to-back, so index 0 is the topmost element. The
-                // cursor has to composite over the entire scene, and unlike
-                // the winit backend there's no second draw call to put it
-                // in - `DrmOutput::render_frame` takes one list.
-                elements.insert(0, TtyRenderElement::Cursor(element));
-            }
-
-            let result = drm_output.render_frame::<_, TtyRenderElement>(
-                &mut self.renderer,
-                &elements,
-                clear,
-                FrameFlags::empty(),
-            )?;
-
-            if result.is_empty {
-                return Ok(RenderStatus::Skipped);
-            }
-
-            drm_output.queue_frame(FrameSubmission {
-                target_presentation_time,
-            })?;
-            entry.pending = true;
-            Ok(RenderStatus::Submitted)
+        entry.drm_output.queue_frame(FrameSubmission {
+            target_presentation_time: request.target_presentation_time,
+        })?;
+        entry.pending = true;
+        Ok(RenderStatus::Submitted)
     }
-}
-
-fn cursor_position_for_output(
-    output_geometry: Rectangle<i32, Logical>,
-    cursor_position: (f64, f64),
-) -> Option<Point<f64, Physical>> {
-    let cursor_position = Point::<f64, Logical>::from(cursor_position);
-    output_geometry
-        .to_f64()
-        .contains(cursor_position)
-        .then(|| (cursor_position - output_geometry.loc.to_f64()).to_physical(1.0))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use smithay::utils::{Logical, Physical, Point, Rectangle};
 
     fn output_mode(width: i32, height: i32, refresh: i32) -> OutputMode {
         OutputMode {
@@ -1055,21 +845,6 @@ mod tests {
     }
 
     #[test]
-    fn cursor_position_is_local_to_the_output_that_contains_it() {
-        let primary = Rectangle::new((0, 0).into(), (2560, 1440).into());
-        let secondary = Rectangle::new((2560, 0).into(), (1920, 1200).into());
-
-        assert_eq!(
-            cursor_position_for_output(primary, (3000.0, 800.0)),
-            None
-        );
-        assert_eq!(
-            cursor_position_for_output(secondary, (3000.0, 800.0)),
-            Some(Point::from((440.0, 800.0)))
-        );
-    }
-
-    #[test]
     fn secondary_window_geometry_becomes_output_local() {
         let secondary = Rectangle::<i32, Logical>::new((2560, 0).into(), (1920, 1200).into());
         let camera_center = crate::camera::global_center(
@@ -1090,17 +865,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn cursor_position_uses_half_open_output_edges() {
-        let secondary = Rectangle::new((2560, 0).into(), (1920, 1200).into());
-
-        assert_eq!(
-            cursor_position_for_output(secondary, (2560.0, 0.0)),
-            Some(Point::from((0.0, 0.0)))
-        );
-        assert_eq!(
-            cursor_position_for_output(secondary, (4480.0, 1199.0)),
-            None
-        );
-    }
 }

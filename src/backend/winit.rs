@@ -1,22 +1,13 @@
 use std::error::Error;
 
-use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
-use smithay::backend::renderer::element::solid::SolidColorRenderElement;
-use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
-use smithay::backend::renderer::element::utils::CropRenderElement;
-use smithay::backend::renderer::element::{Element, Kind, render_elements};
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::renderer::utils::draw_render_elements;
-use smithay::backend::renderer::{Color32F, Frame, Renderer};
+use smithay::backend::renderer::{Frame, Renderer};
 use smithay::backend::winit::WinitGraphicsBackend;
-use smithay::desktop::{Space, Window};
 use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
-use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::utils::{Physical, Point, Rectangle, Scale, Size, Transform};
-use smithay::wayland::shell::wlr_layer::Layer;
+use smithay::utils::{Physical, Rectangle, Size, Transform};
 
-use super::{RenderStatus, Renderable};
-use crate::cursor::CursorImage;
+use super::{RenderRequest, RenderStatus, Renderable};
 
 /// The winit (nested) backend - a real window on the host's desktop,
 /// standing in for real hardware output. Used for dev/testing; the tty
@@ -31,20 +22,6 @@ pub struct WinitBackend {
     /// code (main.rs) is what registers the actual global and maps it into
     /// a `Space`.
     output: Output,
-}
-
-render_elements! {
-    /// Layer surfaces, window content, and border strips in one homogeneous
-    /// scene list, so every element retains its intended stacking depth.
-    /// Drawing borders in a second `draw_render_elements` pass instead - as
-    /// this backend used to - composites *every* border over *every* window
-    /// regardless of z-order, so a buried window's border bleeds across
-    /// whatever is stacked on top of it.
-    WinitRenderElement<=GlesRenderer>;
-    Rescaled=super::rescale::RescaledElement,
-    Cropped=CropRenderElement<super::rescale::RescaledElement>,
-    Border=SolidColorRenderElement,
-    Layer=WaylandSurfaceRenderElement<GlesRenderer>,
 }
 
 fn output_mode(size: Size<i32, Physical>) -> Mode {
@@ -130,177 +107,34 @@ impl Renderable for WinitBackend {
     fn render(
         &mut self,
         output: &Output,
-        target_presentation_time: std::time::Duration,
-        clear: Color32F,
-        cursor: &CursorImage,
-        cursor_position: (f64, f64),
-        space: &Space<Window>,
-        focused: Option<&WlSurface>,
-        decorations: &halley_config::Decorations,
-        cameras: &crate::camera::OutputCameras,
-        window_open_animations: &crate::animation::WindowOpenAnimations,
+        request: RenderRequest<'_>,
     ) -> Result<RenderStatus, Box<dyn Error>> {
         if output != &self.output {
             return Err(format!("winit cannot render unknown output {:?}", output.name()).into());
         }
         let size = self.backend.window_size();
         let damage = Rectangle::from_size(size);
-        let view = cameras
-            .view(&self.output.name())
-            .expect("winit output camera initialized at startup");
-        let camera_center = view.center;
-        let zoom_scale = view.scale;
+        let output_geometry = request
+            .space
+            .output_geometry(output)
+            .ok_or_else(|| format!("winit output {:?} is not mapped", output.name()))?;
 
         // Scoped so `renderer`/`framebuffer` (both borrowed from
         // `self.backend`) are dropped before `submit()` needs its own
         // mutable borrow.
         {
             let (renderer, mut framebuffer) = self.backend.bind()?;
-
-            // Built directly per mapped window (not via `space_render_elements`)
-            // so a live `zoom_scale` can be applied per window - mirrors
-            // `TtyBackend::render`'s own manual loop, keeping both backends'
-            // zoom behavior identical and equally testable. Each window is
-            // rendered at native scale/position first, then wrapped in
-            // `RescaledElement` to draw into a `camera_rect`-scaled
-            // destination - see its doc comment for why passing `zoom_scale`
-            // straight into `render_elements` doesn't actually resize
-            // anything.
-            let mut scene_elements: Vec<WinitRenderElement> =
-                super::layer_surface_elements(renderer, &self.output, Layer::Overlay)
-                    .into_iter()
-                    .map(WinitRenderElement::Layer)
-                    .collect();
-            scene_elements.extend(
-                super::layer_surface_elements(renderer, &self.output, Layer::Top)
-                    .into_iter()
-                    .map(WinitRenderElement::Layer),
-            );
-            // `.rev()` is load-bearing: `Space::elements()` iterates z-order
-            // *back to front* (bottom-most first), but a render element list
-            // is front-to-back by convention - `draw_render_elements`
-            // reverses whatever it's given before drawing, so feeding it
-            // bottom-to-front order inverts z-order on screen and raising a
-            // window would push it visually to the back. Smithay's own
-            // `Space::render_elements_for_region` calls `.rev()` here for
-            // exactly this reason.
-            for window in space.elements().rev() {
-                let Some(geometry) = space.element_geometry(window) else {
-                    continue;
-                };
-                let Some(location) = space.element_location(window) else {
-                    continue;
-                };
-                let scaled_bbox = super::camera_rect(geometry.to_physical(1), camera_center, size, zoom_scale);
-                let opening_progress = window
-                    .toplevel()
-                    .and_then(|toplevel| {
-                        window_open_animations
-                            .progress(toplevel.wl_surface(), target_presentation_time)
-                    })
-                    .unwrap_or(1.0);
-                let animated_bbox = crate::animation::window_open_rect(
-                    scaled_bbox,
-                    scaled_bbox,
-                    opening_progress,
-                );
-                if animated_bbox.size.w == 0 || animated_bbox.size.h == 0 {
-                    continue;
-                }
-
-                // `Space` locations refer to window geometry, while Smithay
-                // renders from the underlying surface origin. GTK, Qt and
-                // Firefox commonly use a non-zero geometry offset for CSD.
-                let surface_location =
-                    super::window_surface_location(location, window.geometry());
-                let (popup_elements, surface_elements) =
-                    super::window_surface_elements(renderer, window, surface_location);
-                scene_elements.extend(popup_elements.into_iter().map(|surface_element| {
-                    let native_geo = surface_element.geometry(Scale::from(1.0));
-                    let final_dst = super::camera_rect(native_geo, camera_center, size, zoom_scale);
-                    // Scaled about the *window's* center like every other
-                    // surface in the tree, so a popup that is already up when
-                    // its toplevel maps rides the open animation instead of
-                    // hanging full-size next to a window that is still a
-                    // sliver. Not cropped to `animated_bbox` - popups
-                    // legitimately extend past their parent's geometry.
-                    let dst = crate::animation::window_open_rect(
-                        final_dst,
-                        scaled_bbox,
-                        opening_progress,
-                    );
-                    WinitRenderElement::Rescaled(super::rescale::RescaledElement::new(surface_element, dst))
-                }));
-                scene_elements.extend(surface_elements.into_iter().filter_map(|surface_element| {
-                    let native_geo = surface_element.geometry(Scale::from(1.0));
-                    let final_dst =
-                        super::camera_rect(native_geo, camera_center, size, zoom_scale);
-                    let dst = crate::animation::window_open_rect(
-                        final_dst,
-                        scaled_bbox,
-                        opening_progress,
-                    );
-                    let element = super::rescale::RescaledElement::new(surface_element, dst);
-                    CropRenderElement::from_element(element, 1.0, animated_bbox)
-                        .map(WinitRenderElement::Cropped)
-                }));
-
-                let is_focused = window
-                    .toplevel()
-                    .is_some_and(|t| Some(t.wl_surface()) == focused);
-                let color = super::window_border_color(decorations, is_focused);
-                // Deliberately *not* scaled by `opening_progress`: newm
-                // animates a view's box and nothing else - its corner radius
-                // (the closest analogue to this border) is interpolated
-                // between two identical values and so stays constant for the
-                // whole open animation. Thinning the border as the window
-                // grows reads as a fade-in the reference compositor doesn't
-                // have.
-                let border_width =
-                    ((decorations.border_width_px as f64 * zoom_scale as f64).round() as i32).max(1);
-                // Pushed alongside this window's own content rather than into
-                // a separate list, so it stays at this window's depth (see
-                // `WinitRenderElement`). Relative order against this window's
-                // own content doesn't matter - `border_strips` builds strips
-                // that sit entirely outside the window's bbox.
-                scene_elements.extend(
-                    super::border_strips(animated_bbox, border_width, color)
-                        .into_iter()
-                        .map(WinitRenderElement::Border),
-                );
-            }
-
-            scene_elements.extend(
-                super::layer_surface_elements(renderer, &self.output, Layer::Bottom)
-                    .into_iter()
-                    .map(WinitRenderElement::Layer),
-            );
-            scene_elements.extend(
-                super::layer_surface_elements(renderer, &self.output, Layer::Background)
-                    .into_iter()
-                    .map(WinitRenderElement::Layer),
-            );
-
-            // Built before renderer.render() borrows renderer for the frame -
-            // doesn't need it beyond this transient import step.
-            let cursor_element = MemoryRenderBufferRenderElement::from_buffer(
+            let elements = super::scene::build(
                 renderer,
-                Point::<f64, Physical>::from(cursor_position),
-                &cursor.buffer,
-                None,
-                None,
-                None,
-                Kind::Cursor,
+                output,
+                &self.output,
+                output_geometry,
+                request,
             )?;
 
             let mut frame = renderer.render(&mut framebuffer, size, Transform::Flipped180)?;
-            frame.clear(clear, &[damage])?;
-            // The scene already follows layer-shell and window z-order; the
-            // cursor uses a later pass so it remains above every client.
-            draw_render_elements(&mut frame, 1.0, &scene_elements, &[damage])?;
-            draw_render_elements(&mut frame, 1.0, &[cursor_element], &[damage])?;
-            // No cross-GPU/import synchronization needed for a plain clear -
-            // discarding the fence is fine at this stage.
+            frame.clear(request.clear, &[damage])?;
+            draw_render_elements(&mut frame, 1.0, &elements, &[damage])?;
             let _ = frame.finish()?;
         }
 

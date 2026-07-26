@@ -46,7 +46,7 @@ use smithay::{
 };
 
 use crate::backend::winit::WinitBackend;
-use crate::backend::{self, Renderable};
+use crate::backend::{self, RenderRequest, Renderable};
 use crate::cursor::CursorImage;
 use crate::input::{Keyboard, PointerBindingResult, SuppressedButtons};
 use crate::input::keybinds::BackendKind;
@@ -316,15 +316,17 @@ pub fn run() {
                 let output = app.backend.output().clone();
                 if let Err(err) = app.backend.render(
                     &output,
-                    target_presentation_time,
-                    backend::CLEAR_COLOR,
-                    &app.cursor,
-                    position,
-                    &app.wayland.space,
-                    app.wayland.focused_window.as_ref(),
-                    &app.decorations,
-                    &app.cameras,
-                    &app.window_open_animations,
+                    RenderRequest {
+                        target_presentation_time,
+                        clear: backend::CLEAR_COLOR,
+                        cursor: &app.cursor,
+                        cursor_position: position,
+                        space: &app.wayland.space,
+                        focused: app.wayland.focused_window.as_ref(),
+                        decorations: &app.decorations,
+                        cameras: &app.cameras,
+                        window_open_animations: &app.window_open_animations,
+                    },
                 ) {
                     eventline::error!("render failed: {err}");
                 }

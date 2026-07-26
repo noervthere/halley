@@ -1,4 +1,5 @@
 pub mod rescale;
+pub mod scene;
 pub mod tty;
 pub mod winit;
 
@@ -116,34 +117,26 @@ pub struct FrameSubmission {
     pub target_presentation_time: std::time::Duration,
 }
 
-/// A backend that can render one output.
-///
-/// Deliberately narrow: takes only what it needs, nothing else. Old
-/// halley-wl's equivalent (`RenderBackend::draw_frame(&mut self, st: &mut
-/// Halley, ...)`) baked a dependency on the *entire* compositor state into
-/// the trait signature itself - a real flaw, confirmed by reading
-/// `backend/interface.rs` in the old code. This doesn't repeat that: the
-/// trait grows exactly the parameters a render call actually needs, never
-/// "the whole state, just in case." `OutputCameras` exposes only per-output
-/// view transforms; it does not give rendering access to session, input, or
-/// Wayland policy state.
+/// Immutable scene data needed to construct one output frame.
+#[derive(Clone, Copy)]
+pub struct RenderRequest<'a> {
+    pub target_presentation_time: std::time::Duration,
+    pub clear: Color32F,
+    pub cursor: &'a CursorImage,
+    pub cursor_position: (f64, f64),
+    pub space: &'a Space<Window>,
+    pub focused: Option<&'a WlSurface>,
+    pub decorations: &'a Decorations,
+    pub cameras: &'a crate::camera::OutputCameras,
+    pub window_open_animations: &'a crate::animation::WindowOpenAnimations,
+}
+
+/// A presentation backend for one already-described scene.
 pub trait Renderable {
-    // Every parameter here is a distinct, legitimate per-frame need (see the
-    // doc comment above) rather than incidental bloat - grouping them into a
-    // struct wouldn't reduce what's actually threaded through, just hide it.
-    #[allow(clippy::too_many_arguments)]
     fn render(
         &mut self,
         output: &Output,
-        target_presentation_time: std::time::Duration,
-        clear: Color32F,
-        cursor: &CursorImage,
-        cursor_position: (f64, f64),
-        space: &Space<Window>,
-        focused: Option<&WlSurface>,
-        decorations: &Decorations,
-        cameras: &crate::camera::OutputCameras,
-        window_open_animations: &crate::animation::WindowOpenAnimations,
+        request: RenderRequest<'_>,
     ) -> Result<RenderStatus, Box<dyn std::error::Error>>;
 }
 

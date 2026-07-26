@@ -52,7 +52,7 @@ use smithay::{
 };
 
 use crate::backend::tty::TtyBackend;
-use crate::backend::{CLEAR_COLOR, RenderStatus, Renderable};
+use crate::backend::{CLEAR_COLOR, RenderRequest, RenderStatus, Renderable};
 use crate::cursor::CursorImage;
 use crate::frame_clock::FrameClock;
 use crate::input::{Keyboard, PointerBindingResult, SuppressedButtons};
@@ -1036,15 +1036,17 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
 
     let status = match app.backend.render(
         output,
-        target_presentation_time,
-        CLEAR_COLOR,
-        &app.cursor,
-        app.pointer.position(),
-        &app.wayland.space,
-        app.wayland.focused_window.as_ref(),
-        &app.decorations,
-        &app.cameras,
-        &app.window_open_animations,
+        RenderRequest {
+            target_presentation_time,
+            clear: CLEAR_COLOR,
+            cursor: &app.cursor,
+            cursor_position: app.pointer.position(),
+            space: &app.wayland.space,
+            focused: app.wayland.focused_window.as_ref(),
+            decorations: &app.decorations,
+            cameras: &app.cameras,
+            window_open_animations: &app.window_open_animations,
+        },
     ) {
         Ok(status) => status,
         Err(err) => {
