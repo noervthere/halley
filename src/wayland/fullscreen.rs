@@ -201,7 +201,6 @@ impl FullscreenManager {
         &mut self,
         wayland: &mut WaylandState,
         window: &Window,
-        now: Duration,
     ) -> Option<Rectangle<i32, Logical>> {
         let wl_surface = window.wl_surface().map(|surface| surface.into_owned())?;
         let window = find_window(wayland, &wl_surface).cloned()?;
@@ -210,13 +209,16 @@ impl FullscreenManager {
             .or_else(|| super::focus::selected_output(wayland).cloned());
         let target = target?;
         let output_geometry = wayland.space.output_geometry(&target)?;
-        let entry = self
-            .windows
+        let target_name = target.name();
+        self.windows
             .entry(wl_surface)
+            .and_modify(|entry| {
+                settle_external_fullscreen(entry, &target_name, output_geometry.size);
+            })
             .or_insert_with(|| FullscreenWindow {
-                desired: false,
-                active: false,
-                target_output: target.name(),
+                desired: true,
+                active: true,
+                target_output: target_name,
                 restore: Some(WindowedPlacement {
                     location: wayland
                         .space
@@ -232,13 +234,6 @@ impl FullscreenManager {
                 transition: None,
                 snapshot_serials: Vec::new(),
             });
-        let transition_requested = !entry.active;
-        entry.desired = true;
-        entry.target_output = target.name();
-        entry.fullscreen_size = output_geometry.size;
-        if transition_requested {
-            retarget_transition(entry, self.animations, now, true);
-        }
         super::set_window_output(&window, &target);
         wayland.space.map_element(window, output_geometry.loc, true);
         Some(output_geometry)
@@ -248,17 +243,12 @@ impl FullscreenManager {
         &mut self,
         wayland: &mut WaylandState,
         window: &Window,
-        now: Duration,
     ) -> Option<Rectangle<i32, Logical>> {
         let wl_surface = window.wl_surface().map(|surface| surface.into_owned())?;
-        let entry = self.windows.get_mut(&wl_surface)?;
-        let restore = entry.restore.clone()?;
-        let transition_requested = entry.active || entry.desired;
-        entry.desired = false;
-        entry.fullscreen_size = window.geometry().size;
-        if transition_requested {
-            retarget_transition(entry, self.animations, now, false);
-        }
+        let restore = self
+            .windows
+            .remove(&wl_surface)
+            .and_then(|entry| entry.restore)?;
         if let Some(output) = restore
             .output
             .as_deref()
@@ -270,18 +260,6 @@ impl FullscreenManager {
             .space
             .map_element(window.clone(), restore.location, true);
         Some(restore.geometry)
-    }
-
-    pub fn should_capture_external_snapshot(&self, surface: &WlSurface, fullscreen: bool) -> bool {
-        animations_enabled(self.animations) && self.is_fullscreen_or_pending(surface) != fullscreen
-    }
-
-    pub fn is_transitioning(&self, surface: &WlSurface, now: Duration) -> bool {
-        self.windows.get(surface).is_some_and(|entry| {
-            entry
-                .transition
-                .is_some_and(|transition| !transition.is_finished_at(now))
-        })
     }
 
     pub fn handle_commit(
@@ -525,6 +503,18 @@ fn animations_enabled(animations: Animations) -> bool {
     animations.enabled && animations.fullscreen.enabled
 }
 
+fn settle_external_fullscreen(
+    entry: &mut FullscreenWindow,
+    target_output: &str,
+    fullscreen_size: Size<i32, Logical>,
+) {
+    entry.desired = true;
+    entry.active = true;
+    entry.target_output = target_output.to_string();
+    entry.fullscreen_size = fullscreen_size;
+    entry.transition = None;
+}
+
 fn retarget_transition(
     entry: &mut FullscreenWindow,
     animations: Animations,
@@ -675,6 +665,21 @@ mod tests {
         retarget_transition(&mut entry, animations, Duration::ZERO, true);
 
         assert!(entry.active);
+        assert!(entry.transition.is_none());
+    }
+
+    #[test]
+    fn external_fullscreen_is_logically_settled_without_animation() {
+        let animations = Animations::default();
+        let mut entry = test_entry(false);
+        retarget_transition(&mut entry, animations, Duration::from_secs(1), true);
+
+        settle_external_fullscreen(&mut entry, "HDMI-A-1", (2560, 1440).into());
+
+        assert!(entry.desired);
+        assert!(entry.active);
+        assert_eq!(entry.target_output, "HDMI-A-1");
+        assert_eq!(entry.fullscreen_size, Size::from((2560, 1440)));
         assert!(entry.transition.is_none());
     }
 }
