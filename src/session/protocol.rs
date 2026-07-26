@@ -84,6 +84,7 @@ pub fn init_wayland_listener<D: SessionDriver>(
                 unsafe {
                     display.get_mut().dispatch_clients(session)?;
                 }
+                super::sync_keyboard_focus(session, SERIAL_COUNTER.next_serial());
                 Ok(PostAction::Continue)
             },
         )
@@ -123,7 +124,6 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
         );
         crate::input::grab::finish_resize_commit(&mut self.resize_anchor, &mut self.wayland.space);
         self.request_redraw();
-        super::sync_keyboard_focus(self, SERIAL_COUNTER.next_serial());
     }
 }
 
@@ -279,7 +279,6 @@ impl<D: SessionDriver> WlrLayerShellHandler for Session<D> {
 
     fn layer_destroyed(&mut self, surface: WlrLayerSurface) {
         wayland::layer_shell::destroyed(&mut self.wayland, &surface);
-        super::sync_keyboard_focus(self, SERIAL_COUNTER.next_serial());
         self.request_redraw();
     }
 

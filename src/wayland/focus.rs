@@ -80,9 +80,28 @@ pub fn current(
 
 pub fn select_layer(wayland: &mut WaylandState, selected: Option<LayerSurface>) {
     wayland.focused_layer = selected.filter(|layer| {
-        !wayland.unmapped_layers.contains(layer.wl_surface())
-            && layer.cached_state().keyboard_interactivity == KeyboardInteractivity::OnDemand
+        retains_on_demand_focus(
+            layer.layer_surface().alive(),
+            wayland.unmapped_layers.contains(layer.wl_surface()),
+            layer.cached_state().keyboard_interactivity,
+        )
     });
+}
+
+/// Drops click-selected layer focus after the client makes that layer
+/// ineligible. Protocol requests are dispatched in batches, so this cleanup
+/// runs immediately before the batch's single seat-focus reconciliation.
+pub fn refresh_selected_layer(wayland: &mut WaylandState) {
+    let retain = wayland.focused_layer.as_ref().is_some_and(|layer| {
+        retains_on_demand_focus(
+            layer.layer_surface().alive(),
+            wayland.unmapped_layers.contains(layer.wl_surface()),
+            layer.cached_state().keyboard_interactivity,
+        )
+    });
+    if !retain {
+        wayland.focused_layer = None;
+    }
 }
 
 /// Records the output chosen by click-to-focus. Resolution is deliberately
@@ -129,6 +148,14 @@ fn selected_on_demand(wayland: &WaylandState, layer_kind: Layer) -> Option<WlSur
         KeyboardInteractivity::OnDemand,
         Some(selected),
     )
+}
+
+fn retains_on_demand_focus(
+    alive: bool,
+    unmapped: bool,
+    interactivity: KeyboardInteractivity,
+) -> bool {
+    alive && !unmapped && interactivity == KeyboardInteractivity::OnDemand
 }
 
 fn first_interactive(
@@ -198,5 +225,23 @@ mod tests {
             selected_output_in(&space, Some("unplugged")).map(Output::name),
             Some("DP-1".to_string())
         );
+    }
+
+    #[test]
+    fn on_demand_focus_requires_a_live_mapped_interactive_layer() {
+        let cases = [
+            (true, false, KeyboardInteractivity::OnDemand, true),
+            (false, false, KeyboardInteractivity::OnDemand, false),
+            (true, true, KeyboardInteractivity::OnDemand, false),
+            (true, false, KeyboardInteractivity::None, false),
+            (true, false, KeyboardInteractivity::Exclusive, false),
+        ];
+
+        for (alive, unmapped, interactivity, expected) in cases {
+            assert_eq!(
+                retains_on_demand_focus(alive, unmapped, interactivity),
+                expected
+            );
+        }
     }
 }

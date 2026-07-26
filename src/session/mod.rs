@@ -116,6 +116,7 @@ pub(crate) fn sync_keyboard_focus<D: SessionDriver>(
     session: &mut Session<D>,
     serial: smithay::utils::Serial,
 ) {
+    wayland::focus::refresh_selected_layer(&mut session.wayland);
     let focused = wayland::focus::current(
         &session.wayland,
         &session.fullscreen,
