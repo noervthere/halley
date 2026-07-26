@@ -4,7 +4,9 @@ use smithay::desktop::space::SpaceElement;
 use smithay::desktop::{Space, Window};
 use smithay::output::Output;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::utils::{Logical, Physical, Point, Rectangle, Serial, Size};
+use smithay::utils::{Logical, Point, Rectangle, Serial, Size};
+#[cfg(test)]
+use smithay::utils::Physical;
 
 /// What's currently being dragged with the left mouse button held, if
 /// anything - `None` the rest of the time. Lives on `App`/`TtyApp` next to
@@ -321,7 +323,8 @@ fn committed_configure_serial(window: &Window) -> Option<Serial> {
 /// Needed because the pointer's tracked position is always in screen
 /// coordinates, but window positions and grab math need to be in world
 /// coordinates now that panning is real.
-pub fn screen_to_world(screen: (f64, f64), camera: &Camera, output_size: Size<i32, Physical>) -> Vec2 {
+#[cfg(test)]
+fn screen_to_world(screen: (f64, f64), camera: &Camera, output_size: Size<i32, Physical>) -> Vec2 {
     let output_center_x = output_size.w as f32 / 2.0;
     let output_center_y = output_size.h as f32 / 2.0;
     let scale = crate::input::zoom::scale(camera);

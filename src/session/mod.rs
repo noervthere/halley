@@ -8,6 +8,7 @@ use crate::wayland::{self, WaylandState};
 
 mod protocol;
 mod state;
+mod input;
 
 pub mod tty;
 pub mod winit;

@@ -12,8 +12,11 @@ use crate::wayland::WaylandState;
 /// Hardware setup, rendering, output reconfiguration, and event sources stay
 /// inside the concrete driver modules.
 pub trait SessionDriver: 'static {
+    const BACKEND_KIND: crate::input::keybinds::BackendKind;
+
     fn primary_output(&self) -> &Output;
     fn request_redraw(&mut self, output: Option<&Output>);
+    fn stop(&mut self);
 }
 
 /// Backend-independent compositor state.
@@ -47,5 +50,20 @@ impl<D: SessionDriver> Session<D> {
 
     pub fn request_output_redraw(&mut self, output: &Output) {
         self.driver.request_redraw(Some(output));
+    }
+
+    /// Applies every backend-independent setting from one validated config
+    /// snapshot. Output hardware policy remains with the concrete driver.
+    pub fn apply_common_config(&mut self, config: &halley_config::RuntimeConfig) {
+        self.keyboard
+            .reload(&config.keybinds, D::BACKEND_KIND);
+        let redraw =
+            self.decorations != config.decorations || self.zoom != config.zoom;
+        self.decorations = config.decorations;
+        self.zoom = config.zoom;
+        self.window_open_animations.reload(config.animations);
+        if redraw {
+            self.request_redraw();
+        }
     }
 }
