@@ -1,4 +1,5 @@
 use std::ffi::OsStr;
+use std::ffi::OsString;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -57,6 +58,27 @@ pub fn activate_session(wayland_display: &OsStr) {
             .arg("--no-block")
             .arg("xdg-desktop-portal.service");
         run("portal refresh", &mut restart);
+    }
+}
+
+pub fn activate_xwayland(display: &OsStr) {
+    let mut assignment = OsString::from("DISPLAY=");
+    assignment.push(display);
+
+    let mut dbus = Command::new("dbus-update-activation-environment");
+    if systemd_is_booted() {
+        dbus.arg("--systemd");
+    }
+    dbus.arg(&assignment);
+    run("XWayland D-Bus environment", &mut dbus);
+
+    if systemd_is_booted() {
+        let mut systemd = Command::new("systemctl");
+        systemd
+            .arg("--user")
+            .arg("set-environment")
+            .arg(&assignment);
+        run("XWayland systemd environment", &mut systemd);
     }
 }
 

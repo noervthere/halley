@@ -12,6 +12,7 @@ use smithay::output::Output;
 use smithay::reexports::drm::control::crtc;
 use smithay::reexports::input::Libinput;
 use smithay::reexports::wayland_server::Display;
+use smithay::wayland::seat::WaylandFocus;
 
 use crate::backend::tty::TtyBackend;
 use crate::backend::{CLEAR_COLOR, RenderOutcome, RenderRequest, RenderStatus, Renderable};
@@ -147,7 +148,8 @@ pub fn run(session_mode: bool) {
         paused: false,
         pending_output_config: None,
     };
-    let wayland = TtyApp::create_wayland_state(dh, &mut driver);
+    let wayland = TtyApp::create_wayland_state(dh.clone(), &mut driver);
+    let xwayland = crate::xwayland::State::new::<TtyApp>(&dh);
     let mut app = TtyApp {
         driver,
         keyboard: Keyboard::from_config(&runtime_config.keybinds, BackendKind::Tty),
@@ -174,6 +176,7 @@ pub fn run(session_mode: bool) {
         fullscreen: crate::wayland::fullscreen::FullscreenManager::new(runtime_config.animations),
         fullscreen_textures:
             crate::backend::fullscreen_texture::FullscreenTextureTransitions::default(),
+        xwayland,
     };
     for output in outputs {
         app.wayland
@@ -192,6 +195,9 @@ pub fn run(session_mode: bool) {
     eventline::info!("wayland socket ready, WAYLAND_DISPLAY={socket_name:?}");
     if session_mode {
         super::environment::activate_session(&socket_name);
+    }
+    if let Err(err) = crate::xwayland::start(&event_loop.handle(), &mut app, session_mode) {
+        eventline::warn!("xwayland: unavailable: {err}");
     }
 
     if let Err(err) =
@@ -377,8 +383,10 @@ fn apply_tty_output_config(app: &mut TtyApp, outputs_config: &[halley_config::Ou
         {
             app.cameras
                 .reset(change.output.name(), geometry.size.to_physical(1));
-            app.fullscreen
+            let external = app
+                .fullscreen
                 .reconfigure_output(&app.wayland, &change.output);
+            crate::xwayland::reconfigure_fullscreen(external);
         }
 
         if change.mode_changed || change.layout_changed {
@@ -389,12 +397,7 @@ fn apply_tty_output_config(app: &mut TtyApp, outputs_config: &[halley_config::Ou
     if layout_changed {
         app.wayland.space.refresh();
         app.capture.update_layout(&app.wayland.space);
-        super::input::update_client_pointer_focus(app, app.start_time.elapsed().as_millis() as u32);
-        let pointer = app
-            .seat
-            .get_pointer()
-            .expect("pointer capability added at seat setup");
-        pointer.frame(app);
+        super::input::update_client_pointer_state(app, app.start_time.elapsed().as_millis() as u32);
     }
 }
 
@@ -439,9 +442,9 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
     let primary = app.driver.backend.primary_output();
     let window_animating = app.wayland.space.elements().any(|window| {
         wayland::window_is_on_output(window, output, primary)
-            && window.toplevel().is_some_and(|toplevel| {
+            && window.wl_surface().is_some_and(|surface| {
                 app.window_open_animations
-                    .is_animating(toplevel.wl_surface(), target_presentation_time)
+                    .is_animating(surface.as_ref(), target_presentation_time)
             })
     });
     let fullscreen_animating = app
@@ -449,25 +452,16 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
         .is_animating_on_output(output, target_presentation_time);
     let animating = camera_animating || window_animating || fullscreen_animating;
     if fullscreen_animating && pointer_is_on_output {
-        super::input::update_client_pointer_focus(app, app.start_time.elapsed().as_millis() as u32);
-        let pointer = app
-            .seat
-            .get_pointer()
-            .expect("pointer capability added at seat setup");
-        pointer.frame(app);
+        super::input::update_client_pointer_state(app, app.start_time.elapsed().as_millis() as u32);
     }
     let view_after = pointer_is_on_output
         .then(|| app.cameras.view(&output.name()))
         .flatten();
     if view_before != view_after {
-        super::input::update_client_pointer_focus(app, app.start_time.elapsed().as_millis() as u32);
-        let pointer = app
-            .seat
-            .get_pointer()
-            .expect("pointer capability added at seat setup");
-        pointer.frame(app);
+        super::input::update_client_pointer_state(app, app.start_time.elapsed().as_millis() as u32);
     }
 
+    let show_cursor = super::pointer_constraints::cursor_visible(app);
     let outcome = match app.driver.backend.render(
         output,
         RenderRequest {
@@ -475,7 +469,7 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
             clear: CLEAR_COLOR,
             cursor: &app.cursor,
             cursor_position: app.pointer.position(),
-            show_cursor: true,
+            show_cursor,
             capture_overlay: app.capture.overlay(),
             space: &app.wayland.space,
             focused: app.wayland.focused_window.as_ref(),
@@ -495,12 +489,7 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
     app.window_open_animations.cleanup(target_presentation_time);
     if app.cleanup_fullscreen(target_presentation_time) {
         super::sync_keyboard_focus(app, smithay::utils::SERIAL_COUNTER.next_serial());
-        super::input::update_client_pointer_focus(app, app.start_time.elapsed().as_millis() as u32);
-        let pointer = app
-            .seat
-            .get_pointer()
-            .expect("pointer capability added at seat setup");
-        pointer.frame(app);
+        super::input::update_client_pointer_state(app, app.start_time.elapsed().as_millis() as u32);
     }
 
     let feedback = app.driver.dmabuf_feedback(output).cloned();

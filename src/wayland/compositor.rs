@@ -1,6 +1,7 @@
 use smithay::backend::renderer::utils::on_commit_buffer_handler;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::wayland::compositor::{get_parent, is_sync_subsurface};
+use smithay::wayland::seat::WaylandFocus;
 
 use super::WaylandState;
 use super::{layer_shell, popup, xdg_shell};
@@ -35,7 +36,11 @@ pub fn commit<D: 'static>(
     let owning_window = wayland
         .space
         .elements()
-        .find(|w| w.toplevel().is_some_and(|t| t.wl_surface() == &root))
+        .find(|window| {
+            window
+                .wl_surface()
+                .is_some_and(|surface| surface.as_ref() == &root)
+        })
         .or_else(|| wayland.unmapped.get(&root));
     if let Some(window) = owning_window {
         window.on_commit();

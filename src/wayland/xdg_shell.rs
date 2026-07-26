@@ -83,46 +83,11 @@ pub fn handle_commit(
         // New windows steal focus - matches most WMs' default behavior.
         // Also raises+activates via `focus_and_raise`, same as clicking a
         // window now does.
-        focus_and_raise(wayland, &window);
+        crate::window::focus_and_raise(wayland, &window);
         return Some(surface.clone());
     }
 
     None
-}
-
-/// Marks `window` as focused, raises it to the top of the stack, and sets
-/// Smithay's own "activated" xdg-toplevel state on it (clearing that state
-/// from every other window) - shared by the new-window-steals-focus path
-/// above and `input::grab`'s click-to-focus/grab-start paths. `window` must
-/// already be mapped into `wayland.space`.
-pub fn focus_and_raise(wayland: &mut WaylandState, window: &Window) {
-    wayland.focused_layer = None;
-    if let Some(location) = wayland.space.element_location(window) {
-        wayland.space.map_element(window.clone(), location, true);
-    }
-    if let Some(toplevel) = window.toplevel() {
-        wayland.focused_window = Some(toplevel.wl_surface().clone());
-    }
-}
-
-/// Sends a close request to the focused window's toplevel, if any - the
-/// client decides whether/how to actually close (an unsaved-changes prompt,
-/// etc.), matching every other close keybind/button on any desktop. A no-op
-/// if nothing is focused or the focused surface somehow isn't in `space`.
-pub fn close_focused(wayland: &WaylandState) {
-    let Some(focused) = wayland.focused_window.as_ref() else {
-        return;
-    };
-    let Some(window) = wayland
-        .space
-        .elements()
-        .find(|window| window.toplevel().is_some_and(|t| t.wl_surface() == focused))
-    else {
-        return;
-    };
-    if let Some(toplevel) = window.toplevel() {
-        toplevel.send_close();
-    }
 }
 
 /// Centers a newly-mapped window on the selected output's live camera.

@@ -11,6 +11,7 @@ use smithay::output::Output;
 use smithay::reexports::wayland_server::Resource;
 use smithay::utils::{Logical, Point, Rectangle, SERIAL_COUNTER};
 use smithay::wayland::keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitorSeat;
+use smithay::wayland::seat::WaylandFocus;
 
 use super::{Session, SessionDriver, focus_layer, focus_window};
 use crate::input::pointer::{axis_frame_filtered, process_wheel_bindings};
@@ -22,10 +23,7 @@ use crate::wayland;
 const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
 
-fn shortcut_policy_allows_bindings(
-    focus_bypasses_shortcuts: bool,
-    inhibitor_active: bool,
-) -> bool {
+fn shortcut_policy_allows_bindings(focus_bypasses_shortcuts: bool, inhibitor_active: bool) -> bool {
     !focus_bypasses_shortcuts && !inhibitor_active
 }
 
@@ -72,25 +70,74 @@ pub(super) fn route_client_pointer<D: SessionDriver>(
     )
 }
 
-pub(super) fn update_client_pointer_focus<D: SessionDriver>(
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PointerFocusUpdate {
+    Always,
+    WhenSurfaceChanges,
+}
+
+fn should_emit_pointer_motion(
+    update: PointerFocusUpdate,
+    surface_changed: bool,
+    locked: bool,
+) -> bool {
+    !locked
+        && match update {
+            PointerFocusUpdate::Always => true,
+            PointerFocusUpdate::WhenSurfaceChanges => surface_changed,
+        }
+}
+
+fn route_and_update_client_pointer_focus<D: SessionDriver>(
     session: &mut Session<D>,
     time: u32,
+    update: PointerFocusUpdate,
 ) -> Option<crate::input::pointer::PointerRoute> {
     let route = route_client_pointer(session)?;
     let pointer = session
         .seat
         .get_pointer()
         .expect("pointer capability added at seat setup");
-    pointer.motion(
-        session,
-        route.focus.clone(),
-        &MotionEvent {
-            location: route.location,
-            serial: SERIAL_COUNTER.next_serial(),
-            time,
-        },
-    );
+    let routed_surface = route.focus.as_ref().map(|(surface, _)| surface);
+    let current_surface = pointer.current_focus();
+    let surface_changed = current_surface.as_ref() != routed_surface;
+    let locked = super::pointer_constraints::has_active_lock(&pointer);
+    if should_emit_pointer_motion(update, surface_changed, locked) {
+        pointer.motion(
+            session,
+            route.focus.clone(),
+            &MotionEvent {
+                location: route.location,
+                serial: SERIAL_COUNTER.next_serial(),
+                time,
+            },
+        );
+    }
     Some(route)
+}
+
+fn finish_pointer_frame<D: SessionDriver>(
+    session: &mut Session<D>,
+    pointer: &smithay::input::pointer::PointerHandle<Session<D>>,
+) {
+    pointer.frame(session);
+    super::pointer_constraints::activate_focused(session, pointer);
+}
+
+pub(super) fn update_client_pointer_state<D: SessionDriver>(session: &mut Session<D>, time: u32) {
+    let pointer = session
+        .seat
+        .get_pointer()
+        .expect("pointer capability added at seat setup");
+    route_and_update_client_pointer_focus(session, time, PointerFocusUpdate::Always);
+    finish_pointer_frame(session, &pointer);
+}
+
+fn refresh_client_pointer_focus<D: SessionDriver>(
+    session: &mut Session<D>,
+    time: u32,
+) -> Option<crate::input::pointer::PointerRoute> {
+    route_and_update_client_pointer_focus(session, time, PointerFocusUpdate::WhenSurfaceChanges)
 }
 
 fn dispatch_action<D: SessionDriver>(
@@ -99,12 +146,14 @@ fn dispatch_action<D: SessionDriver>(
     socket_name: &OsStr,
     output_name: Option<&str>,
 ) {
+    let x11_display = session.xwayland.display_name();
     let camera = output_name.and_then(|name| session.cameras.get_mut(name));
     match super::dispatch_action(
         action,
         &session.wayland,
         session.keyboard.terminal_command(),
         socket_name,
+        x11_display.as_deref(),
         camera,
         &session.zoom,
     ) {
@@ -112,7 +161,7 @@ fn dispatch_action<D: SessionDriver>(
         super::SessionControl::Quit => session.driver.stop(),
         super::SessionControl::Screenshot => {
             let window_available = session.wayland.space.elements().any(|window| {
-                window.toplevel().is_some()
+                window.wl_surface().is_some()
                     && crate::wayland::window_output_name(window)
                         .map(|name| Some(name.as_str()) == output_name)
                         .unwrap_or_else(|| {
@@ -166,11 +215,8 @@ fn capture_key_routing(
     }
 }
 
-pub fn handle<D, B>(
-    session: &mut Session<D>,
-    event: &InputEvent<B>,
-    socket_name: &OsStr,
-) where
+pub fn handle<D, B>(session: &mut Session<D>, event: &InputEvent<B>, socket_name: &OsStr)
+where
     D: SessionDriver,
     B: InputBackend,
 {
@@ -179,8 +225,7 @@ pub fn handle<D, B>(
         .seat
         .get_pointer()
         .expect("pointer capability added at seat setup");
-    let active_constraint =
-        super::pointer_constraints::active(session, &pointer_handle);
+    let active_constraint = super::pointer_constraints::active(session, &pointer_handle);
     session
         .pointer
         .process_input_event(event, &session.wayland.space);
@@ -216,10 +261,7 @@ pub fn handle<D, B>(
                             session.suppressed_buttons.suppress(BTN_LEFT);
                             match session.capture.press(proposed_position) {
                                 Some(crate::capture::CapturePress::Activate(mode)) => {
-                                    if session
-                                        .capture
-                                        .activate_menu(mode, &session.wayland.space)
-                                    {
+                                    if session.capture.activate_menu(mode, &session.wayland.space) {
                                         update_capture_pointer(session, proposed_position);
                                     }
                                 }
@@ -235,9 +277,7 @@ pub fn handle<D, B>(
                             }
                         }
                         ButtonState::Released => {
-                            session
-                                .suppressed_buttons
-                                .release_is_suppressed(BTN_LEFT);
+                            session.suppressed_buttons.release_is_suppressed(BTN_LEFT);
                             session.capture.release();
                         }
                     }
@@ -272,7 +312,7 @@ pub fn handle<D, B>(
                 utime: time,
             },
         );
-        pointer_handle.frame(session);
+        finish_pointer_frame(session, &pointer_handle);
         return;
     }
 
@@ -352,13 +392,22 @@ pub fn handle<D, B>(
                 toplevel.with_pending_state(|pending| pending.size = Some(size));
                 let serial = toplevel.send_pending_configure();
                 crate::input::grab::note_resize_configure(&mut session.resize_anchor, serial);
+            } else {
+                let location = crate::input::grab::resize_location_after_commit(
+                    state.handle,
+                    state.start_rect.loc,
+                    state.start_rect.size,
+                    size,
+                );
+                crate::xwayland::resize_window(&state.window, Rectangle::new(location, size));
             }
         }
         crate::input::grab::Grab::None => {}
     }
 
     if let Some((delta, delta_unaccel, time, time_msec)) = motion {
-        let route = update_client_pointer_focus(session, time_msec);
+        let route =
+            route_and_update_client_pointer_focus(session, time_msec, PointerFocusUpdate::Always);
         pointer_handle.relative_motion(
             session,
             route.and_then(|route| route.focus),
@@ -368,7 +417,7 @@ pub fn handle<D, B>(
                 utime: time,
             },
         );
-        pointer_handle.frame(session);
+        finish_pointer_frame(session, &pointer_handle);
     }
 
     if let InputEvent::PointerButton {
@@ -379,7 +428,7 @@ pub fn handle<D, B>(
         let state = button_event.state();
         let time = button_event.time_msec();
         let serial = SERIAL_COUNTER.next_serial();
-        let route = update_client_pointer_focus(session, time);
+        let route = refresh_client_pointer_focus(session, time);
         if button == BTN_LEFT
             && state == ButtonState::Pressed
             && let Some(route) = route.as_ref()
@@ -409,9 +458,7 @@ pub fn handle<D, B>(
             &mut session.suppressed_buttons,
         ) {
             PointerBindingResult::Action(action) => {
-                let output_name = route
-                    .as_ref()
-                    .map(|route| route.output.name().to_string());
+                let output_name = route.as_ref().map(|route| route.output.name().to_string());
                 dispatch_action(session, action, socket_name, output_name.as_deref());
                 intercepted = true;
             }
@@ -422,60 +469,32 @@ pub fn handle<D, B>(
         if !intercepted && button == BTN_RIGHT {
             match state {
                 ButtonState::Pressed => {
-                    if crate::input::mod_key_held(
-                        &modifiers,
-                        session.keyboard.effective_mod,
-                    ) && let Some(crate::input::pointer::PointerRoute {
-                        target: crate::input::pointer::PointerTarget::Window(window),
-                        location,
-                        ..
-                    }) = route.as_ref()
-                        && !window.toplevel().is_some_and(|toplevel| {
+                    if crate::input::mod_key_held(&modifiers, session.keyboard.effective_mod)
+                        && let Some(crate::input::pointer::PointerRoute {
+                            target: crate::input::pointer::PointerTarget::Window(window),
+                            location,
+                            ..
+                        }) = route.as_ref()
+                        && !window.wl_surface().is_some_and(|surface| {
                             session
                                 .fullscreen
-                                .is_fullscreen_or_pending(toplevel.wl_surface())
+                                .is_fullscreen_or_pending(surface.as_ref())
                         })
-                        && let Some(start_rect) =
-                            session.wayland.space.element_geometry(window)
                     {
                         let world = halley_core::field::Vec2 {
                             x: location.x as f32,
                             y: location.y as f32,
                         };
-                        let handle =
-                            crate::input::grab::handle_from_press_position(start_rect, world);
-                        focus_window(session, window, serial);
-                        session.grab =
-                            crate::input::grab::Grab::ResizeWindow(
-                                crate::input::grab::ResizeState {
-                                    window: window.clone(),
-                                    handle,
-                                    start_rect,
-                                    start_cursor: world,
-                                },
+                        if let Some(start_rect) = session.wayland.space.element_geometry(window) {
+                            let handle =
+                                crate::input::grab::handle_from_press_position(start_rect, world);
+                            intercepted = super::begin_window_resize(
+                                session, window, handle, button, world, serial,
                             );
-                        session.resize_anchor = Some(crate::input::grab::ResizeAnchor {
-                            window: window.clone(),
-                            handle,
-                            phase: crate::input::grab::ResizePhase::Ongoing,
-                            last_configure: None,
-                            last_size: start_rect.size,
-                        });
-                        intercepted = true;
+                        }
                     }
                 }
-                ButtonState::Released => {
-                    if matches!(
-                        session.grab,
-                        crate::input::grab::Grab::ResizeWindow(_)
-                    ) {
-                        session.grab = crate::input::grab::Grab::None;
-                        crate::input::grab::release_resize_anchor(
-                            &mut session.resize_anchor,
-                        );
-                        intercepted = true;
-                    }
-                }
+                ButtonState::Released => {}
             }
         } else if !intercepted && button == BTN_LEFT {
             match state {
@@ -485,10 +504,10 @@ pub fn handle<D, B>(
                     match route.as_ref().map(|route| &route.target) {
                         Some(crate::input::pointer::PointerTarget::Window(window))
                             if mod_held
-                                && !window.toplevel().is_some_and(|toplevel| {
+                                && !window.wl_surface().is_some_and(|surface| {
                                     session
                                         .fullscreen
-                                        .is_fullscreen_or_pending(toplevel.wl_surface())
+                                        .is_fullscreen_or_pending(surface.as_ref())
                                 }) =>
                         {
                             let route = route.as_ref().expect("matched above");
@@ -525,11 +544,7 @@ pub fn handle<D, B>(
                         Some(crate::input::pointer::PointerTarget::Background) => {
                             focus_layer(session, None, serial);
                             session.grab = crate::input::grab::Grab::Pan {
-                                output: route
-                                    .as_ref()
-                                    .expect("matched above")
-                                    .output
-                                    .name(),
+                                output: route.as_ref().expect("matched above").output.name(),
                             };
                             intercepted = true;
                         }
@@ -549,12 +564,20 @@ pub fn handle<D, B>(
             }
         }
 
+        if !intercepted
+            && state == ButtonState::Released
+            && matches!(
+                &session.grab,
+                crate::input::grab::Grab::ResizeWindow(resize) if resize.button == button
+            )
+        {
+            session.grab = crate::input::grab::Grab::None;
+            crate::input::grab::release_resize_anchor(&mut session.resize_anchor);
+            intercepted = true;
+        }
+
         if !intercepted {
-            let pointer = session
-                .seat
-                .get_pointer()
-                .expect("pointer capability added at seat setup");
-            pointer.button(
+            pointer_handle.button(
                 session,
                 &ButtonEvent {
                     serial,
@@ -564,18 +587,12 @@ pub fn handle<D, B>(
                 },
             );
         }
-        let pointer = session
-            .seat
-            .get_pointer()
-            .expect("pointer capability added at seat setup");
-        pointer.frame(session);
+        finish_pointer_frame(session, &pointer_handle);
     }
 
     if let InputEvent::PointerAxis { event: axis_event } = event {
-        let route = update_client_pointer_focus(session, axis_event.time_msec());
-        let output_name = route
-            .as_ref()
-            .map(|route| route.output.name().to_string());
+        let route = refresh_client_pointer_focus(session, axis_event.time_msec());
+        let output_name = route.as_ref().map(|route| route.output.name().to_string());
         let bindings_enabled = bindings_enabled(session);
         let modifiers = session
             .seat
@@ -589,25 +606,19 @@ pub fn handle<D, B>(
             |direction| match_wheel_bind(&session.keyboard.binds, &modifiers, direction),
         );
         for (direction, action) in result.actions {
-            eventline::debug!(
-                "keybinds: wheel {direction:?} + {modifiers:?} -> {action:?}"
-            );
+            eventline::debug!("keybinds: wheel {direction:?} + {modifiers:?} -> {action:?}");
             dispatch_action(session, action, socket_name, output_name.as_deref());
         }
 
-        let pointer = session
-            .seat
-            .get_pointer()
-            .expect("pointer capability added at seat setup");
         if result.forward_horizontal || result.forward_vertical {
             let frame = axis_frame_filtered(
                 axis_event,
                 result.forward_horizontal,
                 result.forward_vertical,
             );
-            pointer.axis(session, frame);
+            pointer_handle.axis(session, frame);
         }
-        pointer.frame(session);
+        finish_pointer_frame(session, &pointer_handle);
     }
 
     if let InputEvent::Keyboard { event: key_event } = event {
@@ -650,14 +661,12 @@ pub fn handle<D, B>(
                             FilterResult::Intercept(KeyboardOutcome::CaptureAccept)
                         }
                         Some(Keysym::Left)
-                            if data.capture.kind()
-                                == Some(crate::capture::CaptureKind::Menu) =>
+                            if data.capture.kind() == Some(crate::capture::CaptureKind::Menu) =>
                         {
                             FilterResult::Intercept(KeyboardOutcome::CapturePrevious)
                         }
                         Some(Keysym::Right)
-                            if data.capture.kind()
-                                == Some(crate::capture::CaptureKind::Menu) =>
+                            if data.capture.kind() == Some(crate::capture::CaptureKind::Menu) =>
                         {
                             FilterResult::Intercept(KeyboardOutcome::CaptureNext)
                         }
@@ -673,9 +682,7 @@ pub fn handle<D, B>(
                     handle.raw_latin_sym_or_raw_current_sym(),
                     keycode,
                 ) {
-                    Some(action) => {
-                        FilterResult::Intercept(KeyboardOutcome::Action(action))
-                    }
+                    Some(action) => FilterResult::Intercept(KeyboardOutcome::Action(action)),
                     None => FilterResult::Forward,
                 }
             },
@@ -730,18 +737,13 @@ pub fn handle<D, B>(
     }
 }
 
-fn update_capture_pointer<D: SessionDriver>(
-    session: &mut Session<D>,
-    position: (f64, f64),
-) {
+fn update_capture_pointer<D: SessionDriver>(session: &mut Session<D>, position: (f64, f64)) {
     match session.capture.kind() {
         Some(crate::capture::CaptureKind::Menu | crate::capture::CaptureKind::Area) => {
             session.capture.motion(position);
         }
         Some(crate::capture::CaptureKind::Screen) => {
-            if let Some((_, geometry)) =
-                output_at_pointer(&session.wayland.space, position)
-            {
+            if let Some((_, geometry)) = output_at_pointer(&session.wayland.space, position) {
                 session.capture.hover_screen(geometry);
             }
         }
@@ -761,12 +763,12 @@ fn update_capture_pointer<D: SessionDriver>(
             };
             let window = match route.target {
                 crate::input::pointer::PointerTarget::Window(window) => {
-                    window.toplevel().and_then(|toplevel| {
+                    window.wl_surface().and_then(|surface| {
                         let geometry = route.visual_geometry?;
                         let size = window.geometry().size;
                         Some((
                             halley_ipc::CaptureSource::Window {
-                                surface_id: toplevel.wl_surface().id().protocol_id(),
+                                surface_id: surface.id().protocol_id(),
                                 width: size.w,
                                 height: size.h,
                             },
@@ -785,7 +787,7 @@ fn update_capture_pointer<D: SessionDriver>(
                 let crate::input::pointer::PointerTarget::Window(window) = route.target else {
                     return None;
                 };
-                let surface = window.toplevel()?.wl_surface().clone();
+                let surface = window.wl_surface()?.into_owned();
                 Some((surface, route.visual_geometry?))
             });
             let (surface, geometry) = hovered
@@ -801,7 +803,10 @@ fn update_capture_pointer<D: SessionDriver>(
 mod tests {
     use smithay::backend::input::KeyState;
 
-    use super::{CaptureKeyRouting, capture_key_routing, shortcut_policy_allows_bindings};
+    use super::{
+        CaptureKeyRouting, PointerFocusUpdate, capture_key_routing,
+        shortcut_policy_allows_bindings, should_emit_pointer_motion,
+    };
 
     #[test]
     fn shortcut_policy_respects_shell_and_client_inhibition() {
@@ -825,5 +830,38 @@ mod tests {
             capture_key_routing(true, KeyState::Pressed, false),
             CaptureKeyRouting::Evaluate
         );
+    }
+
+    #[test]
+    fn locked_pointer_never_receives_absolute_focus_motion() {
+        assert!(!should_emit_pointer_motion(
+            PointerFocusUpdate::Always,
+            true,
+            true
+        ));
+        assert!(!should_emit_pointer_motion(
+            PointerFocusUpdate::WhenSurfaceChanges,
+            true,
+            true
+        ));
+    }
+
+    #[test]
+    fn passive_refresh_only_moves_when_the_surface_changes() {
+        assert!(!should_emit_pointer_motion(
+            PointerFocusUpdate::WhenSurfaceChanges,
+            false,
+            false
+        ));
+        assert!(should_emit_pointer_motion(
+            PointerFocusUpdate::WhenSurfaceChanges,
+            true,
+            false
+        ));
+        assert!(should_emit_pointer_motion(
+            PointerFocusUpdate::Always,
+            false,
+            false
+        ));
     }
 }

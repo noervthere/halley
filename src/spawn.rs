@@ -9,8 +9,8 @@ use std::process::{Command, Stdio};
 /// The shell is intentional: loose keybinds may contain arguments, quoting,
 /// pipelines, or substitutions. The config is user-authored and has the
 /// same authority as starting a command from their own shell.
-pub fn spawn_detached(command_line: &str, wayland_display: &OsStr) {
-    let mut process = detached_process(command_line, wayland_display);
+pub fn spawn_detached(command_line: &str, wayland_display: &OsStr, x11_display: Option<&OsStr>) {
+    let mut process = detached_process(command_line, wayland_display, x11_display);
 
     match process.spawn() {
         Ok(mut child) => {
@@ -18,7 +18,7 @@ pub fn spawn_detached(command_line: &str, wayland_display: &OsStr) {
             // shell is already reparented and will be reaped independently.
             match child.wait() {
                 Ok(_) => eventline::debug!(
-                    "spawn: launched {command_line:?} (WAYLAND_DISPLAY={wayland_display:?})"
+                    "spawn: launched {command_line:?} (WAYLAND_DISPLAY={wayland_display:?}, DISPLAY={x11_display:?})"
                 ),
                 Err(err) => {
                     eventline::warn!("spawn: failed to reap intermediate process: {err}")
@@ -29,15 +29,23 @@ pub fn spawn_detached(command_line: &str, wayland_display: &OsStr) {
     }
 }
 
-fn detached_process(command_line: &str, wayland_display: &OsStr) -> Command {
+fn detached_process(
+    command_line: &str,
+    wayland_display: &OsStr,
+    x11_display: Option<&OsStr>,
+) -> Command {
     let mut process = Command::new("sh");
     process
         .arg("-c")
         .arg(command_line)
         .env("WAYLAND_DISPLAY", wayland_display)
+        .env_remove("DISPLAY")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    if let Some(display) = x11_display {
+        process.env("DISPLAY", display);
+    }
 
     // Safety: only async-signal-safe calls between fork and exec - a raw
     // fork() plus an immediate _exit() (never std::process::exit, which
@@ -63,6 +71,7 @@ mod tests {
         let process = detached_process(
             "grim -g \"$(slurp)\" ~/shot.png",
             OsStr::new("wayland-9"),
+            Some(OsStr::new(":12")),
         );
         assert_eq!(process.get_program(), "sh");
         assert_eq!(
@@ -72,5 +81,20 @@ mod tests {
         assert!(process.get_envs().any(|(name, value)| {
             name == "WAYLAND_DISPLAY" && value == Some(OsStr::new("wayland-9"))
         }));
+        assert!(
+            process
+                .get_envs()
+                .any(|(name, value)| name == "DISPLAY" && value == Some(OsStr::new(":12")))
+        );
+    }
+
+    #[test]
+    fn unavailable_xwayland_removes_ambient_display() {
+        let process = detached_process("foot", OsStr::new("wayland-2"), None);
+        assert!(
+            process
+                .get_envs()
+                .any(|(name, value)| name == "DISPLAY" && value.is_none())
+        );
     }
 }

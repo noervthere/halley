@@ -183,18 +183,30 @@ mod tests {
 
     #[test]
     fn winit_defaults_super_config_to_alt() {
-        assert_eq!(effective_mod(ModifierKey::Super, BackendKind::Winit), ModifierKey::Alt);
+        assert_eq!(
+            effective_mod(ModifierKey::Super, BackendKind::Winit),
+            ModifierKey::Alt
+        );
     }
 
     #[test]
     fn winit_falls_back_to_super_when_configured_alt() {
-        assert_eq!(effective_mod(ModifierKey::Alt, BackendKind::Winit), ModifierKey::Super);
+        assert_eq!(
+            effective_mod(ModifierKey::Alt, BackendKind::Winit),
+            ModifierKey::Super
+        );
     }
 
     #[test]
     fn tty_uses_configured_mod_unchanged() {
-        assert_eq!(effective_mod(ModifierKey::Super, BackendKind::Tty), ModifierKey::Super);
-        assert_eq!(effective_mod(ModifierKey::Ctrl, BackendKind::Tty), ModifierKey::Ctrl);
+        assert_eq!(
+            effective_mod(ModifierKey::Super, BackendKind::Tty),
+            ModifierKey::Super
+        );
+        assert_eq!(
+            effective_mod(ModifierKey::Ctrl, BackendKind::Tty),
+            ModifierKey::Ctrl
+        );
     }
 
     #[test]
@@ -226,7 +238,10 @@ mod tests {
         let resolved = resolve_binds(&keybinds, BackendKind::Winit);
 
         assert_eq!(resolved.len(), 7);
-        let quit = resolved.iter().find(|bind| bind.action == Action::Quit).unwrap();
+        let quit = resolved
+            .iter()
+            .find(|bind| bind.action == Action::Quit)
+            .unwrap();
         assert!(quit.modifiers.alt);
         assert!(!quit.modifiers.super_key);
         assert!(quit.modifiers.shift);
@@ -242,7 +257,10 @@ mod tests {
         let resolved = resolve_binds(&keybinds, BackendKind::Tty);
 
         assert_eq!(resolved.len(), 7);
-        let quit = resolved.iter().find(|bind| bind.action == Action::Quit).unwrap();
+        let quit = resolved
+            .iter()
+            .find(|bind| bind.action == Action::Quit)
+            .unwrap();
         assert!(quit.modifiers.super_key);
         assert!(!quit.modifiers.alt);
         assert!(quit.modifiers.shift);
@@ -270,12 +288,24 @@ mod tests {
         let keybinds = Keybinds::default();
         let resolved = resolve_binds(&keybinds, BackendKind::Tty);
         assert!(resolved.iter().any(|bind| bind.action == Action::Quit));
-        assert!(resolved.iter().any(|bind| bind.action == Action::CloseFocusedWindow));
-        assert!(resolved.iter().any(|bind| bind.action == Action::OpenTerminal));
+        assert!(
+            resolved
+                .iter()
+                .any(|bind| bind.action == Action::CloseFocusedWindow)
+        );
+        assert!(
+            resolved
+                .iter()
+                .any(|bind| bind.action == Action::OpenTerminal)
+        );
         assert!(resolved.iter().any(|bind| bind.action == Action::ZoomIn));
         assert!(resolved.iter().any(|bind| bind.action == Action::ZoomOut));
         assert!(resolved.iter().any(|bind| bind.action == Action::ZoomReset));
-        assert!(resolved.iter().any(|bind| bind.action == Action::Screenshot));
+        assert!(
+            resolved
+                .iter()
+                .any(|bind| bind.action == Action::Screenshot)
+        );
     }
 
     #[test]
@@ -295,10 +325,7 @@ mod tests {
             .iter()
             .find(|bind| {
                 bind.trigger
-                    == ResolvedTrigger::Keysym(xkb::keysym_from_name(
-                        "d",
-                        xkb::KEYSYM_NO_FLAGS,
-                    ))
+                    == ResolvedTrigger::Keysym(xkb::keysym_from_name("d", xkb::KEYSYM_NO_FLAGS))
             })
             .expect("spawn bind resolves");
         assert!(command.modifiers.alt);
@@ -310,7 +337,14 @@ mod tests {
 
     #[test]
     fn standard_xkb_names_are_case_insensitive() {
-        for name in ["Print", "page_up", "PAGE_DOWN", "delete", "F12", "XF86AudioMute"] {
+        for name in [
+            "Print",
+            "page_up",
+            "PAGE_DOWN",
+            "delete",
+            "F12",
+            "XF86AudioMute",
+        ] {
             assert!(matches!(
                 resolve_trigger_name(name),
                 Some(ResolvedTrigger::Keysym(keysym)) if keysym != Keysym::NoSymbol
@@ -338,9 +372,7 @@ mod tests {
         assert!(PointerButtonTrigger::Left.matches(0x110));
         assert_eq!(
             resolve_trigger_name("click-middle"),
-            Some(ResolvedTrigger::PointerButton(
-                PointerButtonTrigger::Middle
-            ))
+            Some(ResolvedTrigger::PointerButton(PointerButtonTrigger::Middle))
         );
         assert!(PointerButtonTrigger::Middle.matches(0x112));
         assert!(PointerButtonTrigger::Back.matches(0x113));

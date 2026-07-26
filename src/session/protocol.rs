@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::ffi::OsString;
 use std::sync::Arc;
 
@@ -41,6 +42,7 @@ use smithay::wayland::shell::xdg::{
 };
 use smithay::wayland::shm::{ShmHandler, ShmState};
 use smithay::wayland::socket::ListeningSocketSource;
+use smithay::wayland::seat::WaylandFocus;
 use smithay::{
     delegate_compositor, delegate_data_device, delegate_dmabuf, delegate_fractional_scale,
     delegate_keyboard_shortcuts_inhibit, delegate_layer_shell, delegate_output,
@@ -96,7 +98,12 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
     }
 
     fn client_compositor_state<'a>(&self, client: &'a Client) -> &'a CompositorClientState {
-        &client.get_data::<ClientState>().unwrap().compositor_state
+        if let Some(state) = client.get_data::<ClientState>() {
+            &state.compositor_state
+        } else {
+            crate::xwayland::compositor_client_state(client)
+                .expect("compositor client has no recognized client data")
+        }
     }
 
     fn commit(&mut self, surface: &WlSurface) {
@@ -300,7 +307,7 @@ impl<D: SessionDriver> XdgDecorationHandler for Session<D> {
 }
 
 impl<D: SessionDriver> SeatHandler for Session<D> {
-    type KeyboardFocus = WlSurface;
+    type KeyboardFocus = crate::xwayland::KeyboardFocusTarget;
     type PointerFocus = WlSurface;
     type TouchFocus = WlSurface;
 
@@ -308,9 +315,14 @@ impl<D: SessionDriver> SeatHandler for Session<D> {
         &mut self.seat_state
     }
 
-    fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
+    fn focus_changed(
+        &mut self,
+        seat: &Seat<Self>,
+        focused: Option<&crate::xwayland::KeyboardFocusTarget>,
+    ) {
         let display_handle = self.wayland.display_handle.clone();
-        wayland::selection::sync_selection_focus(&display_handle, seat, focused);
+        let focused = focused.and_then(|target| target.wl_surface().map(Cow::into_owned));
+        wayland::selection::sync_selection_focus(&display_handle, seat, focused.as_ref());
     }
 }
 

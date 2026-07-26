@@ -2,16 +2,18 @@ mod animation;
 mod backend;
 mod camera;
 mod capture;
-mod screencast;
 mod config;
 mod cursor;
 mod frame_clock;
 mod input;
 mod ipc;
 mod logging;
+mod screencast;
 mod session;
 mod spawn;
 mod wayland;
+mod window;
+mod xwayland;
 
 fn main() {
     logging::init();

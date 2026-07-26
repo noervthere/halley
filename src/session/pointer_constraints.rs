@@ -8,6 +8,9 @@ use smithay::wayland::pointer_constraints::{PointerConstraint, with_pointer_cons
 
 use super::{Session, SessionDriver};
 
+type SurfaceOrigin = (WlSurface, Point<f64, Logical>);
+type SurfaceChain = Vec<SurfaceOrigin>;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ConstraintKind {
     Confined,
@@ -39,10 +42,7 @@ pub(super) struct ActiveConstraint {
     region: Option<RegionAttributes>,
 }
 
-fn surface_chain(
-    surface: WlSurface,
-    origin: Point<f64, Logical>,
-) -> Vec<(WlSurface, Point<f64, Logical>)> {
+fn surface_chain(surface: WlSurface, origin: Point<f64, Logical>) -> SurfaceChain {
     let mut chain = Vec::new();
     let mut current = surface;
     let mut current_origin = origin;
@@ -64,12 +64,22 @@ fn surface_chain(
     chain
 }
 
-fn routed_surface_chain<D: SessionDriver>(
-    session: &Session<D>,
-) -> Vec<(WlSurface, Point<f64, Logical>)> {
+fn routed_surface_chain<D: SessionDriver>(session: &Session<D>) -> SurfaceChain {
     super::input::route_client_pointer(session)
         .and_then(|route| route.focus)
         .map_or_else(Vec::new, |(surface, origin)| surface_chain(surface, origin))
+}
+
+fn focused_route_chain<D: SessionDriver>(
+    session: &Session<D>,
+    pointer: &PointerHandle<Session<D>>,
+) -> Option<(Point<f64, Logical>, SurfaceChain)> {
+    let route = super::input::route_client_pointer(session)?;
+    let (surface, origin) = route.focus?;
+    if pointer.current_focus().as_ref() != Some(&surface) {
+        return None;
+    }
+    Some((route.location, surface_chain(surface, origin)))
 }
 
 fn constraint_at<D: SessionDriver>(
@@ -95,13 +105,64 @@ fn constraint_at<D: SessionDriver>(
     })
 }
 
+fn active_locked_for_focus<D: SessionDriver>(
+    pointer: &PointerHandle<Session<D>>,
+) -> Option<ActiveConstraint> {
+    let focus = pointer.current_focus()?;
+    surface_chain(focus, pointer.current_location())
+        .into_iter()
+        .filter_map(|(surface, origin)| constraint_at(&surface, origin, pointer))
+        .find(|constraint| constraint.kind == ConstraintKind::Locked)
+}
+
+pub(super) fn has_active_lock<D: SessionDriver>(pointer: &PointerHandle<Session<D>>) -> bool {
+    active_locked_for_focus(pointer).is_some()
+}
+
 pub(super) fn active<D: SessionDriver>(
     session: &Session<D>,
     pointer: &PointerHandle<Session<D>>,
 ) -> Option<ActiveConstraint> {
-    routed_surface_chain(session)
-        .into_iter()
-        .find_map(|(surface, origin)| constraint_at(&surface, origin, pointer))
+    focused_route_chain(session, pointer)
+        .and_then(|(_, chain)| {
+            chain
+                .into_iter()
+                .find_map(|(surface, origin)| constraint_at(&surface, origin, pointer))
+        })
+        .or_else(|| active_locked_for_focus(pointer))
+}
+
+fn activate_at<D: SessionDriver>(
+    surface: &WlSurface,
+    origin: Point<f64, Logical>,
+    location: Point<f64, Logical>,
+    pointer: &PointerHandle<Session<D>>,
+) -> bool {
+    with_pointer_constraint(surface, pointer, |constraint| {
+        let Some(constraint) = constraint else {
+            return false;
+        };
+        if constraint.is_active()
+            || constraint
+                .region()
+                .is_some_and(|region| !region.contains((location - origin).to_i32_round()))
+        {
+            return false;
+        }
+        constraint.activate();
+        true
+    })
+}
+
+fn chain_has_active<D: SessionDriver>(
+    chain: &SurfaceChain,
+    pointer: &PointerHandle<Session<D>>,
+) -> bool {
+    chain.iter().any(|(surface, _)| {
+        with_pointer_constraint(surface, pointer, |constraint| {
+            constraint.is_some_and(|constraint| constraint.is_active())
+        })
+    })
 }
 
 pub(super) fn activate_new<D: SessionDriver>(
@@ -109,23 +170,46 @@ pub(super) fn activate_new<D: SessionDriver>(
     requested_surface: &WlSurface,
     pointer: &PointerHandle<Session<D>>,
 ) {
-    let Some((_, origin)) = routed_surface_chain(session)
+    let Some((location, chain)) = focused_route_chain(session, pointer) else {
+        return;
+    };
+    if chain_has_active(&chain, pointer) {
+        return;
+    }
+    let Some((_, origin)) = chain
         .into_iter()
         .find(|(surface, _)| surface == requested_surface)
     else {
         return;
     };
-    let position = pointer.current_location() - origin;
-    with_pointer_constraint(requested_surface, pointer, |constraint| {
-        if let Some(constraint) = constraint
-            && !constraint.is_active()
-            && constraint
-                .region()
-                .is_none_or(|region| region.contains(position.to_i32_round()))
-        {
-            constraint.activate();
-        }
-    });
+    if activate_at(requested_surface, origin, location, pointer) {
+        session.request_redraw();
+    }
+}
+
+pub(super) fn activate_focused<D: SessionDriver>(
+    session: &mut Session<D>,
+    pointer: &PointerHandle<Session<D>>,
+) {
+    let Some((location, chain)) = focused_route_chain(session, pointer) else {
+        return;
+    };
+    if chain_has_active(&chain, pointer) {
+        return;
+    }
+    if chain
+        .into_iter()
+        .any(|(surface, origin)| activate_at(&surface, origin, location, pointer))
+    {
+        session.request_redraw();
+    }
+}
+
+pub(super) fn cursor_visible<D: SessionDriver>(session: &Session<D>) -> bool {
+    session
+        .seat
+        .get_pointer()
+        .is_none_or(|pointer| !has_active_lock(&pointer))
 }
 
 pub(super) fn allows_current_position<D: SessionDriver>(

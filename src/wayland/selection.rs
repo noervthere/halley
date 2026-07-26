@@ -16,8 +16,11 @@ use smithay::wayland::selection::primary_selection::{PrimarySelectionHandler, se
 /// this and both globals still advertise, clients still bind them, and
 /// copy/paste silently does nothing - the failure mode is a working-looking
 /// clipboard that never transfers, not an error.
-pub fn sync_selection_focus<D>(display_handle: &DisplayHandle, seat: &Seat<D>, focused: Option<&WlSurface>)
-where
+pub fn sync_selection_focus<D>(
+    display_handle: &DisplayHandle,
+    seat: &Seat<D>,
+    focused: Option<&WlSurface>,
+) where
     D: SeatHandler + DataDeviceHandler + PrimarySelectionHandler + 'static,
 {
     let client = focused.and_then(|surface| surface.client());
@@ -55,9 +58,11 @@ pub fn start_dnd_grab<D, S>(
 {
     match type_ {
         GrabType::Pointer => {
-            let start = seat
-                .get_pointer()
-                .and_then(|pointer| pointer.grab_start_data().map(|start_data| (pointer, start_data)));
+            let start = seat.get_pointer().and_then(|pointer| {
+                pointer
+                    .grab_start_data()
+                    .map(|start_data| (pointer, start_data))
+            });
             match start {
                 Some((pointer, start_data)) => {
                     let grab = DnDGrab::new_pointer(display_handle, start_data, source, seat);
@@ -80,9 +85,11 @@ pub fn start_dnd_grab<D, S>(
             // anyway: it's the same handful of lines as the pointer arm, and
             // leaving it out would turn adding touch later into a silent
             // drag-and-drop regression rather than a no-op.
-            let start = seat
-                .get_touch()
-                .and_then(|touch| touch.grab_start_data().map(|start_data| (touch, start_data)));
+            let start = seat.get_touch().and_then(|touch| {
+                touch
+                    .grab_start_data()
+                    .map(|start_data| (touch, start_data))
+            });
             match start {
                 Some((touch, start_data)) => {
                     let grab = DnDGrab::new_touch(display_handle, start_data, source, seat);

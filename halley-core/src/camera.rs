@@ -59,8 +59,12 @@ impl Camera {
     pub fn clamp_view_size(&self, size: Vec2, zoom_min: f32, zoom_max: f32) -> Vec2 {
         let (min_zoom, max_zoom) = zoom_scale_bounds(zoom_min, zoom_max);
         Vec2 {
-            x: size.x.clamp(self.base_size.x / max_zoom, self.base_size.x / min_zoom),
-            y: size.y.clamp(self.base_size.y / max_zoom, self.base_size.y / min_zoom),
+            x: size
+                .x
+                .clamp(self.base_size.x / max_zoom, self.base_size.x / min_zoom),
+            y: size
+                .y
+                .clamp(self.base_size.y / max_zoom, self.base_size.y / min_zoom),
         }
     }
 
@@ -112,7 +116,13 @@ impl Camera {
     /// Instant (non-inertial) zoom: jump the target size directly by
     /// `steps` multiplicative zoom-steps, no velocity involved (the
     /// non-smooth branch of the old `zoom_by_steps`).
-    pub fn zoom_instant_by_steps(&mut self, steps: f32, zoom_step_cfg: f32, zoom_min: f32, zoom_max: f32) {
+    pub fn zoom_instant_by_steps(
+        &mut self,
+        steps: f32,
+        zoom_step_cfg: f32,
+        zoom_min: f32,
+        zoom_max: f32,
+    ) {
         let steps = steps.clamp(-4.0, 4.0);
         if steps.abs() < f32::EPSILON {
             return;
@@ -351,8 +361,21 @@ mod tests {
         assert_eq!(too_small, Vec2 { x: 400.0, y: 300.0 });
 
         // Zoomed out too far (size too large) clamps to base/min_zoom.
-        let too_large = cam.clamp_view_size(Vec2 { x: 100_000.0, y: 100_000.0 }, 0.5, 2.0);
-        assert_eq!(too_large, Vec2 { x: 1600.0, y: 1200.0 });
+        let too_large = cam.clamp_view_size(
+            Vec2 {
+                x: 100_000.0,
+                y: 100_000.0,
+            },
+            0.5,
+            2.0,
+        );
+        assert_eq!(
+            too_large,
+            Vec2 {
+                x: 1600.0,
+                y: 1200.0
+            }
+        );
 
         // Within bounds passes through unchanged.
         let within = cam.clamp_view_size(Vec2 { x: 900.0, y: 700.0 }, 0.5, 2.0);
@@ -421,7 +444,10 @@ mod tests {
     #[test]
     fn reset_zoom_target_returns_to_base_size_and_clears_velocity() {
         let mut cam = Camera::new(Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 800.0, y: 600.0 });
-        cam.target_view_size = Vec2 { x: 1234.0, y: 1234.0 };
+        cam.target_view_size = Vec2 {
+            x: 1234.0,
+            y: 1234.0,
+        };
         cam.zoom_log_vel = 42.0;
         cam.reset_zoom_target();
         assert_eq!(cam.target_view_size, cam.base_size);

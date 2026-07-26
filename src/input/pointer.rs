@@ -3,11 +3,12 @@ use smithay::backend::input::{
     PointerMotionEvent,
 };
 use smithay::desktop::space::SpaceElement;
-use smithay::desktop::{layer_map_for_output, LayerSurface, Space, Window, WindowSurfaceType};
+use smithay::desktop::{LayerSurface, Space, Window, WindowSurfaceType, layer_map_for_output};
 use smithay::input::pointer::AxisFrame;
 use smithay::output::Output;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point, Rectangle};
+use smithay::wayland::seat::WaylandFocus;
 use smithay::wayland::shell::wlr_layer::Layer;
 
 use crate::camera::OutputCameras;
@@ -91,7 +92,11 @@ where
 {
     event
         .amount_v120(axis)
-        .or_else(|| event.amount(axis).map(|amount| amount * WHEEL_V120_PER_TICK / 15.0))
+        .or_else(|| {
+            event
+                .amount(axis)
+                .map(|amount| amount * WHEEL_V120_PER_TICK / 15.0)
+        })
         .unwrap_or(0.0)
 }
 
@@ -242,12 +247,9 @@ pub fn route_to_client(
     let screen_location = Point::<f64, Logical>::from(screen_position);
     let output_local = screen_location - output_geometry.loc.to_f64();
 
-    if let Some((layer, focus)) = layer_under(
-        output,
-        output_geometry.loc,
-        output_local,
-        [Layer::Overlay],
-    ) {
+    if let Some((layer, focus)) =
+        layer_under(output, output_geometry.loc, output_local, [Layer::Overlay])
+    {
         return Some(PointerRoute {
             output: output.clone(),
             location: screen_location,
@@ -258,12 +260,8 @@ pub fn route_to_client(
     }
 
     if !fullscreen.covers_top(focused, output, now)
-        && let Some((layer, focus)) = layer_under(
-            output,
-            output_geometry.loc,
-            output_local,
-            [Layer::Top],
-        )
+        && let Some((layer, focus)) =
+            layer_under(output, output_geometry.loc, output_local, [Layer::Top])
     {
         return Some(PointerRoute {
             output: output.clone(),
@@ -372,48 +370,48 @@ fn window_under(
         if !crate::wayland::window_is_on_output(window, output, primary) {
             continue;
         }
-        let Some(toplevel) = window.toplevel() else {
+        let Some(window_surface) = window.wl_surface() else {
             continue;
         };
         let Some(source_geometry) = space.element_geometry(window) else {
             continue;
         };
         let (location, hit, visual_geometry) =
-            match fullscreen.presentation(toplevel.wl_surface(), output, now) {
-            Some(presentation) => {
-                let windowed_geometry = presentation
-                    .windowed_geometry
-                    .unwrap_or(source_geometry)
-                    .to_physical(1);
-                let windowed_screen = crate::backend::camera_rect(
-                    windowed_geometry,
-                    camera_center,
-                    output_size,
-                    view.scale,
-                );
-                let visual = presentation.client_rect(windowed_screen, output_size);
-                (
-                    inverse_map_point(output_local, visual, source_geometry),
-                    visual.to_f64().contains(output_local.to_physical(1.0)),
-                    visual,
-                )
-            }
-            None => {
-                let Some(bbox) = space.element_bbox(window) else {
-                    continue;
-                };
-                (
-                    normal_location,
-                    bbox.to_f64().contains(normal_location),
-                    crate::backend::camera_rect(
-                        source_geometry.to_physical(1),
+            match fullscreen.presentation(window_surface.as_ref(), output, now) {
+                Some(presentation) => {
+                    let windowed_geometry = presentation
+                        .windowed_geometry
+                        .unwrap_or(source_geometry)
+                        .to_physical(1);
+                    let windowed_screen = crate::backend::camera_rect(
+                        windowed_geometry,
                         camera_center,
                         output_size,
                         view.scale,
-                    ),
-                )
-            }
-        };
+                    );
+                    let visual = presentation.client_rect(windowed_screen, output_size);
+                    (
+                        inverse_map_point(output_local, visual, source_geometry),
+                        visual.to_f64().contains(output_local.to_physical(1.0)),
+                        visual,
+                    )
+                }
+                None => {
+                    let Some(bbox) = space.element_bbox(window) else {
+                        continue;
+                    };
+                    (
+                        normal_location,
+                        bbox.to_f64().contains(normal_location),
+                        crate::backend::camera_rect(
+                            source_geometry.to_physical(1),
+                            camera_center,
+                            output_size,
+                            view.scale,
+                        ),
+                    )
+                }
+            };
         if !hit {
             continue;
         }
@@ -426,10 +424,7 @@ fn window_under(
             continue;
         }
         let focus = window
-            .surface_under(
-                location - render_location.to_f64(),
-                WindowSurfaceType::ALL,
-            )
+            .surface_under(location - render_location.to_f64(), WindowSurfaceType::ALL)
             .map(|(surface, surface_location)| {
                 (surface, (surface_location + render_location).to_f64())
             });
@@ -524,10 +519,7 @@ fn desktop_bounds(outputs: &[Rectangle<i32, Logical>]) -> Option<Rectangle<i32, 
     outputs.iter().copied().reduce(Rectangle::merge)
 }
 
-fn clamp_to_outputs(
-    position: (f64, f64),
-    outputs: &[Rectangle<i32, Logical>],
-) -> (f64, f64) {
+fn clamp_to_outputs(position: (f64, f64), outputs: &[Rectangle<i32, Logical>]) -> (f64, f64) {
     let point = Point::<f64, Logical>::from(position);
     if outputs.iter().any(|output| output.to_f64().contains(point)) {
         return position;
@@ -677,22 +669,14 @@ mod tests {
     #[test]
     fn clamp_leaves_positions_on_either_configured_output_unchanged() {
         let outputs = configured_outputs();
-        assert_eq!(
-            clamp_to_outputs((100.0, 200.0), &outputs),
-            (100.0, 200.0)
-        );
-        assert_eq!(
-            clamp_to_outputs((3000.0, 800.0), &outputs),
-            (3000.0, 800.0)
-        );
+        assert_eq!(clamp_to_outputs((100.0, 200.0), &outputs), (100.0, 200.0));
+        assert_eq!(clamp_to_outputs((3000.0, 800.0), &outputs), (3000.0, 800.0));
     }
 
     #[test]
     fn fullscreen_pointer_coordinates_invert_the_visual_transform() {
-        let visual =
-            Rectangle::<i32, Physical>::new((100, 50).into(), (1600, 1200).into());
-        let source =
-            Rectangle::<i32, Logical>::new((400, 200).into(), (800, 600).into());
+        let visual = Rectangle::<i32, Physical>::new((100, 50).into(), (1600, 1200).into());
+        let source = Rectangle::<i32, Logical>::new((400, 200).into(), (800, 600).into());
 
         assert_eq!(
             inverse_map_point((900.0, 650.0).into(), visual, source),
@@ -703,14 +687,8 @@ mod tests {
     #[test]
     fn clamp_crosses_the_shared_edge_between_configured_outputs() {
         let outputs = configured_outputs();
-        assert_eq!(
-            clamp_to_outputs((2559.0, 600.0), &outputs),
-            (2559.0, 600.0)
-        );
-        assert_eq!(
-            clamp_to_outputs((2560.0, 600.0), &outputs),
-            (2560.0, 600.0)
-        );
+        assert_eq!(clamp_to_outputs((2559.0, 600.0), &outputs), (2559.0, 600.0));
+        assert_eq!(clamp_to_outputs((2560.0, 600.0), &outputs), (2560.0, 600.0));
     }
 
     #[test]
@@ -720,10 +698,7 @@ mod tests {
             clamp_to_outputs((3000.0, 1300.0), &outputs),
             (3000.0, 1199.0)
         );
-        assert_eq!(
-            clamp_to_outputs((5000.0, -50.0), &outputs),
-            (4479.0, 0.0)
-        );
+        assert_eq!(clamp_to_outputs((5000.0, -50.0), &outputs), (4479.0, 0.0));
     }
 
     #[test]
@@ -862,10 +837,7 @@ mod tests {
             true,
             |direction| (direction == WheelDirection::Down).then_some("zoom-out"),
         );
-        assert_eq!(
-            second.actions,
-            vec![(WheelDirection::Down, "zoom-out")]
-        );
+        assert_eq!(second.actions, vec![(WheelDirection::Down, "zoom-out")]);
 
         let unbound = process_wheel_bindings(
             &wheel(AxisSource::Wheel, -120.0),

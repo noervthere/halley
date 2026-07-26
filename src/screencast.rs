@@ -7,6 +7,7 @@ use smithay::backend::allocator::{
     dmabuf::{Dmabuf, DmabufFlags},
 };
 use smithay::reexports::wayland_server::Resource;
+use smithay::wayland::seat::WaylandFocus;
 
 use crate::session::{Session, SessionDriver};
 
@@ -233,8 +234,8 @@ fn cursor_position<D: SessionDriver>(
             let crate::input::pointer::PointerTarget::Window(window) = route.target else {
                 return None;
             };
-            let toplevel = window.toplevel()?;
-            if toplevel.wl_surface().id().protocol_id() != *surface_id {
+            let surface = window.wl_surface()?;
+            if surface.id().protocol_id() != *surface_id {
                 return None;
             }
             let location = session.wayland.space.element_location(&window)?;

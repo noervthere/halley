@@ -25,9 +25,9 @@ use smithay::wayland::pointer_constraints::PointerConstraintsState;
 use smithay::wayland::relative_pointer::RelativePointerManagerState;
 use smithay::wayland::selection::data_device::DataDeviceState;
 use smithay::wayland::selection::primary_selection::PrimarySelectionState;
+use smithay::wayland::shell::wlr_layer::WlrLayerShellState;
 use smithay::wayland::shell::xdg::XdgShellState;
 use smithay::wayland::shell::xdg::decoration::XdgDecorationState;
-use smithay::wayland::shell::wlr_layer::WlrLayerShellState;
 use smithay::wayland::shm::ShmState;
 use smithay::wayland::viewporter::ViewporterState;
 
@@ -44,13 +44,10 @@ pub fn set_window_output(window: &Window, output: &Output) {
 }
 
 pub fn window_output_name(window: &Window) -> Option<String> {
-    window.user_data().get::<WindowOutput>().map(|owner| {
-        owner
-            .0
-            .read()
-            .expect("window output lock poisoned")
-            .clone()
-    })
+    window
+        .user_data()
+        .get::<WindowOutput>()
+        .map(|owner| owner.0.read().expect("window output lock poisoned").clone())
 }
 
 pub fn window_is_on_output(window: &Window, output: &Output, primary: &Output) -> bool {

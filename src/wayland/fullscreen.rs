@@ -8,6 +8,7 @@ use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::Sta
 use smithay::reexports::wayland_server::protocol::wl_output::WlOutput;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Physical, Point, Rectangle, Serial, Size};
+use smithay::wayland::seat::WaylandFocus;
 use smithay::wayland::shell::xdg::ToplevelSurface;
 
 use crate::animation::MotionTimeline;
@@ -194,6 +195,74 @@ impl FullscreenManager {
         {
             entry.snapshot_serials.push(serial);
         }
+    }
+
+    pub fn request_external(
+        &mut self,
+        wayland: &mut WaylandState,
+        window: &Window,
+    ) -> Option<Rectangle<i32, Logical>> {
+        let wl_surface = window.wl_surface().map(|surface| surface.into_owned())?;
+        let window = find_window(wayland, &wl_surface).cloned()?;
+        let target = super::window_output_name(&window)
+            .and_then(|name| output_by_name(wayland, &name))
+            .or_else(|| super::focus::selected_output(wayland).cloned());
+        let target = target?;
+        let output_geometry = wayland.space.output_geometry(&target)?;
+        self.windows
+            .entry(wl_surface)
+            .and_modify(|entry| {
+                entry.desired = true;
+                entry.active = true;
+                entry.target_output = target.name();
+                entry.fullscreen_size = output_geometry.size;
+                entry.transition = None;
+            })
+            .or_insert_with(|| FullscreenWindow {
+                desired: true,
+                active: true,
+                target_output: target.name(),
+                restore: Some(WindowedPlacement {
+                    location: wayland
+                        .space
+                        .element_location(&window)
+                        .unwrap_or(output_geometry.loc),
+                    geometry: wayland
+                        .space
+                        .element_geometry(&window)
+                        .unwrap_or_else(|| window.geometry()),
+                    output: super::window_output_name(&window),
+                }),
+                fullscreen_size: output_geometry.size,
+                transition: None,
+                snapshot_serials: Vec::new(),
+            });
+        super::set_window_output(&window, &target);
+        wayland.space.map_element(window, output_geometry.loc, true);
+        Some(output_geometry)
+    }
+
+    pub fn unrequest_external(
+        &mut self,
+        wayland: &mut WaylandState,
+        window: &Window,
+    ) -> Option<Rectangle<i32, Logical>> {
+        let wl_surface = window.wl_surface().map(|surface| surface.into_owned())?;
+        let restore = self
+            .windows
+            .remove(&wl_surface)
+            .and_then(|entry| entry.restore)?;
+        if let Some(output) = restore
+            .output
+            .as_deref()
+            .and_then(|name| output_by_name(wayland, name))
+        {
+            super::set_window_output(window, &output);
+        }
+        wayland
+            .space
+            .map_element(window.clone(), restore.location, true);
+        Some(restore.geometry)
     }
 
     pub fn handle_commit(
@@ -384,28 +453,36 @@ impl FullscreenManager {
         capture
     }
 
-    pub fn reconfigure_output(&self, wayland: &WaylandState, output: &Output) {
+    pub fn reconfigure_output(
+        &mut self,
+        wayland: &WaylandState,
+        output: &Output,
+    ) -> Vec<(Window, Rectangle<i32, Logical>)> {
         let Some(geometry) = wayland.space.output_geometry(output) else {
-            return;
+            return Vec::new();
         };
-        for (surface, entry) in &self.windows {
+        let mut external = Vec::new();
+        for (surface, entry) in &mut self.windows {
             if entry.target_output != output.name() || !(entry.active || entry.desired) {
                 continue;
             }
             let Some(window) = find_window(wayland, surface) else {
                 continue;
             };
-            let Some(toplevel) = window.toplevel() else {
-                continue;
-            };
-            toplevel.with_pending_state(|state| {
-                state.states.set(State::Fullscreen);
-                state.size = Some(geometry.size);
-                state.bounds = Some(geometry.size);
-                super::decoration::clear_tiled_hint(state);
-            });
-            toplevel.send_configure();
+            if let Some(toplevel) = window.toplevel() {
+                toplevel.with_pending_state(|state| {
+                    state.states.set(State::Fullscreen);
+                    state.size = Some(geometry.size);
+                    state.bounds = Some(geometry.size);
+                    super::decoration::clear_tiled_hint(state);
+                });
+                toplevel.send_configure();
+            } else {
+                entry.fullscreen_size = geometry.size;
+                external.push((window.clone(), geometry));
+            }
         }
+        external
     }
 
     pub fn cleanup(&mut self, now: Duration) -> FullscreenCleanup {
@@ -455,8 +532,8 @@ fn find_window<'a>(wayland: &'a WaylandState, surface: &WlSurface) -> Option<&'a
         .elements()
         .find(|window| {
             window
-                .toplevel()
-                .is_some_and(|toplevel| toplevel.wl_surface() == surface)
+                .wl_surface()
+                .is_some_and(|candidate| candidate.as_ref() == surface)
         })
         .or_else(|| wayland.unmapped.get(surface))
 }

@@ -1,13 +1,13 @@
 use smithay::desktop::{
-    find_popup_root_surface, get_popup_toplevel_coords, layer_map_for_output, PopupGrab,
-    PopupKeyboardGrab, PopupKind, PopupManager, PopupPointerGrab, PopupUngrabStrategy,
-    WindowSurfaceType,
+    PopupGrab, PopupKeyboardGrab, PopupKind, PopupManager, PopupPointerGrab, PopupUngrabStrategy,
+    WindowSurfaceType, find_popup_root_surface, get_popup_toplevel_coords, layer_map_for_output,
 };
-use smithay::input::pointer::Focus;
 use smithay::input::Seat;
 use smithay::input::SeatHandler;
+use smithay::input::pointer::Focus;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Rectangle, Serial};
+use smithay::wayland::seat::WaylandFocus;
 use smithay::wayland::shell::xdg::{PopupSurface, PositionerState};
 
 use super::WaylandState;
@@ -126,10 +126,12 @@ pub fn begin_grab<D>(
     serial: Serial,
 ) -> Option<PopupGrab<D>>
 where
-    D: SeatHandler<KeyboardFocus = WlSurface, PointerFocus = WlSurface> + 'static,
+    D: SeatHandler<PointerFocus = WlSurface> + 'static,
+    D::KeyboardFocus: WaylandFocus + From<WlSurface> + From<PopupKind>,
+    WlSurface: From<D::KeyboardFocus>,
 {
     let popup = PopupKind::Xdg(surface);
-    let root = find_popup_root_surface(&popup).ok()?;
+    let root = find_popup_root_surface(&popup).ok()?.into();
     match manager.grab_popup(root, popup, seat, serial) {
         Ok(grab) => Some(grab),
         Err(err) => {
@@ -141,7 +143,9 @@ where
 
 pub fn install_grab<D>(data: &mut D, seat: &Seat<D>, mut grab: PopupGrab<D>, serial: Serial)
 where
-    D: SeatHandler<KeyboardFocus = WlSurface, PointerFocus = WlSurface> + 'static,
+    D: SeatHandler<PointerFocus = WlSurface> + 'static,
+    D::KeyboardFocus: WaylandFocus + From<WlSurface> + From<PopupKind>,
+    WlSurface: From<D::KeyboardFocus>,
 {
     if let Some(keyboard) = seat.get_keyboard() {
         if keyboard.is_grabbed()

@@ -22,6 +22,7 @@ use smithay::desktop::{PopupManager, Space, Window, layer_map_for_output};
 use smithay::output::Output;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Physical, Point, Rectangle, Scale, Size};
+use smithay::wayland::seat::WaylandFocus;
 use smithay::wayland::shell::wlr_layer::Layer;
 
 use crate::cursor::CursorImage;
@@ -51,28 +52,32 @@ pub fn window_surface_elements(
     Vec<WaylandSurfaceRenderElement<GlesRenderer>>,
     Vec<WaylandSurfaceRenderElement<GlesRenderer>>,
 ) {
-    let Some(toplevel) = window.toplevel() else {
+    let Some(surface) = window.wl_surface() else {
         return (Vec::new(), Vec::new());
     };
-    let surface = toplevel.wl_surface();
     let scale = Scale::from(1.0);
-    let popup_elements = PopupManager::popups_for_surface(surface)
-        .flat_map(|(popup, popup_offset)| {
-            let offset = (window.geometry().loc + popup_offset - popup.geometry().loc)
-                .to_physical_precise_round(scale);
-            render_elements_from_surface_tree(
-                renderer,
-                popup.wl_surface(),
-                surface_location + offset,
-                scale,
-                1.0,
-                Kind::ScanoutCandidate,
-            )
+    let popup_elements = window
+        .toplevel()
+        .map(|toplevel| {
+            PopupManager::popups_for_surface(toplevel.wl_surface())
+                .flat_map(|(popup, popup_offset)| {
+                    let offset = (window.geometry().loc + popup_offset - popup.geometry().loc)
+                        .to_physical_precise_round(scale);
+                    render_elements_from_surface_tree(
+                        renderer,
+                        popup.wl_surface(),
+                        surface_location + offset,
+                        scale,
+                        1.0,
+                        Kind::ScanoutCandidate,
+                    )
+                })
+                .collect()
         })
-        .collect();
+        .unwrap_or_default();
     let surface_elements = render_elements_from_surface_tree(
         renderer,
-        surface,
+        surface.as_ref(),
         surface_location,
         scale,
         1.0,

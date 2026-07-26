@@ -7,6 +7,7 @@ use smithay::input::{Seat, SeatState};
 use smithay::reexports::wayland_server::Display;
 use smithay::reexports::winit::dpi::LogicalSize;
 use smithay::reexports::winit::window::Window as WinitWindow;
+use smithay::wayland::seat::WaylandFocus;
 
 use crate::backend::winit::WinitBackend;
 use crate::backend::{self, RenderRequest, Renderable};
@@ -115,7 +116,8 @@ pub fn run() {
         exit: false,
         last_camera_tick: Instant::now(),
     };
-    let wayland = App::create_wayland_state(dh, &mut driver);
+    let wayland = App::create_wayland_state(dh.clone(), &mut driver);
+    let xwayland = crate::xwayland::State::new::<App>(&dh);
     let mut app = App {
         driver,
         keyboard: Keyboard::from_config(&runtime_config.keybinds, BackendKind::Winit),
@@ -142,6 +144,7 @@ pub fn run() {
         fullscreen: crate::wayland::fullscreen::FullscreenManager::new(runtime_config.animations),
         fullscreen_textures:
             crate::backend::fullscreen_texture::FullscreenTextureTransitions::default(),
+        xwayland,
     };
     app.wayland
         .space
@@ -149,6 +152,9 @@ pub fn run() {
 
     let socket_name = super::protocol::init_wayland_listener(display, &mut event_loop);
     eventline::info!("halley (winit) starting, WAYLAND_DISPLAY={socket_name:?}");
+    if let Err(err) = crate::xwayland::start(&event_loop.handle(), &mut app, false) {
+        eventline::warn!("xwayland: unavailable: {err}");
+    }
 
     if let Err(err) =
         crate::ipc::init_ipc_listener(&event_loop.handle(), |app: &mut App, request| {
@@ -183,21 +189,16 @@ pub fn run() {
                     animating |= crate::input::zoom::tick(camera, &app.zoom, dt).1;
                 }
                 if view_before != app.cameras.view(&output_name) {
-                    super::input::update_client_pointer_focus(
+                    super::input::update_client_pointer_state(
                         app,
                         app.start_time.elapsed().as_millis() as u32,
                     );
-                    let pointer = app
-                        .seat
-                        .get_pointer()
-                        .expect("pointer capability added at seat setup");
-                    pointer.frame(app);
                 }
 
                 let window_animating = app.wayland.space.elements().any(|window| {
-                    window.toplevel().is_some_and(|toplevel| {
+                    window.wl_surface().is_some_and(|surface| {
                         app.window_open_animations
-                            .is_animating(toplevel.wl_surface(), target_presentation_time)
+                            .is_animating(surface.as_ref(), target_presentation_time)
                     })
                 });
                 let output = app.driver.backend.output().clone();
@@ -205,17 +206,13 @@ pub fn run() {
                     .fullscreen
                     .is_animating_on_output(&output, target_presentation_time);
                 if fullscreen_animating {
-                    super::input::update_client_pointer_focus(
+                    super::input::update_client_pointer_state(
                         app,
                         app.start_time.elapsed().as_millis() as u32,
                     );
-                    let pointer = app
-                        .seat
-                        .get_pointer()
-                        .expect("pointer capability added at seat setup");
-                    pointer.frame(app);
                 }
                 let position = app.pointer.position();
+                let show_cursor = super::pointer_constraints::cursor_visible(app);
                 if let Err(err) = app.driver.backend.render(
                     &output,
                     RenderRequest {
@@ -223,7 +220,7 @@ pub fn run() {
                         clear: backend::CLEAR_COLOR,
                         cursor: &app.cursor,
                         cursor_position: position,
-                        show_cursor: true,
+                        show_cursor,
                         capture_overlay: app.capture.overlay(),
                         space: &app.wayland.space,
                         focused: app.wayland.focused_window.as_ref(),
@@ -253,15 +250,10 @@ pub fn run() {
                 app.window_open_animations.cleanup(target_presentation_time);
                 if app.cleanup_fullscreen(target_presentation_time) {
                     super::sync_keyboard_focus(app, smithay::utils::SERIAL_COUNTER.next_serial());
-                    super::input::update_client_pointer_focus(
+                    super::input::update_client_pointer_state(
                         app,
                         app.start_time.elapsed().as_millis() as u32,
                     );
-                    let pointer = app
-                        .seat
-                        .get_pointer()
-                        .expect("pointer capability added at seat setup");
-                    pointer.frame(app);
                 }
 
                 if animating || window_animating || fullscreen_animating {
@@ -283,17 +275,14 @@ pub fn run() {
                 let output_size = app.driver.backend.window_size();
                 app.cameras
                     .reset(app.driver.backend.output().name(), output_size);
-                app.fullscreen
+                let external = app
+                    .fullscreen
                     .reconfigure_output(&app.wayland, app.driver.backend.output());
-                super::input::update_client_pointer_focus(
+                crate::xwayland::reconfigure_fullscreen(external);
+                super::input::update_client_pointer_state(
                     app,
                     app.start_time.elapsed().as_millis() as u32,
                 );
-                let pointer = app
-                    .seat
-                    .get_pointer()
-                    .expect("pointer capability added at seat setup");
-                pointer.frame(app);
                 app.request_redraw();
             }
             WinitEvent::Input(event) => super::input::handle(app, &event, &socket_name),

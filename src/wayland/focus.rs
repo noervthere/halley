@@ -1,4 +1,4 @@
-use smithay::desktop::{layer_map_for_output, LayerSurface, Space, Window};
+use smithay::desktop::{LayerSurface, Space, Window, layer_map_for_output};
 use smithay::output::Output;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::wayland::shell::wlr_layer::{KeyboardInteractivity, Layer};
@@ -104,11 +104,7 @@ fn selected_output_in<'a>(
     focused_output: Option<&str>,
 ) -> Option<&'a Output> {
     focused_output
-        .and_then(|name| {
-            space
-                .outputs()
-                .find(|output| output.name() == name)
-        })
+        .and_then(|name| space.outputs().find(|output| output.name() == name))
         .or_else(|| space.outputs().next())
 }
 

@@ -98,7 +98,9 @@ pub fn parse_outputs_checked(config: &RuneConfig) -> Result<Vec<OutputConfig>, O
         .get_value("")
         .map_err(|err| OutputParseError(format!("output config: {err}")))?
     else {
-        return Err(OutputParseError("output config root must be an object".to_string()));
+        return Err(OutputParseError(
+            "output config root must be an object".to_string(),
+        ));
     };
 
     let mut outputs = Vec::new();
@@ -108,7 +110,9 @@ pub fn parse_outputs_checked(config: &RuneConfig) -> Result<Vec<OutputConfig>, O
         _ => None,
     }) {
         let Value::Object(fields) = value else {
-            return Err(OutputParseError("output block must be an object".to_string()));
+            return Err(OutputParseError(
+                "output block must be an object".to_string(),
+            ));
         };
         validate_output_fields(fields)?;
         let output = parse_one_output(fields)
@@ -141,10 +145,7 @@ fn validate_output_fields(fields: &[ObjectItem]) -> Result<(), OutputParseError>
         )));
     }
 
-    for keys in [
-        &["offset-x", "offset_x"][..],
-        &["offset-y", "offset_y"][..],
-    ] {
+    for keys in [&["offset-x", "offset_x"][..], &["offset-y", "offset_y"][..]] {
         if field(fields, keys).is_some_and(|value| as_i32(value).is_none()) {
             return Err(OutputParseError(format!(
                 "output {name:?}: {} must be numeric",
@@ -207,8 +208,12 @@ fn parse_one_output(fields: &[ObjectItem]) -> Option<OutputConfig> {
         return None;
     }
 
-    let offset_x = field(fields, &["offset-x", "offset_x"]).and_then(as_i32).unwrap_or(0);
-    let offset_y = field(fields, &["offset-y", "offset_y"]).and_then(as_i32).unwrap_or(0);
+    let offset_x = field(fields, &["offset-x", "offset_x"])
+        .and_then(as_i32)
+        .unwrap_or(0);
+    let offset_y = field(fields, &["offset-y", "offset_y"])
+        .and_then(as_i32)
+        .unwrap_or(0);
     let rate = field(fields, &["rate", "refresh-rate", "refresh_rate"]).and_then(as_f64);
     let transform = field(fields, &["transform", "rotation"])
         .and_then(as_u16)
@@ -390,7 +395,8 @@ end
 
     #[test]
     fn no_output_sections_returns_empty() {
-        let config = RuneConfig::from_str("keybinds:\n  mod \"super\"\nend\n").expect("valid rune-cfg source");
+        let config = RuneConfig::from_str("keybinds:\n  mod \"super\"\nend\n")
+            .expect("valid rune-cfg source");
         assert_eq!(parse_outputs(&config), Vec::new());
     }
 

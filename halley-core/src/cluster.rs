@@ -614,7 +614,12 @@ impl ClusterRegistry {
     pub fn collapse_cluster(&mut self, field: &mut Field, id: ClusterId) -> Option<NodeId> {
         let (members, already_collapsed, existing_core, was_active) = {
             let c = self.clusters.get(&id)?;
-            (c.members().to_vec(), c.is_collapsed(), c.core, c.is_active())
+            (
+                c.members().to_vec(),
+                c.is_collapsed(),
+                c.core,
+                c.is_active(),
+            )
         };
 
         if already_collapsed {
@@ -895,8 +900,18 @@ mod tests {
         assert_eq!(f.node(b).unwrap().state, NodeState::Node);
         assert_eq!(f.node(a).unwrap().footprint, Vec2 { x: 24.0, y: 24.0 });
 
-        assert!(f.node(a).unwrap().visibility.has(Visibility::HIDDEN_BY_CLUSTER));
-        assert!(f.node(b).unwrap().visibility.has(Visibility::HIDDEN_BY_CLUSTER));
+        assert!(
+            f.node(a)
+                .unwrap()
+                .visibility
+                .has(Visibility::HIDDEN_BY_CLUSTER)
+        );
+        assert!(
+            f.node(b)
+                .unwrap()
+                .visibility
+                .has(Visibility::HIDDEN_BY_CLUSTER)
+        );
         assert!(!f.is_visible(a));
         assert!(!f.is_visible(b));
 
@@ -926,7 +941,12 @@ mod tests {
         assert_eq!(f.node(b).unwrap().state, NodeState::Active);
         assert_eq!(f.node(a).unwrap().footprint, Vec2 { x: 100.0, y: 50.0 });
 
-        assert!(!f.node(a).unwrap().visibility.has(Visibility::HIDDEN_BY_CLUSTER));
+        assert!(
+            !f.node(a)
+                .unwrap()
+                .visibility
+                .has(Visibility::HIDDEN_BY_CLUSTER)
+        );
         assert!(f.is_visible(a));
 
         let c = r.cluster(cid).unwrap();
@@ -1038,7 +1058,10 @@ mod tests {
         assert_eq!(effect_a, Some(RemoveNodeClusterEffect::RemovedMember(cid)));
 
         let (_, effect_b) = r.remove_node_cluster_safe(&mut f, b).unwrap();
-        assert_eq!(effect_b, Some(RemoveNodeClusterEffect::DissolvedCluster(cid)));
+        assert_eq!(
+            effect_b,
+            Some(RemoveNodeClusterEffect::DissolvedCluster(cid))
+        );
 
         assert!(r.cluster(cid).is_none());
         assert!(f.node(core).is_none());

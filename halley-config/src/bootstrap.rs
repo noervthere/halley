@@ -111,7 +111,11 @@ mod tests {
     #[test]
     fn creates_missing_parent_directories() {
         let scratch = ScratchDir::new("creates_missing_parent_directories");
-        let config_file = scratch.path().join("nested").join("halley").join("halley.rune");
+        let config_file = scratch
+            .path()
+            .join("nested")
+            .join("halley")
+            .join("halley.rune");
         assert!(!config_file.parent().unwrap().exists());
 
         let wrote = bootstrap_default_config_at(&config_file).unwrap();

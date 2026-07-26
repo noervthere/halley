@@ -75,7 +75,8 @@ pub fn match_keyboard_bind(
     // needing to reason about it from config alone.
     eventline::debug!(
         "keybinds: {:?} + {mods:?} -> {:?}",
-        bind.trigger, bind.action
+        bind.trigger,
+        bind.action
     );
     Some(bind.action.clone())
 }
@@ -93,7 +94,8 @@ pub fn match_pointer_bind(
     })?;
     eventline::debug!(
         "keybinds: {:?} + {mods:?} -> {:?}",
-        bind.trigger, bind.action
+        bind.trigger,
+        bind.action
     );
     Some(bind.action.clone())
 }
@@ -104,8 +106,7 @@ pub fn match_wheel_bind(
     direction: WheelDirection,
 ) -> Option<Action> {
     let bind = binds.iter().find(|bind| {
-        bind.trigger == ResolvedTrigger::Wheel(direction)
-            && modifiers_match(mods, bind.modifiers)
+        bind.trigger == ResolvedTrigger::Wheel(direction) && modifiers_match(mods, bind.modifiers)
     })?;
     Some(bind.action.clone())
 }
@@ -201,7 +202,8 @@ impl Keyboard {
     pub fn from_config(keybinds: &halley_config::Keybinds, backend: BackendKind) -> Self {
         let binds = keybinds::resolve_binds(keybinds, backend);
         let effective_mod = keybinds::effective_mod(keybinds.modifier, backend);
-        let terminal_command = halley_config::resolve_default_terminal_from_path(&keybinds.default_terminal);
+        let terminal_command =
+            halley_config::resolve_default_terminal_from_path(&keybinds.default_terminal);
 
         Self {
             binds,
@@ -278,11 +280,7 @@ mod tests {
             Modifiers::default(),
         )];
         assert_eq!(
-            match_wheel_bind(
-                &binds,
-                &ModifiersState::default(),
-                WheelDirection::Down
-            ),
+            match_wheel_bind(&binds, &ModifiersState::default(), WheelDirection::Down),
             None
         );
         assert_eq!(
@@ -298,12 +296,7 @@ mod tests {
             Modifiers::default(),
         )];
         assert_eq!(
-            match_keyboard_bind(
-                &binds,
-                &ModifiersState::default(),
-                None,
-                Keycode::new(255)
-            ),
+            match_keyboard_bind(&binds, &ModifiersState::default(), None, Keycode::new(255)),
             Some(Action::Quit)
         );
     }
@@ -325,12 +318,7 @@ mod tests {
             ..ModifiersState::default()
         };
         assert_eq!(
-            match_keyboard_bind(
-                &binds,
-                &shift,
-                Some(Keysym::Shift_L),
-                Keycode::new(50)
-            ),
+            match_keyboard_bind(&binds, &shift, Some(Keysym::Shift_L), Keycode::new(50)),
             Some(Action::Quit)
         );
         let logo = ModifiersState {
@@ -338,12 +326,7 @@ mod tests {
             ..ModifiersState::default()
         };
         assert_eq!(
-            match_keyboard_bind(
-                &binds,
-                &logo,
-                Some(Keysym::Super_R),
-                Keycode::new(134)
-            ),
+            match_keyboard_bind(&binds, &logo, Some(Keysym::Super_R), Keycode::new(134)),
             Some(Action::Quit)
         );
     }

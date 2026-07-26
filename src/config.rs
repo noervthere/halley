@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, SystemTime};
 
-use calloop::channel::{sync_channel, Event};
 use calloop::LoopHandle;
+use calloop::channel::{Event, sync_channel};
 
 const POLLING_INTERVAL: Duration = Duration::from_millis(500);
 

@@ -111,9 +111,7 @@ pub fn tick_cluster_formation(
             } else {
                 // Core is already excluded by the filter above; only need
                 // to additionally exclude Active here.
-                field
-                    .node(id)
-                    .is_some_and(|n| n.state != NodeState::Active)
+                field.node(id).is_some_and(|n| n.state != NodeState::Active)
             }
         })
         .filter(|&id| {

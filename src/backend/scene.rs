@@ -9,6 +9,7 @@ use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::renderer::utils::CommitCounter;
 use smithay::output::Output;
 use smithay::utils::{Logical, Physical, Point, Rectangle, Scale};
+use smithay::wayland::seat::WaylandFocus;
 use smithay::wayland::shell::wlr_layer::Layer;
 
 use super::RenderRequest;
@@ -77,30 +78,29 @@ pub fn build(
         let Some(location) = request.space.element_location(window) else {
             continue;
         };
+        let Some(window_surface) = window.wl_surface() else {
+            continue;
+        };
         let scaled_bbox = super::camera_rect(
             geometry.to_physical(1),
             camera_center,
             output_size,
             zoom_scale,
         );
-        let opening_visual = window
-            .toplevel()
-            .and_then(|toplevel| {
-                request.window_open_animations.visual(
-                    toplevel.wl_surface(),
-                    request.target_presentation_time,
-                    geometry.to_physical(1).size,
-                )
-            })
+        let opening_visual = request
+            .window_open_animations
+            .visual(
+                window_surface.as_ref(),
+                request.target_presentation_time,
+                geometry.to_physical(1).size,
+            )
             .unwrap_or_default();
         let animated_bbox = opening_visual.transform_rect(scaled_bbox, scaled_bbox);
-        let fullscreen = window.toplevel().and_then(|toplevel| {
-            request.fullscreen.presentation(
-                toplevel.wl_surface(),
-                output,
-                request.target_presentation_time,
-            )
-        });
+        let fullscreen = request.fullscreen.presentation(
+            window_surface.as_ref(),
+            output,
+            request.target_presentation_time,
+        );
         let animated_bbox = fullscreen
             .map(|presentation| {
                 let windowed_bbox = presentation
@@ -146,22 +146,23 @@ pub fn build(
                 },
             ))
         }));
-        let fullscreen_blend = if let Some(presentation) = fullscreen {
-            match request.fullscreen_textures.blend_element(
-                renderer,
-                window,
-                animated_bbox,
-                presentation.transition_completion,
-            ) {
-                Ok(blend) => blend,
-                Err(err) => {
-                    eventline::warn!("fullscreen: failed to blend window textures: {err}");
-                    None
+        let fullscreen_blend =
+            if let Some(presentation) = fullscreen.filter(|_| window.toplevel().is_some()) {
+                match request.fullscreen_textures.blend_element(
+                    renderer,
+                    window,
+                    animated_bbox,
+                    presentation.transition_completion,
+                ) {
+                    Ok(blend) => blend,
+                    Err(err) => {
+                        eventline::warn!("fullscreen: failed to blend window textures: {err}");
+                        None
+                    }
                 }
-            }
-        } else {
-            None
-        };
+            } else {
+                None
+            };
         if let Some(blend) = fullscreen_blend {
             elements.push(SceneElement::FullscreenBlend(blend));
         } else {
@@ -188,9 +189,7 @@ pub fn build(
             }));
         }
 
-        let is_focused = window
-            .toplevel()
-            .is_some_and(|toplevel| Some(toplevel.wl_surface()) == request.focused);
+        let is_focused = Some(window_surface.as_ref()) == request.focused;
         let border_color = super::window_border_color(request.decorations, is_focused)
             * opening_visual.alpha()
             * fullscreen
@@ -199,11 +198,13 @@ pub fn build(
         let border_width =
             ((request.decorations.border_width_px as f64 * zoom_scale as f64).round() as i32)
                 .max(1);
-        elements.extend(
-            super::border_strips(animated_bbox, border_width, border_color)
-                .into_iter()
-                .map(SceneElement::Border),
-        );
+        if !crate::xwayland::is_override_redirect(window) {
+            elements.extend(
+                super::border_strips(animated_bbox, border_width, border_color)
+                    .into_iter()
+                    .map(SceneElement::Border),
+            );
+        }
         if let Some(fullscreen) = fullscreen {
             elements.push(SceneElement::Border(SolidColorRenderElement::new(
                 Id::new(),
@@ -232,8 +233,7 @@ pub fn build(
     );
 
     if request.show_cursor
-        && let Some(position) =
-            cursor_position_for_output(output_geometry, request.cursor_position)
+        && let Some(position) = cursor_position_for_output(output_geometry, request.cursor_position)
     {
         let cursor = MemoryRenderBufferRenderElement::from_buffer(
             renderer,
@@ -260,20 +260,20 @@ fn capture_overlay_elements(
 ) -> Result<Vec<SceneElement>, Box<dyn Error>> {
     match overlay {
         crate::capture::CaptureOverlay::None => Ok(Vec::new()),
-        crate::capture::CaptureOverlay::Region(region) => Ok(
-            capture_picker_elements(output_geometry, region, true)
+        crate::capture::CaptureOverlay::Region(region) => {
+            Ok(capture_picker_elements(output_geometry, region, true)
                 .into_iter()
                 .rev()
                 .map(SceneElement::Border)
-                .collect(),
-        ),
-        crate::capture::CaptureOverlay::Highlight(region) => Ok(
-            capture_picker_elements(output_geometry, region, false)
+                .collect())
+        }
+        crate::capture::CaptureOverlay::Highlight(region) => {
+            Ok(capture_picker_elements(output_geometry, region, false)
                 .into_iter()
                 .rev()
                 .map(SceneElement::Border)
-                .collect(),
-        ),
+                .collect())
+        }
         crate::capture::CaptureOverlay::Menu {
             output_name,
             selected,
@@ -301,14 +301,12 @@ fn capture_picker_elements(
     region_style: bool,
 ) -> Vec<SolidColorRenderElement> {
     let output_local = Rectangle::<i32, Physical>::from_size(output.size.to_physical(1));
-    let selected = output
-        .intersection(selection)
-        .map(|intersection| {
-            Rectangle::<i32, Physical>::new(
-                (intersection.loc - output.loc).to_physical(1),
-                intersection.size.to_physical(1),
-            )
-        });
+    let selected = output.intersection(selection).map(|intersection| {
+        Rectangle::<i32, Physical>::new(
+            (intersection.loc - output.loc).to_physical(1),
+            intersection.size.to_physical(1),
+        )
+    });
     let dim = smithay::backend::renderer::Color32F::new(0.0, 0.0, 0.0, 0.48);
     let white = smithay::backend::renderer::Color32F::new(1.0, 1.0, 1.0, 1.0);
     let make = |geometry, color| {
@@ -328,7 +326,10 @@ fn capture_picker_elements(
     let right = selected.loc.x + selected.size.w;
     let bottom = selected.loc.y + selected.size.h;
     for rect in [
-        Rectangle::new((0, 0).into(), (output_local.size.w, selected.loc.y.max(0)).into()),
+        Rectangle::new(
+            (0, 0).into(),
+            (output_local.size.w, selected.loc.y.max(0)).into(),
+        ),
         Rectangle::new(
             (0, bottom).into(),
             (output_local.size.w, (output_local.size.h - bottom).max(0)).into(),
@@ -377,10 +378,7 @@ fn capture_picker_elements(
     elements
 }
 
-fn inner_border_rects(
-    rect: Rectangle<i32, Physical>,
-    width: i32,
-) -> [Rectangle<i32, Physical>; 4] {
+fn inner_border_rects(rect: Rectangle<i32, Physical>, width: i32) -> [Rectangle<i32, Physical>; 4] {
     let width = width.max(0).min(rect.size.w).min(rect.size.h);
     let right = rect.loc.x + rect.size.w;
     let bottom = rect.loc.y + rect.size.h;
@@ -524,16 +522,13 @@ mod tests {
         assert!(strips.contains(&Rectangle::new((320, 180).into(), (10, 2).into())));
         assert!(strips.contains(&Rectangle::new((336, 180).into(), (10, 2).into())));
         assert!(!strips.iter().any(|strip| {
-            strip.loc.y == 180
-                && strip.loc.x < 336
-                && strip.loc.x + strip.size.w > 330
+            strip.loc.y == 180 && strip.loc.x < 336 && strip.loc.x + strip.size.w > 330
         }));
     }
 
     #[test]
     fn full_screen_highlight_border_stays_inside_the_output() {
-        let output =
-            Rectangle::<i32, Physical>::new((0, 0).into(), (1920, 1080).into());
+        let output = Rectangle::<i32, Physical>::new((0, 0).into(), (1920, 1080).into());
         let border = inner_border_rects(output, 2);
 
         assert!(border.into_iter().all(|strip| output.contains_rect(strip)));

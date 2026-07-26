@@ -113,7 +113,12 @@ fn format_output(output: &OutputInfo) -> Result<String, String> {
             mode_qualifier(current.preferred, false),
         )
         .unwrap();
-        writeln!(formatted, "  Position: {}, {}", output.offset_x, output.offset_y).unwrap();
+        writeln!(
+            formatted,
+            "  Position: {}, {}",
+            output.offset_x, output.offset_y
+        )
+        .unwrap();
         writeln!(formatted, "  VRR: {}", output.vrr).unwrap();
     } else {
         writeln!(formatted, "  Disabled").unwrap();

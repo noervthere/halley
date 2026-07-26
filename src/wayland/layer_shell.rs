@@ -1,5 +1,5 @@
 use smithay::backend::renderer::utils::with_renderer_surface_state;
-use smithay::desktop::{layer_map_for_output, LayerSurface, WindowSurfaceType};
+use smithay::desktop::{LayerSurface, WindowSurfaceType, layer_map_for_output};
 use smithay::output::Output;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::wayland::compositor::with_states;

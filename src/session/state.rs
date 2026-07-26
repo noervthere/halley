@@ -71,6 +71,7 @@ pub struct Session<D: SessionDriver> {
     pub window_open_animations: crate::animation::WindowOpenAnimations,
     pub fullscreen: crate::wayland::fullscreen::FullscreenManager,
     pub fullscreen_textures: crate::backend::fullscreen_texture::FullscreenTextureTransitions,
+    pub xwayland: crate::xwayland::State,
 }
 
 impl<D: SessionDriver> Session<D> {

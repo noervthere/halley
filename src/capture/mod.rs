@@ -127,13 +127,12 @@ impl CaptureState {
                 .region()
                 .map(CaptureOverlay::Region)
                 .unwrap_or(CaptureOverlay::None),
-            Some(Selection::Screen { geometry, .. }) => {
-                CaptureOverlay::Highlight(*geometry)
+            Some(Selection::Screen { geometry, .. }) => CaptureOverlay::Highlight(*geometry),
+            Some(Selection::Window { geometry, .. } | Selection::Source { geometry, .. }) => {
+                geometry
+                    .map(CaptureOverlay::Highlight)
+                    .unwrap_or(CaptureOverlay::None)
             }
-            Some(Selection::Window { geometry, .. }
-            | Selection::Source { geometry, .. }) => geometry
-                .map(CaptureOverlay::Highlight)
-                .unwrap_or(CaptureOverlay::None),
             None => CaptureOverlay::None,
         }
     }
@@ -268,9 +267,7 @@ impl CaptureState {
         match self.selection {
             Some(Selection::Area) => self.picker.motion(Point::from(position)),
             Some(
-                Selection::Screen { .. }
-                | Selection::Window { .. }
-                | Selection::Source { .. },
+                Selection::Screen { .. } | Selection::Window { .. } | Selection::Source { .. },
             ) => true,
             Some(Selection::Menu) => unreachable!("handled above"),
             None => false,
@@ -282,9 +279,7 @@ impl CaptureState {
             Some(Selection::Menu) => true,
             Some(Selection::Area) => self.picker.release(),
             Some(
-                Selection::Screen { .. }
-                | Selection::Window { .. }
-                | Selection::Source { .. },
+                Selection::Screen { .. } | Selection::Window { .. } | Selection::Source { .. },
             ) => true,
             None => false,
         }

@@ -7,6 +7,7 @@ use smithay::utils::{Physical, Rectangle, Size};
 
 const ELASTIC_PROXY_SIZE: f64 = 220.0;
 const ELASTIC_MIN_SCALE: f64 = 0.24;
+const ELASTIC_MAX_START_SCALE: f64 = 0.66;
 const MAX_OVERSHOOT_SCALE: f64 = 1.08;
 
 mod motion;
@@ -32,7 +33,7 @@ impl WindowOpenTimeline {
                 let height = f64::from(bounds.h.max(1));
                 let start_scale = (ELASTIC_PROXY_SIZE / width)
                     .min(ELASTIC_PROXY_SIZE / height)
-                    .clamp(ELASTIC_MIN_SCALE, 1.0);
+                    .clamp(ELASTIC_MIN_SCALE, ELASTIC_MAX_START_SCALE);
                 let motion = progress.clamp(0.0, MAX_OVERSHOOT_SCALE);
                 WindowOpenVisual {
                     scale: start_scale + (1.0 - start_scale) * motion,
@@ -269,6 +270,19 @@ mod tests {
             start.transform_rect(bounds, bounds),
             Rectangle::new((390, 268).into(), (220, 165).into())
         );
+    }
+
+    #[test]
+    fn elastic_small_windows_still_have_visible_scale_motion() {
+        let animation = timeline(
+            WindowOpenAnimationType::Elastic,
+            AnimationCurve::EaseOutBack,
+        );
+
+        let start = animation.visual_at(Duration::from_secs(1), Size::from((150, 100)));
+
+        assert_eq!(start.scale, ELASTIC_MAX_START_SCALE);
+        assert_eq!(start.alpha(), 0.0);
     }
 
     #[test]

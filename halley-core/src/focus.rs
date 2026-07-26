@@ -376,16 +376,16 @@ mod tests {
                 .map(|(_, c)| c)
         };
 
-        assert_eq!(
-            best(center, &[right, up, overlap], PortalDir::N),
-            Some(up)
-        );
+        assert_eq!(best(center, &[right, up, overlap], PortalDir::N), Some(up));
         // The closely-stacked peer should win over the far-right window.
         assert_eq!(
             best(center, &[right, up, overlap], PortalDir::E),
             Some(overlap)
         );
-        assert_eq!(best(overlap, &[right, up, center], PortalDir::E), Some(right));
+        assert_eq!(
+            best(overlap, &[right, up, center], PortalDir::E),
+            Some(right)
+        );
         // Nothing to the west of center -> no candidate scores at all.
         assert_eq!(best(center, &[right, up, overlap], PortalDir::W), None);
     }

@@ -2,9 +2,10 @@ use halley_core::camera::Camera;
 use halley_core::field::Vec2;
 use smithay::desktop::{Space, Window};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::utils::{Logical, Point, Rectangle, Serial, Size};
 #[cfg(test)]
 use smithay::utils::Physical;
+use smithay::utils::{Logical, Point, Rectangle, Serial, Size};
+use smithay::wayland::seat::WaylandFocus;
 
 /// What's currently being dragged with the left mouse button held, if
 /// anything - `None` the rest of the time. Lives on `App`/`TtyApp` next to
@@ -15,10 +16,15 @@ pub enum Grab {
     /// Cursor-to-window offset in screen pixels. Keeping this in screen
     /// space preserves the exact grip point when crossing between outputs
     /// with different zoom scales.
-    MoveWindow { window: Window, screen_offset: Vec2 },
+    MoveWindow {
+        window: Window,
+        screen_offset: Vec2,
+    },
     /// Left-click-drag on empty desktop. The output is captured at press
     /// time so crossing a boundary mid-drag never pans both monitors.
-    Pan { output: String },
+    Pan {
+        output: String,
+    },
     /// Mod+right-click-drag on a window.
     ResizeWindow(ResizeState),
 }
@@ -31,8 +37,8 @@ pub fn belongs_to_surface(grab: &Grab, surface: &WlSurface) -> bool {
     };
     window.is_some_and(|window| {
         window
-            .toplevel()
-            .is_some_and(|toplevel| toplevel.wl_surface() == surface)
+            .wl_surface()
+            .is_some_and(|candidate| candidate.as_ref() == surface)
     })
 }
 
@@ -74,6 +80,7 @@ impl ResizeHandle {
 pub struct ResizeState {
     pub window: Window,
     pub handle: ResizeHandle,
+    pub button: u32,
     pub start_rect: Rectangle<i32, Logical>,
     pub start_cursor: Vec2,
 }
@@ -133,8 +140,8 @@ pub fn forget_resize_anchor(anchor: &mut Option<ResizeAnchor>, surface: &WlSurfa
     let belongs_to_surface = anchor.as_ref().is_some_and(|resize| {
         resize
             .window
-            .toplevel()
-            .is_some_and(|toplevel| toplevel.wl_surface() == surface)
+            .wl_surface()
+            .is_some_and(|candidate| candidate.as_ref() == surface)
     });
     if belongs_to_surface {
         *anchor = None;
@@ -320,12 +327,9 @@ pub fn finish_resize_commit(anchor: &mut Option<ResizeAnchor>, space: &mut Space
 /// Serial of the configure the client had acked as of the commit currently
 /// being processed - i.e. which resize request this frame is the answer to.
 fn committed_configure_serial(window: &Window) -> Option<Serial> {
-    window.toplevel()?.with_cached_state(|state| {
-        state
-            .last_acked
-            .as_ref()
-            .map(|configure| configure.serial)
-    })
+    window
+        .toplevel()?
+        .with_cached_state(|state| state.last_acked.as_ref().map(|configure| configure.serial))
 }
 
 /// Converts a screen-space (physical-pixel) position into world (`Space`)
@@ -404,7 +408,13 @@ mod tests {
     use super::*;
 
     fn camera_at_rest() -> Camera {
-        Camera::new(Vec2 { x: 640.0, y: 400.0 }, Vec2 { x: 1280.0, y: 800.0 })
+        Camera::new(
+            Vec2 { x: 640.0, y: 400.0 },
+            Vec2 {
+                x: 1280.0,
+                y: 800.0,
+            },
+        )
     }
 
     #[test]
@@ -412,7 +422,10 @@ mod tests {
         let camera = camera_at_rest();
         let output_size = Size::<i32, Physical>::from((1280, 800));
         // Output center maps to camera center (world origin here).
-        assert_eq!(screen_to_world((640.0, 400.0), &camera, output_size), Vec2 { x: 640.0, y: 400.0 });
+        assert_eq!(
+            screen_to_world((640.0, 400.0), &camera, output_size),
+            Vec2 { x: 640.0, y: 400.0 }
+        );
         // A screen point 100px right/50px down of center is the same world
         // offset when nothing is panned or zoomed.
         let world = screen_to_world((740.0, 450.0), &camera, output_size);
@@ -426,14 +439,20 @@ mod tests {
         let output_size = Size::<i32, Physical>::from((1280, 800));
         // Output center now maps to the panned camera center, not the
         // original world origin.
-        assert_eq!(screen_to_world((640.0, 400.0), &camera, output_size), Vec2 { x: 740.0, y: 400.0 });
+        assert_eq!(
+            screen_to_world((640.0, 400.0), &camera, output_size),
+            Vec2 { x: 740.0, y: 400.0 }
+        );
     }
 
     #[test]
     fn screen_to_world_accounts_for_zoom() {
         let mut camera = camera_at_rest();
         // Zoomed out to half scale (view_size double base_size).
-        camera.view_size = Vec2 { x: 2560.0, y: 1600.0 };
+        camera.view_size = Vec2 {
+            x: 2560.0,
+            y: 1600.0,
+        };
         let output_size = Size::<i32, Physical>::from((1280, 800));
         // At 0.5x scale, a 100px screen offset is a 200px world offset.
         let world = screen_to_world((740.0, 400.0), &camera, output_size);
@@ -445,7 +464,10 @@ mod tests {
         let secondary = Rectangle::<i32, Logical>::new((1280, 0).into(), (1920, 1200).into());
         let camera = Camera::new(
             Vec2 { x: 960.0, y: 600.0 },
-            Vec2 { x: 1920.0, y: 1200.0 },
+            Vec2 {
+                x: 1920.0,
+                y: 1200.0,
+            },
         );
 
         assert_eq!(
@@ -454,7 +476,10 @@ mod tests {
         );
         assert_eq!(
             screen_to_world_on_output((1600.0, 600.0), &camera, secondary),
-            Vec2 { x: 1600.0, y: 600.0 }
+            Vec2 {
+                x: 1600.0,
+                y: 600.0
+            }
         );
     }
 
@@ -462,15 +487,27 @@ mod tests {
     fn secondary_output_coordinates_use_its_own_pan_and_zoom() {
         let mut camera = Camera::new(
             Vec2 { x: 960.0, y: 600.0 },
-            Vec2 { x: 1920.0, y: 1200.0 },
+            Vec2 {
+                x: 1920.0,
+                y: 1200.0,
+            },
         );
-        camera.center = Vec2 { x: 1060.0, y: 650.0 };
-        camera.view_size = Vec2 { x: 3840.0, y: 2400.0 };
+        camera.center = Vec2 {
+            x: 1060.0,
+            y: 650.0,
+        };
+        camera.view_size = Vec2 {
+            x: 3840.0,
+            y: 2400.0,
+        };
         let secondary = Rectangle::<i32, Logical>::new((1280, 0).into(), (1920, 1200).into());
 
         assert_eq!(
             screen_to_world_on_output((2340.0, 650.0), &camera, secondary),
-            Vec2 { x: 2540.0, y: 750.0 }
+            Vec2 {
+                x: 2540.0,
+                y: 750.0
+            }
         );
     }
 
@@ -513,16 +550,16 @@ mod tests {
     fn dragging_bottom_right_grows_without_moving_the_window() {
         let rect = resize_rect();
         let start = Vec2 { x: 400.0, y: 400.0 };
-        let size = resize_target_size(ResizeHandle::BottomRight, rect, start, Vec2 { x: 450.0, y: 430.0 });
+        let size = resize_target_size(
+            ResizeHandle::BottomRight,
+            rect,
+            start,
+            Vec2 { x: 450.0, y: 430.0 },
+        );
         assert_eq!(size, Size::from((350, 330)));
         // Right/bottom drags anchor the top-left, so the window stays put.
         assert_eq!(
-            resize_location_after_commit(
-                ResizeHandle::BottomRight,
-                rect.loc,
-                rect.size,
-                size,
-            ),
+            resize_location_after_commit(ResizeHandle::BottomRight, rect.loc, rect.size, size,),
             Point::from((100, 100))
         );
     }
@@ -534,10 +571,14 @@ mod tests {
         // Drag the top-left corner up and left by 50 - the window grows by
         // 50 in each axis and its origin moves back by the same amount, so
         // the bottom-right corner stays at (400, 400).
-        let size = resize_target_size(ResizeHandle::TopLeft, rect, start, Vec2 { x: 50.0, y: 50.0 });
+        let size = resize_target_size(
+            ResizeHandle::TopLeft,
+            rect,
+            start,
+            Vec2 { x: 50.0, y: 50.0 },
+        );
         assert_eq!(size, Size::from((350, 350)));
-        let loc =
-            resize_location_after_commit(ResizeHandle::TopLeft, rect.loc, rect.size, size);
+        let loc = resize_location_after_commit(ResizeHandle::TopLeft, rect.loc, rect.size, size);
         assert_eq!(loc, Point::from((50, 50)));
         assert_eq!((loc.x + size.w, loc.y + size.h), (400, 400));
     }
@@ -548,10 +589,17 @@ mod tests {
         let start = Vec2 { x: 100.0, y: 100.0 };
         // Drag far past the opposite corner - size floors instead of going
         // negative or inverting the rect, and the anchored corner holds.
-        let size = resize_target_size(ResizeHandle::TopLeft, rect, start, Vec2 { x: 9000.0, y: 9000.0 });
+        let size = resize_target_size(
+            ResizeHandle::TopLeft,
+            rect,
+            start,
+            Vec2 {
+                x: 9000.0,
+                y: 9000.0,
+            },
+        );
         assert_eq!(size, Size::from((MIN_RESIZE_W, MIN_RESIZE_H)));
-        let loc =
-            resize_location_after_commit(ResizeHandle::TopLeft, rect.loc, rect.size, size);
+        let loc = resize_location_after_commit(ResizeHandle::TopLeft, rect.loc, rect.size, size);
         assert_eq!((loc.x + size.w, loc.y + size.h), (400, 400));
     }
 
@@ -586,8 +634,12 @@ mod tests {
             Size::from((264, 300)),
             Size::from((248, 300)),
         ] {
-            location =
-                resize_location_after_commit(ResizeHandle::BottomLeft, location, tracked, committed);
+            location = resize_location_after_commit(
+                ResizeHandle::BottomLeft,
+                location,
+                tracked,
+                committed,
+            );
             tracked = committed;
             // The un-dragged right edge holds at its original 400 throughout.
             assert_eq!(location.x + committed.w, 400);
@@ -628,31 +680,55 @@ mod tests {
 
     #[test]
     fn an_ongoing_drag_is_never_retired_by_a_commit() {
-        assert!(!anchor_is_retired(&ResizePhase::Ongoing, Some(Serial::from(9000))));
+        assert!(!anchor_is_retired(
+            &ResizePhase::Ongoing,
+            Some(Serial::from(9000))
+        ));
     }
 
     #[test]
     fn screen_delta_to_world_scales_by_zoom() {
         let mut camera = camera_at_rest();
-        assert_eq!(screen_delta_to_world(100.0, 50.0, &camera), Vec2 { x: 100.0, y: 50.0 });
+        assert_eq!(
+            screen_delta_to_world(100.0, 50.0, &camera),
+            Vec2 { x: 100.0, y: 50.0 }
+        );
 
-        camera.view_size = Vec2 { x: 2560.0, y: 1600.0 };
-        assert_eq!(screen_delta_to_world(100.0, 50.0, &camera), Vec2 { x: 200.0, y: 100.0 });
+        camera.view_size = Vec2 {
+            x: 2560.0,
+            y: 1600.0,
+        };
+        assert_eq!(
+            screen_delta_to_world(100.0, 50.0, &camera),
+            Vec2 { x: 200.0, y: 100.0 }
+        );
     }
 
     #[test]
     fn screen_grab_offset_stays_visually_fixed_across_zoom_levels() {
         let mut camera = camera_at_rest();
-        let offset = Vec2 { x: -200.0, y: -80.0 };
+        let offset = Vec2 {
+            x: -200.0,
+            y: -80.0,
+        };
         assert_eq!(
             screen_offset_to_world(offset, &camera),
-            Vec2 { x: -200.0, y: -80.0 }
+            Vec2 {
+                x: -200.0,
+                y: -80.0
+            }
         );
 
-        camera.view_size = Vec2 { x: 2560.0, y: 1600.0 };
+        camera.view_size = Vec2 {
+            x: 2560.0,
+            y: 1600.0,
+        };
         assert_eq!(
             screen_offset_to_world(offset, &camera),
-            Vec2 { x: -400.0, y: -160.0 }
+            Vec2 {
+                x: -400.0,
+                y: -160.0
+            }
         );
     }
 }

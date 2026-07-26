@@ -189,7 +189,11 @@ mod tests {
         assert!(zoom_out.modifiers.super_key);
         assert_eq!(zoom_out.key, "minus");
 
-        let zoom_in = kb.binds.iter().find(|b| b.action == Action::ZoomIn).unwrap();
+        let zoom_in = kb
+            .binds
+            .iter()
+            .find(|b| b.action == Action::ZoomIn)
+            .unwrap();
         assert!(zoom_in.modifiers.super_key);
         assert_eq!(zoom_in.key, "equal");
 

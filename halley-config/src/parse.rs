@@ -193,9 +193,17 @@ keybinds:
 end
 "#,
         );
-        let zoom_in = kb.binds.iter().find(|b| b.action == Action::ZoomIn).unwrap();
+        let zoom_in = kb
+            .binds
+            .iter()
+            .find(|b| b.action == Action::ZoomIn)
+            .unwrap();
         assert_eq!(zoom_in.key, "equal");
-        let zoom_out = kb.binds.iter().find(|b| b.action == Action::ZoomOut).unwrap();
+        let zoom_out = kb
+            .binds
+            .iter()
+            .find(|b| b.action == Action::ZoomOut)
+            .unwrap();
         assert_eq!(zoom_out.key, "minus");
         let zoom_reset = kb
             .binds
@@ -233,7 +241,10 @@ keybinds:
 end
 "#,
         );
-        assert_eq!(kb.default_terminal, DefaultTerminal::Explicit("foot".to_string()));
+        assert_eq!(
+            kb.default_terminal,
+            DefaultTerminal::Explicit("foot".to_string())
+        );
     }
 
     #[test]
@@ -277,13 +288,14 @@ end
 "#,
         );
 
-        assert!(kb.binds.iter().any(|bind| {
-            bind.key == "d" && bind.action == Action::Spawn("fuzzel".to_string())
-        }));
+        assert!(
+            kb.binds.iter().any(|bind| {
+                bind.key == "d" && bind.action == Action::Spawn("fuzzel".to_string())
+            })
+        );
         assert!(kb.binds.iter().any(|bind| {
             bind.key == "s"
-                && bind.action
-                    == Action::Spawn("grim -g \"$(slurp)\" ~/shot.png".to_string())
+                && bind.action == Action::Spawn("grim -g \"$(slurp)\" ~/shot.png".to_string())
         }));
     }
 
