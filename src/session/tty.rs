@@ -247,6 +247,9 @@ struct TtyApp {
     suppressed_buttons: SuppressedButtons,
     wheel_accumulator: WheelAccumulator,
     window_open_animations: crate::animation::WindowOpenAnimations,
+    /// The latest valid output config received while DRM master is paused.
+    /// Like niri, hardware application waits until session resume.
+    pending_output_config: Option<Vec<halley_config::OutputConfig>>,
 }
 
 /// Runs the real-hardware (DRM/KMS) session - takes over the seat and a
@@ -254,7 +257,8 @@ struct TtyApp {
 /// since that's expected when nested under a host compositor that already
 /// holds exclusive session control.
 pub fn run() {
-    let (backend, session_notifier, drm_notifier) = match TtyBackend::new() {
+    let (config_path, runtime_config) = crate::config::load_initial();
+    let (backend, session_notifier, drm_notifier) = match TtyBackend::new(&runtime_config.outputs) {
         Ok(parts) => parts,
         Err(err) => {
             println!("TtyBackend::new() failed: {err}");
@@ -313,7 +317,7 @@ pub fn run() {
 
     let mut app = TtyApp {
         backend,
-        keyboard: Keyboard::new(BackendKind::Tty),
+        keyboard: Keyboard::from_config(&runtime_config.keybinds, BackendKind::Tty),
         pointer: Pointer::new((100.0, 100.0)),
         cursor: CursorImage::load(),
         loop_signal,
@@ -331,18 +335,19 @@ pub fn run() {
         seat_state,
         seat,
         start_time: Instant::now(),
-        decorations: halley_config::load_decorations(),
+        decorations: runtime_config.decorations,
         output_frames,
         paused: false,
         cameras: crate::camera::OutputCameras::default(),
-        zoom: halley_config::load_zoom(),
+        zoom: runtime_config.zoom,
         grab: crate::input::grab::Grab::None,
         resize_anchor: None,
         suppressed_buttons: SuppressedButtons::default(),
         wheel_accumulator: WheelAccumulator::default(),
         window_open_animations: crate::animation::WindowOpenAnimations::new(
-            halley_config::load_animations(),
+            runtime_config.animations,
         ),
+        pending_output_config: None,
     };
     for output in outputs {
         app.wayland
@@ -362,6 +367,11 @@ pub fn run() {
 
     if let Err(err) = crate::ipc::init_ipc_listener(&event_loop.handle(), |app: &TtyApp| app.backend.output_info()) {
         eprintln!("ipc: failed to start listener: {err}");
+    }
+    if let Some(path) = config_path
+        && let Err(err) = crate::config::watch(&event_loop.handle(), path, apply_runtime_config)
+    {
+        eprintln!("config: failed to start watcher: {err}");
     }
 
     // Queue every output's first frame through the same state machine used
@@ -771,7 +781,12 @@ pub fn run() {
                         // flight before the switch away) is gone - reset
                         // clean rather than trusting whatever redraw states
                         // said before the switch.
-                        Ok(()) => reset_redraw_state(app, &loop_handle),
+                        Ok(()) => {
+                            if let Some(outputs) = app.pending_output_config.take() {
+                                apply_tty_output_config(app, &outputs);
+                            }
+                            reset_redraw_state(app, &loop_handle);
+                        }
                         Err(err) => println!("resume failed: {err}"),
                     }
                 }
@@ -874,6 +889,80 @@ fn on_vblank(
 fn queue_redraw(app: &mut TtyApp) {
     for state in app.output_frames.values_mut() {
         state.redraw = std::mem::take(&mut state.redraw).queue_redraw();
+    }
+}
+
+fn queue_output_redraw(app: &mut TtyApp, output: &Output) {
+    if let Some(state) = app.output_frames.get_mut(output) {
+        state.redraw = std::mem::take(&mut state.redraw).queue_redraw();
+    }
+}
+
+fn apply_runtime_config(app: &mut TtyApp, config: halley_config::RuntimeConfig) {
+    app.keyboard
+        .reload(&config.keybinds, BackendKind::Tty);
+
+    let redraw_all = app.decorations != config.decorations || app.zoom != config.zoom;
+    app.decorations = config.decorations;
+    app.zoom = config.zoom;
+    app.window_open_animations.reload(config.animations);
+
+    if app.paused {
+        app.pending_output_config = Some(config.outputs);
+    } else {
+        apply_tty_output_config(app, &config.outputs);
+    }
+
+    if redraw_all {
+        queue_redraw(app);
+    }
+}
+
+fn apply_tty_output_config(
+    app: &mut TtyApp,
+    outputs_config: &[halley_config::OutputConfig],
+) {
+    let changes = app.backend.apply_output_config(outputs_config);
+    let mut layout_changed = false;
+
+    for change in changes {
+        if change.mode_changed {
+            let interval = app.backend.refresh_interval_for_output(&change.output);
+            if let Some(state) = app.output_frames.get_mut(&change.output) {
+                state.clock = FrameClock::new(Some(interval));
+                state.last_camera_sample = crate::frame_clock::monotonic_now();
+                state.unfinished_animations = false;
+            }
+        }
+
+        if change.layout_changed {
+            app.wayland
+                .space
+                .map_output(&change.output, change.output.current_location());
+            smithay::desktop::layer_map_for_output(&change.output).arrange();
+            layout_changed = true;
+        }
+
+        if change.size_changed
+            && let Some(geometry) = app.wayland.space.output_geometry(&change.output)
+        {
+            app.cameras
+                .reset(change.output.name(), geometry.size.to_physical(1));
+        }
+
+        if change.mode_changed || change.layout_changed {
+            queue_output_redraw(app, &change.output);
+        }
+    }
+
+    if layout_changed {
+        app.wayland.space.refresh();
+        update_client_pointer_focus(app, app.start_time.elapsed().as_millis() as u32);
+        let pointer = app
+            .seat
+            .get_pointer()
+            .expect("pointer capability added at seat setup");
+        pointer.frame(app);
     }
 }
 

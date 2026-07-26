@@ -60,6 +60,12 @@ impl WindowOpenAnimations {
         );
     }
 
+    /// Updates policy for future windows without disturbing animations
+    /// already in flight.
+    pub fn reload(&mut self, config: Animations) {
+        self.config = config;
+    }
+
     pub fn progress(&self, surface: &WlSurface, now: Duration) -> Option<f64> {
         self.active
             .get(surface)

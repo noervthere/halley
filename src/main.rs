@@ -1,6 +1,7 @@
 mod animation;
 mod backend;
 mod camera;
+mod config;
 mod cursor;
 mod frame_clock;
 mod input;

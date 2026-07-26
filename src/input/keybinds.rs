@@ -59,36 +59,6 @@ pub enum BackendKind {
     Tty,
 }
 
-/// Load the user's keybinds, falling back to `Keybinds::default()` on any
-/// failure (missing `$HOME`, unwritable config dir, parse error) - a config
-/// typo shouldn't crash compositor startup.
-pub fn load_keybinds() -> Keybinds {
-    let Some(path) = halley_config::config_path() else {
-        eprintln!("keybinds: no config path resolvable, using defaults");
-        return Keybinds::default();
-    };
-
-    if let Err(err) = halley_config::bootstrap_default_config_at(&path) {
-        eprintln!("keybinds: failed to bootstrap default config: {err}");
-    }
-
-    let config = match rune_cfg::RuneConfig::from_file(&path) {
-        Ok(config) => config,
-        Err(err) => {
-            eprintln!("keybinds: failed to load {path:?}, using defaults: {err}");
-            return Keybinds::default();
-        }
-    };
-
-    match halley_config::parse_keybinds(&config) {
-        Ok(keybinds) => keybinds,
-        Err(err) => {
-            eprintln!("keybinds: failed to parse {path:?}, using defaults: {err}");
-            Keybinds::default()
-        }
-    }
-}
-
 /// niri's confirmed convention (`Backend::mod_key`): tty uses the configured
 /// mod key as-is; winit (nested) uses Alt instead, unless the user
 /// explicitly configured Alt as their real mod key, in which case nested

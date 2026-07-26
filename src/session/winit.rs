@@ -174,11 +174,24 @@ struct App {
     window_open_animations: crate::animation::WindowOpenAnimations,
 }
 
+fn apply_runtime_config(app: &mut App, config: halley_config::RuntimeConfig) {
+    app.keyboard
+        .reload(&config.keybinds, BackendKind::Winit);
+    let redraw = app.decorations != config.decorations || app.zoom != config.zoom;
+    app.decorations = config.decorations;
+    app.zoom = config.zoom;
+    app.window_open_animations.reload(config.animations);
+    if redraw {
+        app.backend.request_redraw();
+    }
+}
+
 /// Runs the nested (winit) session - a real window on the host desktop,
 /// standing in for real hardware output. Used when we're not the ones
 /// actually driving a display (see `detect_nested_session` in `main.rs`) or
 /// when `--winit` is passed explicitly.
 pub fn run() {
+    let (config_path, runtime_config) = crate::config::load_initial();
     let window_attributes = WinitWindow::default_attributes()
         .with_inner_size(LogicalSize::new(1280.0, 800.0))
         .with_title("halley");
@@ -223,7 +236,7 @@ pub fn run() {
 
     let mut app = App {
         backend: winit_backend,
-        keyboard: Keyboard::new(BackendKind::Winit),
+        keyboard: Keyboard::from_config(&runtime_config.keybinds, BackendKind::Winit),
         pointer: Pointer::new((100.0, 100.0)),
         cursor: CursorImage::load(),
         exit: false,
@@ -241,16 +254,16 @@ pub fn run() {
         seat_state,
         seat,
         start_time: Instant::now(),
-        decorations: halley_config::load_decorations(),
+        decorations: runtime_config.decorations,
         cameras,
-        zoom: halley_config::load_zoom(),
+        zoom: runtime_config.zoom,
         last_camera_tick: Instant::now(),
         grab: crate::input::grab::Grab::None,
         resize_anchor: None,
         suppressed_buttons: SuppressedButtons::default(),
         wheel_accumulator: WheelAccumulator::default(),
         window_open_animations: crate::animation::WindowOpenAnimations::new(
-            halley_config::load_animations(),
+            runtime_config.animations,
         ),
     };
     app.wayland.space.map_output(app.backend.output(), (0, 0));
@@ -260,6 +273,11 @@ pub fn run() {
 
     if let Err(err) = crate::ipc::init_ipc_listener(&event_loop.handle(), |app: &App| app.backend.output_info()) {
         eprintln!("ipc: failed to start listener: {err}");
+    }
+    if let Some(path) = config_path
+        && let Err(err) = crate::config::watch(&event_loop.handle(), path, apply_runtime_config)
+    {
+        eprintln!("config: failed to start watcher: {err}");
     }
 
     event_loop

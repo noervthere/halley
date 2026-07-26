@@ -19,11 +19,11 @@ use smithay::backend::session::Session;
 use smithay::backend::session::libseat::{LibSeatSession, LibSeatSessionNotifier};
 use smithay::backend::udev;
 use smithay::desktop::{Space, Window};
-use smithay::output::{Mode as OutputMode, Output, OutputModeSource, PhysicalProperties, Subpixel};
+use smithay::output::{Mode as OutputMode, Output, PhysicalProperties, Subpixel};
 use smithay::reexports::drm::control::{Mode, ModeTypeFlags, connector, crtc};
 use smithay::reexports::rustix::fs::OFlags;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::utils::{DeviceFd, Logical, Physical, Point, Rectangle, Scale, Size, Transform};
+use smithay::utils::{DeviceFd, Logical, Physical, Point, Rectangle, Scale, Transform};
 use smithay::wayland::shell::wlr_layer::Layer;
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
 
@@ -46,9 +46,56 @@ type TtyDrmOutput =
 /// still waiting on its last one.
 struct DrmOutputEntry {
     crtc: crtc::Handle,
+    connector: connector::Info,
+    current_mode: Mode,
+    configured_vrr: halley_config::Vrr,
     output: Output,
     drm_output: TtyDrmOutput,
     pending: bool,
+}
+
+pub struct AppliedOutputChange {
+    pub output: Output,
+    pub mode_changed: bool,
+    pub size_changed: bool,
+    pub layout_changed: bool,
+}
+
+#[derive(Clone, Copy)]
+struct OutputTarget {
+    mode: Mode,
+    offset: (i32, i32),
+    transform: Transform,
+    vrr: halley_config::Vrr,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct OutputDiff {
+    mode_changed: bool,
+    size_changed: bool,
+    offset_changed: bool,
+    transform_changed: bool,
+    vrr_changed: bool,
+}
+
+fn output_diff(
+    current_mode: OutputMode,
+    current_offset: (i32, i32),
+    current_transform: Transform,
+    current_vrr: halley_config::Vrr,
+    target_mode: OutputMode,
+    target_offset: (i32, i32),
+    target_transform: Transform,
+    target_vrr: halley_config::Vrr,
+) -> OutputDiff {
+    OutputDiff {
+        mode_changed: current_mode != target_mode,
+        size_changed: current_transform.transform_size(current_mode.size)
+            != target_transform.transform_size(target_mode.size),
+        offset_changed: current_offset != target_offset,
+        transform_changed: current_transform != target_transform,
+        vrr_changed: current_vrr != target_vrr,
+    }
 }
 
 render_elements! {
@@ -91,8 +138,8 @@ pub struct TtyBackend {
     outputs: Vec<Output>,
     /// IPC inventory for every physically connected connector, including
     /// connectors which had no usable CRTC/mode or failed initialization.
-    /// There is no tty hotplug or runtime output reconfiguration yet, so
-    /// this startup inventory is the authoritative connector state.
+    /// Connected outputs are discovered at startup; active entries are
+    /// updated as configuration changes are applied.
     ipc_output_info: Vec<halley_ipc::OutputInfo>,
 }
 
@@ -243,13 +290,29 @@ fn transform_from_degrees(degrees: u16) -> Transform {
     }
 }
 
+fn output_target(
+    connector: &connector::Info,
+    configured: Option<&halley_config::OutputConfig>,
+) -> OutputTarget {
+    OutputTarget {
+        mode: select_mode(connector, configured),
+        offset: configured.map_or((0, 0), |cfg| (cfg.offset_x, cfg.offset_y)),
+        transform: configured.map_or(Transform::Normal, |cfg| {
+            transform_from_degrees(cfg.transform)
+        }),
+        vrr: configured.map(|cfg| cfg.vrr).unwrap_or_default(),
+    }
+}
+
 impl TtyBackend {
-    /// Opens the seat, the primary GPU, and the first connected
-    /// connector/CRTC/mode found on it. Notifiers are returned rather than
+    /// Opens the seat and primary GPU, then initializes the connected
+    /// connectors with usable CRTC/mode pairs. Notifiers are returned rather than
     /// owned by `TtyBackend` - whatever drives the event loop inserts them,
     /// exactly like `session::winit` owns `winit_source` today rather than
     /// `WinitBackend` doing so itself.
-    pub fn new() -> Result<(TtyBackend, LibSeatSessionNotifier, DrmDeviceNotifier), Box<dyn Error>> {
+    pub fn new(
+        outputs_config: &[halley_config::OutputConfig],
+    ) -> Result<(TtyBackend, LibSeatSessionNotifier, DrmDeviceNotifier), Box<dyn Error>> {
         let (mut session, session_notifier) = LibSeatSession::new()?;
 
         let gpu_path = udev::all_gpus(session.seat())?
@@ -283,8 +346,6 @@ impl TtyBackend {
         if connected.is_empty() {
             return Err("no connected connector found".into());
         }
-
-        let outputs_config = halley_config::load_outputs();
 
         let gbm = GbmDevice::new(drm_fd)?;
         let allocator = GbmAllocator::new(
@@ -323,8 +384,9 @@ impl TtyBackend {
         for (connector, crtc) in connected {
             let name = connector_name(&connector);
             let configured = outputs_config.iter().find(|cfg| cfg.name == name);
-            let offset = configured.map_or((0, 0), |cfg| (cfg.offset_x, cfg.offset_y));
-            let vrr = configured.map(|cfg| cfg.vrr).unwrap_or_default();
+            let target = output_target(&connector, configured);
+            let offset = target.offset;
+            let vrr = target.vrr;
 
             if connector.modes().is_empty() {
                 eprintln!("output {name:?}: connected connector advertises no modes");
@@ -337,21 +399,28 @@ impl TtyBackend {
                 continue;
             };
 
-            let mode = select_mode(&connector, configured);
-            let (width, height) = mode.size();
-            let size = Size::from((width as i32, height as i32));
-            // DRM scanout stays `Transform::Normal` regardless of a
-            // configured `transform` - real hardware-plane rotation is a
-            // separate, much larger undertaking (GPU/plane-dependent); only
-            // the wl_output-facing transform below reflects config, matching
-            // old halley's own actual behavior (confirmed by reading its
-            // `backend/tty/drm.rs` - it has this exact same split, not a
-            // regression introduced here).
-            let output_mode_source = OutputModeSource::Static {
-                size,
-                scale: Scale::from(1.0),
-                transform: Transform::Normal,
-            };
+            let mode = target.mode;
+            // Use the live Smithay Output as the mode source so later
+            // mode/transform changes resize and transform the compositor's
+            // buffers without rebuilding the DRM output.
+            let output = Output::new(
+                name.clone(),
+                PhysicalProperties {
+                    size: (0, 0).into(),
+                    subpixel: Subpixel::Unknown,
+                    make: "halley-next".into(),
+                    model: "tty".into(),
+                    serial_number: "unknown".into(),
+                },
+            );
+            let output_mode = drm_output_mode(&mode);
+            output.change_current_state(
+                Some(output_mode),
+                Some(target.transform),
+                None,
+                Some(offset.into()),
+            );
+            output.set_preferred(drm_output_mode(&default_mode(&connector)));
 
             let result = drm_output_manager
                 .lock()
@@ -359,7 +428,7 @@ impl TtyBackend {
                     crtc,
                     mode,
                     &[connector.handle()],
-                    output_mode_source,
+                    &output,
                     None,
                     &mut renderer,
                     &DrmOutputRenderElements::default(),
@@ -367,27 +436,12 @@ impl TtyBackend {
 
             match result {
                 Ok(drm_output) => {
-                    let transform = configured.map_or(Transform::Normal, |cfg| transform_from_degrees(cfg.transform));
                     if vrr == halley_config::Vrr::On {
                         eprintln!(
                             "output {name:?}: vrr \"on\" is configured but not wired to real hardware VRR yet \
                              (needs lower-level DRM compositor access this backend doesn't have) - ignored for now"
                         );
                     }
-
-                    let output = Output::new(
-                        name.clone(),
-                        PhysicalProperties {
-                            size: (0, 0).into(),
-                            subpixel: Subpixel::Unknown,
-                            make: "halley-next".into(),
-                            model: "tty".into(),
-                            serial_number: "unknown".into(),
-                        },
-                    );
-                    let output_mode = drm_output_mode(&mode);
-                    output.change_current_state(Some(output_mode), Some(transform), None, Some(offset.into()));
-                    output.set_preferred(output_mode);
 
                     primary_output.get_or_insert_with(|| output.clone());
                     outputs.push(output.clone());
@@ -400,6 +454,9 @@ impl TtyBackend {
                     ));
                     drm_outputs.push(DrmOutputEntry {
                         crtc,
+                        connector,
+                        current_mode: mode,
+                        configured_vrr: vrr,
                         output,
                         drm_output,
                         pending: false,
@@ -468,6 +525,121 @@ impl TtyBackend {
             .find(|entry| &entry.output == output)
             .map(|entry| self.refresh_interval(entry.crtc))
             .unwrap_or_else(|| Duration::from_secs_f64(1.0 / 60.0))
+    }
+
+    /// Applies only effective per-output differences. In particular, a
+    /// changed DP-1 block never calls `use_mode` or `change_current_state`
+    /// for DP-2.
+    pub fn apply_output_config(
+        &mut self,
+        outputs_config: &[halley_config::OutputConfig],
+    ) -> Vec<AppliedOutputChange> {
+        let mut changes = Vec::new();
+
+        for index in 0..self.drm_outputs.len() {
+            let (target, diff) = {
+                let entry = &self.drm_outputs[index];
+                let configured = outputs_config
+                    .iter()
+                    .find(|cfg| cfg.name == entry.output.name());
+                let target = output_target(&entry.connector, configured);
+                let current = drm_output_mode(&entry.current_mode);
+                let requested = drm_output_mode(&target.mode);
+                (
+                    target,
+                    output_diff(
+                        current,
+                        {
+                            let location = entry.output.current_location();
+                            (location.x, location.y)
+                        },
+                        entry.output.current_transform(),
+                        entry.configured_vrr,
+                        requested,
+                        target.offset,
+                        target.transform,
+                        target.vrr,
+                    ),
+                )
+            };
+
+            if !(diff.mode_changed
+                || diff.offset_changed
+                || diff.transform_changed
+                || diff.vrr_changed)
+            {
+                continue;
+            }
+
+            if diff.mode_changed {
+                let result = {
+                    let renderer = &mut self.renderer;
+                    let entry = &mut self.drm_outputs[index];
+                    entry
+                        .drm_output
+                        .use_mode::<GlesRenderer, SolidColorRenderElement>(
+                            target.mode,
+                            renderer,
+                            &DrmOutputRenderElements::default(),
+                        )
+                };
+                if let Err(err) = result {
+                    let name = self.drm_outputs[index].output.name();
+                    eprintln!(
+                        "output {name:?}: failed to apply configured mode, keeping previous state: {err}"
+                    );
+                    continue;
+                }
+            }
+
+            let (name, output, connector, current_mode, configured_vrr) = {
+                let entry = &mut self.drm_outputs[index];
+                entry.output.change_current_state(
+                    diff.mode_changed.then(|| drm_output_mode(&target.mode)),
+                    diff.transform_changed.then_some(target.transform),
+                    None,
+                    diff.offset_changed.then(|| target.offset.into()),
+                );
+                entry.current_mode = target.mode;
+                entry.configured_vrr = target.vrr;
+                (
+                    entry.output.name(),
+                    entry.output.clone(),
+                    entry.connector.clone(),
+                    entry.current_mode,
+                    entry.configured_vrr,
+                )
+            };
+
+            let info = connector_output_info(
+                name.clone(),
+                &connector,
+                Some(current_mode),
+                {
+                    let location = output.current_location();
+                    (location.x, location.y)
+                },
+                configured_vrr,
+            );
+            if let Some(existing) = self
+                .ipc_output_info
+                .iter_mut()
+                .find(|existing| existing.name == name)
+            {
+                *existing = info;
+            }
+
+            changes.push(AppliedOutputChange {
+                output,
+                mode_changed: diff.mode_changed,
+                size_changed: diff.size_changed,
+                layout_changed: diff.size_changed
+                    || diff.offset_changed
+                    || diff.transform_changed,
+            });
+        }
+
+        changes
     }
 
     /// Reacquire DRM master and resync KMS state after a VT switch back.
@@ -763,6 +935,73 @@ fn cursor_position_for_output(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn output_mode(width: i32, height: i32, refresh: i32) -> OutputMode {
+        OutputMode {
+            size: smithay::utils::Size::from((width, height)),
+            refresh,
+        }
+    }
+
+    #[test]
+    fn unchanged_output_has_no_reload_work() {
+        assert_eq!(
+            output_diff(
+                output_mode(1920, 1200, 74_930),
+                (2560, 0),
+                Transform::Normal,
+                halley_config::Vrr::Auto,
+                output_mode(1920, 1200, 74_930),
+                (2560, 0),
+                Transform::Normal,
+                halley_config::Vrr::Auto,
+            ),
+            OutputDiff {
+                mode_changed: false,
+                size_changed: false,
+                offset_changed: false,
+                transform_changed: false,
+                vrr_changed: false,
+            }
+        );
+    }
+
+    #[test]
+    fn refresh_only_change_does_not_reset_layout_or_size() {
+        let diff = output_diff(
+            output_mode(2560, 1440, 60_000),
+            (0, 0),
+            Transform::Normal,
+            halley_config::Vrr::Off,
+            output_mode(2560, 1440, 179_998),
+            (0, 0),
+            Transform::Normal,
+            halley_config::Vrr::Off,
+        );
+
+        assert!(diff.mode_changed);
+        assert!(!diff.size_changed);
+        assert!(!diff.offset_changed);
+        assert!(!diff.transform_changed);
+    }
+
+    #[test]
+    fn quarter_turn_changes_a_rectangular_output_footprint() {
+        let diff = output_diff(
+            output_mode(1920, 1200, 60_000),
+            (0, 0),
+            Transform::Normal,
+            halley_config::Vrr::Off,
+            output_mode(1920, 1200, 60_000),
+            (0, 0),
+            Transform::_90,
+            halley_config::Vrr::Off,
+        );
+
+        assert!(!diff.mode_changed);
+        assert!(diff.size_changed);
+        assert!(diff.transform_changed);
+    }
 
     #[test]
     fn configured_refresh_matches_exact_integer_millihertz_only() {

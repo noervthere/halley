@@ -27,5 +27,4 @@ halley-config = { path = "halley-config" }
 halley-core = { path = "halley-core" }
 halley-ipc = { path = "halley-ipc" }
 libc = "0.2"
-rune-cfg = "0.6.1"
 xcursor = "0.3"
