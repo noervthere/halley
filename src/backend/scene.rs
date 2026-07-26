@@ -68,16 +68,17 @@ pub fn build(
             output_size,
             zoom_scale,
         );
-        let opening_progress = window
+        let opening_visual = window
             .toplevel()
             .and_then(|toplevel| {
-                request
-                    .window_open_animations
-                    .progress(toplevel.wl_surface(), request.target_presentation_time)
+                request.window_open_animations.visual(
+                    toplevel.wl_surface(),
+                    request.target_presentation_time,
+                    geometry.to_physical(1).size,
+                )
             })
-            .unwrap_or(1.0);
-        let animated_bbox =
-            crate::animation::window_open_rect(scaled_bbox, scaled_bbox, opening_progress);
+            .unwrap_or_default();
+        let animated_bbox = opening_visual.transform_rect(scaled_bbox, scaled_bbox);
         if animated_bbox.size.w == 0 || animated_bbox.size.h == 0 {
             continue;
         }
@@ -92,35 +93,31 @@ pub fn build(
             let native_geometry = surface_element.geometry(Scale::from(1.0));
             let final_destination =
                 super::camera_rect(native_geometry, camera_center, output_size, zoom_scale);
-            let destination = crate::animation::window_open_rect(
-                final_destination,
-                scaled_bbox,
-                opening_progress,
-            );
+            let destination = opening_visual.transform_rect(final_destination, scaled_bbox);
             SceneElement::Rescaled(super::rescale::RescaledElement::new(
                 surface_element,
                 destination,
+                opening_visual.alpha(),
             ))
         }));
         elements.extend(surface_elements.into_iter().filter_map(|surface_element| {
             let native_geometry = surface_element.geometry(Scale::from(1.0));
             let final_destination =
                 super::camera_rect(native_geometry, camera_center, output_size, zoom_scale);
-            let destination = crate::animation::window_open_rect(
-                final_destination,
-                scaled_bbox,
-                opening_progress,
+            let destination = opening_visual.transform_rect(final_destination, scaled_bbox);
+            let element = super::rescale::RescaledElement::new(
+                surface_element,
+                destination,
+                opening_visual.alpha(),
             );
-            let element =
-                super::rescale::RescaledElement::new(surface_element, destination);
-            CropRenderElement::from_element(element, 1.0, animated_bbox)
-                .map(SceneElement::Cropped)
+            CropRenderElement::from_element(element, 1.0, animated_bbox).map(SceneElement::Cropped)
         }));
 
         let is_focused = window
             .toplevel()
             .is_some_and(|toplevel| Some(toplevel.wl_surface()) == request.focused);
-        let border_color = super::window_border_color(request.decorations, is_focused);
+        let border_color =
+            super::window_border_color(request.decorations, is_focused) * opening_visual.alpha();
         let border_width =
             ((request.decorations.border_width_px as f64 * zoom_scale as f64).round() as i32)
                 .max(1);

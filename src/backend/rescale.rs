@@ -2,7 +2,9 @@ use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
 use smithay::backend::renderer::element::{Element, Id, Kind, RenderElement, UnderlyingStorage};
 use smithay::backend::renderer::gles::{GlesError, GlesFrame, GlesRenderer};
 use smithay::backend::renderer::utils::CommitCounter;
-use smithay::utils::{Buffer, Physical, Point, Rectangle, Scale, Transform, user_data::UserDataMap};
+use smithay::utils::{
+    Buffer, Physical, Point, Rectangle, Scale, Transform, user_data::UserDataMap,
+};
 
 /// Wraps a `WaylandSurfaceRenderElement` so it draws into an arbitrary
 /// destination rect instead of its native buffer size.
@@ -36,11 +38,20 @@ use smithay::utils::{Buffer, Physical, Point, Rectangle, Scale, Transform, user_
 pub struct RescaledElement {
     inner: WaylandSurfaceRenderElement<GlesRenderer>,
     dst: Rectangle<i32, Physical>,
+    alpha: f32,
 }
 
 impl RescaledElement {
-    pub fn new(inner: WaylandSurfaceRenderElement<GlesRenderer>, dst: Rectangle<i32, Physical>) -> Self {
-        Self { inner, dst }
+    pub fn new(
+        inner: WaylandSurfaceRenderElement<GlesRenderer>,
+        dst: Rectangle<i32, Physical>,
+        alpha: f32,
+    ) -> Self {
+        Self {
+            inner,
+            dst,
+            alpha: alpha.clamp(0.0, 1.0),
+        }
     }
 }
 
@@ -70,7 +81,7 @@ impl Element for RescaledElement {
     }
 
     fn alpha(&self) -> f32 {
-        self.inner.alpha()
+        self.inner.alpha() * self.alpha
     }
 
     fn kind(&self) -> Kind {
@@ -101,7 +112,8 @@ impl RenderElement<GlesRenderer> for RescaledElement {
         // element's own `geometry()`/`src()` (see `draw_render_elements`),
         // so they're already correct - just forward them to the inner
         // element, which is what actually issues the scaled GL draw call.
-        self.inner.draw(frame, src, dst, damage, opaque_regions, cache)
+        self.inner
+            .draw(frame, src, dst, damage, opaque_regions, cache)
     }
 
     fn underlying_storage(&self, renderer: &mut GlesRenderer) -> Option<UnderlyingStorage<'_>> {
