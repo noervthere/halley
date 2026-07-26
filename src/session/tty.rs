@@ -19,7 +19,6 @@ use crate::cursor::CursorImage;
 use crate::input::keybinds::BackendKind;
 use crate::input::pointer::{Pointer, WheelAccumulator};
 use crate::input::{Keyboard, SuppressedButtons};
-use crate::ipc::OutputInfoSource;
 use crate::wayland;
 
 use super::SessionDriver;
@@ -185,9 +184,11 @@ pub fn run(session_mode: bool) {
         super::environment::activate_session(&socket_name);
     }
 
-    if let Err(err) = crate::ipc::init_ipc_listener(&event_loop.handle(), |app: &TtyApp| {
-        app.driver.backend.output_info()
-    }) {
+    if let Err(err) =
+        crate::ipc::init_ipc_listener(&event_loop.handle(), |app: &mut TtyApp, request| {
+            crate::ipc::reply_to_query(&app.driver.backend, request);
+        })
+    {
         eventline::error!("ipc: failed to start listener: {err}");
     }
     if let Some(path) = config_path

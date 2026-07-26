@@ -3,12 +3,18 @@ mod types;
 
 use std::fs;
 use std::io;
+use std::os::fd::{OwnedFd, RawFd};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 
-pub use codec::{CodecError, decode_request, decode_response, encode_request, encode_response, read_frame, write_frame};
-pub use types::{HALLEY_IPC_VERSION, ModeInfo, OutputInfo, OutputsResponse, Request, Response, VersionInfo};
+pub use codec::{
+    CodecError, decode_request, decode_response, encode_request, encode_response, read_frame,
+    read_frame_with_fds, write_frame, write_frame_with_fds,
+};
+pub use types::{
+    HALLEY_IPC_VERSION, ModeInfo, OutputInfo, OutputsResponse, Request, Response, VersionInfo,
+};
 
 fn runtime_dir_from(base: impl AsRef<Path>) -> PathBuf {
     base.as_ref().join("halley")
@@ -43,27 +49,66 @@ pub fn default_socket_path() -> io::Result<PathBuf> {
     Ok(halley_runtime_dir()?.join("halley.sock"))
 }
 
-/// Connects to the running compositor's default socket, sends `req`, and
-/// returns its response. One-shot: a fresh connection per call, matching
-/// old halley's own client shape - there's no persistent-connection use
-/// case yet for a CLI tool that runs once and exits.
+/// A decoded response and any descriptors whose ownership was transferred
+/// with it.
+#[derive(Debug)]
+pub struct ResponseEnvelope {
+    pub response: Response,
+    pub fds: Vec<OwnedFd>,
+}
+
+/// A reusable connection to the compositor.
+pub struct Connection {
+    stream: UnixStream,
+}
+
+impl Connection {
+    pub fn connect() -> Result<Self, CodecError> {
+        Self::connect_to(&default_socket_path()?)
+    }
+
+    pub fn connect_to(path: &Path) -> Result<Self, CodecError> {
+        Ok(Self {
+            stream: UnixStream::connect(path)?,
+        })
+    }
+
+    pub fn request(
+        &mut self,
+        request: &Request,
+        fds: &[RawFd],
+    ) -> Result<ResponseEnvelope, CodecError> {
+        let bytes = encode_request(request)?;
+        write_frame_with_fds(&self.stream, &bytes, fds)?;
+        let (bytes, fds) = read_frame_with_fds(&self.stream, 32)?;
+        Ok(ResponseEnvelope {
+            response: decode_response(&bytes)?,
+            fds,
+        })
+    }
+}
+
+/// Connects to the running compositor, sends one descriptor-free request,
+/// and returns the descriptor-free response used by `halleyctl`.
 pub fn send_request(req: &Request) -> Result<Response, CodecError> {
     let path = default_socket_path()?;
     send_request_to(&path, req)
 }
 
 pub fn send_request_to(path: &Path, req: &Request) -> Result<Response, CodecError> {
-    let mut stream = UnixStream::connect(path)?;
-    let bytes = encode_request(req)?;
-    write_frame(&mut stream, &bytes)?;
-
-    let resp_bytes = read_frame(&mut stream)?;
-    decode_response(&resp_bytes)
+    let mut connection = Connection::connect_to(path)?;
+    let envelope = connection.request(req, &[])?;
+    if !envelope.fds.is_empty() {
+        return Err(io::Error::other("unexpected descriptors in IPC response").into());
+    }
+    Ok(envelope.response)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::net::UnixListener;
+    use std::thread;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     struct ScratchDir(PathBuf);
@@ -113,5 +158,37 @@ mod tests {
             fs::metadata(runtime).unwrap().permissions().mode() & 0o777,
             0o700
         );
+    }
+
+    #[test]
+    fn connection_reuses_one_stream_for_sequential_requests() {
+        let scratch = ScratchDir::new();
+        fs::create_dir_all(&scratch.0).unwrap();
+        let path = scratch.0.join("persistent.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            for version in ["first", "second"] {
+                let (bytes, fds) = read_frame_with_fds(&stream, 0).unwrap();
+                assert!(fds.is_empty());
+                assert!(matches!(decode_request(&bytes).unwrap(), Request::Version));
+                let response = Response::Version(VersionInfo {
+                    version: version.to_string(),
+                    ipc_protocol: HALLEY_IPC_VERSION,
+                });
+                write_frame_with_fds(&stream, &encode_response(&response).unwrap(), &[]).unwrap();
+            }
+        });
+
+        let mut connection = Connection::connect_to(&path).unwrap();
+        for expected in ["first", "second"] {
+            let envelope = connection.request(&Request::Version, &[]).unwrap();
+            assert!(envelope.fds.is_empty());
+            let Response::Version(version) = envelope.response else {
+                panic!("expected version response");
+            };
+            assert_eq!(version.version, expected);
+        }
+        server.join().unwrap();
     }
 }

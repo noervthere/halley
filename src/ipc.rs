@@ -1,9 +1,14 @@
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
+use std::sync::mpsc;
 
+use calloop::channel::{Event, Sender, channel};
 use calloop::generic::Generic;
 use calloop::{Interest, LoopHandle, Mode as CalloopMode, PostAction};
 use smithay::output::Mode as OutputMode;
+
+const MAX_REQUEST_FDS: usize = 32;
 
 /// Backend-agnostic access to real per-output info, mirroring `Renderable`'s
 /// existing shape (one small trait, implemented once per backend) rather
@@ -38,30 +43,97 @@ fn version_info() -> halley_ipc::VersionInfo {
     }
 }
 
-/// Answers one already-connected client synchronously: read one request
-/// frame, reply with one response frame, done. `halleyctl`'s own client is
-/// a one-shot connect/request/reply/disconnect (see `halley-ipc`'s
-/// `send_request`), so there's nothing to keep this connection open for -
-/// no per-client registered source or background thread needed, unlike old
-/// halley's IPC (which needs both because most of its commands mutate
-/// compositor state and have to hop onto the main-loop thread; this first
-/// pass is entirely read-only cached-snapshot queries answered inline).
-fn handle_client(mut stream: UnixStream, outputs: &[halley_ipc::OutputInfo]) {
-    let response = match halley_ipc::read_frame(&mut stream).and_then(|bytes| halley_ipc::decode_request(&bytes)) {
-        Ok(halley_ipc::Request::Outputs) => halley_ipc::Response::Outputs(halley_ipc::OutputsResponse {
-            outputs: outputs.to_vec(),
-        }),
-        Ok(halley_ipc::Request::Version) => halley_ipc::Response::Version(version_info()),
-        Err(err) => halley_ipc::Response::Error(err.to_string()),
-    };
+struct ReplyFrame {
+    response: halley_ipc::Response,
+    fds: Vec<OwnedFd>,
+}
 
-    let Ok(bytes) = halley_ipc::encode_response(&response) else {
-        eventline::error!("ipc: failed to encode response");
-        return;
-    };
-    if let Err(err) = halley_ipc::write_frame(&mut stream, &bytes) {
-        eventline::warn!("ipc: failed to write response: {err}");
+/// The reply half of one IPC request. It is deliberately consumed by
+/// `send`, making double replies impossible while allowing a user-driven
+/// operation to retain it until selection completes.
+pub struct ReplySender(mpsc::SyncSender<ReplyFrame>);
+
+impl ReplySender {
+    pub fn send(
+        self,
+        response: halley_ipc::Response,
+        fds: Vec<OwnedFd>,
+    ) -> Result<(), halley_ipc::Response> {
+        self.0
+            .send(ReplyFrame { response, fds })
+            .map_err(|err| err.0.response)
     }
+}
+
+/// One request delivered on the compositor thread.
+pub struct RequestEnvelope {
+    pub request: halley_ipc::Request,
+    pub fds: Vec<OwnedFd>,
+    pub reply: ReplySender,
+}
+
+fn client_worker(stream: UnixStream, requests: Sender<RequestEnvelope>) {
+    loop {
+        let (bytes, fds) = match halley_ipc::read_frame_with_fds(&stream, MAX_REQUEST_FDS) {
+            Ok(frame) => frame,
+            Err(halley_ipc::CodecError::Io(err))
+                if matches!(
+                    err.kind(),
+                    std::io::ErrorKind::UnexpectedEof
+                        | std::io::ErrorKind::ConnectionReset
+                        | std::io::ErrorKind::BrokenPipe
+                ) =>
+            {
+                break;
+            }
+            Err(err) => {
+                eventline::warn!("ipc: failed to read request: {err}");
+                break;
+            }
+        };
+        let request = match halley_ipc::decode_request(&bytes) {
+            Ok(request) => request,
+            Err(err) => {
+                if write_response(
+                    &stream,
+                    ReplyFrame {
+                        response: halley_ipc::Response::Error(err.to_string()),
+                        fds: Vec::new(),
+                    },
+                )
+                .is_err()
+                {
+                    break;
+                }
+                continue;
+            }
+        };
+
+        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+        if requests
+            .send(RequestEnvelope {
+                request,
+                fds,
+                reply: ReplySender(reply_tx),
+            })
+            .is_err()
+        {
+            break;
+        }
+        let Ok(reply) = reply_rx.recv() else {
+            break;
+        };
+        if let Err(err) = write_response(&stream, reply) {
+            eventline::warn!("ipc: failed to write response: {err}");
+            break;
+        }
+    }
+}
+
+fn write_response(stream: &UnixStream, reply: ReplyFrame) -> Result<(), halley_ipc::CodecError> {
+    let bytes = halley_ipc::encode_response(&reply.response)?;
+    let fds = reply.fds.iter().map(AsRawFd::as_raw_fd).collect::<Vec<_>>();
+    halley_ipc::write_frame_with_fds(stream, &bytes, &fds)
 }
 
 /// If a socket file already exists at `path`, checks whether it's actually
@@ -81,13 +153,12 @@ fn remove_stale_socket(path: &Path) -> std::io::Result<()> {
     }
 }
 
-/// Binds the IPC socket and wires it into the given event loop as another
-/// `calloop` source, exactly like `init_wayland_listener` already does for
-/// the Wayland socket - `output_info` is called fresh per accepted
-/// connection so it always reflects live state.
+/// Binds the IPC socket and routes decoded requests onto the compositor
+/// loop. Socket I/O waits on per-connection workers, so a deferred portal
+/// reply never blocks rendering or input dispatch.
 pub fn init_ipc_listener<App: 'static>(
     loop_handle: &LoopHandle<'_, App>,
-    output_info: impl Fn(&App) -> Vec<halley_ipc::OutputInfo> + 'static,
+    handler: impl Fn(&mut App, RequestEnvelope) + 'static,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let path = halley_ipc::ensure_runtime_dir()?.join("halley.sock");
     remove_stale_socket(&path)?;
@@ -95,19 +166,63 @@ pub fn init_ipc_listener<App: 'static>(
     let listener = UnixListener::bind(&path)?;
     listener.set_nonblocking(true)?;
 
-    loop_handle.insert_source(Generic::new(listener, Interest::READ, CalloopMode::Level), move |_, listener, app| {
-        loop {
-            match listener.accept() {
-                Ok((stream, _addr)) => handle_client(stream, &output_info(app)),
-                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => break,
-                Err(err) => {
-                    eventline::error!("ipc: accept failed: {err}");
-                    break;
-                }
-            }
+    let (request_tx, request_rx) = channel();
+    loop_handle.insert_source(request_rx, move |event, _, app| {
+        if let Event::Msg(request) = event {
+            handler(app, request);
         }
-        Ok(PostAction::Continue)
     })?;
 
+    loop_handle.insert_source(
+        Generic::new(listener, Interest::READ, CalloopMode::Level),
+        move |_, listener, _app| {
+            loop {
+                match listener.accept() {
+                    Ok((stream, _addr)) => {
+                        let requests = request_tx.clone();
+                        if let Err(err) = std::thread::Builder::new()
+                            .name("halley-ipc-client".to_string())
+                            .spawn(move || client_worker(stream, requests))
+                        {
+                            eventline::error!("ipc: failed to start client worker: {err}");
+                        }
+                    }
+                    Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => break,
+                    Err(err) => {
+                        eventline::error!("ipc: accept failed: {err}");
+                        break;
+                    }
+                }
+            }
+            Ok(PostAction::Continue)
+        },
+    )?;
+
     Ok(())
+}
+
+pub fn reply_to_query<App: OutputInfoSource>(app: &App, request: RequestEnvelope) {
+    let RequestEnvelope {
+        request,
+        fds,
+        reply,
+    } = request;
+    if !fds.is_empty() {
+        let _ = reply.send(
+            halley_ipc::Response::Error(
+                "query request included unexpected descriptors".to_string(),
+            ),
+            Vec::new(),
+        );
+        return;
+    }
+    let response = match request {
+        halley_ipc::Request::Outputs => {
+            halley_ipc::Response::Outputs(halley_ipc::OutputsResponse {
+                outputs: app.output_info(),
+            })
+        }
+        halley_ipc::Request::Version => halley_ipc::Response::Version(version_info()),
+    };
+    let _ = reply.send(response, Vec::new());
 }

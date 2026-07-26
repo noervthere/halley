@@ -1,5 +1,7 @@
 use std::fmt;
 use std::io::{self, Read, Write};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::unix::net::UnixStream;
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -66,6 +68,162 @@ pub fn read_frame(stream: &mut impl Read) -> Result<Vec<u8>, CodecError> {
     Ok(buf)
 }
 
+/// Writes a frame and attaches file descriptors to its first bytes.
+///
+/// A descriptor passed with `SCM_RIGHTS` is duplicated into the receiving
+/// process. The caller retains ownership of every descriptor in `fds`.
+pub fn write_frame_with_fds(
+    stream: &UnixStream,
+    bytes: &[u8],
+    fds: &[RawFd],
+) -> Result<(), CodecError> {
+    if bytes.len() > MAX_FRAME_LEN {
+        return Err(CodecError::FrameTooLarge(bytes.len()));
+    }
+    if fds.is_empty() {
+        let mut stream = stream;
+        return write_frame(&mut stream, bytes);
+    }
+
+    let len = (bytes.len() as u32).to_le_bytes();
+    let iov = [
+        libc::iovec {
+            iov_base: len.as_ptr().cast_mut().cast(),
+            iov_len: len.len(),
+        },
+        libc::iovec {
+            iov_base: bytes.as_ptr().cast_mut().cast(),
+            iov_len: bytes.len(),
+        },
+    ];
+    let fd_bytes = std::mem::size_of_val(fds);
+    let control_len = unsafe { libc::CMSG_SPACE(fd_bytes as libc::c_uint) as usize };
+    let mut control = vec![0u8; control_len];
+
+    let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
+    message.msg_iov = iov.as_ptr().cast_mut();
+    message.msg_iovlen = iov.len();
+    message.msg_control = control.as_mut_ptr().cast();
+    message.msg_controllen = control.len();
+
+    unsafe {
+        let header = libc::CMSG_FIRSTHDR(&message);
+        if header.is_null() {
+            return Err(io::Error::other("could not construct IPC descriptor message").into());
+        }
+        (*header).cmsg_level = libc::SOL_SOCKET;
+        (*header).cmsg_type = libc::SCM_RIGHTS;
+        (*header).cmsg_len = libc::CMSG_LEN(fd_bytes as libc::c_uint) as usize;
+        std::ptr::copy_nonoverlapping(
+            fds.as_ptr().cast::<u8>(),
+            libc::CMSG_DATA(header).cast::<u8>(),
+            fd_bytes,
+        );
+    }
+
+    let sent = unsafe { libc::sendmsg(stream.as_raw_fd(), &message, libc::MSG_NOSIGNAL) };
+    if sent < 0 {
+        return Err(io::Error::last_os_error().into());
+    }
+
+    let mut frame = Vec::with_capacity(len.len() + bytes.len());
+    frame.extend_from_slice(&len);
+    frame.extend_from_slice(bytes);
+    let sent = sent as usize;
+    if sent < frame.len() {
+        let mut stream = stream;
+        stream.write_all(&frame[sent..])?;
+    }
+    Ok(())
+}
+
+/// Reads one frame and receives the descriptors attached to it.
+///
+/// `max_fds` is a protocol limit, not merely a buffer hint. Receiving more
+/// descriptors is rejected and every received descriptor is still closed.
+pub fn read_frame_with_fds(
+    stream: &UnixStream,
+    max_fds: usize,
+) -> Result<(Vec<u8>, Vec<OwnedFd>), CodecError> {
+    let control_len = if max_fds == 0 {
+        0
+    } else {
+        unsafe {
+            libc::CMSG_SPACE(((max_fds + 1) * std::mem::size_of::<RawFd>()) as libc::c_uint)
+                as usize
+        }
+    };
+    let mut control = vec![0u8; control_len];
+    // Read only the fixed header with recvmsg. That is enough to receive
+    // ancillary data and, importantly, never consumes bytes belonging to a
+    // later frame on a persistent stream.
+    let mut length = [0u8; 4];
+    let mut iov = [libc::iovec {
+        iov_base: length.as_mut_ptr().cast(),
+        iov_len: length.len(),
+    }];
+
+    let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
+    message.msg_iov = iov.as_mut_ptr();
+    message.msg_iovlen = iov.len();
+    if !control.is_empty() {
+        message.msg_control = control.as_mut_ptr().cast();
+        message.msg_controllen = control.len();
+    }
+
+    let received =
+        unsafe { libc::recvmsg(stream.as_raw_fd(), &mut message, libc::MSG_CMSG_CLOEXEC) };
+    if received < 0 {
+        return Err(io::Error::last_os_error().into());
+    }
+    if received == 0 {
+        return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "IPC peer closed").into());
+    }
+    if message.msg_flags & libc::MSG_CTRUNC != 0 {
+        return Err(io::Error::other("IPC descriptor message was truncated").into());
+    }
+
+    let mut fds = Vec::new();
+    unsafe {
+        let mut header = libc::CMSG_FIRSTHDR(&message);
+        while !header.is_null() {
+            if (*header).cmsg_level == libc::SOL_SOCKET && (*header).cmsg_type == libc::SCM_RIGHTS {
+                let data_len = (*header)
+                    .cmsg_len
+                    .saturating_sub(libc::CMSG_LEN(0) as usize);
+                let count = data_len / std::mem::size_of::<RawFd>();
+                let data = libc::CMSG_DATA(header).cast::<RawFd>();
+                for index in 0..count {
+                    fds.push(OwnedFd::from_raw_fd(*data.add(index)));
+                }
+            }
+            header = libc::CMSG_NXTHDR(&message, header);
+        }
+    }
+    if fds.len() > max_fds {
+        return Err(io::Error::other(format!(
+            "IPC frame carried {} descriptors, maximum is {max_fds}",
+            fds.len()
+        ))
+        .into());
+    }
+
+    let received = received as usize;
+    if received < length.len() {
+        let mut stream = stream;
+        stream.read_exact(&mut length[received..])?;
+    }
+    let length = u32::from_le_bytes(length) as usize;
+    if length > MAX_FRAME_LEN {
+        return Err(CodecError::FrameTooLarge(length));
+    }
+
+    let mut bytes = vec![0u8; length];
+    let mut stream = stream;
+    stream.read_exact(&mut bytes)?;
+    Ok((bytes, fds))
+}
+
 fn encode<T: Serialize>(value: &T) -> Result<Vec<u8>, CodecError> {
     Ok(postcard::to_stdvec(value)?)
 }
@@ -93,6 +251,8 @@ pub fn decode_response(bytes: &[u8]) -> Result<Response, CodecError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs::File;
+    use std::os::fd::AsRawFd;
 
     #[test]
     fn frame_round_trips_through_a_byte_buffer() {
@@ -108,7 +268,10 @@ mod tests {
     #[test]
     fn oversized_frame_is_rejected_on_write() {
         let huge = vec![0u8; MAX_FRAME_LEN + 1];
-        assert!(matches!(write_frame(&mut Vec::new(), &huge), Err(CodecError::FrameTooLarge(_))));
+        assert!(matches!(
+            write_frame(&mut Vec::new(), &huge),
+            Err(CodecError::FrameTooLarge(_))
+        ));
     }
 
     #[test]
@@ -148,5 +311,18 @@ mod tests {
         let bytes = encode_response(&resp).unwrap();
         let decoded = decode_response(&bytes).unwrap();
         assert_eq!(format!("{decoded:?}"), format!("{resp:?}"));
+    }
+
+    #[test]
+    fn frame_and_descriptor_round_trip_together() {
+        let (sender, receiver) = UnixStream::pair().unwrap();
+        let file = File::open("/dev/null").unwrap();
+
+        write_frame_with_fds(&sender, b"buffer", &[file.as_raw_fd()]).unwrap();
+        let (bytes, fds) = read_frame_with_fds(&receiver, 1).unwrap();
+
+        assert_eq!(bytes, b"buffer");
+        assert_eq!(fds.len(), 1);
+        assert_ne!(fds[0].as_raw_fd(), file.as_raw_fd());
     }
 }

@@ -14,7 +14,6 @@ use crate::cursor::CursorImage;
 use crate::input::keybinds::BackendKind;
 use crate::input::pointer::{Pointer, WheelAccumulator};
 use crate::input::{Keyboard, SuppressedButtons};
-use crate::ipc::OutputInfoSource;
 use crate::wayland;
 
 use super::{Session, SessionDriver};
@@ -141,9 +140,11 @@ pub fn run() {
     let socket_name = super::protocol::init_wayland_listener(display, &mut event_loop);
     eventline::info!("halley (winit) starting, WAYLAND_DISPLAY={socket_name:?}");
 
-    if let Err(err) = crate::ipc::init_ipc_listener(&event_loop.handle(), |app: &App| {
-        app.driver.backend.output_info()
-    }) {
+    if let Err(err) =
+        crate::ipc::init_ipc_listener(&event_loop.handle(), |app: &mut App, request| {
+            crate::ipc::reply_to_query(&app.driver.backend, request);
+        })
+    {
         eventline::error!("ipc: failed to start listener: {err}");
     }
     if let Some(path) = config_path
