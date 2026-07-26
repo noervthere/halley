@@ -62,6 +62,7 @@ pub fn handle_commit(
     let toplevel = window.toplevel()?;
 
     if !toplevel.is_initial_configure_sent() {
+        toplevel.with_pending_state(super::decoration::apply_tiled_hint);
         toplevel.send_configure();
         return None;
     }
@@ -165,10 +166,7 @@ mod tests {
     #[test]
     fn window_location_is_centered_on_global_camera_position() {
         assert_eq!(
-            center_window(
-                Point::from((3620.0, 550.0)),
-                Size::from((1000, 700)),
-            ),
+            center_window(Point::from((3620.0, 550.0)), Size::from((1000, 700)),),
             Point::from((3120, 200))
         );
     }
