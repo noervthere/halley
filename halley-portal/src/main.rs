@@ -1,5 +1,8 @@
 mod compositor;
+mod pipewire;
+mod screencast;
 mod screenshot;
+mod session;
 
 use zbus::blocking::Connection;
 
@@ -56,6 +59,11 @@ fn print_help() {
 
 fn run() -> zbus::Result<()> {
     let connection = Connection::session()?;
+    let producer = std::sync::Arc::new(pipewire::Producer::new());
+    connection.object_server().at(
+        OBJECT_PATH,
+        screencast::ScreenCastInterface::new(connection.clone(), producer),
+    )?;
     connection.object_server().at(
         OBJECT_PATH,
         screenshot::ScreenshotInterface::new(connection.clone()),

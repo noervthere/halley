@@ -13,8 +13,10 @@ pub use codec::{
     read_frame_with_fds, write_frame, write_frame_with_fds,
 };
 pub use types::{
-    HALLEY_IPC_VERSION, ModeInfo, OutputInfo, OutputsResponse, Request, Response,
-    ScreenshotRequest, ScreenshotResponse, ScreenshotTarget, VersionInfo,
+    CaptureBuffer, CaptureFrameRequest, CaptureFrameResponse, CaptureSource, CursorMetadata,
+    CursorMode, DmabufPlane, HALLEY_IPC_VERSION, ModeInfo, OutputInfo, OutputsResponse,
+    RegisterDmabufRequest, Request, Response, SOURCE_MONITOR, SOURCE_WINDOW, ScreenshotRequest,
+    ScreenshotResponse, ScreenshotTarget, SourceChooserRequest, SourceChooserResponse, VersionInfo,
 };
 
 fn runtime_dir_from(base: impl AsRef<Path>) -> PathBuf {

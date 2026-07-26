@@ -62,6 +62,7 @@ pub struct Session<D: SessionDriver> {
     pub zoom: halley_config::Zoom,
     pub screenshot: halley_config::Screenshot,
     pub capture: crate::capture::CaptureState,
+    pub screencast: crate::screencast::ScreencastState,
     pub grab: Grab,
     pub resize_anchor: Option<ResizeAnchor>,
     pub suppressed_buttons: SuppressedButtons,

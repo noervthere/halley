@@ -8,6 +8,7 @@ use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point, Rectangle};
 
 use picker::RegionPicker;
+pub(crate) use screenshot::{capture_source_pixels, render_source_dmabuf};
 pub use screenshot::{save_region, save_window};
 
 use crate::session::{Session, SessionDriver};
@@ -25,11 +26,20 @@ enum Selection {
         surface: Option<WlSurface>,
         geometry: Option<Rectangle<i32, Logical>>,
     },
+    Source {
+        source_types: u32,
+        selected: Option<halley_ipc::CaptureSource>,
+        geometry: Option<Rectangle<i32, Logical>>,
+    },
 }
 
 enum PendingCapture {
     Local,
-    Portal {
+    Screenshot {
+        request_handle: String,
+        reply: crate::ipc::ReplySender,
+    },
+    Source {
         request_handle: String,
         reply: crate::ipc::ReplySender,
     },
@@ -43,6 +53,7 @@ struct AcceptedCapture {
 enum AcceptedTarget {
     Area(Rectangle<i32, Logical>),
     Window(WlSurface),
+    Source(halley_ipc::CaptureSource),
 }
 
 impl CaptureState {
@@ -54,10 +65,15 @@ impl CaptureState {
         matches!(self.selection, Some(Selection::Window { .. }))
     }
 
+    pub fn selects_source(&self) -> bool {
+        matches!(self.selection, Some(Selection::Source { .. }))
+    }
+
     pub fn region(&self) -> Option<Rectangle<i32, Logical>> {
         match self.selection.as_ref()? {
             Selection::Area => self.picker.region(),
             Selection::Window { geometry, .. } => *geometry,
+            Selection::Source { geometry, .. } => *geometry,
         }
     }
 
@@ -113,6 +129,23 @@ impl CaptureState {
         Ok(())
     }
 
+    fn begin_source(
+        &mut self,
+        source_types: u32,
+        pending: PendingCapture,
+    ) -> Result<(), PendingCapture> {
+        if self.pending.is_some() {
+            return Err(pending);
+        }
+        self.selection = Some(Selection::Source {
+            source_types,
+            selected: None,
+            geometry: None,
+        });
+        self.pending = Some(pending);
+        Ok(())
+    }
+
     pub fn update_layout(&mut self, space: &Space<Window>) {
         if let Some(bounds) = space
             .outputs()
@@ -126,7 +159,7 @@ impl CaptureState {
     pub fn press(&mut self, position: (f64, f64)) -> bool {
         match self.selection {
             Some(Selection::Area) => self.picker.press(Point::from(position)),
-            Some(Selection::Window { .. }) => true,
+            Some(Selection::Window { .. } | Selection::Source { .. }) => true,
             None => false,
         }
     }
@@ -134,7 +167,7 @@ impl CaptureState {
     pub fn motion(&mut self, position: (f64, f64)) -> bool {
         match self.selection {
             Some(Selection::Area) => self.picker.motion(Point::from(position)),
-            Some(Selection::Window { .. }) => true,
+            Some(Selection::Window { .. } | Selection::Source { .. }) => true,
             None => false,
         }
     }
@@ -142,7 +175,7 @@ impl CaptureState {
     pub fn release(&mut self) -> bool {
         match self.selection {
             Some(Selection::Area) => self.picker.release(),
-            Some(Selection::Window { .. }) => true,
+            Some(Selection::Window { .. } | Selection::Source { .. }) => true,
             None => false,
         }
     }
@@ -164,6 +197,33 @@ impl CaptureState {
         true
     }
 
+    pub fn hover_source(
+        &mut self,
+        monitor: halley_ipc::CaptureSource,
+        window: Option<(halley_ipc::CaptureSource, Rectangle<i32, Logical>)>,
+        monitor_geometry: Rectangle<i32, Logical>,
+    ) -> bool {
+        let Some(Selection::Source {
+            source_types,
+            selected,
+            geometry,
+        }) = self.selection.as_mut()
+        else {
+            return false;
+        };
+        let window_allowed = *source_types & halley_ipc::SOURCE_WINDOW != 0;
+        let monitor_allowed = *source_types & halley_ipc::SOURCE_MONITOR != 0;
+        let choice = window
+            .filter(|_| window_allowed)
+            .or_else(|| monitor_allowed.then_some((monitor, monitor_geometry)));
+        let (source, bounds) = choice
+            .map(|(source, bounds)| (Some(source), Some(bounds)))
+            .unwrap_or((None, None));
+        *selected = source;
+        *geometry = bounds;
+        true
+    }
+
     fn accept(&mut self) -> Option<AcceptedCapture> {
         let target = match self.selection.take()? {
             Selection::Area => AcceptedTarget::Area(self.picker.accept()?),
@@ -172,6 +232,14 @@ impl CaptureState {
                 ..
             } => AcceptedTarget::Window(surface),
             selection @ Selection::Window { surface: None, .. } => {
+                self.selection = Some(selection);
+                return None;
+            }
+            Selection::Source {
+                selected: Some(source),
+                ..
+            } => AcceptedTarget::Source(source),
+            selection @ Selection::Source { selected: None, .. } => {
                 self.selection = Some(selection);
                 return None;
             }
@@ -203,11 +271,11 @@ pub fn request_screenshot<D: SessionDriver>(
         halley_ipc::ScreenshotTarget::Area => {
             let preferred = crate::wayland::focus::selected_output(&session.wayland)
                 .map(|output| output.name());
-            let pending = PendingCapture::Portal {
+            let pending = PendingCapture::Screenshot {
                 request_handle: request.request_handle,
                 reply,
             };
-            if let Err(PendingCapture::Portal { reply, .. }) =
+            if let Err(PendingCapture::Screenshot { reply, .. }) =
                 session
                     .capture
                     .begin_area(&session.wayland.space, preferred.as_deref(), pending)
@@ -235,11 +303,12 @@ pub fn request_screenshot<D: SessionDriver>(
             reply_with_capture(reply, save_region(session, region));
         }
         halley_ipc::ScreenshotTarget::Window => {
-            let pending = PendingCapture::Portal {
+            let pending = PendingCapture::Screenshot {
                 request_handle: request.request_handle,
                 reply,
             };
-            if let Err(PendingCapture::Portal { reply, .. }) = session.capture.begin_window(pending)
+            if let Err(PendingCapture::Screenshot { reply, .. }) =
+                session.capture.begin_window(pending)
             {
                 let _ = reply.send(
                     halley_ipc::Response::Screenshot(halley_ipc::ScreenshotResponse::Failed {
@@ -254,22 +323,63 @@ pub fn request_screenshot<D: SessionDriver>(
     }
 }
 
+pub fn request_source<D: SessionDriver>(
+    session: &mut Session<D>,
+    request: halley_ipc::SourceChooserRequest,
+    reply: crate::ipc::ReplySender,
+) {
+    let supported = request.source_types & (halley_ipc::SOURCE_MONITOR | halley_ipc::SOURCE_WINDOW);
+    if supported == 0 {
+        let _ = reply.send(
+            halley_ipc::Response::Source(halley_ipc::SourceChooserResponse::Failed {
+                message: "no supported source type was requested".to_string(),
+            }),
+            Vec::new(),
+        );
+        return;
+    }
+    let pending = PendingCapture::Source {
+        request_handle: request.request_handle,
+        reply,
+    };
+    if let Err(PendingCapture::Source { reply, .. }) =
+        session.capture.begin_source(supported, pending)
+    {
+        let _ = reply.send(
+            halley_ipc::Response::Source(halley_ipc::SourceChooserResponse::Failed {
+                message: "another capture is already active".to_string(),
+            }),
+            Vec::new(),
+        );
+        return;
+    }
+    begin_modal_capture(session);
+}
+
 pub fn cancel_portal<D: SessionDriver>(session: &mut Session<D>, request_handle: &str) -> bool {
     let matches = matches!(
         session.capture.pending.as_ref(),
-        Some(PendingCapture::Portal {
-            request_handle: active,
-            ..
-        }) if active == request_handle
+        Some(PendingCapture::Screenshot { request_handle: active, .. }
+            | PendingCapture::Source { request_handle: active, .. })
+            if active == request_handle
     );
     if !matches {
         return false;
     }
-    if let Some(PendingCapture::Portal { reply, .. }) = session.capture.cancel() {
-        let _ = reply.send(
-            halley_ipc::Response::Screenshot(halley_ipc::ScreenshotResponse::Cancelled),
-            Vec::new(),
-        );
+    match session.capture.cancel() {
+        Some(PendingCapture::Screenshot { reply, .. }) => {
+            let _ = reply.send(
+                halley_ipc::Response::Screenshot(halley_ipc::ScreenshotResponse::Cancelled),
+                Vec::new(),
+            );
+        }
+        Some(PendingCapture::Source { reply, .. }) => {
+            let _ = reply.send(
+                halley_ipc::Response::Source(halley_ipc::SourceChooserResponse::Cancelled),
+                Vec::new(),
+            );
+        }
+        _ => {}
     }
     session.request_redraw();
     true
@@ -279,9 +389,19 @@ pub fn accept_selected<D: SessionDriver>(session: &mut Session<D>) -> bool {
     let Some(accepted) = session.capture.accept() else {
         return false;
     };
+    if let AcceptedTarget::Source(source) = accepted.target {
+        if let PendingCapture::Source { reply, .. } = accepted.pending {
+            let _ = reply.send(
+                halley_ipc::Response::Source(halley_ipc::SourceChooserResponse::Selected(source)),
+                Vec::new(),
+            );
+        }
+        return true;
+    }
     let (result, remembered_region) = match accepted.target {
         AcceptedTarget::Area(region) => (save_region(session, region), Some(region)),
         AcceptedTarget::Window(surface) => (save_window(session, &surface), None),
+        AcceptedTarget::Source(_) => unreachable!("handled above"),
     };
     if result.is_ok()
         && let Some(region) = remembered_region
@@ -293,7 +413,10 @@ pub fn accept_selected<D: SessionDriver>(session: &mut Session<D>) -> bool {
             Ok(path) => eventline::info!("screenshot saved to {}", path.display()),
             Err(err) => eventline::error!("screenshot failed: {err}"),
         },
-        PendingCapture::Portal { reply, .. } => reply_with_capture(reply, result),
+        PendingCapture::Screenshot { reply, .. } => reply_with_capture(reply, result),
+        PendingCapture::Source { .. } => {
+            unreachable!("source selection returned a screenshot target")
+        }
     }
     true
 }
@@ -302,11 +425,20 @@ pub fn cancel_selected<D: SessionDriver>(session: &mut Session<D>) -> bool {
     let Some(pending) = session.capture.cancel() else {
         return false;
     };
-    if let PendingCapture::Portal { reply, .. } = pending {
-        let _ = reply.send(
-            halley_ipc::Response::Screenshot(halley_ipc::ScreenshotResponse::Cancelled),
-            Vec::new(),
-        );
+    match pending {
+        PendingCapture::Screenshot { reply, .. } => {
+            let _ = reply.send(
+                halley_ipc::Response::Screenshot(halley_ipc::ScreenshotResponse::Cancelled),
+                Vec::new(),
+            );
+        }
+        PendingCapture::Source { reply, .. } => {
+            let _ = reply.send(
+                halley_ipc::Response::Source(halley_ipc::SourceChooserResponse::Cancelled),
+                Vec::new(),
+            );
+        }
+        PendingCapture::Local => {}
     }
     true
 }

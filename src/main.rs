@@ -2,6 +2,7 @@ mod animation;
 mod backend;
 mod camera;
 mod capture;
+mod screencast;
 mod config;
 mod cursor;
 mod frame_clock;

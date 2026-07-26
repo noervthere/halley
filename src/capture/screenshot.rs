@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use smithay::backend::allocator::Fourcc;
+use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::renderer::element::Kind;
 use smithay::backend::renderer::element::surface::{
     WaylandSurfaceRenderElement, render_elements_from_surface_tree,
@@ -13,6 +14,7 @@ use smithay::backend::renderer::gles::{GlesRenderer, GlesTexture};
 use smithay::backend::renderer::utils::draw_render_elements;
 use smithay::backend::renderer::{Bind, Color32F, ExportMem, Frame, Offscreen, Renderer};
 use smithay::output::Output;
+use smithay::reexports::wayland_server::Resource;
 use smithay::utils::{Buffer, Logical, Physical, Rectangle, Scale, Transform};
 
 use crate::backend::{self, RenderRequest};
@@ -128,6 +130,211 @@ pub fn save_window<D: SessionDriver>(
     )
 }
 
+pub(crate) fn capture_source_pixels<D: SessionDriver>(
+    session: &mut Session<D>,
+    source: &halley_ipc::CaptureSource,
+    show_cursor: bool,
+) -> Result<Vec<u8>, Box<dyn Error>> {
+    match source {
+        halley_ipc::CaptureSource::Monitor {
+            name,
+            width,
+            height,
+            ..
+        } => with_monitor_scene(
+            session,
+            name,
+            *width,
+            *height,
+            show_cursor,
+            |renderer, elements, size| {
+                capture_elements(
+                    renderer,
+                    Fourcc::Abgr8888,
+                    size,
+                    elements,
+                    backend::CLEAR_COLOR,
+                )
+            },
+        ),
+        halley_ipc::CaptureSource::Window {
+            surface_id,
+            width,
+            height,
+        } => {
+            let (surface, geometry) =
+                resolve_source_window(&session.wayland.space, *surface_id, *width, *height)?;
+            session
+                .driver
+                .with_renderer(|renderer| capture_surface_tree(renderer, &surface, geometry))
+        }
+    }
+}
+
+pub(crate) fn render_source_dmabuf<D: SessionDriver>(
+    session: &mut Session<D>,
+    source: &halley_ipc::CaptureSource,
+    show_cursor: bool,
+    dmabuf: &mut Dmabuf,
+) -> Result<(), Box<dyn Error>> {
+    session.driver.import_dmabuf(dmabuf);
+    match source {
+        halley_ipc::CaptureSource::Monitor {
+            name,
+            width,
+            height,
+            ..
+        } => with_monitor_scene(
+            session,
+            name,
+            *width,
+            *height,
+            show_cursor,
+            |renderer, elements, size| {
+                render_elements_to_dmabuf(renderer, dmabuf, size, elements, backend::CLEAR_COLOR)
+            },
+        ),
+        halley_ipc::CaptureSource::Window {
+            surface_id,
+            width,
+            height,
+        } => {
+            let (surface, geometry) =
+                resolve_source_window(&session.wayland.space, *surface_id, *width, *height)?;
+            session.driver.with_renderer(|renderer| {
+                let elements = surface_tree_elements(renderer, &surface, geometry)?;
+                render_elements_to_dmabuf(
+                    renderer,
+                    dmabuf,
+                    geometry.size.to_physical(1),
+                    &elements,
+                    Color32F::TRANSPARENT,
+                )
+            })
+        }
+    }
+}
+
+fn with_monitor_scene<D, T>(
+    session: &mut Session<D>,
+    name: &str,
+    width: i32,
+    height: i32,
+    show_cursor: bool,
+    consume: impl FnOnce(
+        &mut GlesRenderer,
+        &[backend::scene::SceneElement],
+        smithay::utils::Size<i32, Physical>,
+    ) -> Result<T, Box<dyn Error>>,
+) -> Result<T, Box<dyn Error>>
+where
+    D: SessionDriver,
+{
+    let output = session
+        .wayland
+        .space
+        .outputs()
+        .find(|output| output.name() == name)
+        .cloned()
+        .ok_or_else(|| io::Error::other(format!("unknown output {name}")))?;
+    let geometry = session
+        .wayland
+        .space
+        .output_geometry(&output)
+        .ok_or_else(|| io::Error::other(format!("output {name} has no geometry")))?;
+    if geometry.size != (width, height).into() {
+        return Err(io::Error::other("selected output size changed").into());
+    }
+    let primary = session.driver.primary_output().clone();
+    let target_time = crate::frame_clock::monotonic_now();
+    let driver = &mut session.driver;
+    let cursor = &session.cursor;
+    let pointer_position = session.pointer.position();
+    let wayland = &session.wayland;
+    let decorations = &session.decorations;
+    let cameras = &session.cameras;
+    let window_open_animations = &session.window_open_animations;
+    let fullscreen = &session.fullscreen;
+    let fullscreen_textures = &mut session.fullscreen_textures;
+    driver.with_renderer(|renderer| {
+        let elements = backend::scene::build(
+            renderer,
+            &output,
+            &primary,
+            geometry,
+            RenderRequest {
+                target_presentation_time: target_time,
+                clear: backend::CLEAR_COLOR,
+                cursor,
+                cursor_position: pointer_position,
+                show_cursor,
+                capture_region: None,
+                space: &wayland.space,
+                focused: wayland.focused_window.as_ref(),
+                decorations,
+                cameras,
+                window_open_animations,
+                fullscreen,
+                fullscreen_textures,
+            },
+        )?;
+        consume(renderer, &elements, geometry.size.to_physical(1))
+    })
+}
+
+fn resolve_source_window(
+    space: &smithay::desktop::Space<smithay::desktop::Window>,
+    surface_id: u32,
+    width: i32,
+    height: i32,
+) -> Result<
+    (
+        smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+        Rectangle<i32, Logical>,
+    ),
+    Box<dyn Error>,
+> {
+    let window = space
+        .elements()
+        .find(|window| {
+            window
+                .toplevel()
+                .is_some_and(|toplevel| toplevel.wl_surface().id().protocol_id() == surface_id)
+        })
+        .ok_or_else(|| io::Error::other("selected window is no longer mapped"))?;
+    let geometry = window.geometry();
+    if geometry.size != (width, height).into() {
+        return Err(io::Error::other("selected window size changed").into());
+    }
+    Ok((
+        window
+            .toplevel()
+            .expect("matched a toplevel above")
+            .wl_surface()
+            .clone(),
+        geometry,
+    ))
+}
+
+fn render_elements_to_dmabuf<E>(
+    renderer: &mut GlesRenderer,
+    dmabuf: &mut Dmabuf,
+    size: smithay::utils::Size<i32, Physical>,
+    elements: &[E],
+    clear: Color32F,
+) -> Result<(), Box<dyn Error>>
+where
+    E: smithay::backend::renderer::element::RenderElement<GlesRenderer>,
+{
+    let damage = Rectangle::<i32, Physical>::from_size(size);
+    let mut target = renderer.bind(dmabuf)?;
+    let mut frame = renderer.render(&mut target, size, Transform::Normal)?;
+    frame.clear(clear, &[damage])?;
+    draw_render_elements(&mut frame, 1.0, elements, &[damage])?;
+    let _ = frame.finish()?;
+    Ok(())
+}
+
 fn save_pixels(
     configured_directory: &str,
     width: u32,
@@ -150,6 +357,21 @@ fn capture_surface_tree(
     geometry: Rectangle<i32, Logical>,
 ) -> Result<Vec<u8>, Box<dyn Error>> {
     let size = geometry.size.to_physical(1);
+    let elements = surface_tree_elements(renderer, surface, geometry)?;
+    capture_elements(
+        renderer,
+        Fourcc::Abgr8888,
+        size,
+        &elements,
+        Color32F::TRANSPARENT,
+    )
+}
+
+fn surface_tree_elements(
+    renderer: &mut GlesRenderer,
+    surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+    geometry: Rectangle<i32, Logical>,
+) -> Result<Vec<WaylandSurfaceRenderElement<GlesRenderer>>, Box<dyn Error>> {
     let location = smithay::utils::Point::from((-geometry.loc.x, -geometry.loc.y)).to_physical(1);
     let elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
         render_elements_from_surface_tree(
@@ -163,24 +385,34 @@ fn capture_surface_tree(
     if elements.is_empty() {
         return Err(io::Error::other("selected window surface tree is empty").into());
     }
-    let buffer_size = geometry.size.to_buffer(1, Transform::Normal);
-    let mut texture = <GlesRenderer as Offscreen<GlesTexture>>::create_buffer(
-        renderer,
-        Fourcc::Abgr8888,
-        buffer_size,
-    )?;
+    Ok(elements)
+}
+
+fn capture_elements<E>(
+    renderer: &mut GlesRenderer,
+    format: Fourcc,
+    size: smithay::utils::Size<i32, Physical>,
+    elements: &[E],
+    clear: Color32F,
+) -> Result<Vec<u8>, Box<dyn Error>>
+where
+    E: smithay::backend::renderer::element::RenderElement<GlesRenderer>,
+{
+    let buffer_size = smithay::utils::Size::<i32, Buffer>::from((size.w, size.h));
+    let mut texture =
+        <GlesRenderer as Offscreen<GlesTexture>>::create_buffer(renderer, format, buffer_size)?;
     let damage = Rectangle::<i32, Physical>::from_size(size);
     {
         let mut target = renderer.bind(&mut texture)?;
         let mut frame = renderer.render(&mut target, size, Transform::Normal)?;
-        frame.clear(Color32F::TRANSPARENT, &[damage])?;
-        draw_render_elements(&mut frame, 1.0, &elements, &[damage])?;
+        frame.clear(clear, &[damage])?;
+        draw_render_elements(&mut frame, 1.0, elements, &[damage])?;
         let _ = frame.finish()?;
     }
     let mapping = renderer.copy_texture(
         &texture,
         Rectangle::<i32, Buffer>::from_size(buffer_size),
-        Fourcc::Abgr8888,
+        format,
     )?;
     Ok(renderer.map_texture(&mapping)?.to_vec())
 }
@@ -194,24 +426,13 @@ fn capture_output(
 ) -> Result<Vec<u8>, Box<dyn Error>> {
     let elements = backend::scene::build(renderer, output, primary, geometry, request)?;
     let size = geometry.size.to_physical(1);
-    let buffer_size = smithay::utils::Size::<i32, Buffer>::from((size.w, size.h));
-    let mut texture = <GlesRenderer as Offscreen<GlesTexture>>::create_buffer(
+    capture_elements(
         renderer,
         Fourcc::Abgr8888,
-        buffer_size,
-    )?;
-    let damage = Rectangle::<i32, Physical>::from_size(size);
-    {
-        let mut target = renderer.bind(&mut texture)?;
-        let mut frame = renderer.render(&mut target, size, Transform::Normal)?;
-        frame.clear(backend::CLEAR_COLOR, &[damage])?;
-        draw_render_elements(&mut frame, 1.0, &elements, &[damage])?;
-        let _ = frame.finish()?;
-    }
-
-    let region = Rectangle::<i32, Buffer>::from_size(buffer_size);
-    let mapping = renderer.copy_texture(&texture, region, Fourcc::Abgr8888)?;
-    Ok(renderer.map_texture(&mapping)?.to_vec())
+        size,
+        &elements,
+        backend::CLEAR_COLOR,
+    )
 }
 
 fn composite_region(

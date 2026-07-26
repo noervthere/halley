@@ -8,6 +8,7 @@ use smithay::desktop::{Space, Window};
 use smithay::input::keyboard::{FilterResult, Keysym};
 use smithay::input::pointer::{ButtonEvent, MotionEvent, RelativeMotionEvent};
 use smithay::output::Output;
+use smithay::reexports::wayland_server::Resource;
 use smithay::utils::{Logical, Point, Rectangle, SERIAL_COUNTER};
 use smithay::wayland::keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitorSeat;
 
@@ -182,7 +183,8 @@ pub fn handle<D, B>(
                         ButtonState::Pressed => {
                             session.suppressed_buttons.suppress(BTN_LEFT);
                             session.capture.press(proposed_position);
-                            if session.capture.selects_window()
+                            if (session.capture.selects_window()
+                                || session.capture.selects_source())
                                 && crate::capture::accept_selected(session)
                             {
                                 super::sync_keyboard_focus(
@@ -647,6 +649,42 @@ fn update_capture_pointer<D: SessionDriver>(
     position: (f64, f64),
 ) {
     if !session.capture.selects_window() {
+        if session.capture.selects_source() {
+            let Some(route) = route_client_pointer(session) else {
+                return;
+            };
+            let Some(output_geometry) = session.wayland.space.output_geometry(&route.output) else {
+                return;
+            };
+            let monitor = halley_ipc::CaptureSource::Monitor {
+                name: route.output.name(),
+                x: output_geometry.loc.x,
+                y: output_geometry.loc.y,
+                width: output_geometry.size.w,
+                height: output_geometry.size.h,
+            };
+            let window = match route.target {
+                crate::input::pointer::PointerTarget::Window(window) => {
+                    window.toplevel().and_then(|toplevel| {
+                        let geometry = route.visual_geometry?;
+                        let size = window.geometry().size;
+                        Some((
+                            halley_ipc::CaptureSource::Window {
+                                surface_id: toplevel.wl_surface().id().protocol_id(),
+                                width: size.w,
+                                height: size.h,
+                            },
+                            geometry,
+                        ))
+                    })
+                }
+                _ => None,
+            };
+            session
+                .capture
+                .hover_source(monitor, window, output_geometry);
+            return;
+        }
         session.capture.motion(position);
         return;
     }

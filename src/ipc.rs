@@ -210,11 +210,13 @@ pub fn handle_request<D: crate::session::SessionDriver>(
         fds,
         reply,
     } = request;
-    if !fds.is_empty() {
+    let accepts_descriptors = matches!(
+        request,
+        halley_ipc::Request::RegisterDmabuf(_) | halley_ipc::Request::CaptureFrame(_)
+    );
+    if !accepts_descriptors && !fds.is_empty() {
         let _ = reply.send(
-            halley_ipc::Response::Error(
-                "query request included unexpected descriptors".to_string(),
-            ),
+            halley_ipc::Response::Error("request included unexpected descriptors".to_string()),
             Vec::new(),
         );
         return;
@@ -235,6 +237,36 @@ pub fn handle_request<D: crate::session::SessionDriver>(
                 halley_ipc::Response::Ack
             } else {
                 halley_ipc::Response::Error("screenshot request is not active".to_string())
+            }
+        }
+        halley_ipc::Request::ChooseSource(request) => {
+            crate::capture::request_source(app, request, reply);
+            return;
+        }
+        halley_ipc::Request::CancelSourceChooser { request_handle } => {
+            if crate::capture::cancel_portal(app, &request_handle) {
+                halley_ipc::Response::Ack
+            } else {
+                halley_ipc::Response::Error("source chooser is not active".to_string())
+            }
+        }
+        halley_ipc::Request::RegisterDmabuf(request) => {
+            match app.screencast.register(request, fds) {
+                Ok(()) => halley_ipc::Response::Ack,
+                Err(message) => halley_ipc::Response::Error(message),
+            }
+        }
+        halley_ipc::Request::RemoveDmabuf {
+            stream_handle,
+            buffer_id,
+        } => {
+            app.screencast.remove(&stream_handle, buffer_id);
+            halley_ipc::Response::Ack
+        }
+        halley_ipc::Request::CaptureFrame(request) => {
+            match crate::screencast::capture_frame(app, request, fds) {
+                Ok(response) => halley_ipc::Response::Frame(response),
+                Err(message) => halley_ipc::Response::Error(message),
             }
         }
     };

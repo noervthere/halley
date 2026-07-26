@@ -130,6 +130,7 @@ pub fn run() {
         zoom: runtime_config.zoom,
         screenshot: runtime_config.screenshot,
         capture: crate::capture::CaptureState::default(),
+        screencast: crate::screencast::ScreencastState::default(),
         grab: crate::input::grab::Grab::None,
         resize_anchor: None,
         suppressed_buttons: SuppressedButtons::default(),

@@ -12,6 +12,11 @@ const FALLBACK_SIZE: usize = 24;
 /// no real pointer tracking exists yet (design decision 14).
 pub struct CursorImage {
     pub buffer: MemoryRenderBuffer,
+    pub metadata_bgra: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
+    pub hotspot_x: i32,
+    pub hotspot_y: i32,
 }
 
 impl CursorImage {
@@ -19,11 +24,10 @@ impl CursorImage {
     /// procedurally-generated filled circle on any failure - never panics,
     /// always produces something to draw.
     pub fn load() -> Self {
-        let buffer = Self::load_from_theme().unwrap_or_else(Self::procedural_fallback);
-        Self { buffer }
+        Self::load_from_theme().unwrap_or_else(Self::procedural_fallback)
     }
 
-    fn load_from_theme() -> Option<MemoryRenderBuffer> {
+    fn load_from_theme() -> Option<Self> {
         let theme_name = std::env::var("XCURSOR_THEME").unwrap_or_else(|_| "default".to_string());
         let theme = xcursor::CursorTheme::load(&theme_name);
         let path = theme.load_icon("default")?;
@@ -37,14 +41,26 @@ impl CursorImage {
         // leaks into blue, etc). `pixels_rgba` ([R, G, B, A]) paired with
         // Fourcc::Abgr8888 (DRM's little-endian [R, G, B, A] format) is the
         // combination that's actually byte-order-correct.
-        Some(MemoryRenderBuffer::from_slice(
+        let buffer = MemoryRenderBuffer::from_slice(
             &image.pixels_rgba,
             Fourcc::Abgr8888,
             (image.width as i32, image.height as i32),
             1,
             Transform::Normal,
             None,
-        ))
+        );
+        let mut metadata_bgra = image.pixels_rgba.clone();
+        for pixel in metadata_bgra.chunks_exact_mut(4) {
+            pixel.swap(0, 2);
+        }
+        Some(Self {
+            buffer,
+            metadata_bgra,
+            width: image.width,
+            height: image.height,
+            hotspot_x: image.xhot as i32,
+            hotspot_y: image.yhot as i32,
+        })
     }
 
     /// A small opaque circle, ARGB8888 (byte order B, G, R, A - the standard
@@ -52,16 +68,24 @@ impl CursorImage {
     /// like anvil's fallback - generated in code, since pixel-perfect
     /// system-theme fidelity isn't the point here, just proving the
     /// RenderElement plumbing works end to end.
-    fn procedural_fallback() -> MemoryRenderBuffer {
+    fn procedural_fallback() -> Self {
         let pixels = filled_circle_argb8888(FALLBACK_SIZE);
-        MemoryRenderBuffer::from_slice(
+        let buffer = MemoryRenderBuffer::from_slice(
             &pixels,
             Fourcc::Argb8888,
             (FALLBACK_SIZE as i32, FALLBACK_SIZE as i32),
             1,
             Transform::Normal,
             None,
-        )
+        );
+        Self {
+            buffer,
+            metadata_bgra: pixels,
+            width: FALLBACK_SIZE as u32,
+            height: FALLBACK_SIZE as u32,
+            hotspot_x: FALLBACK_SIZE as i32 / 2,
+            hotspot_y: FALLBACK_SIZE as i32 / 2,
+        }
     }
 }
 
@@ -105,10 +129,18 @@ mod tests {
         let pixels = filled_circle_argb8888(size);
 
         let center_idx = (size / 2 * size + size / 2) * 4;
-        assert_eq!(pixels[center_idx + 3], 0xFF, "center pixel should be opaque");
+        assert_eq!(
+            pixels[center_idx + 3],
+            0xFF,
+            "center pixel should be opaque"
+        );
 
         let corner_idx = 0; // (0, 0)
-        assert_eq!(pixels[corner_idx + 3], 0x00, "corner pixel should be transparent");
+        assert_eq!(
+            pixels[corner_idx + 3],
+            0x00,
+            "corner pixel should be transparent"
+        );
     }
 
     #[test]

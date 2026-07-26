@@ -286,6 +286,27 @@ mod tests {
             Request::CancelScreenshot {
                 request_handle: "/org/freedesktop/portal/request/1".to_string(),
             },
+            Request::ChooseSource(crate::SourceChooserRequest {
+                request_handle: "/org/freedesktop/portal/request/2".to_string(),
+                source_types: crate::SOURCE_MONITOR | crate::SOURCE_WINDOW,
+            }),
+            Request::CaptureFrame(crate::CaptureFrameRequest {
+                stream_handle: "/org/freedesktop/portal/session/1".to_string(),
+                source: crate::CaptureSource::Monitor {
+                    name: "DP-1".to_string(),
+                    x: 0,
+                    y: 0,
+                    width: 1920,
+                    height: 1080,
+                },
+                cursor_mode: crate::CursorMode::Metadata,
+                buffer: crate::CaptureBuffer::MemFd {
+                    fd_index: 0,
+                    offset: 0,
+                    size: 1920 * 1080 * 4,
+                    stride: 1920 * 4,
+                },
+            }),
         ] {
             let bytes = encode_request(&req).unwrap();
             let decoded = decode_request(&bytes).unwrap();
@@ -297,6 +318,24 @@ mod tests {
     fn screenshot_response_round_trips_through_postcard() {
         let response = Response::Screenshot(crate::ScreenshotResponse::Saved {
             path: "/tmp/halley screenshot.png".to_string(),
+        });
+        let bytes = encode_response(&response).unwrap();
+        let decoded = decode_response(&bytes).unwrap();
+        assert_eq!(format!("{decoded:?}"), format!("{response:?}"));
+    }
+
+    #[test]
+    fn screencast_response_round_trips_through_postcard() {
+        let response = Response::Frame(crate::CaptureFrameResponse {
+            cursor: Some(crate::CursorMetadata {
+                x: 12,
+                y: 34,
+                hotspot_x: 2,
+                hotspot_y: 3,
+                width: 1,
+                height: 1,
+                bgra: vec![10, 20, 30, 255],
+            }),
         });
         let bytes = encode_response(&response).unwrap();
         let decoded = decode_response(&bytes).unwrap();
