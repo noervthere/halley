@@ -22,6 +22,7 @@ render_elements! {
     Rescaled=super::rescale::RescaledElement,
     Cropped=CropRenderElement<super::rescale::RescaledElement>,
     FullscreenBlend=super::fullscreen_texture::FullscreenBlendElement,
+    CaptureOverlay=super::capture_overlay::CaptureOverlayElement,
     Border=SolidColorRenderElement,
     Layer=WaylandSurfaceRenderElement<GlesRenderer>,
 }
@@ -41,16 +42,13 @@ pub fn build(
     let camera_center = crate::camera::global_center(view.center, output_geometry);
     let zoom_scale = view.scale;
 
-    let mut elements: Vec<SceneElement> = capture_overlay_elements(
+    let mut elements = capture_overlay_elements(
+        renderer,
         output,
         output_geometry,
         request.capture_overlay,
         request.decorations,
-    )
-        .into_iter()
-        .rev()
-        .map(SceneElement::Border)
-        .collect();
+    )?;
     elements.extend(
         super::layer_surface_elements(renderer, output, Layer::Overlay)
             .into_iter()
@@ -254,35 +252,53 @@ pub fn build(
 }
 
 fn capture_overlay_elements(
+    renderer: &mut GlesRenderer,
     output: &Output,
     output_geometry: Rectangle<i32, Logical>,
     overlay: crate::capture::CaptureOverlay<'_>,
     decorations: &halley_config::Decorations,
-) -> Vec<SolidColorRenderElement> {
+) -> Result<Vec<SceneElement>, Box<dyn Error>> {
     match overlay {
-        crate::capture::CaptureOverlay::None => Vec::new(),
-        crate::capture::CaptureOverlay::Selection(region) => {
-            capture_picker_elements(output_geometry, region)
-        }
+        crate::capture::CaptureOverlay::None => Ok(Vec::new()),
+        crate::capture::CaptureOverlay::Region(region) => Ok(
+            capture_picker_elements(output_geometry, region, true)
+                .into_iter()
+                .rev()
+                .map(SceneElement::Border)
+                .collect(),
+        ),
+        crate::capture::CaptureOverlay::Highlight(region) => Ok(
+            capture_picker_elements(output_geometry, region, false)
+                .into_iter()
+                .rev()
+                .map(SceneElement::Border)
+                .collect(),
+        ),
         crate::capture::CaptureOverlay::Menu {
             output_name,
             selected,
             hovered,
             window_available,
-        } if output.name() == output_name => super::capture_overlay::menu_elements(
+        } if output.name() == output_name => Ok(super::capture_overlay::menu_elements(
+            renderer,
             output_geometry,
             selected,
             hovered,
             window_available,
             super::window_border_color(decorations, true),
-        ),
-        crate::capture::CaptureOverlay::Menu { .. } => Vec::new(),
+        )?
+        .into_iter()
+        .rev()
+        .map(SceneElement::CaptureOverlay)
+        .collect()),
+        crate::capture::CaptureOverlay::Menu { .. } => Ok(Vec::new()),
     }
 }
 
 fn capture_picker_elements(
     output: Rectangle<i32, Logical>,
     selection: Rectangle<i32, Logical>,
+    show_handles: bool,
 ) -> Vec<SolidColorRenderElement> {
     let output_local = Rectangle::<i32, Physical>::from_size(output.size.to_physical(1));
     let selected = output
@@ -331,20 +347,22 @@ fn capture_picker_elements(
         }
     }
     elements.extend(super::border_strips(selected, 2, white));
-    let handle_size = 12;
-    for point in [
-        selected.loc,
-        (right, selected.loc.y).into(),
-        (selected.loc.x, bottom).into(),
-        (right, bottom).into(),
-    ] {
-        elements.push(make(
-            Rectangle::new(
-                (point.x - handle_size / 2, point.y - handle_size / 2).into(),
-                (handle_size, handle_size).into(),
-            ),
-            white,
-        ));
+    if show_handles {
+        let handle_size = 12;
+        for point in [
+            selected.loc,
+            (right, selected.loc.y).into(),
+            (selected.loc.x, bottom).into(),
+            (right, bottom).into(),
+        ] {
+            elements.push(make(
+                Rectangle::new(
+                    (point.x - handle_size / 2, point.y - handle_size / 2).into(),
+                    (handle_size, handle_size).into(),
+                ),
+                white,
+            ));
+        }
     }
     elements
 }
@@ -407,6 +425,17 @@ mod tests {
         assert!(cursor_position_for_output(output, (0.0, 0.0)).is_some());
         assert!(cursor_position_for_output(output, (1919.0, 1079.0)).is_some());
         assert!(cursor_position_for_output(output, (1920.0, 500.0)).is_none());
+    }
+
+    #[test]
+    fn resize_handles_are_reserved_for_region_selection() {
+        let output = Rectangle::<i32, Logical>::new((0, 0).into(), (1920, 1080).into());
+        let selection = Rectangle::<i32, Logical>::new((320, 180).into(), (1280, 720).into());
+
+        let region = capture_picker_elements(output, selection, true);
+        let highlight = capture_picker_elements(output, selection, false);
+
+        assert_eq!(region.len(), highlight.len() + 4);
     }
 
     #[test]

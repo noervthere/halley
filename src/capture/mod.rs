@@ -84,7 +84,8 @@ pub enum CapturePress {
 #[derive(Clone, Copy, Debug)]
 pub enum CaptureOverlay<'a> {
     None,
-    Selection(Rectangle<i32, Logical>),
+    Region(Rectangle<i32, Logical>),
+    Highlight(Rectangle<i32, Logical>),
     Menu {
         output_name: &'a str,
         selected: usize,
@@ -124,14 +125,14 @@ impl CaptureState {
             Some(Selection::Area) => self
                 .picker
                 .region()
-                .map(CaptureOverlay::Selection)
+                .map(CaptureOverlay::Region)
                 .unwrap_or(CaptureOverlay::None),
             Some(Selection::Screen { geometry, .. }) => {
-                CaptureOverlay::Selection(*geometry)
+                CaptureOverlay::Highlight(*geometry)
             }
             Some(Selection::Window { geometry, .. }
             | Selection::Source { geometry, .. }) => geometry
-                .map(CaptureOverlay::Selection)
+                .map(CaptureOverlay::Highlight)
                 .unwrap_or(CaptureOverlay::None),
             None => CaptureOverlay::None,
         }
