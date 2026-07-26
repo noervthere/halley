@@ -239,6 +239,15 @@ pub fn run() {
                     .cleanup(target_presentation_time);
                 if app.fullscreen.cleanup(target_presentation_time) {
                     super::sync_keyboard_focus(app, smithay::utils::SERIAL_COUNTER.next_serial());
+                    super::input::update_client_pointer_focus(
+                        app,
+                        app.start_time.elapsed().as_millis() as u32,
+                    );
+                    let pointer = app
+                        .seat
+                        .get_pointer()
+                        .expect("pointer capability added at seat setup");
+                    pointer.frame(app);
                 }
 
                 if animating || window_animating || fullscreen_animating {
