@@ -261,7 +261,9 @@ fn create_stream(
         .map_err(|err| format!("register PipeWire listener: {err}"))?;
 
     let format_data = format_pod(width, height)?;
-    let buffers_data = buffers_pod(width, height)?;
+    let allow_dmabuf = !matches!(source, halley_ipc::CaptureSource::Window { .. })
+        || cursor_mode != halley_ipc::CursorMode::Embedded;
+    let buffers_data = buffers_pod(width, height, allow_dmabuf)?;
     let meta_data = meta_pod();
     let format = spa::pod::Pod::from_bytes(&format_data)
         .ok_or_else(|| "invalid PipeWire format POD".to_string())?;
@@ -347,7 +349,16 @@ fn format_pod(width: u32, height: u32) -> Result<Vec<u8>, String> {
     .map_err(|err| format!("serialize PipeWire format: {err}"))
 }
 
-fn buffers_pod(width: u32, height: u32) -> Result<Vec<u8>, String> {
+fn buffer_data_types(allow_dmabuf: bool) -> i32 {
+    (1 << spa_sys::SPA_DATA_MemFd)
+        | if allow_dmabuf {
+            1 << spa_sys::SPA_DATA_DmaBuf
+        } else {
+            0
+        }
+}
+
+fn buffers_pod(width: u32, height: u32, allow_dmabuf: bool) -> Result<Vec<u8>, String> {
     use spa::pod::Property;
     let object = spa::pod::object!(
         spa::utils::SpaTypes::ObjectParamBuffers,
@@ -364,7 +375,7 @@ fn buffers_pod(width: u32, height: u32) -> Result<Vec<u8>, String> {
         Property::new(spa_sys::SPA_PARAM_BUFFERS_align, spa::pod::Value::Int(16)),
         Property::new(
             spa_sys::SPA_PARAM_BUFFERS_dataType,
-            spa::pod::Value::Int((1 << spa_sys::SPA_DATA_DmaBuf) | (1 << spa_sys::SPA_DATA_MemFd))
+            spa::pod::Value::Int(buffer_data_types(allow_dmabuf))
         ),
     );
     spa::pod::serialize::PodSerializer::serialize(
@@ -487,5 +498,24 @@ fn fill_cursor_meta(
             (bitmap as *mut u8).add(bitmap_size),
             bytes,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn embedded_window_fallback_can_exclude_dmabuf() {
+        let data_types = buffer_data_types(false);
+        assert_ne!(data_types & (1 << spa_sys::SPA_DATA_MemFd), 0);
+        assert_eq!(data_types & (1 << spa_sys::SPA_DATA_DmaBuf), 0);
+    }
+
+    #[test]
+    fn compatible_streams_offer_dmabuf_and_memfd() {
+        let data_types = buffer_data_types(true);
+        assert_ne!(data_types & (1 << spa_sys::SPA_DATA_MemFd), 0);
+        assert_ne!(data_types & (1 << spa_sys::SPA_DATA_DmaBuf), 0);
     }
 }
