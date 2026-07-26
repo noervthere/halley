@@ -85,8 +85,8 @@ fn example_config_window_open_animation_parses() {
     let config = RuneConfig::from_file(EXAMPLE_PATH).expect("example config parses");
     let animations = halley_config::parse_animations(&config);
 
-    assert!(!animations.off);
-    assert!(!animations.window_open.off);
+    assert!(animations.enabled);
+    assert!(animations.window_open.enabled);
     assert_eq!(animations.window_open.duration_ms, 300);
     assert_eq!(
         animations.window_open.curve,

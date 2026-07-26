@@ -23,7 +23,7 @@ impl AnimationCurve {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WindowOpenAnimation {
-    pub off: bool,
+    pub enabled: bool,
     pub duration_ms: u32,
     pub curve: AnimationCurve,
 }
@@ -31,17 +31,26 @@ pub struct WindowOpenAnimation {
 impl Default for WindowOpenAnimation {
     fn default() -> Self {
         Self {
-            off: false,
+            enabled: true,
             duration_ms: 300,
             curve: AnimationCurve::Linear,
         }
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Animations {
-    pub off: bool,
+    pub enabled: bool,
     pub window_open: WindowOpenAnimation,
+}
+
+impl Default for Animations {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            window_open: WindowOpenAnimation::default(),
+        }
+    }
 }
 
 pub fn parse_animations(config: &RuneConfig) -> Animations {
@@ -54,9 +63,12 @@ pub fn parse_animations(config: &RuneConfig) -> Animations {
         .unwrap_or(defaults.window_open.curve);
 
     Animations {
-        off: config.get_or("animations.off", defaults.off),
+        enabled: config.get_or("animations.enabled", defaults.enabled),
         window_open: WindowOpenAnimation {
-            off: config.get_or("animations.window-open.off", defaults.window_open.off),
+            enabled: config.get_or(
+                "animations.window-open.enabled",
+                defaults.window_open.enabled,
+            ),
             duration_ms: config.get_or(
                 "animations.window-open.duration-ms",
                 defaults.window_open.duration_ms,
@@ -94,9 +106,9 @@ mod tests {
         let config = RuneConfig::from_str(
             r#"
 animations:
-  off false
+  enabled true
   window-open:
-    off true
+    enabled false
     duration-ms 450
     curve "ease-out-cubic"
   end
@@ -108,9 +120,9 @@ end
         assert_eq!(
             parse_animations(&config),
             Animations {
-                off: false,
+                enabled: true,
                 window_open: WindowOpenAnimation {
-                    off: true,
+                    enabled: false,
                     duration_ms: 450,
                     curve: AnimationCurve::EaseOutCubic,
                 },
@@ -124,6 +136,8 @@ end
             .expect("valid rune-cfg source");
 
         assert_eq!(parse_animations(&config), Animations::default());
+        assert!(Animations::default().enabled);
+        assert!(Animations::default().window_open.enabled);
         assert_eq!(Animations::default().window_open.duration_ms, 300);
         assert_eq!(
             Animations::default().window_open.curve,

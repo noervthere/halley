@@ -17,8 +17,8 @@
 #   offset-y 0
 #
 #   # Must match one of the connector's real modes exactly - no closest-rate
-#   # guessing. Omit this line entirely to just use the preferred mode at
-#   # this resolution instead.
+#   # guessing. Omit this line to use the highest refresh available at this
+#   # resolution.
 #   rate 179.998
 #
 #   # Rotation in degrees - 0, 90, 180, or 270.
@@ -59,15 +59,15 @@ zoom:
   smooth-rate 12.5
 end
 
-# Animation settings follow niri's section shape. Only window opening exists
-# for now; more animation names will be added only when their effects exist.
+# Animation settings. Only window opening exists for now; more animation
+# names will be added only when their effects exist.
 animations:
-  # Uncomment to turn off all animations.
-  # off true
+  # Master switch for all animations.
+  enabled true
 
   window-open:
-    # Uncomment to turn off just the window-open animation.
-    # off true
+    # Enable or disable just the window-open animation.
+    enabled true
 
     # newm's original center-out opening lasts 300 ms and moves linearly.
     duration-ms 300

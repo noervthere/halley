@@ -109,7 +109,7 @@ decorations:
 end
 
 animations:
-  off true
+  enabled false
 end
 
 keybinds:
@@ -124,7 +124,7 @@ end
         assert_eq!(runtime.outputs.len(), 1);
         assert!(!runtime.zoom.enabled);
         assert_eq!(runtime.decorations.border_width_px, 7);
-        assert!(runtime.animations.off);
+        assert!(!runtime.animations.enabled);
         assert_eq!(runtime.keybinds.binds.len(), 1);
     }
 

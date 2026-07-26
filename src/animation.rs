@@ -46,7 +46,7 @@ impl WindowOpenAnimations {
 
     pub fn start(&mut self, surface: WlSurface, now: Duration) {
         let config = self.config.window_open;
-        if self.config.off || config.off || config.duration_ms == 0 {
+        if !self.config.enabled || !config.enabled || config.duration_ms == 0 {
             return;
         }
 
