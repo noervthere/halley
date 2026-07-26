@@ -1,6 +1,7 @@
 pub mod rescale;
 pub mod scene;
 pub mod tty;
+mod tty_output;
 pub mod winit;
 
 use halley_config::Decorations;

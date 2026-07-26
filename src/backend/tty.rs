@@ -13,20 +13,32 @@ use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::session::Session;
 use smithay::backend::session::libseat::{LibSeatSession, LibSeatSessionNotifier};
 use smithay::backend::udev;
-use smithay::output::{Mode as OutputMode, Output, PhysicalProperties, Subpixel};
-use smithay::reexports::drm::control::{Mode, ModeTypeFlags, connector, crtc};
+use smithay::output::{Output, PhysicalProperties, Subpixel};
+use smithay::reexports::drm::control::{Mode, connector, crtc};
 use smithay::reexports::rustix::fs::OFlags;
-use smithay::utils::{DeviceFd, Transform};
+use smithay::utils::DeviceFd;
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
 
 use super::scene::SceneElement;
+use super::tty_output::{
+    OutputState, connector_name, connector_output_info, default_mode, drm_output_mode, output_diff,
+    output_target,
+};
 use super::{FrameSubmission, RenderRequest, RenderStatus, Renderable};
 
-type TtyDrmOutputManager =
-    DrmOutputManager<GbmAllocator<DrmDeviceFd>, GbmFramebufferExporter<DrmDeviceFd>, FrameSubmission, DrmDeviceFd>;
+type TtyDrmOutputManager = DrmOutputManager<
+    GbmAllocator<DrmDeviceFd>,
+    GbmFramebufferExporter<DrmDeviceFd>,
+    FrameSubmission,
+    DrmDeviceFd,
+>;
 
-type TtyDrmOutput =
-    DrmOutput<GbmAllocator<DrmDeviceFd>, GbmFramebufferExporter<DrmDeviceFd>, FrameSubmission, DrmDeviceFd>;
+type TtyDrmOutput = DrmOutput<
+    GbmAllocator<DrmDeviceFd>,
+    GbmFramebufferExporter<DrmDeviceFd>,
+    FrameSubmission,
+    DrmDeviceFd,
+>;
 
 /// One connected output plus whether it currently has a frame queued and
 /// awaiting its VBlank. DRM only produces a VBlank in response to a page
@@ -51,43 +63,6 @@ pub struct AppliedOutputChange {
     pub mode_changed: bool,
     pub size_changed: bool,
     pub layout_changed: bool,
-}
-
-#[derive(Clone, Copy)]
-struct OutputTarget {
-    mode: Mode,
-    offset: (i32, i32),
-    transform: Transform,
-    vrr: halley_config::Vrr,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct OutputDiff {
-    mode_changed: bool,
-    size_changed: bool,
-    offset_changed: bool,
-    transform_changed: bool,
-    vrr_changed: bool,
-}
-
-fn output_diff(
-    current_mode: OutputMode,
-    current_offset: (i32, i32),
-    current_transform: Transform,
-    current_vrr: halley_config::Vrr,
-    target_mode: OutputMode,
-    target_offset: (i32, i32),
-    target_transform: Transform,
-    target_vrr: halley_config::Vrr,
-) -> OutputDiff {
-    OutputDiff {
-        mode_changed: current_mode != target_mode,
-        size_changed: current_transform.transform_size(current_mode.size)
-            != target_transform.transform_size(target_mode.size),
-        offset_changed: current_offset != target_offset,
-        transform_changed: current_transform != target_transform,
-        vrr_changed: current_vrr != target_vrr,
-    }
 }
 
 /// The tty (DRM/KMS) backend - real hardware output, no host compositor
@@ -117,167 +92,6 @@ pub struct TtyBackend {
     /// Connected outputs are discovered at startup; active entries are
     /// updated as configuration changes are applied.
     ipc_output_info: Vec<halley_ipc::OutputInfo>,
-}
-
-/// `{interface}-{interface_id}`, e.g. "DP-1" - the standard connector-name
-/// convention used to match a connector against a configured `output:`
-/// block by its `name` field.
-fn connector_name(connector: &connector::Info) -> String {
-    format!("{}-{}", connector.interface().as_str(), connector.interface_id())
-}
-
-/// The single DRM-to-output-mode conversion used by selection, activation,
-/// and IPC. Smithay performs the rounded millihertz calculation, including
-/// interlace/doublescan handling.
-fn drm_output_mode(mode: &Mode) -> OutputMode {
-    OutputMode::from(*mode)
-}
-
-fn configured_refresh_millihz(refresh_hz: f64) -> i32 {
-    (refresh_hz * 1000.0).round() as i32
-}
-
-/// Returns the connector-order index of an exact configured mode. When the
-/// refresh is omitted, use the highest refresh available at that exact
-/// resolution.
-fn matching_mode_index(
-    modes: impl IntoIterator<Item = (usize, i32, i32, i32)>,
-    width: i32,
-    height: i32,
-    refresh_hz: Option<f64>,
-) -> Option<usize> {
-    let refresh_millihz = refresh_hz.map(configured_refresh_millihz);
-    modes
-        .into_iter()
-        .filter(|(_, mode_width, mode_height, mode_refresh)| {
-            *mode_width == width
-                && *mode_height == height
-                && refresh_millihz.is_none_or(|refresh| *mode_refresh == refresh)
-        })
-        .max_by_key(|(_, _, _, refresh)| *refresh)
-        .map(|(index, _, _, _)| index)
-}
-
-fn connector_output_info(
-    name: String,
-    connector: &connector::Info,
-    current_mode: Option<Mode>,
-    offset: (i32, i32),
-    vrr: halley_config::Vrr,
-) -> halley_ipc::OutputInfo {
-    let modes = connector
-        .modes()
-        .iter()
-        .map(|mode| {
-            crate::ipc::mode_info(
-                drm_output_mode(mode),
-                mode.mode_type().contains(ModeTypeFlags::PREFERRED),
-            )
-        })
-        .collect::<Vec<_>>();
-    let current_mode =
-        current_mode.and_then(|current| connector.modes().iter().position(|mode| *mode == current));
-
-    halley_ipc::OutputInfo {
-        name,
-        modes,
-        current_mode,
-        offset_x: offset.0,
-        offset_y: offset.1,
-        vrr: crate::ipc::vrr_str(vrr).to_string(),
-    }
-}
-
-/// This connector's preferred mode, or its first mode if none is flagged
-/// preferred - used both as the fallback when no `output:` block configures
-/// this connector, and when one does but no mode matches it exactly.
-fn default_mode(connector: &connector::Info) -> Mode {
-    connector
-        .modes()
-        .iter()
-        .find(|mode| mode.mode_type().contains(ModeTypeFlags::PREFERRED))
-        .or_else(|| connector.modes().first())
-        .copied()
-        .expect("connector has at least one mode - checked when building `connected`")
-}
-
-/// Picks which mode to actually use for this connector: if a matching
-/// `output:` block exists, its `width`/`height` (and `rate`, if set) must
-/// match one of the connector's real modes *exactly* - no closest/fuzzy
-/// rate matching, unlike old halley's `<2.0`Hz tolerance window. A
-/// configured-but-unmatched output falls back to `default_mode` with a
-/// clear error listing what's actually available, rather than silently
-/// accepting a different rate or refusing to start.
-fn select_mode(connector: &connector::Info, configured: Option<&halley_config::OutputConfig>) -> Mode {
-    let name = connector_name(connector);
-    let Some(cfg) = configured else {
-        return default_mode(connector);
-    };
-
-    let matched = matching_mode_index(
-        connector.modes().iter().enumerate().map(|(index, mode)| {
-            let output_mode = drm_output_mode(mode);
-            (index, output_mode.size.w, output_mode.size.h, output_mode.refresh)
-        }),
-        cfg.width,
-        cfg.height,
-        cfg.rate,
-    )
-    .and_then(|index| connector.modes().get(index));
-
-    match matched {
-        Some(mode) => *mode,
-        None => {
-            let available = connector
-                .modes()
-                .iter()
-                .map(|mode| {
-                    let output_mode = drm_output_mode(mode);
-                    format!(
-                        "{}x{}@{:.3}",
-                        output_mode.size.w,
-                        output_mode.size.h,
-                        output_mode.refresh as f64 / 1000.0,
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join(", ");
-            eventline::warn!(
-                "output {name:?}: configured {}x{}{} not found on this connector; available modes: {available}",
-                cfg.width,
-                cfg.height,
-                cfg.rate.map(|hz| format!(" @ {hz}Hz")).unwrap_or_default(),
-            );
-            default_mode(connector)
-        }
-    }
-}
-
-/// Only rotation is representable (matches old halley's own `transform`
-/// mapping) - any other value already falls back to `0` during config
-/// parsing (`halley_config::output::parse_one_output`), so this only ever
-/// sees 0/90/180/270.
-fn transform_from_degrees(degrees: u16) -> Transform {
-    match degrees {
-        90 => Transform::_90,
-        180 => Transform::_180,
-        270 => Transform::_270,
-        _ => Transform::Normal,
-    }
-}
-
-fn output_target(
-    connector: &connector::Info,
-    configured: Option<&halley_config::OutputConfig>,
-) -> OutputTarget {
-    OutputTarget {
-        mode: select_mode(connector, configured),
-        offset: configured.map_or((0, 0), |cfg| (cfg.offset_x, cfg.offset_y)),
-        transform: configured.map_or(Transform::Normal, |cfg| {
-            transform_from_degrees(cfg.transform)
-        }),
-        vrr: configured.map(|cfg| cfg.vrr).unwrap_or_default(),
-    }
 }
 
 impl TtyBackend {
@@ -436,7 +250,8 @@ impl TtyBackend {
                 }
                 Err(err) => {
                     eventline::error!("failed to initialize output {name:?}: {err}");
-                    ipc_output_info.push(connector_output_info(name, &connector, None, offset, vrr));
+                    ipc_output_info
+                        .push(connector_output_info(name, &connector, None, offset, vrr));
                 }
             }
         }
@@ -515,24 +330,20 @@ impl TtyBackend {
                     .iter()
                     .find(|cfg| cfg.name == entry.output.name());
                 let target = output_target(&entry.connector, configured);
-                let current = drm_output_mode(&entry.current_mode);
-                let requested = drm_output_mode(&target.mode);
-                (
-                    target,
-                    output_diff(
-                        current,
-                        {
-                            let location = entry.output.current_location();
-                            (location.x, location.y)
-                        },
-                        entry.output.current_transform(),
-                        entry.configured_vrr,
-                        requested,
-                        target.offset,
-                        target.transform,
-                        target.vrr,
-                    ),
-                )
+                let location = entry.output.current_location();
+                let current = OutputState {
+                    mode: drm_output_mode(&entry.current_mode),
+                    offset: (location.x, location.y),
+                    transform: entry.output.current_transform(),
+                    vrr: entry.configured_vrr,
+                };
+                let requested = OutputState {
+                    mode: drm_output_mode(&target.mode),
+                    offset: target.offset,
+                    transform: target.transform,
+                    vrr: target.vrr,
+                };
+                (target, output_diff(current, requested))
             };
 
             if !(diff.mode_changed
@@ -605,9 +416,7 @@ impl TtyBackend {
                 output,
                 mode_changed: diff.mode_changed,
                 size_changed: diff.size_changed,
-                layout_changed: diff.size_changed
-                    || diff.offset_changed
-                    || diff.transform_changed,
+                layout_changed: diff.size_changed || diff.offset_changed || diff.transform_changed,
             });
         }
 
@@ -715,154 +524,4 @@ impl Renderable for TtyBackend {
         entry.pending = true;
         Ok(RenderStatus::Submitted)
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use smithay::utils::{Logical, Physical, Point, Rectangle};
-
-    fn output_mode(width: i32, height: i32, refresh: i32) -> OutputMode {
-        OutputMode {
-            size: smithay::utils::Size::from((width, height)),
-            refresh,
-        }
-    }
-
-    #[test]
-    fn unchanged_output_has_no_reload_work() {
-        assert_eq!(
-            output_diff(
-                output_mode(1920, 1200, 74_930),
-                (2560, 0),
-                Transform::Normal,
-                halley_config::Vrr::Auto,
-                output_mode(1920, 1200, 74_930),
-                (2560, 0),
-                Transform::Normal,
-                halley_config::Vrr::Auto,
-            ),
-            OutputDiff {
-                mode_changed: false,
-                size_changed: false,
-                offset_changed: false,
-                transform_changed: false,
-                vrr_changed: false,
-            }
-        );
-    }
-
-    #[test]
-    fn refresh_only_change_does_not_reset_layout_or_size() {
-        let diff = output_diff(
-            output_mode(2560, 1440, 60_000),
-            (0, 0),
-            Transform::Normal,
-            halley_config::Vrr::Off,
-            output_mode(2560, 1440, 179_998),
-            (0, 0),
-            Transform::Normal,
-            halley_config::Vrr::Off,
-        );
-
-        assert!(diff.mode_changed);
-        assert!(!diff.size_changed);
-        assert!(!diff.offset_changed);
-        assert!(!diff.transform_changed);
-    }
-
-    #[test]
-    fn quarter_turn_changes_a_rectangular_output_footprint() {
-        let diff = output_diff(
-            output_mode(1920, 1200, 60_000),
-            (0, 0),
-            Transform::Normal,
-            halley_config::Vrr::Off,
-            output_mode(1920, 1200, 60_000),
-            (0, 0),
-            Transform::_90,
-            halley_config::Vrr::Off,
-        );
-
-        assert!(!diff.mode_changed);
-        assert!(diff.size_changed);
-        assert!(diff.transform_changed);
-    }
-
-    #[test]
-    fn configured_refresh_matches_exact_integer_millihertz_only() {
-        let modes = [
-            (0, 2560, 1440, 179_997),
-            (1, 2560, 1440, 179_998),
-            (2, 2560, 1440, 180_000),
-        ];
-
-        assert_eq!(
-            matching_mode_index(modes, 2560, 1440, Some(179.998)),
-            Some(1)
-        );
-        assert_eq!(
-            matching_mode_index(modes, 2560, 1440, Some(179.999)),
-            None
-        );
-    }
-
-    #[test]
-    fn configured_refresh_rounds_to_integer_millihertz() {
-        let modes = [(0, 2560, 1440, 179_998)];
-
-        assert_eq!(
-            matching_mode_index(modes, 2560, 1440, Some(179.9984)),
-            Some(0)
-        );
-        assert_eq!(
-            matching_mode_index(modes, 2560, 1440, Some(179.9986)),
-            None
-        );
-    }
-
-    #[test]
-    fn omitted_refresh_selects_highest_rate_at_exact_resolution() {
-        let modes = [
-            (0, 1920, 1080, 60_000),
-            (1, 2560, 1440, 143_912),
-            (2, 2560, 1440, 179_998),
-        ];
-
-        assert_eq!(matching_mode_index(modes, 2560, 1440, None), Some(2));
-        assert_eq!(matching_mode_index(modes, 3840, 2160, None), None);
-    }
-
-    #[test]
-    fn transform_from_degrees_maps_known_values_and_falls_back_to_normal() {
-        assert_eq!(transform_from_degrees(0), Transform::Normal);
-        assert_eq!(transform_from_degrees(90), Transform::_90);
-        assert_eq!(transform_from_degrees(180), Transform::_180);
-        assert_eq!(transform_from_degrees(270), Transform::_270);
-        // parse_one_output already clamps anything else to 0, but this
-        // function stays defensive on its own rather than trusting that.
-        assert_eq!(transform_from_degrees(45), Transform::Normal);
-    }
-
-    #[test]
-    fn secondary_window_geometry_becomes_output_local() {
-        let secondary = Rectangle::<i32, Logical>::new((2560, 0).into(), (1920, 1200).into());
-        let camera_center = crate::camera::global_center(
-            Point::from((1060.0, 550.0)),
-            secondary,
-        );
-        let world_rect =
-            Rectangle::<i32, Physical>::new((3520, 600).into(), (200, 100).into());
-
-        assert_eq!(
-            super::super::camera_rect(
-                world_rect,
-                camera_center,
-                secondary.size.to_physical(1),
-                0.5,
-            ),
-            Rectangle::new((910, 625).into(), (100, 50).into())
-        );
-    }
-
 }

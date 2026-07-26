@@ -173,6 +173,7 @@ pub fn cursor_position_for_output(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use smithay::utils::{Physical, Rectangle};
 
     #[test]
     fn cursor_is_localized_to_the_containing_output() {
@@ -192,5 +193,22 @@ mod tests {
         assert!(cursor_position_for_output(output, (0.0, 0.0)).is_some());
         assert!(cursor_position_for_output(output, (1919.0, 1079.0)).is_some());
         assert!(cursor_position_for_output(output, (1920.0, 500.0)).is_none());
+    }
+
+    #[test]
+    fn secondary_window_geometry_becomes_output_local() {
+        let secondary = Rectangle::<i32, Logical>::new((2560, 0).into(), (1920, 1200).into());
+        let camera_center = crate::camera::global_center(Point::from((1060.0, 550.0)), secondary);
+        let world_rect = Rectangle::<i32, Physical>::new((3520, 600).into(), (200, 100).into());
+
+        assert_eq!(
+            super::super::camera_rect(
+                world_rect,
+                camera_center,
+                secondary.size.to_physical(1),
+                0.5,
+            ),
+            Rectangle::new((910, 625).into(), (100, 50).into())
+        );
     }
 }
