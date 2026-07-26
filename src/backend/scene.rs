@@ -368,9 +368,34 @@ fn capture_picker_elements(
             ));
         }
     } else {
-        elements.extend(super::border_strips(selected, 2, white));
+        elements.extend(
+            inner_border_rects(selected, 2)
+                .into_iter()
+                .map(|rect| make(rect, white)),
+        );
     }
     elements
+}
+
+fn inner_border_rects(
+    rect: Rectangle<i32, Physical>,
+    width: i32,
+) -> [Rectangle<i32, Physical>; 4] {
+    let width = width.max(0).min(rect.size.w).min(rect.size.h);
+    let right = rect.loc.x + rect.size.w;
+    let bottom = rect.loc.y + rect.size.h;
+    [
+        Rectangle::new(rect.loc, (rect.size.w, width).into()),
+        Rectangle::new(
+            (rect.loc.x, bottom - width).into(),
+            (rect.size.w, width).into(),
+        ),
+        Rectangle::new(rect.loc, (width, rect.size.h).into()),
+        Rectangle::new(
+            (right - width, rect.loc.y).into(),
+            (width, rect.size.h).into(),
+        ),
+    ]
 }
 
 fn dashed_border_rects(rect: Rectangle<i32, Physical>) -> Vec<Rectangle<i32, Physical>> {
@@ -503,6 +528,20 @@ mod tests {
                 && strip.loc.x < 336
                 && strip.loc.x + strip.size.w > 330
         }));
+    }
+
+    #[test]
+    fn full_screen_highlight_border_stays_inside_the_output() {
+        let output =
+            Rectangle::<i32, Physical>::new((0, 0).into(), (1920, 1080).into());
+        let border = inner_border_rects(output, 2);
+
+        assert!(border.into_iter().all(|strip| output.contains_rect(strip)));
+        assert_eq!(border[0], Rectangle::new((0, 0).into(), (1920, 2).into()));
+        assert_eq!(
+            border[1],
+            Rectangle::new((0, 1078).into(), (1920, 2).into())
+        );
     }
 
     #[test]
