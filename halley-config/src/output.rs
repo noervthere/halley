@@ -1,3 +1,6 @@
+use std::collections::HashSet;
+use std::fmt;
+
 use rune_cfg::RuneConfig;
 use rune_cfg::ast::{ObjectItem, Value};
 
@@ -39,6 +42,17 @@ pub struct OutputConfig {
     pub vrr: Vrr,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OutputParseError(String);
+
+impl fmt::Display for OutputParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for OutputParseError {}
+
 /// Parses every top-level `output:` block in the config into one
 /// `OutputConfig` each, in file order.
 ///
@@ -73,6 +87,115 @@ pub fn parse_outputs(config: &RuneConfig) -> Vec<OutputConfig> {
             parse_one_output(fields)
         })
         .collect()
+}
+
+/// Strict output parsing for atomic live reload. The tolerant public parser
+/// above remains useful for its existing load-or-default callers, but a
+/// half-written output block must not make a live compositor temporarily
+/// drop that connector's last valid configuration.
+pub fn parse_outputs_checked(config: &RuneConfig) -> Result<Vec<OutputConfig>, OutputParseError> {
+    let Value::Object(root_items) = config
+        .get_value("")
+        .map_err(|err| OutputParseError(format!("output config: {err}")))?
+    else {
+        return Err(OutputParseError("output config root must be an object".to_string()));
+    };
+
+    let mut outputs = Vec::new();
+    let mut names = HashSet::new();
+    for value in root_items.iter().filter_map(|item| match item {
+        ObjectItem::Assign(key, value) if key == "output" => Some(value),
+        _ => None,
+    }) {
+        let Value::Object(fields) = value else {
+            return Err(OutputParseError("output block must be an object".to_string()));
+        };
+        validate_output_fields(fields)?;
+        let output = parse_one_output(fields)
+            .expect("validated output fields must produce an output config");
+        if !names.insert(output.name.clone()) {
+            return Err(OutputParseError(format!(
+                "duplicate output block for {:?}",
+                output.name
+            )));
+        }
+        outputs.push(output);
+    }
+
+    Ok(outputs)
+}
+
+fn validate_output_fields(fields: &[ObjectItem]) -> Result<(), OutputParseError> {
+    let name = field(fields, &["name"])
+        .and_then(as_str)
+        .ok_or_else(|| OutputParseError("output block requires a string name".to_string()))?;
+    let width = field(fields, &["width"])
+        .and_then(as_i32)
+        .ok_or_else(|| OutputParseError(format!("output {name:?} requires a numeric width")))?;
+    let height = field(fields, &["height"])
+        .and_then(as_i32)
+        .ok_or_else(|| OutputParseError(format!("output {name:?} requires a numeric height")))?;
+    if width <= 0 || height <= 0 {
+        return Err(OutputParseError(format!(
+            "output {name:?}: width/height must be positive"
+        )));
+    }
+
+    for keys in [
+        &["offset-x", "offset_x"][..],
+        &["offset-y", "offset_y"][..],
+    ] {
+        if field(fields, keys).is_some_and(|value| as_i32(value).is_none()) {
+            return Err(OutputParseError(format!(
+                "output {name:?}: {} must be numeric",
+                keys[0]
+            )));
+        }
+    }
+
+    if let Some(value) = field(fields, &["rate", "refresh-rate", "refresh_rate"]) {
+        let Some(rate) = as_f64(value) else {
+            return Err(OutputParseError(format!(
+                "output {name:?}: rate must be numeric"
+            )));
+        };
+        if !rate.is_finite() || rate <= 0.0 {
+            return Err(OutputParseError(format!(
+                "output {name:?}: rate must be positive and finite"
+            )));
+        }
+    }
+
+    if let Some(value) = field(fields, &["transform", "rotation"]) {
+        let Some(transform) = as_u16(value) else {
+            return Err(OutputParseError(format!(
+                "output {name:?}: transform must be numeric"
+            )));
+        };
+        if !matches!(transform, 0 | 90 | 180 | 270) {
+            return Err(OutputParseError(format!(
+                "output {name:?}: transform must be 0, 90, 180, or 270"
+            )));
+        }
+    }
+
+    if let Some(value) = field(fields, &["vrr"]) {
+        let Some(vrr) = as_str(value) else {
+            return Err(OutputParseError(format!(
+                "output {name:?}: vrr must be a string"
+            )));
+        };
+        if !matches!(
+            vrr.to_ascii_lowercase().as_str(),
+            "on" | "true" | "off" | "false" | "auto" | "on-demand" | "on_demand" | "ondemand"
+        ) {
+            return Err(OutputParseError(format!(
+                "output {name:?}: unknown vrr mode {vrr:?}"
+            )));
+        }
+    }
+
+    Ok(())
 }
 
 fn parse_one_output(fields: &[ObjectItem]) -> Option<OutputConfig> {
