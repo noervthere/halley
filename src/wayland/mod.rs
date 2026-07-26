@@ -15,6 +15,7 @@ use smithay::reexports::wayland_server::DisplayHandle;
 use smithay::reexports::wayland_server::backend::{ClientData, ClientId, DisconnectReason};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::wayland::compositor::{CompositorClientState, CompositorState};
+use smithay::wayland::fractional_scale::FractionalScaleManagerState;
 use smithay::wayland::output::OutputManagerState;
 use smithay::wayland::selection::data_device::DataDeviceState;
 use smithay::wayland::selection::primary_selection::PrimarySelectionState;
@@ -22,6 +23,7 @@ use smithay::wayland::shell::xdg::XdgShellState;
 use smithay::wayland::shell::xdg::decoration::XdgDecorationState;
 use smithay::wayland::shell::wlr_layer::WlrLayerShellState;
 use smithay::wayland::shm::ShmState;
+use smithay::wayland::viewporter::ViewporterState;
 
 /// The one output responsible for painting a window. Smithay's `Space`
 /// still owns output geometry and pointer routing; this is only Halley's
@@ -65,6 +67,8 @@ pub struct WaylandState {
     pub layer_shell_state: WlrLayerShellState,
     // Retained for the lifetime of its advertised global.
     _xdg_decoration_state: XdgDecorationState,
+    _viewporter_state: ViewporterState,
+    _fractional_scale_manager_state: FractionalScaleManagerState,
     pub shm_state: ShmState,
     // Retained alongside the wl_output globals it serves.
     _output_manager_state: OutputManagerState,
@@ -121,6 +125,8 @@ impl WaylandState {
         xdg_shell_state: XdgShellState,
         layer_shell_state: WlrLayerShellState,
         xdg_decoration_state: XdgDecorationState,
+        viewporter_state: ViewporterState,
+        fractional_scale_manager_state: FractionalScaleManagerState,
         shm_state: ShmState,
         output_manager_state: OutputManagerState,
         data_device_state: DataDeviceState,
@@ -132,6 +138,8 @@ impl WaylandState {
             xdg_shell_state,
             layer_shell_state,
             _xdg_decoration_state: xdg_decoration_state,
+            _viewporter_state: viewporter_state,
+            _fractional_scale_manager_state: fractional_scale_manager_state,
             shm_state,
             _output_manager_state: output_manager_state,
             data_device_state,

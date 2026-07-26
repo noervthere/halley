@@ -1,5 +1,16 @@
 use smithay::input::{Seat, SeatState};
 use smithay::output::Output;
+use smithay::reexports::wayland_server::DisplayHandle;
+use smithay::wayland::compositor::CompositorState;
+use smithay::wayland::fractional_scale::FractionalScaleManagerState;
+use smithay::wayland::output::OutputManagerState;
+use smithay::wayland::selection::data_device::DataDeviceState;
+use smithay::wayland::selection::primary_selection::PrimarySelectionState;
+use smithay::wayland::shell::wlr_layer::WlrLayerShellState;
+use smithay::wayland::shell::xdg::XdgShellState;
+use smithay::wayland::shell::xdg::decoration::XdgDecorationState;
+use smithay::wayland::shm::ShmState;
+use smithay::wayland::viewporter::ViewporterState;
 
 use crate::camera::OutputCameras;
 use crate::cursor::CursorImage;
@@ -44,6 +55,22 @@ pub struct Session<D: SessionDriver> {
 }
 
 impl<D: SessionDriver> Session<D> {
+    pub fn create_wayland_state(display_handle: DisplayHandle) -> WaylandState {
+        WaylandState::new(
+            display_handle.clone(),
+            CompositorState::new::<Self>(&display_handle),
+            XdgShellState::new::<Self>(&display_handle),
+            WlrLayerShellState::new::<Self>(&display_handle),
+            XdgDecorationState::new::<Self>(&display_handle),
+            ViewporterState::new::<Self>(&display_handle),
+            FractionalScaleManagerState::new::<Self>(&display_handle),
+            ShmState::new::<Self>(&display_handle, vec![]),
+            OutputManagerState::new_with_xdg_output::<Self>(&display_handle),
+            DataDeviceState::new::<Self>(&display_handle),
+            PrimarySelectionState::new::<Self>(&display_handle),
+        )
+    }
+
     pub fn request_redraw(&mut self) {
         self.driver.request_redraw(None);
     }

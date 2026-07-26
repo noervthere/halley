@@ -12,14 +12,6 @@ use smithay::output::Output;
 use smithay::reexports::drm::control::crtc;
 use smithay::reexports::input::Libinput;
 use smithay::reexports::wayland_server::Display;
-use smithay::wayland::compositor::CompositorState;
-use smithay::wayland::output::OutputManagerState;
-use smithay::wayland::selection::data_device::DataDeviceState;
-use smithay::wayland::selection::primary_selection::PrimarySelectionState;
-use smithay::wayland::shell::wlr_layer::WlrLayerShellState;
-use smithay::wayland::shell::xdg::XdgShellState;
-use smithay::wayland::shell::xdg::decoration::XdgDecorationState;
-use smithay::wayland::shm::ShmState;
 
 use crate::backend::tty::TtyBackend;
 use crate::backend::{CLEAR_COLOR, RenderRequest, RenderStatus, Renderable};
@@ -28,7 +20,7 @@ use crate::input::{Keyboard, SuppressedButtons};
 use crate::input::keybinds::BackendKind;
 use crate::input::pointer::{Pointer, WheelAccumulator};
 use crate::ipc::OutputInfoSource;
-use crate::wayland::{self, WaylandState};
+use crate::wayland;
 
 use super::tty_frame::{EstimatedVblankTimer, OutputFrameState};
 
@@ -96,15 +88,6 @@ pub fn run() {
     let display: Display<TtyApp> = Display::new().expect("failed to create wayland display");
     let dh = display.handle();
 
-    let compositor_state = CompositorState::new::<TtyApp>(&dh);
-    let xdg_shell_state = XdgShellState::new::<TtyApp>(&dh);
-    let layer_shell_state = WlrLayerShellState::new::<TtyApp>(&dh);
-    let xdg_decoration_state = XdgDecorationState::new::<TtyApp>(&dh);
-    let shm_state = ShmState::new::<TtyApp>(&dh, vec![]);
-    let output_manager_state = OutputManagerState::new();
-    let data_device_state = DataDeviceState::new::<TtyApp>(&dh);
-    let primary_selection_state = PrimarySelectionState::new::<TtyApp>(&dh);
-
     let mut seat_state = SeatState::new();
     let mut seat: Seat<TtyApp> = seat_state.new_wl_seat(&dh, "seat0");
     seat.add_keyboard(Default::default(), 200, 25)
@@ -140,17 +123,7 @@ pub fn run() {
         keyboard: Keyboard::from_config(&runtime_config.keybinds, BackendKind::Tty),
         pointer: Pointer::new((100.0, 100.0)),
         cursor: CursorImage::load(),
-        wayland: WaylandState::new(
-            dh,
-            compositor_state,
-            xdg_shell_state,
-            layer_shell_state,
-            xdg_decoration_state,
-            shm_state,
-            output_manager_state,
-            data_device_state,
-            primary_selection_state,
-        ),
+        wayland: TtyApp::create_wayland_state(dh),
         seat_state,
         seat,
         start_time: Instant::now(),

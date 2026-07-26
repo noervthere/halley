@@ -12,7 +12,10 @@ use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{Client, Display};
 use smithay::utils::{SERIAL_COUNTER, Serial};
 use smithay::wayland::buffer::BufferHandler;
-use smithay::wayland::compositor::{CompositorClientState, CompositorHandler, CompositorState};
+use smithay::wayland::compositor::{
+    CompositorClientState, CompositorHandler, CompositorState, with_states,
+};
+use smithay::wayland::fractional_scale::{FractionalScaleHandler, with_fractional_scale};
 use smithay::wayland::output::OutputHandler;
 use smithay::wayland::selection::SelectionHandler;
 use smithay::wayland::selection::data_device::{
@@ -31,9 +34,9 @@ use smithay::wayland::shell::xdg::{
 use smithay::wayland::shm::{ShmHandler, ShmState};
 use smithay::wayland::socket::ListeningSocketSource;
 use smithay::{
-    delegate_compositor, delegate_data_device, delegate_layer_shell, delegate_output,
-    delegate_primary_selection, delegate_seat, delegate_shm, delegate_xdg_decoration,
-    delegate_xdg_shell,
+    delegate_compositor, delegate_data_device, delegate_fractional_scale, delegate_layer_shell,
+    delegate_output, delegate_primary_selection, delegate_seat, delegate_shm,
+    delegate_viewporter, delegate_xdg_decoration, delegate_xdg_shell,
 };
 
 use super::state::{Session, SessionDriver};
@@ -224,6 +227,17 @@ impl<D: SessionDriver> SeatHandler for Session<D> {
 
 impl<D: SessionDriver> OutputHandler for Session<D> {}
 
+impl<D: SessionDriver> FractionalScaleHandler for Session<D> {
+    fn new_fractional_scale(&mut self, surface: WlSurface) {
+        let scale = self.driver.primary_output().current_scale().fractional_scale();
+        with_states(&surface, |states| {
+            with_fractional_scale(states, |fractional_scale| {
+                fractional_scale.set_preferred_scale(scale);
+            });
+        });
+    }
+}
+
 impl<D: SessionDriver> SelectionHandler for Session<D> {
     type SelectionUserData = ();
 }
@@ -263,5 +277,7 @@ delegate_layer_shell!(@<D: SessionDriver> Session<D>);
 delegate_xdg_decoration!(@<D: SessionDriver> Session<D>);
 delegate_seat!(@<D: SessionDriver> Session<D>);
 delegate_output!(@<D: SessionDriver> Session<D>);
+delegate_viewporter!(@<D: SessionDriver> Session<D>);
+delegate_fractional_scale!(@<D: SessionDriver> Session<D>);
 delegate_data_device!(@<D: SessionDriver> Session<D>);
 delegate_primary_selection!(@<D: SessionDriver> Session<D>);

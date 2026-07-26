@@ -7,14 +7,6 @@ use smithay::input::{Seat, SeatState};
 use smithay::reexports::wayland_server::Display;
 use smithay::reexports::winit::dpi::LogicalSize;
 use smithay::reexports::winit::window::Window as WinitWindow;
-use smithay::wayland::compositor::CompositorState;
-use smithay::wayland::output::OutputManagerState;
-use smithay::wayland::selection::data_device::DataDeviceState;
-use smithay::wayland::selection::primary_selection::PrimarySelectionState;
-use smithay::wayland::shell::wlr_layer::WlrLayerShellState;
-use smithay::wayland::shell::xdg::XdgShellState;
-use smithay::wayland::shell::xdg::decoration::XdgDecorationState;
-use smithay::wayland::shm::ShmState;
 
 use crate::backend::winit::WinitBackend;
 use crate::backend::{self, RenderRequest, Renderable};
@@ -23,7 +15,7 @@ use crate::input::{Keyboard, SuppressedButtons};
 use crate::input::keybinds::BackendKind;
 use crate::input::pointer::{Pointer, WheelAccumulator};
 use crate::ipc::OutputInfoSource;
-use crate::wayland::{self, WaylandState};
+use crate::wayland;
 
 use super::{Session, SessionDriver};
 
@@ -78,15 +70,6 @@ pub fn run() {
     let display: Display<App> = Display::new().expect("failed to create wayland display");
     let dh = display.handle();
 
-    let compositor_state = CompositorState::new::<App>(&dh);
-    let xdg_shell_state = XdgShellState::new::<App>(&dh);
-    let layer_shell_state = WlrLayerShellState::new::<App>(&dh);
-    let xdg_decoration_state = XdgDecorationState::new::<App>(&dh);
-    let shm_state = ShmState::new::<App>(&dh, vec![]);
-    let output_manager_state = OutputManagerState::new();
-    let data_device_state = DataDeviceState::new::<App>(&dh);
-    let primary_selection_state = PrimarySelectionState::new::<App>(&dh);
-
     let mut seat_state = SeatState::new();
     let mut seat: Seat<App> = seat_state.new_wl_seat(&dh, "seat0");
     // Advertises capabilities and creates the wl_keyboard/wl_pointer
@@ -112,17 +95,7 @@ pub fn run() {
         keyboard: Keyboard::from_config(&runtime_config.keybinds, BackendKind::Winit),
         pointer: Pointer::new((100.0, 100.0)),
         cursor: CursorImage::load(),
-        wayland: WaylandState::new(
-            dh,
-            compositor_state,
-            xdg_shell_state,
-            layer_shell_state,
-            xdg_decoration_state,
-            shm_state,
-            output_manager_state,
-            data_device_state,
-            primary_selection_state,
-        ),
+        wayland: App::create_wayland_state(dh),
         seat_state,
         seat,
         start_time: Instant::now(),
