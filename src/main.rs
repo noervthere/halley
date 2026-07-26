@@ -25,8 +25,7 @@ fn main() {
 
 /// Whether we're already running inside another Wayland/X compositor - if
 /// so, taking over real hardware (the tty/DRM session) would be wrong even
-/// without `--winit`. Mirrors niri's own auto-detection (`Niri::init`,
-/// reference-only): a `WAYLAND_DISPLAY` or `DISPLAY` already set in the
+/// without `--winit`. A `WAYLAND_DISPLAY` or `DISPLAY` already set in the
 /// environment means a host compositor/X server is available to nest under.
 fn detect_nested_session() -> bool {
     std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("DISPLAY").is_some()

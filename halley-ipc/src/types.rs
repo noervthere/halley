@@ -52,8 +52,8 @@ pub struct OutputInfo {
 pub struct ModeInfo {
     pub width: i32,
     pub height: i32,
-    /// Refresh rate in millihertz, matching Smithay and niri's lossless
-    /// representation rather than sending an approximate floating value.
+    /// Refresh rate in Smithay's lossless millihertz representation rather
+    /// than an approximate floating value.
     pub refresh_millihz: i32,
     pub preferred: bool,
 }

@@ -11,11 +11,9 @@ pub fn new_decoration(toplevel: ToplevelSurface) {
     set_mode(&toplevel, Mode::ServerSide);
 }
 
-/// A client explicitly asked for a mode - honor exactly what it asked for
-/// rather than overriding it with our own preference. Niri does the same,
-/// specifically to avoid a known SDL2 bug where forcing a different mode
-/// during window creation leaves the window permanently hidden
-/// (https://github.com/libsdl-org/SDL/issues/8173).
+/// A client explicitly asked for a mode - honor exactly what it asked for.
+/// Forcing a different mode during window creation can leave some clients
+/// permanently hidden (https://github.com/libsdl-org/SDL/issues/8173).
 pub fn request_mode(toplevel: ToplevelSurface, mode: Mode) {
     set_mode(&toplevel, mode);
 }

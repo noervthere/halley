@@ -152,12 +152,10 @@ fn dispatch_action(
     }
 }
 
-/// Mirrors niri's `RedrawState` (`niri/src/niri.rs`) - structurally the same
-/// machine old halley's `TtyRedrawState` also independently arrived at,
-/// which is a strong signal this is the actually-necessary shape for DRM
-/// correctness, not incidental complexity. DRM only produces a VBlank event
-/// in response to a page flip it was actually asked to do, so a scene that
-/// settles into "nothing changed" naturally stops generating any further
+/// Tracks the minimum state needed for correct DRM redraw scheduling. DRM
+/// only produces a VBlank event in response to a page flip it was actually
+/// asked to do, so a scene that settles into "nothing changed" naturally
+/// stops generating any further
 /// VBlank at all - and the kernel occasionally just drops a promised VBlank
 /// notification outright (a known amdgpu quirk area, per this project's own
 /// freeze history). This tracks whether a redraw is owed and whether one is
@@ -221,8 +219,8 @@ impl OutputFrameState {
 /// work.
 /// `loop_signal`/`output_frames` replace winit's `App`'s plain `exit: bool` +
 /// direct `render()` calls - the tty backend's redraw needs real scheduling
-/// (see `RedrawState`), which `event_loop.run()` + `LoopSignal` (matching
-/// smallvil's and niri's own structure) is built to support cleanly.
+/// (see `RedrawState`), which `event_loop.run()` + `LoopSignal` supports
+/// cleanly.
 struct TtyApp {
     backend: TtyBackend,
     keyboard: Keyboard,
@@ -248,7 +246,7 @@ struct TtyApp {
     wheel_accumulator: WheelAccumulator,
     window_open_animations: crate::animation::WindowOpenAnimations,
     /// The latest valid output config received while DRM master is paused.
-    /// Like niri, hardware application waits until session resume.
+    /// Hardware application waits until session resume.
     pending_output_config: Option<Vec<halley_config::OutputConfig>>,
 }
 

@@ -59,11 +59,9 @@ pub enum BackendKind {
     Tty,
 }
 
-/// niri's confirmed convention (`Backend::mod_key`): tty uses the configured
-/// mod key as-is; winit (nested) uses Alt instead, unless the user
-/// explicitly configured Alt as their real mod key, in which case nested
-/// falls back to Super - avoids stealing the host desktop's Super key
-/// during nested/dev testing.
+/// TTY uses the configured mod key as-is. Winit uses Alt instead unless Alt
+/// is configured, in which case it falls back to Super. This avoids stealing
+/// the host desktop's Super key during nested development.
 pub fn effective_mod(configured: ModifierKey, backend: BackendKind) -> ModifierKey {
     match backend {
         BackendKind::Winit => {

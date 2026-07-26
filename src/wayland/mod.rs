@@ -84,10 +84,9 @@ pub struct WaylandState {
     /// toplevel role exists.
     pub space: Space<Window>,
     /// Toplevels that exist but haven't mapped a buffer yet, keyed by their
-    /// `wl_surface`. A narrower version of niri's `Unmapped`/`Mapped` split -
-    /// just enough to defer entering `space` until there's something real
-    /// to show, without niri's window-rules/credentials/placement-policy
-    /// weight this milestone doesn't need.
+    /// `wl_surface`. This defers entering `space` until there is a real
+    /// buffer to show, without mixing placement policy into surface
+    /// lifecycle tracking.
     pub unmapped: HashMap<WlSurface, Window>,
     /// Layer surfaces that have not attached a buffer since creation (or
     /// since a null-buffer unmap). The Smithay `LayerMap` retains the role so

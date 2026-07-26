@@ -68,12 +68,9 @@ pub struct ResizeState {
 /// Left/top-edge anchoring state, kept *outside* `Grab` because it has to
 /// outlive the drag itself.
 ///
-/// niri models the same thing on the window (`InteractiveResize::Ongoing` ->
-/// `WaitingForLastConfigure` -> `WaitingForLastCommit` in
-/// `niri/src/window/mapped.rs`) for the reason below. Halley needs only two
-/// states because it sends resize configures inline from the motion handler,
-/// so the last serial is already known by the time the button comes up;
-/// niri defers configures to its refresh cycle and so needs the extra hop.
+/// Halley needs two states because it sends resize configures inline from
+/// the motion handler, so the last serial is already known by the time the
+/// button comes up.
 pub struct ResizeAnchor {
     pub window: Window,
     pub handle: ResizeHandle,
@@ -89,9 +86,8 @@ pub struct ResizeAnchor {
     /// `wayland/compositor/tree.rs`) *before* dispatching
     /// `CompositorHandler::commit`, so by the time this code runs
     /// `Window::geometry()` already reports the newly committed size and the
-    /// correction would always work out to zero. niri sidesteps the same trap
-    /// by diffing against its own cached `data.size` in
-    /// `FloatingSpace::update_window`.
+    /// correction would always work out to zero. Keeping the compositor's
+    /// previous size provides the required before/after pair.
     pub last_size: Size<i32, Logical>,
 }
 
@@ -252,9 +248,8 @@ pub fn resize_target_size(
 /// can respond asynchronously or quantize a requested size, so anchoring
 /// against the request makes left/top resizes visibly jump.
 ///
-/// Same correction niri applies in `FloatingSpace::update_window`
-/// (`niri/src/layout/floating.rs`): `pos += prev_size - committed_size` for
-/// the LEFT/TOP edges only, evaluated once per commit against the size the
+/// The correction is `pos += previous_size - committed_size` for the
+/// left/top edges only, evaluated once per commit against the size the
 /// client actually landed on.
 pub fn resize_location_after_commit(
     handle: ResizeHandle,
@@ -284,9 +279,8 @@ pub fn resize_location_after_commit(
 /// only changes on its own commit, so for any other surface the size is
 /// unchanged and the correction works out to zero.
 ///
-/// The retirement check runs *after* the correction, matching niri's ordering
-/// in `update_window` (it reads `interactive_resize_data()` before
-/// `on_commit()` clears it) - the final commit of a drag is still anchored.
+/// The retirement check runs *after* the correction so the final commit of
+/// a drag is still anchored.
 pub fn finish_resize_commit(anchor: &mut Option<ResizeAnchor>, space: &mut Space<Window>) {
     let Some(resize) = anchor.as_mut() else {
         return;

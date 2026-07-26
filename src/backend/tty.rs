@@ -144,15 +144,15 @@ pub struct TtyBackend {
 }
 
 /// `{interface}-{interface_id}`, e.g. "DP-1" - the standard connector-name
-/// convention (matches sway/niri/wlroots), used to match a connector against
-/// a configured `output:` block by its `name` field.
+/// convention used to match a connector against a configured `output:`
+/// block by its `name` field.
 fn connector_name(connector: &connector::Info) -> String {
     format!("{}-{}", connector.interface().as_str(), connector.interface_id())
 }
 
 /// The single DRM-to-output-mode conversion used by selection, activation,
-/// and IPC. Smithay performs the same rounded millihertz calculation as
-/// niri, including interlace/doublescan handling.
+/// and IPC. Smithay performs the rounded millihertz calculation, including
+/// interlace/doublescan handling.
 fn drm_output_mode(mode: &Mode) -> OutputMode {
     OutputMode::from(*mode)
 }
@@ -162,8 +162,8 @@ fn configured_refresh_millihz(refresh_hz: f64) -> i32 {
 }
 
 /// Returns the connector-order index of an exact configured mode. When the
-/// refresh is omitted, niri's policy is to use the highest refresh available
-/// at that exact resolution.
+/// refresh is omitted, use the highest refresh available at that exact
+/// resolution.
 fn matching_mode_index(
     modes: impl IntoIterator<Item = (usize, i32, i32, i32)>,
     width: i32,
@@ -326,12 +326,8 @@ impl TtyBackend {
 
         let (drm, drm_notifier) = DrmDevice::new(drm_fd.clone(), false)?;
 
-        // Every connected connector is collected here (not just the first) -
-        // leaving a second monitor's CRTC untouched while committing an
-        // atomic modeset on another CRTC of the same AMD GPU is what caused
-        // a real system freeze during testing (see the plan for the full
-        // diagnosis). Matches anvil's and niri's own connector-handling
-        // pattern, both confirmed via source to loop over every connector.
+        // Every connected connector is collected here because the device's
+        // atomic output state must cover all active CRTCs.
         // Mode selection happens later, per-connector, once config is
         // loaded (see `select_mode`) - not here, so it can take a
         // configured `output:` block into account.
@@ -1022,7 +1018,7 @@ mod tests {
     }
 
     #[test]
-    fn configured_refresh_uses_niri_style_millihertz_rounding() {
+    fn configured_refresh_rounds_to_integer_millihertz() {
         let modes = [(0, 2560, 1440, 179_998)];
 
         assert_eq!(

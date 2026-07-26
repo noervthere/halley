@@ -70,9 +70,8 @@ pub fn load_initial() -> (Option<PathBuf>, halley_config::RuntimeConfig) {
     (Some(path), config)
 }
 
-/// Mirrors niri's deliberately simple config watcher: poll canonical path
-/// plus mtime on a background thread, parse there, and deliver complete
-/// snapshots onto the compositor event loop.
+/// Polls the canonical path plus mtime on a background thread, parses there,
+/// and delivers complete snapshots onto the compositor event loop.
 pub fn watch<App: 'static>(
     loop_handle: &LoopHandle<'_, App>,
     path: PathBuf,
