@@ -107,6 +107,11 @@ keybinds:
   # here instead to skip detection.
   "$var.mod+t" "open-terminal"
 
+  # Control the default PipeWire output through WirePlumber.
+  "XF86AudioRaiseVolume" "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+ --limit 1.0"
+  "XF86AudioLowerVolume" "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-"
+  "XF86AudioMute" "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle"
+
   # Zoom out one step, back in one step, or reset straight to 1.0x.
   "$var.mod+minus" "zoom-out"
   "$var.mod+equal" "zoom-in"

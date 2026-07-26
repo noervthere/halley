@@ -13,7 +13,7 @@ fn example_config_parses_end_to_end() {
 
     assert_eq!(keybinds.modifier, ModifierKey::Super);
     assert_eq!(keybinds.default_terminal, DefaultTerminal::Auto);
-    assert_eq!(keybinds.binds.len(), 7);
+    assert_eq!(keybinds.binds.len(), 10);
 
     let quit = keybinds
         .binds
@@ -40,6 +40,29 @@ fn example_config_parses_end_to_end() {
         .expect("open-terminal bind present");
     assert_eq!(terminal.key, "t");
     assert!(terminal.modifiers.super_key);
+
+    for (key, command) in [
+        (
+            "XF86AudioRaiseVolume",
+            "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+ --limit 1.0",
+        ),
+        (
+            "XF86AudioLowerVolume",
+            "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-",
+        ),
+        (
+            "XF86AudioMute",
+            "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle",
+        ),
+    ] {
+        let binding = keybinds
+            .binds
+            .iter()
+            .find(|binding| binding.key == key)
+            .expect("media key bind present");
+        assert_eq!(binding.modifiers, halley_config::Modifiers::default());
+        assert_eq!(&binding.action, &Action::Spawn(command.to_string()));
+    }
 
     let zoom_out = keybinds
         .binds
