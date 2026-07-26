@@ -15,14 +15,14 @@ use crate::wayland::{WaylandState, window_is_on_output};
 enum Advertisement {
     None,
     Version3,
-    Version4(libc::dev_t),
+    Version5(libc::dev_t),
 }
 
 fn advertisement(capabilities: &DmabufCapabilities) -> Advertisement {
     if capabilities.is_empty() {
         Advertisement::None
     } else if let Some(main_device) = capabilities.main_device() {
-        Advertisement::Version4(main_device)
+        Advertisement::Version5(main_device)
     } else {
         Advertisement::Version3
     }
@@ -30,7 +30,7 @@ fn advertisement(capabilities: &DmabufCapabilities) -> Advertisement {
 
 /// Advertises the strongest truthful linux-dmabuf global for one renderer.
 ///
-/// Version 4 needs a device-backed feedback table. Renderers whose EGL
+/// Feedback-capable version 5 needs a device-backed table. Renderers whose EGL
 /// device cannot be resolved still support the version 3 format list.
 pub fn create_global<D>(
     state: &mut DmabufState,
@@ -55,20 +55,20 @@ where
             );
             return Some(state.create_global::<D>(display_handle, formats));
         }
-        Advertisement::Version4(main_device) => main_device,
+        Advertisement::Version5(main_device) => main_device,
     };
 
     match DmabufFeedbackBuilder::new(main_device, formats.iter().copied()).build() {
         Ok(feedback) => {
             eventline::debug!(
-                "DMA-BUF: advertising version 4 with {} renderer formats",
+                "DMA-BUF: advertising version 5 with {} renderer formats",
                 formats.len()
             );
             Some(state.create_global_with_default_feedback::<D>(display_handle, &feedback))
         }
         Err(err) => {
             eventline::warn!(
-                "DMA-BUF: failed to build version 4 feedback, falling back to version 3: {err}"
+                "DMA-BUF: failed to build version 5 feedback, falling back to version 3: {err}"
             );
             Some(state.create_global::<D>(display_handle, formats))
         }
@@ -143,10 +143,10 @@ mod tests {
     }
 
     #[test]
-    fn selects_version_four_when_feedback_has_a_device() {
+    fn selects_version_five_when_feedback_has_a_device() {
         assert_eq!(
             advertisement(&capabilities(Some(42))),
-            Advertisement::Version4(42)
+            Advertisement::Version5(42)
         );
     }
 }
