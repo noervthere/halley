@@ -59,8 +59,7 @@ zoom:
   smooth-rate 12.5
 end
 
-# Animation settings. Only window opening exists for now; more animation
-# names will be added only when their effects exist.
+# Animation settings.
 animations:
   # Master switch for all animations.
   enabled true
@@ -74,6 +73,18 @@ animations:
 
     duration-ms 300
     curve "linear"
+  end
+
+  fullscreen:
+    # Enable or disable just the fullscreen transition.
+    enabled true
+
+    # Motion can be "spring" or "easing". Spring uses the three values
+    # below; easing instead uses duration-ms and curve.
+    motion "spring"
+    damping-ratio 1.0
+    stiffness 800.0
+    epsilon 0.0001
   end
 end
 

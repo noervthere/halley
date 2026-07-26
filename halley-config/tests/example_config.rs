@@ -98,6 +98,22 @@ fn example_config_window_open_animation_parses() {
     );
 }
 
+#[test]
+fn example_config_fullscreen_animation_parses() {
+    let config = RuneConfig::from_file(EXAMPLE_PATH).expect("example config parses");
+    let fullscreen = halley_config::parse_animations(&config).fullscreen;
+
+    assert!(fullscreen.enabled);
+    assert_eq!(
+        fullscreen.motion,
+        halley_config::AnimationMotion::Spring(halley_config::SpringMotion {
+            damping_ratio: 1.0,
+            stiffness: 800.0,
+            epsilon: 0.0001,
+        })
+    );
+}
+
 /// The shipped example's `output:` block is commented out on purpose (an
 /// active block whose `name` happened to match a real connector would force
 /// a mode onto hardware this file wasn't written for) - confirm it really
