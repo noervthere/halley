@@ -188,5 +188,17 @@ pub struct ClientState {
 
 impl ClientData for ClientState {
     fn initialized(&self, _client_id: ClientId) {}
-    fn disconnected(&self, _client_id: ClientId, _reason: DisconnectReason) {}
+
+    fn disconnected(&self, client_id: ClientId, reason: DisconnectReason) {
+        match reason {
+            DisconnectReason::ConnectionClosed => {
+                eventline::debug!("wayland client {client_id:?} disconnected");
+            }
+            DisconnectReason::ProtocolError(error) => {
+                eventline::warn!(
+                    "wayland client {client_id:?} disconnected after protocol error: {error:?}"
+                );
+            }
+        }
+    }
 }
