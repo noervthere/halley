@@ -6,11 +6,13 @@ mod cursor;
 mod frame_clock;
 mod input;
 mod ipc;
+mod logging;
 mod spawn;
 mod session;
 mod wayland;
 
 fn main() {
+    logging::init();
     let force_winit = std::env::args().any(|arg| arg == "--winit");
 
     if force_winit || detect_nested_session() {
@@ -18,6 +20,7 @@ fn main() {
     } else {
         session::tty::run();
     }
+    logging::flush();
 }
 
 /// Whether we're already running inside another Wayland/X compositor - if

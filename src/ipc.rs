@@ -89,10 +89,7 @@ pub fn init_ipc_listener<App: 'static>(
     loop_handle: &LoopHandle<'_, App>,
     output_info: impl Fn(&App) -> Vec<halley_ipc::OutputInfo> + 'static,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let path = halley_ipc::default_socket_path()?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
+    let path = halley_ipc::ensure_runtime_dir()?.join("halley.sock");
     remove_stale_socket(&path)?;
 
     let listener = UnixListener::bind(&path)?;
