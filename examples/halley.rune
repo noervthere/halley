@@ -112,7 +112,7 @@ keybinds:
   "$var.mod+equal" "zoom-in"
   "$var.mod+0" "zoom-reset"
 
-  # Open the native area selector.
+  # Open the native Region, Screen, and Window screenshot menu.
   "Print" "screenshot"
 
   # Other keyboard, mouse, and physical-wheel triggers use the same chord
