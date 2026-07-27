@@ -9,16 +9,12 @@ use crate::camera::OutputCameras;
 
 use super::WaylandState;
 
-/// A new toplevel role was created - stash it as unmapped, nothing shown
-/// yet. Deliberately just this: no spawn-rule resolution, no monitor/
-/// cluster placement, no reveal animation. Old halley fused exactly this
-/// kind of window-manager policy into `XdgShellHandler::new_toplevel`
-/// itself; that policy, if and when it exists, belongs downstream of
-/// mapping, not inside protocol handling.
+/// Registers a new toplevel as unmapped. Placement, rules, focus, and reveal
+/// policy run only after the client attaches a visible buffer.
 pub fn new_toplevel(wayland: &mut WaylandState, surface: ToplevelSurface) {
     let wl_surface = surface.wl_surface().clone();
     let window = Window::new_wayland_window(surface);
-    wayland.unmapped.insert(wl_surface, window);
+    wayland.windows.register_xdg(wl_surface, window);
 }
 
 /// Removes a destroyed toplevel from whichever lifecycle state owns it.
@@ -28,18 +24,9 @@ pub fn new_toplevel(wayland: &mut WaylandState, surface: ToplevelSurface) {
 /// `Space::refresh()` can leave Halley's compositor-drawn border in the next
 /// frame. Focus clears to `None`; there is no fallback-refocus policy yet.
 pub fn toplevel_destroyed(wayland: &mut WaylandState, surface: &ToplevelSurface) {
-    wayland.unmapped.remove(surface.wl_surface());
-    let mapped = wayland
-        .space
-        .elements()
-        .find(|window| {
-            window
-                .toplevel()
-                .is_some_and(|toplevel| toplevel.wl_surface() == surface.wl_surface())
-        })
-        .cloned();
-    if let Some(window) = mapped {
-        wayland.space.unmap_elem(&window);
+    let key = crate::window::lifecycle::WindowLifecycle::xdg_key(surface.wl_surface());
+    if let Some(removed) = wayland.windows.destroy(&key) {
+        wayland.space.unmap_elem(&removed.window);
     }
     if wayland.focused_window.as_ref() == Some(surface.wl_surface()) {
         wayland.focused_window = None;
@@ -58,7 +45,11 @@ pub fn handle_commit(
     cameras: &OutputCameras,
     surface: &WlSurface,
 ) -> Option<WlSurface> {
-    let window = wayland.unmapped.get(surface)?;
+    let key = crate::window::lifecycle::WindowLifecycle::xdg_key(surface);
+    if wayland.windows.is_mapped(&key) {
+        return None;
+    }
+    let window = wayland.windows.window(&key)?;
     let toplevel = window.toplevel()?;
 
     if !toplevel.is_initial_configure_sent() {
@@ -70,7 +61,8 @@ pub fn handle_commit(
     let has_buffer =
         with_renderer_surface_state(surface, |state| state.buffer().is_some()).unwrap_or(false);
     if has_buffer {
-        let window = wayland.unmapped.remove(surface).expect("checked above");
+        let transition = wayland.windows.begin_map(&key)?;
+        let window = transition.window;
         let output = super::focus::selected_output(wayland).cloned();
         let location = output
             .as_ref()
@@ -84,6 +76,7 @@ pub fn handle_commit(
         // Also raises+activates via `focus_and_raise`, same as clicking a
         // window now does.
         crate::window::focus_and_raise(wayland, &window);
+        wayland.windows.finalize_map(&key);
         return Some(surface.clone());
     }
 

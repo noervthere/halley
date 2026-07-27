@@ -553,7 +553,7 @@ fn find_window<'a>(wayland: &'a WaylandState, surface: &WlSurface) -> Option<&'a
                 .wl_surface()
                 .is_some_and(|candidate| candidate.as_ref() == surface)
         })
-        .or_else(|| wayland.unmapped.get(surface))
+        .or_else(|| wayland.windows.window_for_wl_surface(surface))
 }
 
 fn output_by_name(wayland: &WaylandState, name: &str) -> Option<Output> {
