@@ -127,46 +127,36 @@ fn admit_window<D: SessionDriver>(session: &mut Session<D>, xid: u32) {
         return;
     };
     let output = session.driver.primary_output().clone();
-    let location = crate::wayland::xdg_shell::centered_location(
+    let opening_size = OpeningPlacement::preferred_size(initial_size, window.geometry().size);
+    let location = crate::wayland::xdg_shell::centered_location_for_size(
         &session.wayland,
         &session.cameras,
         &output,
-        &window,
+        opening_size,
     );
+    let opening_geometry = Rectangle::new(location, opening_size);
+    if let Err(err) = surface.configure(opening_geometry) {
+        eventline::warn!("xwayland: failed to prepare centered opening geometry: {err}");
+        return;
+    }
     crate::wayland::set_window_output(&window, &output);
     session
         .wayland
         .space
         .map_element(window.clone(), location, true);
-    let opening_geometry = session
-        .wayland
-        .space
-        .element_geometry(&window)
-        .and_then(|geometry| {
-            let placement = OpeningPlacement::new(geometry, initial_size);
-            let opening_geometry = placement.restore_geometry();
-            session.xwayland.opening_placements.insert(xid, placement);
-            opening_geometry
-        });
+    session
+        .xwayland
+        .opening_placements
+        .insert(xid, OpeningPlacement::new(opening_geometry));
     let started = window.wl_surface().is_some_and(|wl_surface| {
         session
             .window_open_animations
             .start(wl_surface.into_owned(), crate::frame_clock::monotonic_now())
     });
     if surface.is_fullscreen() {
-        if let Some(geometry) = opening_geometry
-            && let Err(err) = surface.configure(geometry)
-        {
-            eventline::warn!("xwayland: failed to configure opening window: {err}");
-        }
         enter_fullscreen(session, &surface, FullscreenRequestOrigin::Initial);
     } else if surface.is_maximized() {
         maximize_window(session, &surface);
-    } else if let Some(geometry) =
-        opening_geometry.or_else(|| session.wayland.space.element_bbox(&window))
-        && let Err(err) = surface.configure(geometry)
-    {
-        eventline::warn!("xwayland: failed to configure mapped window: {err}");
     }
     if !surface.is_override_redirect() {
         crate::session::focus_window(session, &window, SERIAL_COUNTER.next_serial());
