@@ -31,8 +31,20 @@ struct FullscreenWindow {
     restore: Option<WindowedPlacement>,
     fullscreen_size: Size<i32, Logical>,
     transition: Option<MotionTimeline>,
-    external_pending: Option<Rectangle<i32, Logical>>,
+    external_pending: Option<ExternalPending>,
     snapshot_serials: Vec<Serial>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExternalPresentationKind {
+    Opening,
+    Animated,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ExternalPending {
+    geometry: Rectangle<i32, Logical>,
+    presentation: ExternalPresentationKind,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -283,6 +295,23 @@ impl FullscreenManager {
         wayland: &mut WaylandState,
         window: &Window,
     ) -> Option<ExternalTransactionRequest> {
+        self.request_external_transaction(wayland, window, ExternalPresentationKind::Animated)
+    }
+
+    pub(crate) fn request_external_opening(
+        &mut self,
+        wayland: &mut WaylandState,
+        window: &Window,
+    ) -> Option<ExternalTransactionRequest> {
+        self.request_external_transaction(wayland, window, ExternalPresentationKind::Opening)
+    }
+
+    fn request_external_transaction(
+        &mut self,
+        wayland: &mut WaylandState,
+        window: &Window,
+        presentation: ExternalPresentationKind,
+    ) -> Option<ExternalTransactionRequest> {
         let wl_surface = window.wl_surface().map(|surface| surface.into_owned())?;
         let window = find_window(wayland, &wl_surface).cloned()?;
         let target = super::window_output_name(&window)
@@ -321,17 +350,42 @@ impl FullscreenManager {
             entry.restore = restore;
         }
         super::set_window_output(&window, &target);
-        Some(begin_external_transaction(entry, true, output_geometry))
+        Some(begin_external_transaction(
+            entry,
+            true,
+            output_geometry,
+            presentation,
+        ))
     }
 
     pub(crate) fn unrequest_external_animated(
         &mut self,
         window: &Window,
     ) -> Option<ExternalTransactionRequest> {
+        self.unrequest_external_transaction(window, ExternalPresentationKind::Animated)
+    }
+
+    pub(crate) fn unrequest_external_opening(
+        &mut self,
+        window: &Window,
+    ) -> Option<ExternalTransactionRequest> {
+        self.unrequest_external_transaction(window, ExternalPresentationKind::Opening)
+    }
+
+    fn unrequest_external_transaction(
+        &mut self,
+        window: &Window,
+        presentation: ExternalPresentationKind,
+    ) -> Option<ExternalTransactionRequest> {
         let wl_surface = window.wl_surface().map(|surface| surface.into_owned())?;
         let entry = self.windows.get_mut(&wl_surface)?;
         let geometry = entry.restore.as_ref()?.geometry;
-        Some(begin_external_transaction(entry, false, geometry))
+        Some(begin_external_transaction(
+            entry,
+            false,
+            geometry,
+            presentation,
+        ))
     }
 
     pub(crate) fn settle_external_configure(
@@ -659,12 +713,16 @@ fn begin_external_transaction(
     entry: &mut FullscreenWindow,
     desired: bool,
     geometry: Rectangle<i32, Logical>,
+    presentation: ExternalPresentationKind,
 ) -> ExternalTransactionRequest {
     if entry.desired == desired {
         return ExternalTransactionRequest::NoChange;
     }
     entry.desired = desired;
-    entry.external_pending = Some(geometry);
+    entry.external_pending = Some(ExternalPending {
+        geometry,
+        presentation,
+    });
     ExternalTransactionRequest::Configure(geometry)
 }
 
@@ -674,15 +732,23 @@ fn acknowledge_external_transaction(
     animations: Animations,
     now: Duration,
 ) -> ExternalConfigureResult {
-    let Some(expected) = entry.external_pending else {
+    let Some(pending) = entry.external_pending else {
         return ExternalConfigureResult::NotPending;
     };
-    if observed != expected {
+    if observed != pending.geometry {
         return ExternalConfigureResult::Waiting;
     }
     entry.external_pending = None;
     let fullscreen = entry.desired;
-    retarget_transition(entry, animations, now, fullscreen);
+    match pending.presentation {
+        ExternalPresentationKind::Opening => {
+            entry.active = fullscreen;
+            entry.transition = None;
+        }
+        ExternalPresentationKind::Animated => {
+            retarget_transition(entry, animations, now, fullscreen);
+        }
+    }
     ExternalConfigureResult::Settled {
         fullscreen,
         animated: entry.transition.is_some(),
@@ -904,7 +970,12 @@ mod tests {
         let intermediate = Rectangle::new((0, 0).into(), (1280, 720).into());
 
         assert_eq!(
-            begin_external_transaction(&mut entry, true, target),
+            begin_external_transaction(
+                &mut entry,
+                true,
+                target,
+                ExternalPresentationKind::Animated
+            ),
             ExternalTransactionRequest::Configure(target)
         );
         assert_eq!(
@@ -939,19 +1010,64 @@ mod tests {
         let restore = Rectangle::new((320, 180).into(), (1280, 720).into());
 
         assert_eq!(
-            begin_external_transaction(&mut entry, true, fullscreen),
+            begin_external_transaction(
+                &mut entry,
+                true,
+                fullscreen,
+                ExternalPresentationKind::Opening
+            ),
             ExternalTransactionRequest::Configure(fullscreen)
         );
         assert_eq!(
-            begin_external_transaction(&mut entry, false, restore),
+            begin_external_transaction(
+                &mut entry,
+                false,
+                restore,
+                ExternalPresentationKind::Opening
+            ),
             ExternalTransactionRequest::Configure(restore)
         );
         assert_eq!(
-            begin_external_transaction(&mut entry, true, fullscreen),
+            begin_external_transaction(
+                &mut entry,
+                true,
+                fullscreen,
+                ExternalPresentationKind::Opening
+            ),
             ExternalTransactionRequest::Configure(fullscreen)
         );
-        assert_eq!(entry.external_pending, Some(fullscreen));
+        assert_eq!(
+            entry.external_pending,
+            Some(ExternalPending {
+                geometry: fullscreen,
+                presentation: ExternalPresentationKind::Opening
+            })
+        );
         assert!(entry.desired);
+        assert!(entry.transition.is_none());
+    }
+
+    #[test]
+    fn opening_transaction_settles_without_a_second_animation() {
+        let animations = Animations::default();
+        let mut entry = test_entry(false);
+        let target = Rectangle::new((0, 0).into(), (1920, 1080).into());
+
+        begin_external_transaction(&mut entry, true, target, ExternalPresentationKind::Opening);
+
+        assert_eq!(
+            acknowledge_external_transaction(
+                &mut entry,
+                target,
+                animations,
+                Duration::from_secs(1)
+            ),
+            ExternalConfigureResult::Settled {
+                fullscreen: true,
+                animated: false
+            }
+        );
+        assert!(entry.active);
         assert!(entry.transition.is_none());
     }
 
@@ -960,7 +1076,7 @@ mod tests {
         let animations = Animations::default();
         let mut entry = test_entry(false);
         let target = Rectangle::new((0, 0).into(), (1920, 1080).into());
-        begin_external_transaction(&mut entry, true, target);
+        begin_external_transaction(&mut entry, true, target, ExternalPresentationKind::Animated);
         acknowledge_external_transaction(&mut entry, target, animations, Duration::from_secs(1));
         assert!(entry.transition.is_some());
 

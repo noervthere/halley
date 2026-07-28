@@ -95,13 +95,12 @@ pub fn build(
                 scaled_bbox,
             )
             .unwrap_or_default();
-        let animated_bbox = opening_visual.transform_rect(scaled_bbox, scaled_bbox);
         let fullscreen = request.fullscreen.presentation(
             window_surface.as_ref(),
             output,
             request.target_presentation_time,
         );
-        let animated_bbox = fullscreen
+        let presentation_bbox = fullscreen
             .map(|presentation| {
                 let windowed_bbox = presentation
                     .windowed_geometry
@@ -116,7 +115,8 @@ pub fn build(
                     .unwrap_or_else(|| presentation.fullscreen_rect(output_size));
                 presentation.client_rect(windowed_bbox, output_size)
             })
-            .unwrap_or(animated_bbox);
+            .unwrap_or(scaled_bbox);
+        let animated_bbox = opening_visual.transform_rect(presentation_bbox, presentation_bbox);
         if animated_bbox.size.w == 0 || animated_bbox.size.h == 0 {
             continue;
         }
@@ -130,7 +130,9 @@ pub fn build(
         elements.extend(popup_elements.into_iter().map(|surface_element| {
             let native_geometry = surface_element.geometry(Scale::from(1.0));
             let destination = if fullscreen.is_some() {
-                map_rect(native_geometry, geometry.to_physical(1), animated_bbox)
+                let destination =
+                    map_rect(native_geometry, geometry.to_physical(1), presentation_bbox);
+                opening_visual.transform_rect(destination, presentation_bbox)
             } else {
                 let final_destination =
                     super::camera_rect(native_geometry, camera_center, output_size, zoom_scale);
@@ -139,11 +141,7 @@ pub fn build(
             SceneElement::Rescaled(super::rescale::RescaledElement::new(
                 surface_element,
                 destination,
-                if fullscreen.is_some() {
-                    1.0
-                } else {
-                    opening_visual.alpha()
-                },
+                opening_visual.alpha(),
             ))
         }));
         let fullscreen_blend = if let Some(presentation) = fullscreen {
@@ -168,7 +166,9 @@ pub fn build(
             elements.extend(surface_elements.into_iter().filter_map(|surface_element| {
                 let native_geometry = surface_element.geometry(Scale::from(1.0));
                 let destination = if fullscreen.is_some() {
-                    map_rect(native_geometry, geometry.to_physical(1), animated_bbox)
+                    let destination =
+                        map_rect(native_geometry, geometry.to_physical(1), presentation_bbox);
+                    opening_visual.transform_rect(destination, presentation_bbox)
                 } else {
                     let final_destination =
                         super::camera_rect(native_geometry, camera_center, output_size, zoom_scale);
@@ -177,11 +177,7 @@ pub fn build(
                 let element = super::rescale::RescaledElement::new(
                     surface_element,
                     destination,
-                    if fullscreen.is_some() {
-                        1.0
-                    } else {
-                        opening_visual.alpha()
-                    },
+                    opening_visual.alpha(),
                 );
                 CropRenderElement::from_element(element, 1.0, animated_bbox)
                     .map(SceneElement::Cropped)
