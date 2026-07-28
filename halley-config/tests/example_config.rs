@@ -131,10 +131,12 @@ fn example_config_window_open_animation_parses() {
         animations.window_open.animation_type,
         halley_config::WindowOpenAnimationType::CenterOut
     );
-    assert_eq!(animations.window_open.duration_ms, 300);
     assert_eq!(
-        animations.window_open.curve,
-        halley_config::AnimationCurve::Linear
+        animations.window_open.motion,
+        halley_config::AnimationMotion::Easing(halley_config::EasingMotion {
+            duration_ms: 300,
+            curve: halley_config::AnimationCurve::Linear,
+        })
     );
 }
 

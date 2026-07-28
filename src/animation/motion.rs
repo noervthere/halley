@@ -111,7 +111,7 @@ pub fn apply_curve(curve: AnimationCurve, progress: f64) -> f64 {
         AnimationCurve::EaseOutCubic => 1.0 - (1.0 - progress).powi(3),
         AnimationCurve::EaseOutExpo if progress == 1.0 => 1.0,
         AnimationCurve::EaseOutExpo => 1.0 - 2.0_f64.powf(-10.0 * progress),
-        AnimationCurve::EaseOutBack => {
+        AnimationCurve::Elastic => {
             let overshoot = 1.42;
             let shifted = progress - 1.0;
             1.0 + shifted * shifted * ((overshoot + 1.0) * shifted + overshoot)
@@ -209,11 +209,17 @@ mod tests {
             AnimationCurve::EaseOutQuad,
             AnimationCurve::EaseOutCubic,
             AnimationCurve::EaseOutExpo,
-            AnimationCurve::EaseOutBack,
+            AnimationCurve::Elastic,
         ] {
             assert_eq!(apply_curve(curve, 0.0), 0.0);
             assert_eq!(apply_curve(curve, 1.0), 1.0);
         }
+    }
+
+    #[test]
+    fn elastic_curve_overshoots_before_settling() {
+        assert!(apply_curve(AnimationCurve::Elastic, 0.5) > 1.0);
+        assert_eq!(apply_curve(AnimationCurve::Elastic, 1.0), 1.0);
     }
 
     #[test]

@@ -5,9 +5,6 @@ use halley_config::{AnimationMotion, Animations, WindowOpenAnimationType};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Physical, Rectangle};
 
-const ELASTIC_PROXY_SIZE: f64 = 220.0;
-const ELASTIC_MIN_SCALE: f64 = 0.24;
-const ELASTIC_MAX_START_SCALE: f64 = 0.66;
 const MAX_OVERSHOOT_SCALE: f64 = 1.08;
 
 mod motion;
@@ -23,22 +20,11 @@ struct WindowOpenTimeline {
 }
 
 impl WindowOpenTimeline {
-    fn visual_at(self, now: Duration, bounds: Rectangle<i32, Physical>) -> WindowOpenVisual {
+    fn visual_at(self, now: Duration, _bounds: Rectangle<i32, Physical>) -> WindowOpenVisual {
         let progress = self.motion.value_at(now);
         let (scale, alpha) = match self.animation_type {
             WindowOpenAnimationType::CenterOut => (progress.clamp(0.0, MAX_OVERSHOOT_SCALE), 1.0),
-            WindowOpenAnimationType::Elastic => {
-                let width = f64::from(bounds.size.w.max(1));
-                let height = f64::from(bounds.size.h.max(1));
-                let start_scale = (ELASTIC_PROXY_SIZE / width)
-                    .min(ELASTIC_PROXY_SIZE / height)
-                    .clamp(ELASTIC_MIN_SCALE, ELASTIC_MAX_START_SCALE);
-                let motion = progress.clamp(0.0, MAX_OVERSHOOT_SCALE);
-                (
-                    start_scale + (1.0 - start_scale) * motion,
-                    motion.clamp(0.0, 1.0) as f32,
-                )
-            }
+            WindowOpenAnimationType::Fade => (1.0, progress.clamp(0.0, 1.0) as f32),
         };
         WindowOpenVisual {
             scale,
@@ -63,8 +49,8 @@ impl WindowOpenTimeline {
         let (current, velocity) = match self.geometry {
             Some(geometry) => (geometry.rect_at(now), geometry.velocity_at(now)),
             None => {
-                let scale = self.scale_at(now, current_bounds);
-                let scale_velocity = self.scale_velocity_at(now, current_bounds);
+                let scale = self.scale_at(now);
+                let scale_velocity = self.scale_velocity_at(now);
                 (
                     VisualRect::scaled(current_bounds, scale),
                     VisualRect::scaled_velocity(current_bounds, scale_velocity),
@@ -80,22 +66,15 @@ impl WindowOpenTimeline {
         ));
     }
 
-    fn scale_at(self, now: Duration, bounds: Rectangle<i32, Physical>) -> f64 {
+    fn scale_at(self, now: Duration) -> f64 {
         let motion = self.motion.value_at(now).clamp(0.0, MAX_OVERSHOOT_SCALE);
         match self.animation_type {
             WindowOpenAnimationType::CenterOut => motion,
-            WindowOpenAnimationType::Elastic => {
-                let width = f64::from(bounds.size.w.max(1));
-                let height = f64::from(bounds.size.h.max(1));
-                let start = (ELASTIC_PROXY_SIZE / width)
-                    .min(ELASTIC_PROXY_SIZE / height)
-                    .clamp(ELASTIC_MIN_SCALE, ELASTIC_MAX_START_SCALE);
-                start + (1.0 - start) * motion
-            }
+            WindowOpenAnimationType::Fade => 1.0,
         }
     }
 
-    fn scale_velocity_at(self, now: Duration, bounds: Rectangle<i32, Physical>) -> f64 {
+    fn scale_velocity_at(self, now: Duration) -> f64 {
         let progress = self.motion.value_at(now);
         if !(0.0..MAX_OVERSHOOT_SCALE).contains(&progress) {
             return 0.0;
@@ -103,14 +82,7 @@ impl WindowOpenTimeline {
         let velocity = self.motion.velocity_at(now);
         match self.animation_type {
             WindowOpenAnimationType::CenterOut => velocity,
-            WindowOpenAnimationType::Elastic => {
-                let width = f64::from(bounds.size.w.max(1));
-                let height = f64::from(bounds.size.h.max(1));
-                let start = (ELASTIC_PROXY_SIZE / width)
-                    .min(ELASTIC_PROXY_SIZE / height)
-                    .clamp(ELASTIC_MIN_SCALE, ELASTIC_MAX_START_SCALE);
-                (1.0 - start) * velocity
-            }
+            WindowOpenAnimationType::Fade => 0.0,
         }
     }
 }
@@ -432,7 +404,7 @@ mod tests {
             AnimationCurve::EaseOutQuad,
             AnimationCurve::EaseOutCubic,
             AnimationCurve::EaseOutExpo,
-            AnimationCurve::EaseOutBack,
+            AnimationCurve::Elastic,
         ] {
             assert_eq!(motion::apply_curve(curve, 0.0), 0.0);
             assert_eq!(motion::apply_curve(curve, 1.0), 1.0);
@@ -486,38 +458,31 @@ mod tests {
     }
 
     #[test]
-    fn elastic_starts_at_proxy_scale_and_fades_in() {
+    fn fade_starts_transparent_at_final_geometry() {
         let bounds = Rectangle::new((100, 50).into(), (800, 600).into());
-        let animation = timeline(
-            WindowOpenAnimationType::Elastic,
-            AnimationCurve::EaseOutBack,
-        );
+        let animation = timeline(WindowOpenAnimationType::Fade, AnimationCurve::Linear);
 
         let start = animation.visual_at(Duration::from_secs(1), bounds);
-        assert_eq!(start.scale, 0.275);
+        assert_eq!(start.scale, 1.0);
         assert_eq!(start.alpha(), 0.0);
-        assert_eq!(
-            start.transform_rect(bounds, bounds),
-            Rectangle::new((390, 268).into(), (220, 165).into())
-        );
+        assert_eq!(start.transform_rect(bounds, bounds), bounds);
     }
 
     #[test]
-    fn elastic_small_windows_still_have_visible_scale_motion() {
-        let animation = timeline(
-            WindowOpenAnimationType::Elastic,
-            AnimationCurve::EaseOutBack,
-        );
+    fn fade_advances_alpha_without_transforming_geometry() {
+        let bounds = Rectangle::new((100, 50).into(), (800, 600).into());
+        let animation = timeline(WindowOpenAnimationType::Fade, AnimationCurve::Linear);
+        let middle = animation.visual_at(Duration::from_millis(1150), bounds);
+        let end = animation.visual_at(Duration::from_millis(1300), bounds);
 
-        let start = animation.visual_at(Duration::from_secs(1), rect(150, 100));
-
-        assert_eq!(start.scale, ELASTIC_MAX_START_SCALE);
-        assert_eq!(start.alpha(), 0.0);
+        assert_eq!(middle.alpha(), 0.5);
+        assert_eq!(middle.transform_rect(bounds, bounds), bounds);
+        assert_eq!(end, WindowOpenVisual::default());
     }
 
     #[test]
     fn active_opening_uses_updated_final_bounds_without_restarting() {
-        let animation = timeline(WindowOpenAnimationType::Elastic, AnimationCurve::Linear);
+        let animation = timeline(WindowOpenAnimationType::Fade, AnimationCurve::Linear);
         let now = Duration::from_millis(1150);
 
         let windowed = animation.visual_at(now, rect(800, 600));
@@ -525,17 +490,15 @@ mod tests {
 
         assert_eq!(animation.motion.value_at(now), 0.5);
         assert_eq!(windowed.alpha(), fullscreen.alpha());
-        assert!(fullscreen.scale < windowed.scale);
+        assert_eq!(windowed.scale, 1.0);
+        assert_eq!(fullscreen.scale, 1.0);
         assert_eq!(animation.motion.value_at(Duration::from_millis(1300)), 1.0);
     }
 
     #[test]
-    fn elastic_overshoots_before_settling() {
+    fn center_out_can_use_the_elastic_curve() {
         let bounds = Rectangle::new((0, 0).into(), (800, 600).into());
-        let animation = timeline(
-            WindowOpenAnimationType::Elastic,
-            AnimationCurve::EaseOutBack,
-        );
+        let animation = timeline(WindowOpenAnimationType::CenterOut, AnimationCurve::Elastic);
 
         let middle = animation.visual_at(Duration::from_millis(1150), bounds);
         assert!(middle.scale > 1.0);
@@ -548,10 +511,7 @@ mod tests {
 
     #[test]
     fn overshoot_does_not_finish_the_timeline_early() {
-        let animation = timeline(
-            WindowOpenAnimationType::Elastic,
-            AnimationCurve::EaseOutBack,
-        );
+        let animation = timeline(WindowOpenAnimationType::CenterOut, AnimationCurve::Elastic);
         let middle = Duration::from_millis(1150);
 
         assert!(animation.visual_at(middle, rect(800, 600)).scale > 1.0);
@@ -613,7 +573,7 @@ mod tests {
         let windowed = rect(800, 600);
         let fullscreen = rect(1920, 1080);
         let now = Duration::from_millis(1150);
-        let mut animation = timeline(WindowOpenAnimationType::Elastic, AnimationCurve::Linear);
+        let mut animation = timeline(WindowOpenAnimationType::Fade, AnimationCurve::Linear);
         let alpha = animation.visual_at(now, windowed).alpha();
 
         animation.retarget(now, windowed, fullscreen);
@@ -626,7 +586,7 @@ mod tests {
         let windowed = rect(800, 600);
         let fullscreen = rect(1920, 1080);
         let started = Duration::from_secs(1);
-        let mut animation = timeline(WindowOpenAnimationType::Elastic, AnimationCurve::Linear);
+        let mut animation = timeline(WindowOpenAnimationType::Fade, AnimationCurve::Linear);
         let alpha = animation.visual_at(started, windowed).alpha();
 
         animation.retarget(started, windowed, fullscreen);

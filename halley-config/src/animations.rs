@@ -7,7 +7,7 @@ pub enum AnimationCurve {
     EaseOutQuad,
     EaseOutCubic,
     EaseOutExpo,
-    EaseOutBack,
+    Elastic,
 }
 
 impl AnimationCurve {
@@ -17,7 +17,7 @@ impl AnimationCurve {
             "ease-out-quad" => Some(Self::EaseOutQuad),
             "ease-out-cubic" => Some(Self::EaseOutCubic),
             "ease-out-expo" => Some(Self::EaseOutExpo),
-            "ease-out-back" => Some(Self::EaseOutBack),
+            "elastic" => Some(Self::Elastic),
             _ => None,
         }
     }
@@ -122,14 +122,14 @@ fn finite_clamp(value: f64, min: f64, max: f64, fallback: f64) -> f64 {
 pub enum WindowOpenAnimationType {
     #[default]
     CenterOut,
-    Elastic,
+    Fade,
 }
 
 impl WindowOpenAnimationType {
     fn parse(value: &str) -> Option<Self> {
         match value {
             "center-out" => Some(Self::CenterOut),
-            "elastic" => Some(Self::Elastic),
+            "fade" => Some(Self::Fade),
             _ => None,
         }
     }
@@ -139,41 +139,19 @@ impl WindowOpenAnimationType {
 pub struct WindowOpenAnimation {
     pub enabled: bool,
     pub animation_type: WindowOpenAnimationType,
-    pub duration_ms: u32,
-    pub curve: AnimationCurve,
     pub motion: AnimationMotion,
-}
-
-impl WindowOpenAnimation {
-    fn defaults_for(animation_type: WindowOpenAnimationType) -> Self {
-        match animation_type {
-            WindowOpenAnimationType::CenterOut => Self {
-                enabled: true,
-                animation_type,
-                duration_ms: 300,
-                curve: AnimationCurve::Linear,
-                motion: AnimationMotion::Easing(EasingMotion {
-                    duration_ms: 300,
-                    curve: AnimationCurve::Linear,
-                }),
-            },
-            WindowOpenAnimationType::Elastic => Self {
-                enabled: true,
-                animation_type,
-                duration_ms: 620,
-                curve: AnimationCurve::EaseOutBack,
-                motion: AnimationMotion::Easing(EasingMotion {
-                    duration_ms: 620,
-                    curve: AnimationCurve::EaseOutBack,
-                }),
-            },
-        }
-    }
 }
 
 impl Default for WindowOpenAnimation {
     fn default() -> Self {
-        Self::defaults_for(WindowOpenAnimationType::default())
+        Self {
+            enabled: true,
+            animation_type: WindowOpenAnimationType::default(),
+            motion: AnimationMotion::Easing(EasingMotion {
+                duration_ms: 300,
+                curve: AnimationCurve::Linear,
+            }),
+        }
     }
 }
 
@@ -217,22 +195,25 @@ pub fn parse_animations(config: &RuneConfig) -> Animations {
         .flatten()
         .and_then(|value| WindowOpenAnimationType::parse(&value))
         .unwrap_or(defaults.window_open.animation_type);
-    let type_defaults = WindowOpenAnimation::defaults_for(animation_type);
+    let default_easing = match defaults.window_open.motion {
+        AnimationMotion::Easing(easing) => easing,
+        AnimationMotion::Spring(_) => unreachable!("window-open defaults use easing motion"),
+    };
     let curve = config
         .get_optional::<String>("animations.window-open.curve")
         .ok()
         .flatten()
         .and_then(|curve| AnimationCurve::parse(&curve))
-        .unwrap_or(type_defaults.curve);
-    let legacy_motion = AnimationMotion::Easing(EasingMotion {
+        .unwrap_or(default_easing.curve);
+    let configured_easing = AnimationMotion::Easing(EasingMotion {
         duration_ms: config.get_or(
             "animations.window-open.duration-ms",
-            type_defaults.duration_ms,
+            default_easing.duration_ms,
         ),
         curve,
     });
     let window_open_motion =
-        AnimationMotion::parse(config, "animations.window-open", legacy_motion);
+        AnimationMotion::parse(config, "animations.window-open", configured_easing);
 
     Animations {
         enabled: config.get_or("animations.enabled", defaults.enabled),
@@ -242,11 +223,6 @@ pub fn parse_animations(config: &RuneConfig) -> Animations {
                 defaults.window_open.enabled,
             ),
             animation_type,
-            duration_ms: match window_open_motion {
-                AnimationMotion::Easing(motion) => motion.duration_ms,
-                AnimationMotion::Spring(_) => type_defaults.duration_ms,
-            },
-            curve,
             motion: window_open_motion,
         },
         fullscreen: FullscreenAnimation {
@@ -291,9 +267,9 @@ animations:
   enabled true
   window-open:
     enabled false
-    type "elastic"
+    type "fade"
     duration-ms 450
-    curve "ease-out-cubic"
+    curve "elastic"
   end
 end
 "#,
@@ -306,12 +282,10 @@ end
                 enabled: true,
                 window_open: WindowOpenAnimation {
                     enabled: false,
-                    animation_type: WindowOpenAnimationType::Elastic,
-                    duration_ms: 450,
-                    curve: AnimationCurve::EaseOutCubic,
+                    animation_type: WindowOpenAnimationType::Fade,
                     motion: AnimationMotion::Easing(EasingMotion {
                         duration_ms: 450,
-                        curve: AnimationCurve::EaseOutCubic,
+                        curve: AnimationCurve::Elastic,
                     }),
                 },
                 fullscreen: FullscreenAnimation::default(),
@@ -331,50 +305,54 @@ end
             Animations::default().window_open.animation_type,
             WindowOpenAnimationType::CenterOut
         );
-        assert_eq!(Animations::default().window_open.duration_ms, 300);
         assert_eq!(
-            Animations::default().window_open.curve,
-            AnimationCurve::Linear
+            Animations::default().window_open.motion,
+            AnimationMotion::Easing(EasingMotion {
+                duration_ms: 300,
+                curve: AnimationCurve::Linear,
+            })
         );
     }
 
     #[test]
-    fn elastic_type_supplies_legacy_motion_defaults() {
-        let config = RuneConfig::from_str(
-            r#"
+    fn window_open_style_does_not_select_motion_defaults() {
+        let parse = |animation_type| {
+            let config = RuneConfig::from_str(&format!(
+                r#"
 animations:
   window-open:
-    type "elastic"
+    type "{animation_type}"
   end
 end
-"#,
-        )
-        .expect("valid rune-cfg source");
+"#
+            ))
+            .expect("valid rune-cfg source");
+            parse_animations(&config).window_open
+        };
 
-        let animation = parse_animations(&config).window_open;
-        assert_eq!(animation.animation_type, WindowOpenAnimationType::Elastic);
-        assert_eq!(animation.duration_ms, 620);
-        assert_eq!(animation.curve, AnimationCurve::EaseOutBack);
+        let center_out = parse("center-out");
+        let fade = parse("fade");
+
+        assert_eq!(
+            center_out.animation_type,
+            WindowOpenAnimationType::CenterOut
+        );
+        assert_eq!(fade.animation_type, WindowOpenAnimationType::Fade);
+        assert_eq!(center_out.motion, fade.motion);
     }
 
     #[test]
-    fn explicit_values_override_elastic_defaults() {
-        let config = RuneConfig::from_str(
-            r#"
-animations:
-  window-open:
-    type "elastic"
-    duration-ms 480
-    curve "ease-out-quad"
-  end
-end
-"#,
-        )
-        .expect("valid rune-cfg source");
-
-        let animation = parse_animations(&config).window_open;
-        assert_eq!(animation.duration_ms, 480);
-        assert_eq!(animation.curve, AnimationCurve::EaseOutQuad);
+    fn removed_animation_names_have_no_compatibility_aliases() {
+        assert_eq!(WindowOpenAnimationType::parse("elastic"), None);
+        assert_eq!(AnimationCurve::parse("ease-out-back"), None);
+        assert_eq!(
+            WindowOpenAnimationType::parse("fade"),
+            Some(WindowOpenAnimationType::Fade)
+        );
+        assert_eq!(
+            AnimationCurve::parse("elastic"),
+            Some(AnimationCurve::Elastic)
+        );
     }
 
     #[test]
@@ -393,8 +371,13 @@ end
 
         let animation = parse_animations(&config).window_open;
         assert_eq!(animation.animation_type, WindowOpenAnimationType::CenterOut);
-        assert_eq!(animation.duration_ms, 300);
-        assert_eq!(animation.curve, AnimationCurve::Linear);
+        assert_eq!(
+            animation.motion,
+            AnimationMotion::Easing(EasingMotion {
+                duration_ms: 300,
+                curve: AnimationCurve::Linear,
+            })
+        );
     }
 
     #[test]
