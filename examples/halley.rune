@@ -119,8 +119,8 @@ animations:
     curve "linear"
 
     # Window-open motion also accepts `motion "spring"`. With spring motion,
-    # use damping-ratio, stiffness, and epsilon as documented below instead
-    # of duration-ms and curve.
+    # use damping-ratio and stiffness as documented below instead of
+    # duration-ms and curve.
   end
 
   fullscreen:
@@ -139,10 +139,6 @@ animations:
 
     # Spring strength. Higher values reach the target more aggressively.
     stiffness 800.0
-
-    # Motion is considered finished once its remaining displacement and
-    # velocity fall beneath this threshold.
-    epsilon 0.0001
 
     # Example easing alternative:
     # motion "easing"

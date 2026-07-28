@@ -13,14 +13,13 @@ animations:
     motion "spring"
     damping-ratio 1.0
     stiffness 800.0
-    epsilon 0.0001
   end
 end
 ```
 
-Spring motion accepts `damping-ratio`, `stiffness`, and `epsilon`. Lower
-damping ratios allow overshoot, higher stiffness moves faster, and epsilon
-controls how close to the target the motion must get before it is complete.
+Spring motion accepts `damping-ratio` and `stiffness`. Lower damping ratios
+allow overshoot and higher stiffness moves faster. Halley keeps the settling
+threshold internal.
 
 An animation can use duration-based easing instead:
 
