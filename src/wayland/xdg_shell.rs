@@ -70,6 +70,7 @@ pub fn handle_commit(
             admission.first
         );
         let window = admission.window;
+        wayland.windows.set_input_ready(id, true);
         let output = super::focus::selected_output(wayland).cloned();
         let location = output
             .as_ref()

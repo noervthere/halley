@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use smithay::desktop::Window;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::utils::{Logical, Point};
+use smithay::utils::{Logical, Point, Rectangle};
 use smithay::xwayland::X11Surface;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -92,6 +92,31 @@ struct WindowRecord {
     kind: WindowKind,
     mapping: MappingState,
     placement: Option<Placement>,
+    input_ready: bool,
+    geometry: GeometryState,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct GeometryState {
+    target: Option<Rectangle<i32, Logical>>,
+    pending: bool,
+    focus_when_settled: bool,
+}
+
+impl GeometryState {
+    fn begin(&mut self, target: Rectangle<i32, Logical>, focus_when_settled: bool) {
+        self.target = Some(target);
+        self.pending = true;
+        self.focus_when_settled = focus_when_settled;
+    }
+
+    fn settle(&mut self, observed: Rectangle<i32, Logical>) -> Option<bool> {
+        if !self.pending || self.target != Some(observed) {
+            return None;
+        }
+        self.pending = false;
+        Some(std::mem::take(&mut self.focus_when_settled))
+    }
 }
 
 #[derive(Default)]
@@ -119,6 +144,8 @@ impl WindowRegistry {
                 kind: WindowKind::Xdg,
                 mapping: MappingState::default(),
                 placement: None,
+                input_ready: false,
+                geometry: GeometryState::default(),
             },
         );
         self.xdg.insert(surface, id);
@@ -138,6 +165,8 @@ impl WindowRegistry {
                 kind,
                 mapping: MappingState::default(),
                 placement: None,
+                input_ready: false,
+                geometry: GeometryState::default(),
             },
         );
         self.x11.insert(xid, id);
@@ -184,6 +213,59 @@ impl WindowRegistry {
         }
     }
 
+    pub(crate) fn set_input_ready(&mut self, id: WindowId, ready: bool) {
+        if let Some(record) = self.records.get_mut(&id) {
+            record.input_ready = ready;
+        }
+    }
+
+    pub(crate) fn input_ready(&self, id: WindowId) -> bool {
+        self.records
+            .get(&id)
+            .is_some_and(|record| record.input_ready)
+    }
+
+    pub(crate) fn input_ready_for_surface(&self, surface: &WlSurface) -> Option<bool> {
+        self.id_for_surface(surface).map(|id| self.input_ready(id))
+    }
+
+    pub(crate) fn begin_geometry_settlement(
+        &mut self,
+        id: WindowId,
+        target: Rectangle<i32, Logical>,
+        gate_input: bool,
+    ) {
+        let Some(record) = self.records.get_mut(&id) else {
+            return;
+        };
+        record.geometry.begin(target, gate_input);
+        if gate_input {
+            record.input_ready = false;
+        }
+    }
+
+    pub(crate) fn geometry_target(&self, id: WindowId) -> Option<Rectangle<i32, Logical>> {
+        self.records.get(&id)?.geometry.target
+    }
+
+    pub(crate) fn settle_geometry(
+        &mut self,
+        id: WindowId,
+        observed: Rectangle<i32, Logical>,
+    ) -> Option<bool> {
+        let record = self.records.get_mut(&id)?;
+        let focus = record.geometry.settle(observed)?;
+        record.input_ready = true;
+        Some(focus)
+    }
+
+    pub(crate) fn clear_geometry_target(&mut self, id: WindowId) {
+        if let Some(record) = self.records.get_mut(&id) {
+            record.geometry = GeometryState::default();
+            record.input_ready = record.mapping.admitted;
+        }
+    }
+
     pub(crate) fn request_map(&mut self, id: WindowId) {
         if let Some(record) = self.records.get_mut(&id) {
             record.mapping.request_map();
@@ -217,7 +299,12 @@ impl WindowRegistry {
 
     pub(crate) fn withdraw(&mut self, id: WindowId) -> Option<Window> {
         let record = self.records.get_mut(&id)?;
-        record.mapping.withdraw().then(|| record.window.clone())
+        if !record.mapping.withdraw() {
+            return None;
+        }
+        record.input_ready = false;
+        record.geometry = GeometryState::default();
+        Some(record.window.clone())
     }
 
     pub(crate) fn destroy_xdg(&mut self, surface: &WlSurface) -> Option<Window> {
@@ -244,7 +331,9 @@ impl WindowRegistry {
 
 #[cfg(test)]
 mod tests {
-    use super::MappingState;
+    use smithay::utils::Rectangle;
+
+    use super::{GeometryState, MappingState};
 
     #[test]
     fn admission_requires_both_map_intent_and_a_surface() {
@@ -294,5 +383,28 @@ mod tests {
 
         state.request_map();
         assert!(state.admit().is_some());
+    }
+
+    #[test]
+    fn geometry_settlement_ignores_intermediate_client_sizes() {
+        let target = Rectangle::new((0, 0).into(), (1920, 1080).into());
+        let mut state = GeometryState::default();
+        state.begin(target, true);
+
+        assert_eq!(
+            state.settle(Rectangle::new((0, 0).into(), (640, 480).into())),
+            None
+        );
+        assert_eq!(state.settle(target), Some(true));
+        assert_eq!(state.settle(target), None);
+    }
+
+    #[test]
+    fn settled_window_geometry_does_not_request_a_second_focus() {
+        let target = Rectangle::new((0, 0).into(), (1920, 1080).into());
+        let mut state = GeometryState::default();
+        state.begin(target, false);
+
+        assert_eq!(state.settle(target), Some(false));
     }
 }

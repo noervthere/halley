@@ -165,6 +165,17 @@ fn chain_has_active<D: SessionDriver>(
     })
 }
 
+fn activation_allowed(has_active: bool, input_ready: bool) -> bool {
+    !has_active && input_ready
+}
+
+fn chain_input_ready<D: SessionDriver>(session: &Session<D>, chain: &SurfaceChain) -> bool {
+    chain
+        .last()
+        .and_then(|(root, _)| session.wayland.windows.input_ready_for_surface(root))
+        .unwrap_or(true)
+}
+
 pub(super) fn activate_new<D: SessionDriver>(
     session: &mut Session<D>,
     requested_surface: &WlSurface,
@@ -173,7 +184,10 @@ pub(super) fn activate_new<D: SessionDriver>(
     let Some((location, chain)) = focused_route_chain(session, pointer) else {
         return;
     };
-    if chain_has_active(&chain, pointer) {
+    if !activation_allowed(
+        chain_has_active(&chain, pointer),
+        chain_input_ready(session, &chain),
+    ) {
         return;
     }
     let Some((_, origin)) = chain
@@ -194,7 +208,10 @@ pub(super) fn activate_focused<D: SessionDriver>(
     let Some((location, chain)) = focused_route_chain(session, pointer) else {
         return;
     };
-    if chain_has_active(&chain, pointer) {
+    if !activation_allowed(
+        chain_has_active(&chain, pointer),
+        chain_input_ready(session, &chain),
+    ) {
         return;
     }
     if chain
@@ -277,5 +294,12 @@ mod tests {
             MotionDisposition::Apply
         );
         assert_eq!(motion_disposition(None, false), MotionDisposition::Apply);
+    }
+
+    #[test]
+    fn new_constraint_waits_for_window_input_readiness() {
+        assert!(!activation_allowed(false, false));
+        assert!(activation_allowed(false, true));
+        assert!(!activation_allowed(true, true));
     }
 }
