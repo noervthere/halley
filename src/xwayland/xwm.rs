@@ -346,7 +346,7 @@ fn request_opening_fullscreen<D: SessionDriver>(
                 settle_external_immediately(session, surface, window, fullscreen);
                 return;
             };
-            session.window_open_animations.retarget_for_fullscreen(
+            session.window_open_animations.retarget(
                 wl_surface.as_ref(),
                 now,
                 current_bounds,
