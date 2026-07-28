@@ -33,7 +33,6 @@ pub struct EasingMotion {
 pub struct SpringMotion {
     pub damping_ratio: f64,
     pub stiffness: f64,
-    pub epsilon: f64,
 }
 
 impl Default for SpringMotion {
@@ -41,7 +40,6 @@ impl Default for SpringMotion {
         Self {
             damping_ratio: 1.0,
             stiffness: 800.0,
-            epsilon: 0.0001,
         }
     }
 }
@@ -77,12 +75,6 @@ impl AnimationMotion {
                         1.0,
                         100_000.0,
                         defaults.stiffness,
-                    ),
-                    epsilon: finite_clamp(
-                        config.get_or(&format!("{path}.epsilon"), defaults.epsilon),
-                        0.00001,
-                        0.1,
-                        defaults.epsilon,
                     ),
                 })
             }
@@ -390,7 +382,6 @@ animations:
     motion "spring"
     damping-ratio 0.8
     stiffness 600.0
-    epsilon 0.001
   end
 end
 "#,
@@ -404,7 +395,6 @@ end
             AnimationMotion::Spring(SpringMotion {
                 damping_ratio: 0.8,
                 stiffness: 600.0,
-                epsilon: 0.001,
             })
         );
     }
@@ -442,7 +432,6 @@ animations:
     motion "spring"
     damping-ratio 0.0
     stiffness 999999.0
-    epsilon 1.0
   end
 end
 "#,
@@ -454,7 +443,6 @@ end
             AnimationMotion::Spring(SpringMotion {
                 damping_ratio: 0.1,
                 stiffness: 100_000.0,
-                epsilon: 0.1,
             })
         );
     }

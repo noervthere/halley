@@ -4,6 +4,7 @@ use halley_config::{AnimationCurve, AnimationMotion, SpringMotion};
 
 const MAX_SPRING_DURATION: Duration = Duration::from_secs(10);
 const SPRING_DURATION_STEP: Duration = Duration::from_millis(1);
+const SPRING_SETTLE_EPSILON: f64 = 0.0001;
 
 #[derive(Clone, Copy, Debug)]
 pub struct MotionTimeline {
@@ -187,7 +188,7 @@ fn spring_duration(
             elapsed.as_secs_f64(),
         )
         .abs()
-            > spring.epsilon
+            > SPRING_SETTLE_EPSILON
         {
             last_unsettled = elapsed;
         }
@@ -251,7 +252,6 @@ mod tests {
         let spring = SpringMotion {
             damping_ratio: 4.0,
             stiffness: 100_000.0,
-            epsilon: 0.00001,
         };
         for millis in 0..1_000 {
             assert!(spring_displacement(spring, -1.0, 0.0, f64::from(millis) / 1000.0).is_finite());

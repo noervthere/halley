@@ -151,7 +151,6 @@ fn example_config_fullscreen_animation_parses() {
         halley_config::AnimationMotion::Spring(halley_config::SpringMotion {
             damping_ratio: 1.0,
             stiffness: 800.0,
-            epsilon: 0.0001,
         })
     );
 }
