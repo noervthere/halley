@@ -142,7 +142,7 @@ where
         .seat
         .get_pointer()
         .expect("pointer capability added at seat setup");
-    let constraint = super::pointer::constraint_snapshot(session, &pointer_handle);
+    super::pointer::finish_frame(session, &pointer_handle);
     session
         .pointer
         .process_input_event(event, &session.wayland.space);
@@ -206,7 +206,7 @@ where
             _ => {}
         }
     }
-    let constrained_motion = super::pointer::constrain_motion(session, &constraint);
+    let constrained_motion = super::pointer::constrain_motion(session, &pointer_handle);
 
     if let super::pointer::ConstrainedMotion::RelativeOnly { surface, origin } = &constrained_motion
         && let Some((delta, delta_unaccel, time, _)) = motion

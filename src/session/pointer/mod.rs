@@ -1,5 +1,7 @@
 mod constraints;
 
+pub(super) use constraints::PointerConstraintLifecycle;
+
 use smithay::input::pointer::{MotionEvent, PointerHandle};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point, SERIAL_COUNTER};
@@ -63,8 +65,11 @@ fn route_and_update_client_focus<D: SessionDriver>(
     if should_emit_absolute_motion(
         policy,
         surface_changed,
-        constraints::has_active_lock(&pointer),
+        constraints::has_active_lock(session, &pointer),
     ) {
+        if surface_changed {
+            constraints::deactivate_before_pointer_focus_change(session, routed_surface);
+        }
         pointer.motion(
             session,
             route.focus.clone(),
@@ -97,9 +102,10 @@ pub(super) fn finish_frame<D: SessionDriver>(
     pointer: &PointerHandle<Session<D>>,
 ) {
     pointer.frame(session);
-    // Activate only after the current event batch is complete so the first
-    // event cannot straddle the unlocked and locked protocol states.
-    constraints::activate_focused(session, pointer);
+    // Reconcile only after the current event batch is complete so an input
+    // event cannot straddle the old and new constraint owners.
+    constraints::reconcile(session, pointer, None);
+    pointer.frame(session);
 }
 
 pub(super) fn update_client_state<D: SessionDriver>(session: &mut Session<D>, time: u32) {
@@ -111,8 +117,6 @@ pub(super) fn update_client_state<D: SessionDriver>(session: &mut Session<D>, ti
     finish_frame(session, &pointer);
 }
 
-pub(super) struct ConstraintSnapshot(Option<constraints::ActiveConstraint>);
-
 pub(super) enum ConstrainedMotion {
     Apply,
     Hold,
@@ -122,30 +126,24 @@ pub(super) enum ConstrainedMotion {
     },
 }
 
-pub(super) fn constraint_snapshot<D: SessionDriver>(
-    session: &Session<D>,
-    pointer: &PointerHandle<Session<D>>,
-) -> ConstraintSnapshot {
-    ConstraintSnapshot(constraints::active(session, pointer))
-}
-
 pub(super) fn constrain_motion<D: SessionDriver>(
-    session: &Session<D>,
-    snapshot: &ConstraintSnapshot,
+    session: &mut Session<D>,
+    pointer: &PointerHandle<Session<D>>,
 ) -> ConstrainedMotion {
-    let position_allowed = snapshot.0.as_ref().is_none_or(|constraint| {
+    constraints::reconcile(session, pointer, None);
+    let active = constraints::active(session, pointer);
+    let position_allowed = active.as_ref().is_none_or(|constraint| {
         constraint.kind != constraints::ConstraintKind::Confined
             || constraints::allows_current_position(session, constraint)
     });
     match constraints::motion_disposition(
-        snapshot.0.as_ref().map(|constraint| constraint.kind),
+        active.as_ref().map(|constraint| constraint.kind),
         position_allowed,
     ) {
         constraints::MotionDisposition::Apply => ConstrainedMotion::Apply,
         constraints::MotionDisposition::Hold => ConstrainedMotion::Hold,
         constraints::MotionDisposition::RelativeOnly => {
-            let constraint = snapshot
-                .0
+            let constraint = active
                 .as_ref()
                 .expect("relative-only motion requires an active lock");
             ConstrainedMotion::RelativeOnly {
@@ -160,16 +158,28 @@ pub(super) fn cursor_visible<D: SessionDriver>(session: &Session<D>) -> bool {
     constraints::cursor_visible(session)
 }
 
+pub(super) fn prepare_keyboard_focus_change<D: SessionDriver>(
+    session: &mut Session<D>,
+    next_focused_root: Option<&WlSurface>,
+) {
+    constraints::deactivate_before_focus_change(session, next_focused_root);
+}
+
+pub(super) fn prepare_unmap<D: SessionDriver>(session: &mut Session<D>, root: &WlSurface) {
+    constraints::deactivate_before_unmap(session, root);
+}
+
 pub(super) fn activate_new<D: SessionDriver>(
     session: &mut Session<D>,
     surface: &WlSurface,
     pointer: &PointerHandle<Session<D>>,
 ) {
-    constraints::activate_new(session, surface, pointer);
+    constraints::reconcile(session, pointer, Some(surface));
+    pointer.frame(session);
 }
 
 pub(super) fn apply_position_hint<D: SessionDriver>(
-    session: &Session<D>,
+    session: &mut Session<D>,
     surface: &WlSurface,
     pointer: &PointerHandle<Session<D>>,
     location: Point<f64, Logical>,

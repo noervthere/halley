@@ -138,6 +138,7 @@ pub fn run() {
         suppressed_buttons: SuppressedButtons::default(),
         suppressed_keys: SuppressedKeys::default(),
         wheel_accumulator: WheelAccumulator::default(),
+        pointer_constraints: super::pointer::PointerConstraintLifecycle::default(),
         window_open_animations: crate::animation::WindowOpenAnimations::new(
             runtime_config.animations,
         ),

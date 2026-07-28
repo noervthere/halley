@@ -416,6 +416,7 @@ fn forget_window<D: SessionDriver>(session: &mut Session<D>, surface: &X11Surfac
         return;
     };
     if let Some(wl_surface) = window.wl_surface().map(|surface| surface.into_owned()) {
+        crate::session::prepare_window_unmap(session, &wl_surface);
         session.fullscreen.remove(&wl_surface);
         session.fullscreen_textures.remove(&wl_surface);
         session.window_open_animations.remove(&wl_surface);

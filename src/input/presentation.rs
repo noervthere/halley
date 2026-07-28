@@ -1,6 +1,8 @@
 use smithay::desktop::{Space, Window};
 use smithay::output::Output;
+use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point, Rectangle};
+use smithay::wayland::compositor::{SubsurfaceCachedState, get_parent, with_states};
 use smithay::wayland::seat::WaylandFocus;
 
 use crate::camera::OutputCameras;
@@ -13,7 +15,9 @@ use crate::camera::OutputCameras;
 /// origin from the pointer's last event location.
 #[derive(Clone, Debug)]
 pub struct WindowPresentation {
+    root: WlSurface,
     source_geometry: Rectangle<i32, Logical>,
+    root_origin: Point<f64, Logical>,
     visual_geometry: Rectangle<i32, Logical>,
     hit_geometry: Rectangle<i32, Logical>,
 }
@@ -31,6 +35,8 @@ impl WindowPresentation {
         let output_geometry = space.output_geometry(output)?;
         let source_geometry = space.element_geometry(window)?;
         let source_bbox = space.element_bbox(window)?;
+        let element_location = space.element_location(window)?;
+        let root_origin = (element_location - window.geometry().loc).to_f64();
         let view = cameras.view(&output.name())?;
         let camera_center = crate::camera::global_center(view.center, output_geometry);
         let output_size = output_geometry.size.to_physical(1);
@@ -70,10 +76,36 @@ impl WindowPresentation {
         };
 
         Some(Self {
+            root,
             source_geometry,
+            root_origin,
             visual_geometry,
             hit_geometry,
         })
+    }
+
+    pub fn for_surface(
+        space: &Space<Window>,
+        cameras: &OutputCameras,
+        primary: &Output,
+        fullscreen: &crate::wayland::fullscreen::FullscreenManager,
+        surface: &WlSurface,
+        now: std::time::Duration,
+    ) -> Option<Self> {
+        let root = crate::wayland::compositor::root_surface(surface);
+        let window = space.elements().find(|window| {
+            window
+                .wl_surface()
+                .is_some_and(|candidate| candidate.as_ref() == &root)
+        })?;
+        let output = space
+            .outputs()
+            .find(|output| crate::wayland::window_is_on_output(window, output, primary))?;
+        Self::for_window(space, cameras, fullscreen, window, output, now)
+    }
+
+    pub fn root(&self) -> &WlSurface {
+        &self.root
     }
 
     pub fn visual_geometry(&self) -> Rectangle<i32, Logical> {
@@ -91,6 +123,56 @@ impl WindowPresentation {
             self.source_geometry.to_f64(),
         )
     }
+
+    pub fn screen_from_source(&self, source: Point<f64, Logical>) -> Point<f64, Logical> {
+        map_point(
+            source,
+            self.source_geometry.to_f64(),
+            self.visual_geometry.to_f64(),
+        )
+    }
+
+    pub fn surface_origin(&self, surface: &WlSurface) -> Option<Point<f64, Logical>> {
+        let offset = subsurface_offset_from_root(surface, &self.root)?;
+        Some(self.root_origin + offset.to_f64())
+    }
+
+    pub fn surface_from_screen(
+        &self,
+        surface: &WlSurface,
+        screen: Point<f64, Logical>,
+    ) -> Option<Point<f64, Logical>> {
+        Some(self.source_from_screen(screen) - self.surface_origin(surface)?)
+    }
+
+    pub fn screen_from_surface(
+        &self,
+        surface: &WlSurface,
+        local: Point<f64, Logical>,
+    ) -> Option<Point<f64, Logical>> {
+        Some(self.screen_from_source(self.surface_origin(surface)? + local))
+    }
+}
+
+fn subsurface_offset_from_root(
+    surface: &WlSurface,
+    expected_root: &WlSurface,
+) -> Option<Point<i32, Logical>> {
+    let mut current = surface.clone();
+    let mut offset = Point::from((0, 0));
+    while &current != expected_root {
+        let parent = get_parent(&current)?;
+        let location = with_states(&current, |states| {
+            states
+                .cached_state
+                .get::<SubsurfaceCachedState>()
+                .current()
+                .location
+        });
+        offset += location;
+        current = parent;
+    }
+    Some(offset)
 }
 
 fn map_point(

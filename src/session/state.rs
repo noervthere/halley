@@ -70,6 +70,7 @@ pub struct Session<D: SessionDriver> {
     pub suppressed_buttons: SuppressedButtons,
     pub suppressed_keys: SuppressedKeys,
     pub wheel_accumulator: WheelAccumulator,
+    pub pointer_constraints: super::pointer::PointerConstraintLifecycle,
     pub window_open_animations: crate::animation::WindowOpenAnimations,
     pub fullscreen: crate::wayland::fullscreen::FullscreenManager,
     pub fullscreen_textures: crate::backend::fullscreen_texture::FullscreenTextureTransitions,

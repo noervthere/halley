@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::ffi::OsStr;
 
 use halley_config::Action;
@@ -78,6 +79,13 @@ fn cancel_grab_for_surface<D: SessionDriver>(
     }
 }
 
+pub(crate) fn prepare_window_unmap<D: SessionDriver>(
+    session: &mut Session<D>,
+    surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+) {
+    pointer::prepare_unmap(session, surface);
+}
+
 pub(crate) fn has_active_pointer_constraint<D: SessionDriver>(session: &Session<D>) -> bool {
     pointer::has_active_constraint(session)
 }
@@ -145,6 +153,11 @@ pub(crate) fn sync_keyboard_focus<D: SessionDriver>(
         .seat
         .get_keyboard()
         .expect("keyboard capability added at seat setup");
+    let next_constraint_root = focused
+        .as_ref()
+        .and_then(|target| target.wl_surface().map(Cow::into_owned))
+        .filter(|surface| session.wayland.focused_window.as_ref() == Some(surface));
+    pointer::prepare_keyboard_focus_change(session, next_constraint_root.as_ref());
     keyboard.set_focus(session, focused, serial);
 }
 

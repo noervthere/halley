@@ -202,6 +202,7 @@ impl<D: SessionDriver> XdgShellHandler for Session<D> {
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
+        super::prepare_window_unmap(self, surface.wl_surface());
         self.window_open_animations.remove(surface.wl_surface());
         self.fullscreen.remove(surface.wl_surface());
         self.fullscreen_textures.remove(surface.wl_surface());
