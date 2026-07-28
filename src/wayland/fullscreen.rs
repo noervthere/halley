@@ -28,6 +28,8 @@ struct FullscreenWindow {
     desired: bool,
     active: bool,
     animate_external: bool,
+    initial_external_visual: bool,
+    deferred_external: Option<bool>,
     target_output: String,
     restore: Option<WindowedPlacement>,
     fullscreen_size: Size<i32, Logical>,
@@ -129,6 +131,8 @@ impl FullscreenManager {
                 desired: true,
                 active: false,
                 animate_external: false,
+                initial_external_visual: false,
+                deferred_external: None,
                 target_output: target.name(),
                 restore: window.as_ref().and_then(|window| {
                     Some(WindowedPlacement {
@@ -204,6 +208,7 @@ impl FullscreenManager {
         wayland: &mut WaylandState,
         window: &Window,
         animate: bool,
+        initial: bool,
     ) -> Option<(Rectangle<i32, Logical>, bool)> {
         let wl_surface = window.wl_surface().map(|surface| surface.into_owned())?;
         let window = find_window(wayland, &wl_surface).cloned()?;
@@ -233,10 +238,14 @@ impl FullscreenManager {
                     output: placement.output.clone(),
                 })
             });
+        let mut deferred = false;
         self.windows
             .entry(wl_surface.clone())
             .and_modify(|entry| {
-                request_external_transition(entry, true, animate);
+                deferred = defer_external_request(entry, true);
+                if !deferred {
+                    request_external_transition(entry, true, animate);
+                }
                 entry.target_output.clone_from(&target_name);
                 entry.fullscreen_size = output_geometry.size;
                 if entry.restore.is_none() {
@@ -247,6 +256,8 @@ impl FullscreenManager {
                 desired: true,
                 active: false,
                 animate_external: animate,
+                initial_external_visual: initial && animate,
+                deferred_external: None,
                 target_output: target_name,
                 restore,
                 fullscreen_size: output_geometry.size,
@@ -254,6 +265,9 @@ impl FullscreenManager {
                 snapshot_serials: Vec::new(),
             });
         super::set_window_output(&window, &target);
+        if deferred {
+            return Some((output_geometry, false));
+        }
         let pending = self
             .windows
             .get(&wl_surface)
@@ -269,6 +283,12 @@ impl FullscreenManager {
     ) -> Option<(Rectangle<i32, Logical>, bool)> {
         let wl_surface = window.wl_surface().map(|surface| surface.into_owned())?;
         let entry = self.windows.get_mut(&wl_surface)?;
+        if defer_external_request(entry, false) {
+            return entry
+                .restore
+                .as_ref()
+                .map(|restore| (restore.geometry, false));
+        }
         let pending = request_external_transition(entry, false, animate);
         entry
             .restore
@@ -312,7 +332,7 @@ impl FullscreenManager {
             && self
                 .windows
                 .get(surface)
-                .is_none_or(|entry| entry.desired != fullscreen)
+                .is_none_or(|entry| !entry.initial_external_visual && entry.desired != fullscreen)
     }
 
     pub fn handle_commit(
@@ -525,6 +545,7 @@ impl FullscreenManager {
     pub fn cleanup(&mut self, now: Duration) -> FullscreenCleanup {
         let mut finished = false;
         let mut finished_surfaces = Vec::new();
+        let mut deferred_external = Vec::new();
         self.windows.retain(|surface, entry| {
             if entry
                 .transition
@@ -533,12 +554,16 @@ impl FullscreenManager {
                 entry.transition = None;
                 finished = true;
                 finished_surfaces.push(surface.clone());
+                if let Some(desired) = finish_initial_external_visual(entry) {
+                    deferred_external.push((surface.clone(), desired));
+                }
             }
             entry.active || entry.desired || entry.transition.is_some()
         });
         FullscreenCleanup {
             visual_finished: finished,
             finished_surfaces,
+            deferred_external,
         }
     }
 
@@ -550,6 +575,7 @@ impl FullscreenManager {
 pub struct FullscreenCleanup {
     pub visual_finished: bool,
     pub finished_surfaces: Vec<WlSurface>,
+    pub deferred_external: Vec<(WlSurface, bool)>,
 }
 
 fn animations_enabled(animations: Animations) -> bool {
@@ -585,6 +611,27 @@ fn request_external_transition(entry: &mut FullscreenWindow, desired: bool, anim
         entry.animate_external |= animate;
     }
     entry.active != entry.desired
+}
+
+fn defer_external_request(entry: &mut FullscreenWindow, desired: bool) -> bool {
+    // Some X11 games cycle fullscreen state while their first presentation is
+    // still opening. The initial visual owns that interval; only the last
+    // requested state is reconciled after it finishes.
+    if !entry.initial_external_visual || entry.transition.is_none() {
+        return false;
+    }
+    entry.deferred_external = Some(desired);
+    true
+}
+
+fn finish_initial_external_visual(entry: &mut FullscreenWindow) -> Option<bool> {
+    if !std::mem::take(&mut entry.initial_external_visual) {
+        return None;
+    }
+    entry
+        .deferred_external
+        .take()
+        .filter(|desired| *desired != entry.active)
 }
 
 fn retarget_transition(
@@ -680,6 +727,8 @@ mod tests {
             desired: active,
             active,
             animate_external: false,
+            initial_external_visual: false,
+            deferred_external: None,
             target_output: "DP-1".to_string(),
             restore: None,
             fullscreen_size: (1920, 1080).into(),
@@ -820,5 +869,49 @@ mod tests {
                 .value_at(probe),
             progress
         );
+    }
+
+    #[test]
+    fn initial_external_visual_coalesces_state_churn() {
+        let mut entry = test_entry(true);
+        entry.initial_external_visual = true;
+        entry.transition = Some(MotionTimeline::new(
+            Animations::default().fullscreen.motion,
+            Duration::ZERO,
+        ));
+
+        assert!(defer_external_request(&mut entry, false));
+        assert!(defer_external_request(&mut entry, true));
+
+        assert!(entry.active);
+        assert!(entry.desired);
+        assert_eq!(entry.deferred_external, Some(true));
+        assert_eq!(finish_initial_external_visual(&mut entry), None);
+        assert!(!entry.initial_external_visual);
+        assert_eq!(entry.deferred_external, None);
+    }
+
+    #[test]
+    fn settled_external_visual_does_not_defer_later_requests() {
+        let mut entry = test_entry(true);
+        entry.initial_external_visual = false;
+
+        assert!(!defer_external_request(&mut entry, false));
+        assert_eq!(entry.deferred_external, None);
+    }
+
+    #[test]
+    fn initial_external_visual_reconciles_a_different_final_state() {
+        let mut entry = test_entry(true);
+        entry.initial_external_visual = true;
+        entry.transition = Some(MotionTimeline::new(
+            Animations::default().fullscreen.motion,
+            Duration::ZERO,
+        ));
+
+        assert!(defer_external_request(&mut entry, false));
+        assert_eq!(finish_initial_external_visual(&mut entry), Some(false));
+        assert!(!entry.initial_external_visual);
+        assert_eq!(entry.deferred_external, None);
     }
 }

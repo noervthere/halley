@@ -134,6 +134,15 @@ impl<D: SessionDriver> Session<D> {
         for surface in cleanup.finished_surfaces {
             self.fullscreen_textures.remove(&surface);
         }
+        for (surface, fullscreen) in cleanup.deferred_external {
+            let window = self.wayland.windows.window_for_surface(&surface).cloned();
+            if let Some(window) = window.filter(|window| window.x11_surface().is_some()) {
+                eventline::debug!(
+                    "fullscreen: reconciling deferred X11 startup state fullscreen={fullscreen}"
+                );
+                crate::xwayland::set_window_fullscreen(self, &window, fullscreen);
+            }
+        }
         cleanup.visual_finished
     }
 }

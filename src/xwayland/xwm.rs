@@ -200,11 +200,12 @@ fn enter_fullscreen<D: SessionDriver>(session: &mut Session<D>, surface: &X11Sur
     let Some(window) = window_for_surface(session, surface) else {
         return false;
     };
+    let initial = !session.wayland.windows.is_presented(id);
     let captured = capture_fullscreen_snapshot(session, surface, true);
     let Some((geometry, pending)) =
         session
             .fullscreen
-            .request_external(&mut session.wayland, &window, captured)
+            .request_external(&mut session.wayland, &window, captured, initial)
     else {
         remove_fullscreen_snapshot(session, &window);
         session.wayland.windows.set_input_ready(id, true);
