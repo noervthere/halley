@@ -4,6 +4,7 @@ use std::sync::Mutex;
 use smithay::backend::renderer::utils::with_renderer_surface_state;
 use smithay::desktop::Window;
 use smithay::output::Output;
+use smithay::reexports::wayland_server::Resource;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point, Rectangle, SERIAL_COUNTER};
 use smithay::wayland::seat::WaylandFocus;
@@ -26,6 +27,33 @@ fn window_for_surface<D: SessionDriver>(
         .windows
         .window(&WindowLifecycle::x11_key(surface))
         .cloned()
+}
+
+fn authoritative_fullscreen_geometry<D: SessionDriver>(
+    session: &Session<D>,
+    surface: &X11Surface,
+) -> Option<Rectangle<i32, Logical>> {
+    let window = window_for_surface(session, surface)?;
+    if let Some(wl_surface) = window.wl_surface()
+        && let Some(geometry) = session
+            .fullscreen
+            .external_geometry(&session.wayland, wl_surface.as_ref())
+    {
+        return Some(geometry);
+    }
+    if !surface.is_fullscreen() {
+        return None;
+    }
+    crate::wayland::window_output_name(&window)
+        .and_then(|name| {
+            session
+                .wayland
+                .space
+                .outputs()
+                .find(|output| output.name() == name)
+        })
+        .or_else(|| crate::wayland::focus::selected_output(&session.wayland))
+        .and_then(|output| session.wayland.space.output_geometry(output))
 }
 
 pub(super) fn handle_surface_commit<D: SessionDriver>(
@@ -67,6 +95,11 @@ pub(super) fn surface_associated<D: SessionDriver>(
     wl_surface: smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
     surface: X11Surface,
 ) {
+    eventline::debug!(
+        "window: X11 0x{:x} associated with {}",
+        surface.window_id(),
+        wl_surface.id()
+    );
     if let Some(previous) = session
         .wayland
         .windows
@@ -97,9 +130,20 @@ fn finalize_mapped_window<D: SessionDriver>(session: &mut Session<D>, surface: &
     let Some(transition) = session.wayland.windows.finalize_map(&key) else {
         return;
     };
+    eventline::debug!(
+        "window: X11 0x{:x} mapped generation={} first={}",
+        surface.window_id(),
+        transition.generation,
+        transition.first_map
+    );
 
     if surface.is_fullscreen() || session.fullscreen.is_fullscreen_or_pending(&wl_surface) {
-        enter_fullscreen(session, surface);
+        update_fullscreen(
+            session,
+            surface,
+            true,
+            FullscreenApplication::MapFinalization,
+        );
     } else if surface.is_maximized() {
         maximize_window(session, surface);
     } else if let Some(geometry) = session.wayland.space.element_bbox(&transition.window)
@@ -136,17 +180,24 @@ fn output_for_geometry<D: SessionDriver>(
 }
 
 fn enter_fullscreen<D: SessionDriver>(session: &mut Session<D>, surface: &X11Surface) {
-    update_fullscreen(session, surface, true);
+    update_fullscreen(session, surface, true, FullscreenApplication::StateRequest);
 }
 
 fn leave_fullscreen<D: SessionDriver>(session: &mut Session<D>, surface: &X11Surface) {
-    update_fullscreen(session, surface, false);
+    update_fullscreen(session, surface, false, FullscreenApplication::StateRequest);
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FullscreenApplication {
+    StateRequest,
+    MapFinalization,
 }
 
 fn update_fullscreen<D: SessionDriver>(
     session: &mut Session<D>,
     surface: &X11Surface,
     fullscreen: bool,
+    application: FullscreenApplication,
 ) {
     let mapped = session
         .wayland
@@ -178,7 +229,9 @@ fn update_fullscreen<D: SessionDriver>(
             .unrequest_external(&session.wayland, &window, now)
     };
     match geometry {
-        Some(update) => apply_external_fullscreen_update(session, surface, &window, update),
+        Some(update) => {
+            apply_external_fullscreen_update(session, surface, &window, update, application)
+        }
         None => {
             if let Some(snapshot) = snapshot {
                 session.fullscreen_textures.remove(&snapshot);
@@ -192,8 +245,15 @@ fn apply_external_fullscreen_update<D: SessionDriver>(
     surface: &X11Surface,
     window: &Window,
     update: crate::wayland::fullscreen::ExternalFullscreenUpdate,
+    application: FullscreenApplication,
 ) {
-    let _state_changed = update.changed;
+    if !update.changed && application == FullscreenApplication::StateRequest {
+        eventline::debug!(
+            "xwayland: ignored duplicate fullscreen state for window=0x{:x}",
+            surface.window_id()
+        );
+        return;
+    }
     if let Some(output) = update.output.as_ref() {
         crate::wayland::set_window_output(window, output);
     }
@@ -201,7 +261,12 @@ fn apply_external_fullscreen_update<D: SessionDriver>(
         .wayland
         .space
         .map_element(window.clone(), update.location, true);
-    if let Err(err) = surface.configure(update.geometry) {
+    let configured = if surface.geometry() == update.geometry {
+        surface.configure(None::<Rectangle<i32, Logical>>)
+    } else {
+        surface.configure(update.geometry)
+    };
+    if let Err(err) = configured {
         eventline::warn!("xwayland: failed to configure fullscreen transition: {err}");
     }
 }
@@ -390,14 +455,21 @@ fn current_placement<D: SessionDriver>(session: &Session<D>, window: &Window) ->
 
 fn unmap_window<D: SessionDriver>(session: &mut Session<D>, surface: &X11Surface) {
     let key = WindowLifecycle::x11_key(surface);
-    let placement = session
-        .wayland
-        .windows
-        .window(&key)
-        .and_then(|window| current_placement(session, window));
+    let placement = session.wayland.windows.window(&key).and_then(|window| {
+        let fullscreen = window.wl_surface().is_some_and(|wl_surface| {
+            session
+                .fullscreen
+                .external_geometry(&session.wayland, wl_surface.as_ref())
+                .is_some()
+        });
+        (!fullscreen)
+            .then(|| current_placement(session, window))
+            .flatten()
+    });
     let Some(transition) = session.wayland.windows.unmap(&key, placement) else {
         return;
     };
+    eventline::debug!("window: X11 0x{:x} unmapped", surface.window_id());
     crate::session::retire_window_mapping(
         session,
         transition,
@@ -443,6 +515,12 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
         let Some(transition) = self.wayland.windows.begin_map(&key) else {
             return;
         };
+        eventline::debug!(
+            "window: X11 0x{:x} map requested generation={} first={}",
+            surface.window_id(),
+            transition.generation,
+            transition.first_map
+        );
         crate::window::place_mapping(&mut self.wayland, &self.cameras, &transition);
         finalize_mapped_window(self, &surface);
         self.request_redraw();
@@ -491,6 +569,29 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
         height: Option<u32>,
         _reorder: Option<Reorder>,
     ) {
+        if let Some(geometry) = authoritative_fullscreen_geometry(self, &surface) {
+            // A fullscreen window has one geometry owner. Accepting transient
+            // game resize requests here creates a windowed/fullscreen configure
+            // loop and can move XWayland's relative-pointer anchor.
+            let configured = if surface.geometry() == geometry {
+                surface.configure(None::<Rectangle<i32, Logical>>)
+            } else {
+                surface.configure(geometry)
+            };
+            eventline::debug!(
+                "xwayland: kept fullscreen geometry for window=0x{:x} requested={:?}x{:?} target={}x{}",
+                surface.window_id(),
+                width,
+                height,
+                geometry.size.w,
+                geometry.size.h
+            );
+            if let Err(err) = configured {
+                eventline::warn!("xwayland: fullscreen configure acknowledgement failed: {err}");
+            }
+            return;
+        }
+
         let mut geometry = surface.geometry();
         if surface.is_override_redirect() {
             geometry.loc.x = x.unwrap_or(geometry.loc.x);
@@ -521,16 +622,22 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
         let Some(window) = window_for_surface(self, &surface) else {
             return;
         };
+        let fullscreen_geometry = authoritative_fullscreen_geometry(self, &surface);
+        let location = fullscreen_geometry
+            .map(|geometry| geometry.loc)
+            .unwrap_or(geometry.loc);
         self.wayland
             .space
-            .map_element(window.clone(), geometry.loc, false);
-        self.wayland.windows.update_placement(
-            &key,
-            Placement {
-                location: geometry.loc,
-                output: crate::wayland::window_output_name(&window),
-            },
-        );
+            .map_element(window.clone(), location, false);
+        if fullscreen_geometry.is_none() {
+            self.wayland.windows.update_placement(
+                &key,
+                Placement {
+                    location,
+                    output: crate::wayland::window_output_name(&window),
+                },
+            );
+        }
         self.request_redraw();
     }
 

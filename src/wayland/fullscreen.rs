@@ -286,6 +286,19 @@ impl FullscreenManager {
         })
     }
 
+    pub(crate) fn external_geometry(
+        &self,
+        wayland: &WaylandState,
+        surface: &WlSurface,
+    ) -> Option<Rectangle<i32, Logical>> {
+        let entry = self
+            .windows
+            .get(surface)
+            .filter(|entry| entry.active || entry.desired)?;
+        output_by_name(wayland, &entry.target_output)
+            .and_then(|output| wayland.space.output_geometry(&output))
+    }
+
     pub fn reassociate_external(&mut self, previous: &WlSurface, current: WlSurface) {
         if previous == &current || self.windows.contains_key(&current) {
             return;
