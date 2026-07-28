@@ -36,8 +36,13 @@ end
 ```
 
 Available curves are `linear`, `ease-out-quad`, `ease-out-cubic`,
-`ease-out-expo`, and `ease-out-back`.
+`ease-out-expo`, and `elastic`. The elastic curve overshoots before settling.
 
-The existing `window-open` section remains compatible with `duration-ms` and
-`curve` directly. It may also select `motion "spring"` and use the same spring
-fields when a spring-driven opening effect is desired.
+Window opening separates visual style from motion:
+
+- `type "center-out"` scales the window outward from its final center.
+- `type "fade"` keeps the final geometry and animates opacity.
+
+Either type can use any easing curve through `duration-ms` and `curve`, or
+select `motion "spring"` and use the same spring fields. Changing the type
+never selects a different curve or duration implicitly.

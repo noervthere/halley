@@ -107,13 +107,14 @@ animations:
 
     # Visual style:
     #   "center-out" - scale the window outward from its final center.
-    #   "elastic"    - begin from a visible proxy size, fade in, and permit
-    #                  a small overshoot before settling.
+    #   "fade"       - keep the final geometry and fade from transparent to
+    #                  opaque.
     type "center-out"
 
     # Easing duration in milliseconds and curve name. Supported curves:
     # "linear", "ease-out-quad", "ease-out-cubic", "ease-out-expo", and
-    # "ease-out-back".
+    # "elastic". The elastic curve overshoots before settling and is
+    # independent of the visual style above.
     duration-ms 300
     curve "linear"
 
