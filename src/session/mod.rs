@@ -89,10 +89,12 @@ pub(crate) fn retire_window_mapping<D: SessionDriver>(
     transition: crate::window::lifecycle::UnmapTransition,
     retirement: WindowRetirement,
 ) {
-    let surface = transition
-        .window
-        .wl_surface()
-        .map(|surface| surface.into_owned());
+    let surface = transition.surface.or_else(|| {
+        transition
+            .window
+            .wl_surface()
+            .map(|surface| surface.into_owned())
+    });
 
     session.wayland.space.unmap_elem(&transition.window);
     if let Some(surface) = surface.as_ref() {

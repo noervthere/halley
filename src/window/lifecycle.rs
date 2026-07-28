@@ -46,11 +46,13 @@ pub struct UnmapTransition {
     pub key: WindowKey,
     pub window: Window,
     pub kind: WindowKind,
+    pub surface: Option<WlSurface>,
 }
 
 struct WindowRecord {
     window: Window,
     kind: WindowKind,
+    surface: Option<WlSurface>,
     mapping: MappingState,
     placement: Option<Placement>,
 }
@@ -113,10 +115,11 @@ pub struct WindowLifecycle {
 impl WindowLifecycle {
     pub fn register_xdg(&mut self, surface: WlSurface, window: Window) {
         self.records.insert(
-            WindowKey::Xdg(surface),
+            WindowKey::Xdg(surface.clone()),
             WindowRecord {
                 window,
                 kind: WindowKind::Xdg,
+                surface: Some(surface),
                 mapping: MappingState::default(),
                 placement: None,
             },
@@ -128,6 +131,7 @@ impl WindowLifecycle {
         self.records.entry(key).or_insert_with(|| WindowRecord {
             window: Window::new_x11_window(surface),
             kind,
+            surface: None,
             mapping: MappingState::default(),
             placement: None,
         });
@@ -140,10 +144,20 @@ impl WindowLifecycle {
             .or_insert_with(|| WindowRecord {
                 window: Window::new_x11_window(surface.clone()),
                 kind,
+                surface: None,
                 mapping: MappingState::default(),
                 placement: None,
             });
         key
+    }
+
+    pub fn associate_x11(
+        &mut self,
+        surface: &X11Surface,
+        wl_surface: WlSurface,
+    ) -> Option<WlSurface> {
+        let record = self.records.get_mut(&Self::x11_key(surface))?;
+        record.surface.replace(wl_surface)
     }
 
     pub fn xdg_key(surface: &WlSurface) -> WindowKey {
@@ -160,21 +174,23 @@ impl WindowLifecycle {
 
     pub fn window_for_wl_surface(&self, surface: &WlSurface) -> Option<&Window> {
         self.records.values().find_map(|record| {
-            record
-                .window
-                .wl_surface()
-                .is_some_and(|candidate| candidate.as_ref() == surface)
-                .then_some(&record.window)
+            let matches = record.surface.as_ref() == Some(surface)
+                || record
+                    .window
+                    .wl_surface()
+                    .is_some_and(|candidate| candidate.as_ref() == surface);
+            matches.then_some(&record.window)
         })
     }
 
     pub fn key_for_wl_surface(&self, surface: &WlSurface) -> Option<WindowKey> {
         self.records.iter().find_map(|(key, record)| {
-            record
-                .window
-                .wl_surface()
-                .is_some_and(|candidate| candidate.as_ref() == surface)
-                .then(|| key.clone())
+            let matches = record.surface.as_ref() == Some(surface)
+                || record
+                    .window
+                    .wl_surface()
+                    .is_some_and(|candidate| candidate.as_ref() == surface);
+            matches.then(|| key.clone())
         })
     }
 
@@ -238,6 +254,7 @@ impl WindowLifecycle {
             key: key.clone(),
             window: record.window.clone(),
             kind: record.kind,
+            surface: record.surface.clone(),
         })
     }
 
@@ -252,6 +269,7 @@ impl WindowLifecycle {
             key: key.clone(),
             window: record.window,
             kind: record.kind,
+            surface: record.surface,
         })
     }
 

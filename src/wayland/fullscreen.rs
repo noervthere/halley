@@ -277,6 +277,15 @@ impl FullscreenManager {
         })
     }
 
+    pub fn reassociate_external(&mut self, previous: &WlSurface, current: WlSurface) {
+        if previous == &current || self.windows.contains_key(&current) {
+            return;
+        }
+        if let Some(entry) = self.windows.remove(previous) {
+            self.windows.insert(current, entry);
+        }
+    }
+
     pub fn handle_commit(
         &mut self,
         wayland: &mut WaylandState,

@@ -64,9 +64,21 @@ pub(super) fn handle_surface_commit<D: SessionDriver>(
 
 pub(super) fn surface_associated<D: SessionDriver>(
     session: &mut Session<D>,
-    _wl_surface: smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+    wl_surface: smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
     surface: X11Surface,
 ) {
+    if let Some(previous) = session
+        .wayland
+        .windows
+        .associate_x11(&surface, wl_surface.clone())
+        && previous != wl_surface
+    {
+        session
+            .fullscreen
+            .reassociate_external(&previous, wl_surface);
+        session.fullscreen_textures.remove(&previous);
+        session.window_open_animations.remove(&previous);
+    }
     finalize_mapped_window(session, &surface);
     session.request_redraw();
 }
@@ -86,10 +98,8 @@ fn finalize_mapped_window<D: SessionDriver>(session: &mut Session<D>, surface: &
         return;
     };
 
-    if surface.is_fullscreen() {
+    if surface.is_fullscreen() || session.fullscreen.is_fullscreen_or_pending(&wl_surface) {
         enter_fullscreen(session, surface);
-    } else if session.fullscreen.is_fullscreen_or_pending(&wl_surface) {
-        leave_fullscreen(session, surface);
     } else if surface.is_maximized() {
         maximize_window(session, surface);
     } else if let Some(geometry) = session.wayland.space.element_bbox(&transition.window)
