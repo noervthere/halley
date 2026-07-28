@@ -43,6 +43,7 @@ pub struct State {
     xwm: Option<X11Wm>,
     display: Option<u32>,
     pending_windows: HashMap<u32, PendingWindow>,
+    opening_placements: HashMap<u32, lifecycle::OpeningPlacement>,
 }
 
 impl State {
@@ -62,6 +63,7 @@ impl State {
             xwm: None,
             display: None,
             pending_windows: HashMap::new(),
+            opening_placements: HashMap::new(),
         }
     }
 
@@ -86,6 +88,7 @@ impl State {
         self.xwm = None;
         self.display = None;
         self.pending_windows.clear();
+        self.opening_placements.clear();
     }
 }
 

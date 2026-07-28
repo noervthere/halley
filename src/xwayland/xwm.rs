@@ -14,7 +14,7 @@ use crate::session::{Session, SessionDriver};
 use crate::wayland::fullscreen::{ExternalConfigureResult, ExternalTransactionRequest};
 
 use super::PendingWindow;
-use super::lifecycle::{MapAdmission, map_admission};
+use super::lifecycle::{MapAdmission, OpeningPlacement, map_admission};
 
 #[derive(Default)]
 struct RestoreGeometry(Mutex<Option<Rectangle<i32, Logical>>>);
@@ -138,6 +138,12 @@ fn admit_window<D: SessionDriver>(session: &mut Session<D>, xid: u32) {
         .wayland
         .space
         .map_element(window.clone(), location, true);
+    if let Some(geometry) = session.wayland.space.element_geometry(&window) {
+        session
+            .xwayland
+            .opening_placements
+            .insert(xid, OpeningPlacement::from_geometry(geometry));
+    }
     if surface.is_fullscreen() {
         enter_fullscreen(session, &surface, FullscreenRequestOrigin::Initial);
     } else if surface.is_maximized() {
@@ -491,6 +497,10 @@ fn forget_window<D: SessionDriver>(session: &mut Session<D>, surface: &X11Surfac
         .xwayland
         .pending_windows
         .remove(&surface.window_id());
+    session
+        .xwayland
+        .opening_placements
+        .remove(&surface.window_id());
     let Some(window) = window_for_surface(session, surface) else {
         return;
     };
@@ -624,14 +634,43 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
         let Some(window) = window_for_surface(self, &surface) else {
             return;
         };
-        match self.fullscreen.settle_external_configure(
-            &mut self.wayland,
-            &window,
-            geometry,
-            crate::frame_clock::monotonic_now(),
-        ) {
+        let now = crate::frame_clock::monotonic_now();
+        match self
+            .fullscreen
+            .settle_external_configure(&mut self.wayland, &window, geometry, now)
+        {
             ExternalConfigureResult::NotPending => {
-                self.wayland.space.map_element(window, geometry.loc, false);
+                let opening = window.wl_surface().is_some_and(|wl_surface| {
+                    self.window_open_animations
+                        .is_animating(wl_surface.as_ref(), now)
+                });
+                let grabbed = window.wl_surface().is_some_and(|wl_surface| {
+                    crate::input::grab::belongs_to_surface(&self.grab, wl_surface.as_ref())
+                });
+                let placement = if opening && !grabbed {
+                    self.xwayland
+                        .opening_placements
+                        .get(&surface.window_id())
+                        .copied()
+                } else {
+                    self.xwayland
+                        .opening_placements
+                        .remove(&surface.window_id());
+                    None
+                };
+                if let Some(placement) = placement {
+                    let centered = placement.centered(geometry.size);
+                    self.wayland.space.relocate_element(&window, centered.loc);
+                    if centered != geometry
+                        && let Err(err) = surface.configure(centered)
+                    {
+                        eventline::warn!(
+                            "xwayland: failed to preserve opening window center: {err}"
+                        );
+                    }
+                } else {
+                    self.wayland.space.map_element(window, geometry.loc, false);
+                }
             }
             ExternalConfigureResult::Waiting => {}
             ExternalConfigureResult::Settled {
