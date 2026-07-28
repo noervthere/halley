@@ -87,6 +87,9 @@ pub fn build(
             output_size,
             zoom_scale,
         );
+        let opening_is_animating = request
+            .window_open_animations
+            .is_animating(window_surface.as_ref(), request.target_presentation_time);
         let opening_visual = request
             .window_open_animations
             .visual(
@@ -200,17 +203,12 @@ pub fn build(
                     .map(SceneElement::Border),
             );
         }
-        if let Some(fullscreen) = fullscreen {
+        if let Some(backdrop_alpha) = fullscreen_backdrop_alpha(fullscreen, opening_is_animating) {
             elements.push(SceneElement::Border(SolidColorRenderElement::new(
                 Id::new(),
                 Rectangle::new((0, 0).into(), output_size),
                 CommitCounter::default(),
-                smithay::backend::renderer::Color32F::new(
-                    0.0,
-                    0.0,
-                    0.0,
-                    fullscreen.progress as f32,
-                ),
+                smithay::backend::renderer::Color32F::new(0.0, 0.0, 0.0, backdrop_alpha),
                 Kind::Unspecified,
             )));
         }
@@ -244,6 +242,18 @@ pub fn build(
     }
 
     Ok(elements)
+}
+
+fn fullscreen_backdrop_alpha(
+    fullscreen: Option<crate::wayland::fullscreen::FullscreenPresentation>,
+    opening_is_animating: bool,
+) -> Option<f32> {
+    // Opening geometry owns the initial presentation. A separate fullscreen
+    // plane would expose transient client request churn as an output-wide flash.
+    if opening_is_animating {
+        return None;
+    }
+    fullscreen.map(|presentation| presentation.progress.clamp(0.0, 1.0) as f32)
 }
 
 fn capture_overlay_elements(
@@ -590,5 +600,44 @@ mod tests {
             ),
             Rectangle::new((40, 40).into(), (400, 200).into())
         );
+    }
+
+    fn fullscreen_presentation(
+        progress: f64,
+    ) -> crate::wayland::fullscreen::FullscreenPresentation {
+        crate::wayland::fullscreen::FullscreenPresentation {
+            progress,
+            transition_completion: progress,
+            windowed_geometry: None,
+            fullscreen_size: (1920, 1080).into(),
+        }
+    }
+
+    #[test]
+    fn opening_fullscreen_does_not_create_an_independent_backdrop() {
+        let startup_churn = [
+            Some(fullscreen_presentation(1.0)),
+            None,
+            Some(fullscreen_presentation(1.0)),
+        ];
+
+        assert!(
+            startup_churn
+                .into_iter()
+                .all(|fullscreen| fullscreen_backdrop_alpha(fullscreen, true).is_none())
+        );
+    }
+
+    #[test]
+    fn fullscreen_without_an_active_opening_keeps_normal_backdrop_policy() {
+        assert_eq!(
+            fullscreen_backdrop_alpha(Some(fullscreen_presentation(1.0)), false),
+            Some(1.0)
+        );
+        assert_eq!(
+            fullscreen_backdrop_alpha(Some(fullscreen_presentation(0.4)), false),
+            Some(0.4)
+        );
+        assert_eq!(fullscreen_backdrop_alpha(None, false), None);
     }
 }
