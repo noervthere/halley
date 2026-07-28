@@ -70,6 +70,13 @@ pub struct FullscreenManager {
     windows: HashMap<WlSurface, FullscreenWindow>,
 }
 
+pub(crate) struct ExternalFullscreenUpdate {
+    pub changed: bool,
+    pub geometry: Rectangle<i32, Logical>,
+    pub location: Point<i32, Logical>,
+    pub output: Option<Output>,
+}
+
 impl FullscreenManager {
     pub fn new(animations: Animations) -> Self {
         Self {
@@ -197,12 +204,12 @@ impl FullscreenManager {
         }
     }
 
-    pub fn request_external(
+    pub(crate) fn request_external(
         &mut self,
-        wayland: &mut WaylandState,
+        wayland: &WaylandState,
         window: &Window,
         now: Duration,
-    ) -> Option<Rectangle<i32, Logical>> {
+    ) -> Option<ExternalFullscreenUpdate> {
         let wl_surface = window.wl_surface().map(|surface| surface.into_owned())?;
         let window = find_window(wayland, &wl_surface).cloned()?;
         let target = super::window_output_name(&window)
@@ -235,34 +242,36 @@ impl FullscreenManager {
             });
         entry.target_output = target_name;
         entry.fullscreen_size = output_geometry.size;
-        retarget_external(entry, self.animations, now, true);
-        super::set_window_output(&window, &target);
-        wayland.space.map_element(window, output_geometry.loc, true);
-        Some(output_geometry)
+        let changed = retarget_external(entry, self.animations, now, true);
+        Some(ExternalFullscreenUpdate {
+            changed,
+            geometry: output_geometry,
+            location: output_geometry.loc,
+            output: Some(target),
+        })
     }
 
-    pub fn unrequest_external(
+    pub(crate) fn unrequest_external(
         &mut self,
-        wayland: &mut WaylandState,
+        wayland: &WaylandState,
         window: &Window,
         now: Duration,
-    ) -> Option<Rectangle<i32, Logical>> {
+    ) -> Option<ExternalFullscreenUpdate> {
         let wl_surface = window.wl_surface().map(|surface| surface.into_owned())?;
         let entry = self.windows.get_mut(&wl_surface)?;
         let restore = entry.restore.clone()?;
         entry.fullscreen_size = window.geometry().size;
-        retarget_external(entry, self.animations, now, false);
-        if let Some(output) = restore
+        let changed = retarget_external(entry, self.animations, now, false);
+        let output = restore
             .output
             .as_deref()
-            .and_then(|name| output_by_name(wayland, name))
-        {
-            super::set_window_output(window, &output);
-        }
-        wayland
-            .space
-            .map_element(window.clone(), restore.location, true);
-        Some(restore.geometry)
+            .and_then(|name| output_by_name(wayland, name));
+        Some(ExternalFullscreenUpdate {
+            changed,
+            geometry: restore.geometry,
+            location: restore.location,
+            output,
+        })
     }
 
     pub fn should_capture_external_snapshot(&self, surface: &WlSurface, fullscreen: bool) -> bool {

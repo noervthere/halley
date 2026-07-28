@@ -171,23 +171,38 @@ fn update_fullscreen<D: SessionDriver>(
     let geometry = if fullscreen {
         session
             .fullscreen
-            .request_external(&mut session.wayland, &window, now)
+            .request_external(&session.wayland, &window, now)
     } else {
         session
             .fullscreen
-            .unrequest_external(&mut session.wayland, &window, now)
+            .unrequest_external(&session.wayland, &window, now)
     };
     match geometry {
-        Some(geometry) => {
-            if let Err(err) = surface.configure(geometry) {
-                eventline::warn!("xwayland: failed to configure fullscreen transition: {err}");
-            }
-        }
+        Some(update) => apply_external_fullscreen_update(session, surface, &window, update),
         None => {
             if let Some(snapshot) = snapshot {
                 session.fullscreen_textures.remove(&snapshot);
             }
         }
+    }
+}
+
+fn apply_external_fullscreen_update<D: SessionDriver>(
+    session: &mut Session<D>,
+    surface: &X11Surface,
+    window: &Window,
+    update: crate::wayland::fullscreen::ExternalFullscreenUpdate,
+) {
+    let _state_changed = update.changed;
+    if let Some(output) = update.output.as_ref() {
+        crate::wayland::set_window_output(window, output);
+    }
+    session
+        .wayland
+        .space
+        .map_element(window.clone(), update.location, true);
+    if let Err(err) = surface.configure(update.geometry) {
+        eventline::warn!("xwayland: failed to configure fullscreen transition: {err}");
     }
 }
 
