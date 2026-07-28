@@ -27,6 +27,12 @@ enum SessionControl {
     ToggleFullscreen,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WindowRetirement {
+    Unmapped,
+    Destroyed,
+}
+
 /// Interprets every configured action once for both session backends.
 /// Backends provide the camera selected by their own output routing and
 /// translate the returned quit request into their loop's native mechanism.
@@ -76,6 +82,35 @@ fn cancel_grab_for_surface<D: SessionDriver>(
         session.grab = crate::input::grab::Grab::None;
         crate::input::grab::forget_resize_anchor(&mut session.resize_anchor, surface);
     }
+}
+
+pub(crate) fn retire_window_mapping<D: SessionDriver>(
+    session: &mut Session<D>,
+    transition: crate::window::lifecycle::UnmapTransition,
+    retirement: WindowRetirement,
+) {
+    let surface = transition
+        .window
+        .wl_surface()
+        .map(|surface| surface.into_owned());
+
+    session.wayland.space.unmap_elem(&transition.window);
+    if let Some(surface) = surface.as_ref() {
+        cancel_grab_for_surface(session, surface);
+        crate::input::grab::forget_resize_anchor(&mut session.resize_anchor, surface);
+        session.window_open_animations.remove(surface);
+        session.fullscreen_textures.remove(surface);
+        match retirement {
+            WindowRetirement::Unmapped => session.fullscreen.suspend(surface),
+            WindowRetirement::Destroyed => session.fullscreen.remove(surface),
+        }
+        if session.wayland.focused_window.as_ref() == Some(surface) {
+            session.wayland.focused_window = None;
+        }
+        let time = session.start_time.elapsed().as_millis() as u32;
+        pointer::retire_surface(session, surface, time);
+    }
+    sync_keyboard_focus(session, smithay::utils::SERIAL_COUNTER.next_serial());
 }
 
 fn toggle_focused_fullscreen<D: SessionDriver>(session: &mut Session<D>) {

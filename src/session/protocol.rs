@@ -109,6 +109,7 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
 
     fn commit(&mut self, surface: &WlSurface) {
         let root = wayland::compositor::root_surface(surface);
+        let mut process_fullscreen_commit = true;
         match wayland::compositor::commit::<Self>(&mut self.wayland, &self.cameras, surface) {
             Some(wayland::xdg_shell::CommitOutcome::Mapped(transition)) => {
                 if transition.first_map
@@ -120,18 +121,19 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
                 }
             }
             Some(wayland::xdg_shell::CommitOutcome::Unmapped(transition)) => {
-                if let Some(unmapped) = transition.window.wl_surface() {
-                    self.window_open_animations.remove(unmapped.as_ref());
-                }
+                super::retire_window_mapping(self, transition, super::WindowRetirement::Unmapped);
+                process_fullscreen_commit = false;
             }
             None => {}
         }
-        self.fullscreen.handle_commit(
-            &mut self.wayland,
-            &self.cameras,
-            &root,
-            crate::frame_clock::monotonic_now(),
-        );
+        if process_fullscreen_commit {
+            self.fullscreen.handle_commit(
+                &mut self.wayland,
+                &self.cameras,
+                &root,
+                crate::frame_clock::monotonic_now(),
+            );
+        }
         crate::input::grab::finish_resize_commit(&mut self.resize_anchor, &mut self.wayland.space);
         self.request_redraw();
     }
@@ -212,11 +214,11 @@ impl<D: SessionDriver> XdgShellHandler for Session<D> {
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
-        self.window_open_animations.remove(surface.wl_surface());
-        self.fullscreen.remove(surface.wl_surface());
-        self.fullscreen_textures.remove(surface.wl_surface());
-        crate::input::grab::forget_resize_anchor(&mut self.resize_anchor, surface.wl_surface());
-        wayland::xdg_shell::toplevel_destroyed(&mut self.wayland, &surface);
+        if let Some(transition) =
+            wayland::xdg_shell::toplevel_destroyed(&mut self.wayland, &surface)
+        {
+            super::retire_window_mapping(self, transition, super::WindowRetirement::Destroyed);
+        }
         self.request_redraw();
     }
 

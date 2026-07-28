@@ -23,20 +23,14 @@ pub fn new_toplevel(wayland: &mut WaylandState, surface: ToplevelSurface) {
     wayland.windows.register_xdg(wl_surface, window);
 }
 
-/// Removes a destroyed toplevel from whichever lifecycle state owns it.
-///
-/// This must explicitly unmap a mapped window: Smithay calls this handler
-/// while the underlying `wl_surface` may still be alive, so waiting for
-/// `Space::refresh()` can leave Halley's compositor-drawn border in the next
-/// frame. Focus clears to `None`; there is no fallback-refocus policy yet.
-pub fn toplevel_destroyed(wayland: &mut WaylandState, surface: &ToplevelSurface) {
-    let key = crate::window::lifecycle::WindowLifecycle::xdg_key(surface.wl_surface());
-    if let Some(removed) = wayland.windows.destroy(&key) {
-        wayland.space.unmap_elem(&removed.window);
-    }
-    if wayland.focused_window.as_ref() == Some(surface.wl_surface()) {
-        wayland.focused_window = None;
-    }
+/// Removes a destroyed toplevel from lifecycle ownership. Session-level
+/// retirement applies the shared scene, focus, and visual cleanup.
+pub fn toplevel_destroyed(
+    wayland: &mut WaylandState,
+    surface: &ToplevelSurface,
+) -> Option<UnmapTransition> {
+    let key = WindowLifecycle::xdg_key(surface.wl_surface());
+    wayland.windows.destroy(&key)
 }
 
 /// The commit-path half of the unmapped -> mapped transition: sends the
@@ -69,10 +63,6 @@ pub fn handle_commit(
                 output: super::window_output_name(&window),
             });
         let transition = wayland.windows.unmap(&key, placement)?;
-        wayland.space.unmap_elem(&transition.window);
-        if wayland.focused_window.as_ref() == Some(surface) {
-            wayland.focused_window = None;
-        }
         return Some(CommitOutcome::Unmapped(transition));
     }
 

@@ -492,6 +492,12 @@ impl FullscreenManager {
     pub fn remove(&mut self, surface: &WlSurface) {
         self.windows.remove(surface);
     }
+
+    pub fn suspend(&mut self, surface: &WlSurface) {
+        if let Some(entry) = self.windows.get_mut(surface) {
+            suspend_entry(entry);
+        }
+    }
 }
 
 pub struct FullscreenCleanup {
@@ -513,6 +519,11 @@ fn settle_external_fullscreen(
     entry.target_output = target_output.to_string();
     entry.fullscreen_size = fullscreen_size;
     entry.transition = None;
+}
+
+fn suspend_entry(entry: &mut FullscreenWindow) {
+    entry.transition = None;
+    entry.snapshot_serials.clear();
 }
 
 fn retarget_transition(
@@ -681,5 +692,25 @@ mod tests {
         assert_eq!(entry.target_output, "HDMI-A-1");
         assert_eq!(entry.fullscreen_size, Size::from((2560, 1440)));
         assert!(entry.transition.is_none());
+    }
+
+    #[test]
+    fn suspend_keeps_fullscreen_state_but_retires_visual_work() {
+        let mut entry = test_entry(true);
+        entry.transition = Some(MotionTimeline::between(
+            Animations::default().fullscreen.motion,
+            Duration::ZERO,
+            0.0,
+            1.0,
+            0.0,
+        ));
+        entry.snapshot_serials.push(1.into());
+
+        suspend_entry(&mut entry);
+
+        assert!(entry.active);
+        assert!(entry.desired);
+        assert!(entry.transition.is_none());
+        assert!(entry.snapshot_serials.is_empty());
     }
 }

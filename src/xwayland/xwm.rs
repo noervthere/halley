@@ -296,26 +296,22 @@ fn unmap_window<D: SessionDriver>(session: &mut Session<D>, surface: &X11Surface
     let Some(transition) = session.wayland.windows.unmap(&key, placement) else {
         return;
     };
-    if let Some(wl_surface) = transition
-        .window
-        .wl_surface()
-        .map(|surface| surface.into_owned())
-    {
-        session.fullscreen.remove(&wl_surface);
-        session.fullscreen_textures.remove(&wl_surface);
-        session.window_open_animations.remove(&wl_surface);
-        crate::input::grab::forget_resize_anchor(&mut session.resize_anchor, &wl_surface);
-        if session.wayland.focused_window.as_ref() == Some(&wl_surface) {
-            session.wayland.focused_window = None;
-        }
-    }
-    session.wayland.space.unmap_elem(&transition.window);
+    crate::session::retire_window_mapping(
+        session,
+        transition,
+        crate::session::WindowRetirement::Unmapped,
+    );
 }
 
 fn destroy_window<D: SessionDriver>(session: &mut Session<D>, surface: &X11Surface) {
-    unmap_window(session, surface);
     let key = WindowLifecycle::x11_key(surface);
-    session.wayland.windows.destroy(&key);
+    if let Some(transition) = session.wayland.windows.destroy(&key) {
+        crate::session::retire_window_mapping(
+            session,
+            transition,
+            crate::session::WindowRetirement::Destroyed,
+        );
+    }
 }
 
 impl<D: SessionDriver> XwmHandler for Session<D> {
@@ -407,13 +403,11 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
         {
             eventline::warn!("xwayland: failed to acknowledge unmap: {err}");
         }
-        crate::session::sync_keyboard_focus(self, SERIAL_COUNTER.next_serial());
         self.request_redraw();
     }
 
     fn destroyed_window(&mut self, _xwm: XwmId, surface: X11Surface) {
         destroy_window(self, &surface);
-        crate::session::sync_keyboard_focus(self, SERIAL_COUNTER.next_serial());
         self.request_redraw();
     }
 
@@ -545,6 +539,14 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
 
     fn disconnected(&mut self, _xwm: XwmId) {
         eventline::warn!("xwayland: window manager disconnected");
+        for transition in self.wayland.windows.clear_x11() {
+            crate::session::retire_window_mapping(
+                self,
+                transition,
+                crate::session::WindowRetirement::Destroyed,
+            );
+        }
         self.xwayland.clear();
+        self.request_redraw();
     }
 }
