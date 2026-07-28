@@ -95,28 +95,28 @@ pub fn build(
                 geometry.to_physical(1).size,
             )
             .unwrap_or_default();
-        let animated_bbox = opening_visual.transform_rect(scaled_bbox, scaled_bbox);
         let fullscreen = request.fullscreen.presentation(
             window_surface.as_ref(),
             output,
             request.target_presentation_time,
         );
-        let animated_bbox = fullscreen
-            .map(|presentation| {
-                let windowed_bbox = presentation
-                    .windowed_geometry
-                    .map(|geometry| {
-                        super::camera_rect(
-                            geometry.to_physical(1),
-                            camera_center,
-                            output_size,
-                            zoom_scale,
-                        )
-                    })
-                    .unwrap_or_else(|| presentation.fullscreen_rect(output_size));
-                presentation.client_rect(windowed_bbox, output_size)
-            })
-            .unwrap_or(animated_bbox);
+        let windowed_bbox = fullscreen
+            .and_then(|presentation| presentation.windowed_geometry)
+            .map(|geometry| {
+                super::camera_rect(
+                    geometry.to_physical(1),
+                    camera_center,
+                    output_size,
+                    zoom_scale,
+                )
+            });
+        let animated_bbox = animated_window_bbox(
+            opening_visual,
+            fullscreen,
+            windowed_bbox,
+            scaled_bbox,
+            output_size,
+        );
         if animated_bbox.size.w == 0 || animated_bbox.size.h == 0 {
             continue;
         }
@@ -139,11 +139,7 @@ pub fn build(
             SceneElement::Rescaled(super::rescale::RescaledElement::new(
                 surface_element,
                 destination,
-                if fullscreen.is_some() {
-                    1.0
-                } else {
-                    opening_visual.alpha()
-                },
+                opening_visual.alpha(),
             ))
         }));
         let fullscreen_blend = if let Some(presentation) = fullscreen {
@@ -177,11 +173,7 @@ pub fn build(
                 let element = super::rescale::RescaledElement::new(
                     surface_element,
                     destination,
-                    if fullscreen.is_some() {
-                        1.0
-                    } else {
-                        opening_visual.alpha()
-                    },
+                    opening_visual.alpha(),
                 );
                 CropRenderElement::from_element(element, 1.0, animated_bbox)
                     .map(SceneElement::Cropped)
@@ -435,6 +427,24 @@ fn dashed_border_rects(rect: Rectangle<i32, Physical>) -> Vec<Rectangle<i32, Phy
     strips
 }
 
+fn animated_window_bbox(
+    opening: crate::animation::WindowOpenVisual,
+    fullscreen: Option<crate::wayland::fullscreen::FullscreenPresentation>,
+    windowed_bbox: Option<Rectangle<i32, Physical>>,
+    scaled_bbox: Rectangle<i32, Physical>,
+    output_size: smithay::utils::Size<i32, Physical>,
+) -> Rectangle<i32, Physical> {
+    let settled = fullscreen
+        .map(|presentation| {
+            presentation.client_rect(
+                windowed_bbox.unwrap_or_else(|| presentation.fullscreen_rect(output_size)),
+                output_size,
+            )
+        })
+        .unwrap_or(scaled_bbox);
+    opening.transform_rect(settled, settled)
+}
+
 fn map_rect(
     rect: Rectangle<i32, Physical>,
     source: Rectangle<i32, Physical>,
@@ -473,7 +483,7 @@ pub fn cursor_position_for_output(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use smithay::utils::{Physical, Rectangle};
+    use smithay::utils::{Physical, Rectangle, Size};
 
     #[test]
     fn cursor_is_localized_to_the_containing_output() {
@@ -581,6 +591,64 @@ mod tests {
         assert_eq!(
             middle.client_rect(windowed, (1920, 1080).into()),
             Rectangle::new((50, 25).into(), (1360, 840).into())
+        );
+    }
+
+    #[test]
+    fn opening_animation_scales_settled_fullscreen_geometry() {
+        let output_size = Size::<i32, Physical>::from((1920, 1080));
+        let fullscreen = crate::wayland::fullscreen::FullscreenPresentation {
+            progress: 1.0,
+            transition_completion: 1.0,
+            windowed_geometry: None,
+            fullscreen_size: (1920, 1080).into(),
+        };
+        let opening = crate::animation::WindowOpenVisual::from_parts(0.5, 0.5);
+
+        assert_eq!(
+            animated_window_bbox(
+                opening,
+                Some(fullscreen),
+                None,
+                Rectangle::new((0, 0).into(), output_size),
+                output_size,
+            ),
+            Rectangle::new((480, 270).into(), (960, 540).into())
+        );
+    }
+
+    #[test]
+    fn completed_opening_preserves_settled_fullscreen_geometry() {
+        let output_size = Size::<i32, Physical>::from((1920, 1080));
+        let fullscreen = crate::wayland::fullscreen::FullscreenPresentation {
+            progress: 1.0,
+            transition_completion: 1.0,
+            windowed_geometry: None,
+            fullscreen_size: (1920, 1080).into(),
+        };
+        let full = Rectangle::new((0, 0).into(), output_size);
+
+        assert_eq!(
+            animated_window_bbox(
+                Default::default(),
+                Some(fullscreen),
+                None,
+                full,
+                output_size
+            ),
+            full
+        );
+    }
+
+    #[test]
+    fn windowed_opening_geometry_is_unchanged() {
+        let output_size = Size::<i32, Physical>::from((1920, 1080));
+        let windowed = Rectangle::new((100, 50).into(), (800, 600).into());
+        let opening = crate::animation::WindowOpenVisual::from_parts(0.5, 1.0);
+
+        assert_eq!(
+            animated_window_bbox(opening, None, None, windowed, output_size),
+            opening.transform_rect(windowed, windowed)
         );
     }
 

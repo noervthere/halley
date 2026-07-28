@@ -64,6 +64,11 @@ impl Default for WindowOpenVisual {
 }
 
 impl WindowOpenVisual {
+    #[cfg(test)]
+    pub(crate) fn from_parts(scale: f64, alpha: f32) -> Self {
+        Self { scale, alpha }
+    }
+
     pub fn transform_rect(
         self,
         rect: Rectangle<i32, Physical>,
