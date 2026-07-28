@@ -341,39 +341,7 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
         let Some(transition) = self.wayland.windows.begin_map(&key) else {
             return;
         };
-        let window = transition.window;
-        let output = transition
-            .placement
-            .as_ref()
-            .and_then(|placement| placement.output.as_deref())
-            .and_then(|name| {
-                self.wayland
-                    .space
-                    .outputs()
-                    .find(|output| output.name() == name)
-            })
-            .cloned()
-            .or_else(|| crate::wayland::focus::selected_output(&self.wayland).cloned());
-        let location = transition
-            .placement
-            .map(|placement| placement.location)
-            .or_else(|| {
-                output.as_ref().map(|output| {
-                    crate::wayland::xdg_shell::centered_location(
-                        &self.wayland,
-                        &self.cameras,
-                        output,
-                        &window,
-                    )
-                })
-            })
-            .unwrap_or_else(|| (0, 0).into());
-        if let Some(output) = output.as_ref() {
-            crate::wayland::set_window_output(&window, output);
-        }
-        self.wayland
-            .space
-            .map_element(window.clone(), location, true);
+        crate::window::place_mapping(&mut self.wayland, &self.cameras, &transition);
         finalize_mapped_window(self, &surface);
         self.request_redraw();
     }
