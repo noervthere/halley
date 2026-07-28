@@ -117,6 +117,14 @@ pub(super) fn update_client_state<D: SessionDriver>(session: &mut Session<D>, ti
     finish_frame(session, &pointer);
 }
 
+pub(super) fn reconcile_state<D: SessionDriver>(session: &mut Session<D>) {
+    let Some(pointer) = session.seat.get_pointer() else {
+        return;
+    };
+    constraints::reconcile(session, &pointer, None);
+    pointer.frame(session);
+}
+
 pub(super) enum ConstrainedMotion {
     Apply,
     Hold,

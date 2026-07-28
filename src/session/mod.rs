@@ -86,6 +86,10 @@ pub(crate) fn prepare_window_unmap<D: SessionDriver>(
     pointer::prepare_unmap(session, surface);
 }
 
+pub(crate) fn reconcile_pointer_constraints<D: SessionDriver>(session: &mut Session<D>) {
+    pointer::reconcile_state(session);
+}
+
 pub(crate) fn has_active_pointer_constraint<D: SessionDriver>(session: &Session<D>) -> bool {
     pointer::has_active_constraint(session)
 }
@@ -121,6 +125,7 @@ fn toggle_focused_fullscreen<D: SessionDriver>(session: &mut Session<D>) {
     } else {
         crate::xwayland::set_window_fullscreen(session, &window, entering);
     }
+    pointer::reconcile_state(session);
     session.request_redraw();
 }
 
@@ -159,6 +164,7 @@ pub(crate) fn sync_keyboard_focus<D: SessionDriver>(
         .filter(|surface| session.wayland.focused_window.as_ref() == Some(surface));
     pointer::prepare_keyboard_focus_change(session, next_constraint_root.as_ref());
     keyboard.set_focus(session, focused, serial);
+    pointer::reconcile_state(session);
 }
 
 fn focus_layer<D: SessionDriver>(

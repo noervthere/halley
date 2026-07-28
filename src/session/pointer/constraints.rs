@@ -641,6 +641,44 @@ mod tests {
     }
 
     #[test]
+    fn persistent_constraint_reactivates_only_after_remap_and_exact_focus() {
+        let unmapped = decision(true, false, false, false, false, false);
+        let remapped_without_focus = decision(false, false, false, false, false, false);
+        let remapped_and_focused = decision(false, false, false, true, true, false);
+
+        assert!(unmapped.deactivate_current);
+        assert_eq!(
+            remapped_without_focus,
+            ReconcileDecision {
+                deactivate_current: false,
+                establish_focus: false,
+                activate_candidate: false,
+            }
+        );
+        assert_eq!(
+            remapped_and_focused,
+            ReconcileDecision {
+                deactivate_current: false,
+                establish_focus: true,
+                activate_candidate: true,
+            }
+        );
+    }
+
+    #[test]
+    fn removed_oneshot_constraint_does_not_reactivate_after_remap() {
+        let remapped_without_protocol_candidate = decision(false, false, false, false, true, false);
+        assert_eq!(
+            remapped_without_protocol_candidate,
+            ReconcileDecision {
+                deactivate_current: false,
+                establish_focus: false,
+                activate_candidate: false,
+            }
+        );
+    }
+
+    #[test]
     fn owner_replacement_deactivates_then_focuses_and_activates() {
         assert_eq!(
             decision(true, false, false, true, false, false),

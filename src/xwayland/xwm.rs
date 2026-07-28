@@ -211,6 +211,7 @@ fn set_external_fullscreen<D: SessionDriver>(
         );
         settle_external_immediately(session, surface, &window, fullscreen);
     }
+    crate::session::reconcile_pointer_constraints(session);
 }
 
 fn presentation_policy_name(policy: ExternalPresentationPolicy) -> &'static str {
@@ -573,6 +574,7 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
                 }
             }
         }
+        crate::session::reconcile_pointer_constraints(self);
         self.request_redraw();
     }
 

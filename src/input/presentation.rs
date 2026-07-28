@@ -247,4 +247,19 @@ mod tests {
             Point::from((512.0, 384.0))
         );
     }
+
+    #[test]
+    fn subsurface_coordinates_share_the_window_transform() {
+        let source = Rectangle::<f64, Logical>::new((400.0, 200.0).into(), (800.0, 600.0).into());
+        let visual = Rectangle::<f64, Logical>::new((100.0, 50.0).into(), (1600.0, 1200.0).into());
+        let root_origin = Point::from((380.0, 170.0));
+        let subsurface_offset = Point::from((30.0, 40.0));
+        let local = Point::from((25.0, 15.0));
+        let source_point = root_origin + subsurface_offset + local;
+        let screen = map_point(source_point, source, visual);
+        let round_trip = map_point(screen, visual, source) - root_origin - subsurface_offset;
+
+        assert_eq!(screen, Point::from((170.0, 100.0)));
+        assert_eq!(round_trip, local);
+    }
 }

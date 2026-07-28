@@ -123,6 +123,7 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
             crate::frame_clock::monotonic_now(),
         );
         crate::input::grab::finish_resize_commit(&mut self.resize_anchor, &mut self.wayland.space);
+        super::pointer::reconcile_state(self);
         self.request_redraw();
     }
 }
@@ -218,11 +219,13 @@ impl<D: SessionDriver> XdgShellHandler for Session<D> {
     ) {
         super::cancel_grab_for_surface(self, surface.wl_surface());
         self.fullscreen.request(&mut self.wayland, &surface, output);
+        super::pointer::reconcile_state(self);
         self.request_redraw();
     }
 
     fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
         self.fullscreen.unrequest(&self.wayland, &surface);
+        super::pointer::reconcile_state(self);
         self.request_redraw();
     }
 

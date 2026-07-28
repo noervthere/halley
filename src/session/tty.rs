@@ -359,8 +359,10 @@ fn apply_runtime_config(app: &mut TtyApp, config: halley_config::RuntimeConfig) 
 fn apply_tty_output_config(app: &mut TtyApp, outputs_config: &[halley_config::OutputConfig]) {
     let changes = app.driver.backend.apply_output_config(outputs_config);
     let mut layout_changed = false;
+    let mut output_changed = false;
 
     for change in changes {
+        output_changed = true;
         if change.mode_changed {
             let interval = app
                 .driver
@@ -398,6 +400,8 @@ fn apply_tty_output_config(app: &mut TtyApp, outputs_config: &[halley_config::Ou
     if layout_changed {
         app.wayland.space.refresh();
         app.capture.update_layout(&app.wayland.space);
+    }
+    if output_changed {
         super::pointer::update_client_state(app, app.start_time.elapsed().as_millis() as u32);
     }
 }
