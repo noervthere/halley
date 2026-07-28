@@ -68,6 +68,20 @@ struct ReconcileDecision {
     activate_candidate: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FocusEstablishment {
+    EnterSurface,
+    RefreshLocation,
+}
+
+fn focus_establishment(pointer_already_focused: bool) -> FocusEstablishment {
+    if pointer_already_focused {
+        FocusEstablishment::RefreshLocation
+    } else {
+        FocusEstablishment::EnterSurface
+    }
+}
+
 fn reconcile_decision(
     current_present: bool,
     current_is_candidate: bool,
@@ -310,12 +324,13 @@ fn focus_candidate<D: SessionDriver>(
     constraint: &ConstraintDescriptor,
 ) -> bool {
     let screen = Point::from(session.pointer.position());
-    let desired = constraint
-        .position_hint
-        .or_else(|| context.presentation.surface_from_screen(surface, screen));
-    let Some(local) = desired.and_then(|point| {
-        nearest_valid_point(point, context.surface_size, constraint.region.as_ref())
-    }) else {
+    let Some(local) = context
+        .presentation
+        .surface_from_screen(surface, screen)
+        .and_then(|point| {
+            nearest_valid_point(point, context.surface_size, constraint.region.as_ref())
+        })
+    else {
         return false;
     };
     let Some(origin) = context.presentation.surface_origin(surface) else {
@@ -326,15 +341,23 @@ fn focus_candidate<D: SessionDriver>(
     };
     let location = origin + local;
     session.pointer.set_position((screen.x, screen.y));
-    pointer.motion(
-        session,
-        Some((surface.clone(), origin)),
-        &MotionEvent {
-            location,
-            serial: SERIAL_COUNTER.next_serial(),
-            time: session.start_time.elapsed().as_millis() as u32,
-        },
-    );
+    match focus_establishment(pointer.current_focus().as_ref() == Some(surface)) {
+        FocusEstablishment::EnterSurface => pointer.motion(
+            session,
+            Some((surface.clone(), origin)),
+            &MotionEvent {
+                location,
+                serial: SERIAL_COUNTER.next_serial(),
+                time: session.start_time.elapsed().as_millis() as u32,
+            },
+        ),
+        // A recreated lock on the same pointer-focused surface still needs
+        // current geometry, especially after an X11 resolution change. A
+        // wl_pointer.motion here is client-visible, though, and XWayland
+        // games may interpret it as camera movement while returning from a
+        // menu. Update Smithay's bookkeeping without sending an event.
+        FocusEstablishment::RefreshLocation => pointer.set_location(location),
+    }
     true
 }
 
@@ -546,26 +569,13 @@ pub(super) fn allows_current_position<D: SessionDriver>(
 pub(super) fn apply_position_hint<D: SessionDriver>(
     session: &mut Session<D>,
     surface: &WlSurface,
-    pointer: &PointerHandle<Session<D>>,
+    _pointer: &PointerHandle<Session<D>>,
     location: Point<f64, Logical>,
 ) {
     if let Some(tracked) = session.pointer_constraints.active.as_mut()
         && tracked.surface == *surface
     {
         tracked.position_hint = Some(location);
-    }
-    if let Some(context) = owner_context(session, surface)
-        && let Some(local) = nearest_valid_point(
-            location,
-            context.surface_size,
-            descriptor(surface, pointer)
-                .and_then(|state| state.region)
-                .as_ref(),
-        )
-        && let Some(screen) = context.presentation.screen_from_surface(surface, local)
-    {
-        session.pointer.set_position((screen.x, screen.y));
-        session.request_redraw();
     }
 }
 
@@ -626,6 +636,15 @@ mod tests {
                 activate_candidate: true,
             }
         );
+    }
+
+    #[test]
+    fn same_surface_relock_refreshes_location_without_absolute_motion() {
+        assert_eq!(
+            focus_establishment(true),
+            FocusEstablishment::RefreshLocation
+        );
+        assert_eq!(focus_establishment(false), FocusEstablishment::EnterSurface);
     }
 
     #[test]
