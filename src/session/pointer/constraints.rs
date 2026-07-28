@@ -119,6 +119,13 @@ fn descriptor<D: SessionDriver>(
     })
 }
 
+pub(super) fn constraint_kind<D: SessionDriver>(
+    surface: &WlSurface,
+    pointer: &PointerHandle<Session<D>>,
+) -> Option<ConstraintKind> {
+    descriptor(surface, pointer).map(|constraint| constraint.kind)
+}
+
 fn surface_size(surface: &WlSurface) -> Option<Size<i32, Logical>> {
     with_renderer_surface_state(surface, |state| state.surface_size()).flatten()
 }
@@ -534,6 +541,13 @@ pub(super) fn has_active_lock<D: SessionDriver>(
     pointer: &PointerHandle<Session<D>>,
 ) -> bool {
     active(session, pointer).is_some_and(|constraint| constraint.kind == ConstraintKind::Locked)
+}
+
+pub(super) fn has_active_confinement<D: SessionDriver>(
+    session: &Session<D>,
+    pointer: &PointerHandle<Session<D>>,
+) -> bool {
+    active(session, pointer).is_some_and(|constraint| constraint.kind == ConstraintKind::Confined)
 }
 
 pub(super) struct ActiveConstraint {

@@ -30,17 +30,17 @@ enum FullscreenRequestOrigin {
 enum ExternalPresentationPolicy {
     Initial,
     Opening,
-    Constrained,
+    Confined,
     Animated,
 }
 
 fn external_presentation_policy(
     origin: FullscreenRequestOrigin,
     opening: bool,
-    constrained: bool,
+    confined: bool,
 ) -> ExternalPresentationPolicy {
-    if constrained {
-        ExternalPresentationPolicy::Constrained
+    if confined {
+        ExternalPresentationPolicy::Confined
     } else if opening {
         ExternalPresentationPolicy::Opening
     } else if origin == FullscreenRequestOrigin::Initial {
@@ -248,7 +248,7 @@ fn set_external_fullscreen<D: SessionDriver>(
     let policy = external_presentation_policy(
         origin,
         opening,
-        crate::session::has_active_pointer_constraint(session),
+        crate::session::has_active_pointer_confinement(session),
     );
     if policy == ExternalPresentationPolicy::Opening {
         preserve_opening_center(session, surface, &window);
@@ -347,7 +347,7 @@ fn request_opening_fullscreen<D: SessionDriver>(
                 settle_external_immediately(session, surface, window, fullscreen);
                 return;
             };
-            session.window_open_animations.retarget(
+            session.window_open_animations.retarget_for_fullscreen(
                 wl_surface.as_ref(),
                 now,
                 current_bounds,
@@ -426,7 +426,7 @@ fn presentation_policy_name(policy: ExternalPresentationPolicy) -> &'static str 
     match policy {
         ExternalPresentationPolicy::Initial => "initial",
         ExternalPresentationPolicy::Opening => "opening",
-        ExternalPresentationPolicy::Constrained => "constrained",
+        ExternalPresentationPolicy::Confined => "confined",
         ExternalPresentationPolicy::Animated => "snapshot-fallback",
     }
 }
@@ -957,7 +957,7 @@ mod tests {
     }
 
     #[test]
-    fn constrained_fullscreen_never_animates() {
+    fn confined_fullscreen_never_animates() {
         for origin in [
             FullscreenRequestOrigin::Initial,
             FullscreenRequestOrigin::Client,
@@ -965,13 +965,13 @@ mod tests {
         ] {
             assert_eq!(
                 external_presentation_policy(origin, true, true),
-                ExternalPresentationPolicy::Constrained
+                ExternalPresentationPolicy::Confined
             );
         }
     }
 
     #[test]
-    fn settled_unconstrained_fullscreen_animates() {
+    fn settled_or_locked_fullscreen_animates_when_not_confined() {
         for origin in [
             FullscreenRequestOrigin::Client,
             FullscreenRequestOrigin::Compositor,

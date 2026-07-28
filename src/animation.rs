@@ -60,6 +60,16 @@ impl WindowOpenTimeline {
         current_bounds: Rectangle<i32, Physical>,
         target_bounds: Rectangle<i32, Physical>,
     ) {
+        self.retarget_with_motion(now, current_bounds, target_bounds, self.motion_config);
+    }
+
+    fn retarget_with_motion(
+        &mut self,
+        now: Duration,
+        current_bounds: Rectangle<i32, Physical>,
+        target_bounds: Rectangle<i32, Physical>,
+        motion: AnimationMotion,
+    ) {
         let (current, velocity) = match self.geometry {
             Some(geometry) => (geometry.rect_at(now), geometry.velocity_at(now)),
             None => {
@@ -72,7 +82,7 @@ impl WindowOpenTimeline {
             }
         };
         self.geometry = Some(RectTransition::between(
-            self.motion_config,
+            motion,
             now,
             current,
             VisualRect::from(target_bounds),
@@ -303,6 +313,25 @@ impl WindowOpenAnimations {
             return false;
         };
         timeline.retarget(now, current_bounds, target_bounds);
+        true
+    }
+
+    pub fn retarget_for_fullscreen(
+        &mut self,
+        surface: &WlSurface,
+        now: Duration,
+        current_bounds: Rectangle<i32, Physical>,
+        target_bounds: Rectangle<i32, Physical>,
+    ) -> bool {
+        let Some(timeline) = self.active.get_mut(surface) else {
+            return false;
+        };
+        let motion = if self.config.enabled && self.config.fullscreen.enabled {
+            self.config.fullscreen.motion
+        } else {
+            timeline.motion_config
+        };
+        timeline.retarget_with_motion(now, current_bounds, target_bounds, motion);
         true
     }
 
@@ -613,5 +642,28 @@ mod tests {
         animation.retarget(now, windowed, fullscreen);
 
         assert_eq!(animation.visual_at(now, fullscreen).alpha(), alpha);
+    }
+
+    #[test]
+    fn fullscreen_retarget_can_use_fullscreen_motion_without_restarting_alpha() {
+        let windowed = rect(800, 600);
+        let fullscreen = rect(1920, 1080);
+        let started = Duration::from_secs(1);
+        let mut animation = timeline(WindowOpenAnimationType::Elastic, AnimationCurve::Linear);
+        let alpha = animation.visual_at(started, windowed).alpha();
+        let fullscreen_motion = AnimationMotion::Easing(EasingMotion {
+            duration_ms: 100,
+            curve: AnimationCurve::Linear,
+        });
+
+        animation.retarget_with_motion(started, windowed, fullscreen, fullscreen_motion);
+
+        assert_eq!(animation.visual_at(started, fullscreen).alpha(), alpha);
+        assert_eq!(
+            animation
+                .visual_at(started + Duration::from_millis(100), fullscreen)
+                .transform_rect(fullscreen, fullscreen),
+            fullscreen
+        );
     }
 }

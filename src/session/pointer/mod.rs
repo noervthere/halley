@@ -43,11 +43,22 @@ pub(super) fn route_client<D: SessionDriver>(
     )
 }
 
-pub(super) fn has_active_constraint<D: SessionDriver>(session: &Session<D>) -> bool {
+pub(super) fn has_active_confinement<D: SessionDriver>(session: &Session<D>) -> bool {
     session
         .seat
         .get_pointer()
-        .is_some_and(|pointer| constraints::active(session, &pointer).is_some())
+        .is_some_and(|pointer| constraints::has_active_confinement(session, &pointer))
+}
+
+fn constraint_requires_stable_presentation(kind: Option<constraints::ConstraintKind>) -> bool {
+    kind != Some(constraints::ConstraintKind::Locked)
+}
+
+pub(super) fn new_constraint_requires_stable_presentation<D: SessionDriver>(
+    surface: &WlSurface,
+    pointer: &PointerHandle<Session<D>>,
+) -> bool {
+    constraint_requires_stable_presentation(constraints::constraint_kind(surface, pointer))
 }
 
 fn route_and_update_client_focus<D: SessionDriver>(
@@ -197,7 +208,10 @@ pub(super) fn apply_position_hint<D: SessionDriver>(
 
 #[cfg(test)]
 mod tests {
-    use super::{AbsoluteMotionPolicy, should_emit_absolute_motion};
+    use super::{
+        AbsoluteMotionPolicy, constraint_requires_stable_presentation, constraints,
+        should_emit_absolute_motion,
+    };
 
     #[test]
     fn locked_pointer_suppresses_every_absolute_motion_policy() {
@@ -234,5 +248,16 @@ mod tests {
             false,
             false
         ));
+    }
+
+    #[test]
+    fn locks_allow_visual_motion_while_confinement_requires_stable_geometry() {
+        assert!(!constraint_requires_stable_presentation(Some(
+            constraints::ConstraintKind::Locked
+        )));
+        assert!(constraint_requires_stable_presentation(Some(
+            constraints::ConstraintKind::Confined
+        )));
+        assert!(constraint_requires_stable_presentation(None));
     }
 }

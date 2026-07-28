@@ -90,8 +90,8 @@ pub(crate) fn reconcile_pointer_constraints<D: SessionDriver>(session: &mut Sess
     pointer::reconcile_state(session);
 }
 
-pub(crate) fn has_active_pointer_constraint<D: SessionDriver>(session: &Session<D>) -> bool {
-    pointer::has_active_constraint(session)
+pub(crate) fn has_active_pointer_confinement<D: SessionDriver>(session: &Session<D>) -> bool {
+    pointer::has_active_confinement(session)
 }
 
 fn toggle_focused_fullscreen<D: SessionDriver>(session: &mut Session<D>) {
