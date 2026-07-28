@@ -1,12 +1,14 @@
 mod focus;
+mod lifecycle;
 mod selection;
 mod xwm;
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::process::Stdio;
 
 use calloop::LoopHandle;
+use smithay::desktop::Window;
 use smithay::reexports::wayland_protocols::xwayland::keyboard_grab::zv1::server::{
     zwp_xwayland_keyboard_grab_manager_v1::ZwpXwaylandKeyboardGrabManagerV1,
     zwp_xwayland_keyboard_grab_v1::ZwpXwaylandKeyboardGrabV1,
@@ -30,12 +32,17 @@ use crate::session::{Session, SessionDriver};
 
 pub use focus::KeyboardFocusTarget;
 
+struct PendingWindow {
+    surface: smithay::xwayland::X11Surface,
+    window: Window,
+}
+
 pub struct State {
     shell_state: XWaylandShellState,
     _keyboard_grab_state: XWaylandKeyboardGrabState,
     xwm: Option<X11Wm>,
     display: Option<u32>,
-    pending_open_animations: HashSet<u32>,
+    pending_windows: HashMap<u32, PendingWindow>,
 }
 
 impl State {
@@ -54,7 +61,7 @@ impl State {
             _keyboard_grab_state: XWaylandKeyboardGrabState::new::<D>(display),
             xwm: None,
             display: None,
-            pending_open_animations: HashSet::new(),
+            pending_windows: HashMap::new(),
         }
     }
 
@@ -78,7 +85,7 @@ impl State {
     fn clear(&mut self) {
         self.xwm = None;
         self.display = None;
-        self.pending_open_animations.clear();
+        self.pending_windows.clear();
     }
 }
 
@@ -169,6 +176,13 @@ pub fn set_window_fullscreen<D: SessionDriver>(
     fullscreen: bool,
 ) {
     xwm::set_window_fullscreen(session, window, fullscreen);
+}
+
+pub fn handle_commit<D: SessionDriver>(
+    session: &mut Session<D>,
+    surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+) {
+    xwm::handle_commit(session, surface);
 }
 
 pub fn is_override_redirect(window: &smithay::desktop::Window) -> bool {

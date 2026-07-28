@@ -116,6 +116,7 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
             self.window_open_animations
                 .start(mapped, crate::frame_clock::monotonic_now());
         }
+        crate::xwayland::handle_commit(self, &root);
         self.fullscreen.handle_commit(
             &mut self.wayland,
             &self.cameras,
