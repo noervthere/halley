@@ -156,6 +156,7 @@ pub fn build(
                 window,
                 animated_bbox,
                 presentation.transition_completion,
+                opening_visual.alpha(),
             ) {
                 Ok(blend) => blend,
                 Err(err) => {

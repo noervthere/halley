@@ -127,6 +127,7 @@ impl FullscreenTextureTransitions {
         window: &Window,
         destination: Rectangle<i32, Physical>,
         progress: f64,
+        alpha: f32,
     ) -> Result<Option<FullscreenBlendElement>, Box<dyn Error>> {
         let surface = window
             .wl_surface()
@@ -174,7 +175,7 @@ impl FullscreenTextureTransitions {
             previous.clone(),
             1,
             Transform::Normal,
-            Some(1.0),
+            Some(alpha.clamp(0.0, 1.0)),
             Some(source),
             Some(destination_size),
             None,
@@ -235,7 +236,7 @@ impl Element for FullscreenBlendElement {
     }
 
     fn alpha(&self) -> f32 {
-        1.0
+        self.previous.alpha()
     }
 
     fn kind(&self) -> Kind {
