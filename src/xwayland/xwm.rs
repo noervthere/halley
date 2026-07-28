@@ -114,12 +114,11 @@ fn admit_window<D: SessionDriver>(session: &mut Session<D>, surface: &X11Surface
     {
         crate::wayland::set_window_output(&admission.window, &output);
     }
-    session
-        .wayland
-        .space
-        .map_element(admission.window.clone(), location, false);
-
-    let focus_deferred = if surface.is_fullscreen() {
+    let initially_fullscreen = surface.is_fullscreen();
+    if !initially_fullscreen {
+        present_window(session, id, &admission.window, location);
+    }
+    let focus_deferred = if initially_fullscreen {
         enter_fullscreen(session, surface)
     } else if surface.is_maximized() {
         maximize_window(session, surface);
@@ -133,6 +132,9 @@ fn admit_window<D: SessionDriver>(session: &mut Session<D>, surface: &X11Surface
         session.wayland.windows.set_input_ready(id, true);
         false
     };
+    if !session.wayland.windows.is_presented(id) && !focus_deferred {
+        present_window(session, id, &admission.window, location);
+    }
 
     if admission.first
         && !surface.is_fullscreen()
@@ -154,6 +156,20 @@ fn admit_window<D: SessionDriver>(session: &mut Session<D>, surface: &X11Surface
     );
 }
 
+fn present_window<D: SessionDriver>(
+    session: &mut Session<D>,
+    id: crate::window::lifecycle::WindowId,
+    window: &Window,
+    location: Point<i32, Logical>,
+) {
+    if session.wayland.windows.present(id) {
+        session
+            .wayland
+            .space
+            .map_element(window.clone(), location, false);
+    }
+}
+
 fn output_for_geometry<D: SessionDriver>(
     session: &Session<D>,
     geometry: Rectangle<i32, Logical>,
@@ -172,6 +188,7 @@ fn output_for_geometry<D: SessionDriver>(
 }
 
 fn enter_fullscreen<D: SessionDriver>(session: &mut Session<D>, surface: &X11Surface) -> bool {
+    let captured = capture_fullscreen_snapshot(session, surface, true);
     if let Err(err) = surface.set_fullscreen(true) {
         eventline::warn!("xwayland: failed to set fullscreen state: {err}");
     }
@@ -184,16 +201,22 @@ fn enter_fullscreen<D: SessionDriver>(session: &mut Session<D>, surface: &X11Sur
     let Some(window) = window_for_surface(session, surface) else {
         return false;
     };
-    let Some(geometry) = session
-        .fullscreen
-        .request_external(&mut session.wayland, &window)
+    let Some((geometry, pending)) =
+        session
+            .fullscreen
+            .request_external(&mut session.wayland, &window, captured)
     else {
+        remove_fullscreen_snapshot(session, &window);
         session.wayland.windows.set_input_ready(id, true);
         return false;
     };
+    if !pending {
+        return false;
+    }
     let gate_input = !session.wayland.windows.input_ready(id);
     if let Err(err) = surface.configure(geometry) {
         eventline::warn!("xwayland: failed to configure fullscreen window: {err}");
+        remove_fullscreen_snapshot(session, &window);
         session.wayland.windows.set_input_ready(id, true);
         return false;
     }
@@ -208,18 +231,70 @@ fn leave_fullscreen<D: SessionDriver>(session: &mut Session<D>, surface: &X11Sur
     let Some(window) = window_for_surface(session, surface) else {
         return;
     };
+    let captured = capture_fullscreen_snapshot(session, surface, false);
     if let Err(err) = surface.set_fullscreen(false) {
         eventline::warn!("xwayland: failed to clear fullscreen state: {err}");
     }
-    if let Some(id) = session.wayland.windows.id_for_x11(surface) {
+    let Some(id) = session.wayland.windows.id_for_x11(surface) else {
+        return;
+    };
+    let Some((geometry, pending)) =
+        session
+            .fullscreen
+            .unrequest_external(&mut session.wayland, &window, captured)
+    else {
+        remove_fullscreen_snapshot(session, &window);
         session.wayland.windows.clear_geometry_target(id);
+        return;
+    };
+    if !pending {
+        return;
     }
-    if let Some(geometry) = session
-        .fullscreen
-        .unrequest_external(&mut session.wayland, &window)
-        && let Err(err) = surface.configure(geometry)
-    {
+    if let Err(err) = surface.configure(geometry) {
         eventline::warn!("xwayland: failed to restore fullscreen window: {err}");
+        remove_fullscreen_snapshot(session, &window);
+        session.wayland.windows.clear_geometry_target(id);
+        return;
+    }
+    session
+        .wayland
+        .windows
+        .begin_geometry_settlement(id, geometry, false);
+}
+
+fn capture_fullscreen_snapshot<D: SessionDriver>(
+    session: &mut Session<D>,
+    surface: &X11Surface,
+    fullscreen: bool,
+) -> bool {
+    let Some(window) = window_for_surface(session, surface) else {
+        return false;
+    };
+    let Some(wl_surface) = window.wl_surface().map(|surface| surface.into_owned()) else {
+        return false;
+    };
+    if !session
+        .fullscreen
+        .should_capture_external_snapshot(&wl_surface, fullscreen)
+    {
+        return false;
+    }
+    let textures = &mut session.fullscreen_textures;
+    match session
+        .driver
+        .with_renderer(|renderer| textures.capture_previous(renderer, &window))
+    {
+        Ok(()) => true,
+        Err(err) => {
+            eventline::warn!("fullscreen: failed to capture X11 window texture: {err}");
+            false
+        }
+    }
+}
+
+fn remove_fullscreen_snapshot<D: SessionDriver>(session: &mut Session<D>, window: &Window) {
+    if let Some(surface) = window.wl_surface() {
+        session.fullscreen_textures.remove(surface.as_ref());
     }
 }
 
@@ -520,7 +595,7 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
         if let Some(output) = output_for_geometry(self, geometry) {
             crate::wayland::set_window_output(&window, &output);
         }
-        self.wayland.space.map_element(window, geometry.loc, true);
+        present_window(self, id, &window, geometry.loc);
         self.request_redraw();
     }
 
@@ -601,15 +676,29 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
                 self.request_redraw();
                 return;
             }
-            self.wayland.space.relocate_element(&window, target.loc);
+            present_window(self, id, &window, target.loc);
+            let fullscreen = self.fullscreen.settle_external(
+                &mut self.wayland,
+                &window,
+                crate::frame_clock::monotonic_now(),
+            );
+            let location = self
+                .wayland
+                .space
+                .element_location(&window)
+                .unwrap_or(target.loc);
             self.wayland.windows.set_placement(
                 id,
                 Placement {
-                    location: target.loc,
+                    location,
                     output: crate::wayland::window_output_name(&window),
                 },
             );
-            if self.wayland.windows.settle_geometry(id, geometry) == Some(true) {
+            let focus = self.wayland.windows.settle_geometry(id, geometry) == Some(true);
+            if fullscreen == Some(false) {
+                self.wayland.windows.clear_geometry_target(id);
+            }
+            if focus {
                 crate::session::focus_window(self, &window, SERIAL_COUNTER.next_serial());
             }
             self.request_redraw();

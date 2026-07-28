@@ -146,23 +146,22 @@ pub fn build(
                 },
             ))
         }));
-        let fullscreen_blend =
-            if let Some(presentation) = fullscreen.filter(|_| window.toplevel().is_some()) {
-                match request.fullscreen_textures.blend_element(
-                    renderer,
-                    window,
-                    animated_bbox,
-                    presentation.transition_completion,
-                ) {
-                    Ok(blend) => blend,
-                    Err(err) => {
-                        eventline::warn!("fullscreen: failed to blend window textures: {err}");
-                        None
-                    }
+        let fullscreen_blend = if let Some(presentation) = fullscreen {
+            match request.fullscreen_textures.blend_element(
+                renderer,
+                window,
+                animated_bbox,
+                presentation.transition_completion,
+            ) {
+                Ok(blend) => blend,
+                Err(err) => {
+                    eventline::warn!("fullscreen: failed to blend window textures: {err}");
+                    None
                 }
-            } else {
-                None
-            };
+            }
+        } else {
+            None
+        };
         if let Some(blend) = fullscreen_blend {
             elements.push(SceneElement::FullscreenBlend(blend));
         } else {

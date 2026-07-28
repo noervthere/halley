@@ -92,6 +92,7 @@ struct WindowRecord {
     kind: WindowKind,
     mapping: MappingState,
     placement: Option<Placement>,
+    presented: bool,
     input_ready: bool,
     geometry: GeometryState,
 }
@@ -144,6 +145,7 @@ impl WindowRegistry {
                 kind: WindowKind::Xdg,
                 mapping: MappingState::default(),
                 placement: None,
+                presented: false,
                 input_ready: false,
                 geometry: GeometryState::default(),
             },
@@ -165,6 +167,7 @@ impl WindowRegistry {
                 kind,
                 mapping: MappingState::default(),
                 placement: None,
+                presented: false,
                 input_ready: false,
                 geometry: GeometryState::default(),
             },
@@ -217,6 +220,21 @@ impl WindowRegistry {
         if let Some(record) = self.records.get_mut(&id) {
             record.input_ready = ready;
         }
+    }
+
+    pub(crate) fn present(&mut self, id: WindowId) -> bool {
+        let Some(record) = self.records.get_mut(&id) else {
+            return false;
+        };
+        if record.presented {
+            return false;
+        }
+        record.presented = true;
+        true
+    }
+
+    pub(crate) fn is_presented(&self, id: WindowId) -> bool {
+        self.records.get(&id).is_some_and(|record| record.presented)
     }
 
     pub(crate) fn input_ready(&self, id: WindowId) -> bool {
@@ -303,6 +321,7 @@ impl WindowRegistry {
             return None;
         }
         record.input_ready = false;
+        record.presented = false;
         record.geometry = GeometryState::default();
         Some(record.window.clone())
     }
