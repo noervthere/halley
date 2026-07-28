@@ -92,7 +92,7 @@ pub fn build(
             .visual(
                 window_surface.as_ref(),
                 request.target_presentation_time,
-                geometry.to_physical(1).size,
+                scaled_bbox,
             )
             .unwrap_or_default();
         let animated_bbox = opening_visual.transform_rect(scaled_bbox, scaled_bbox);
