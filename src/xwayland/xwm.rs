@@ -9,7 +9,7 @@ use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point, Rectangle, SERIAL_COUNTER};
 use smithay::wayland::seat::WaylandFocus;
 use smithay::wayland::selection::SelectionTarget;
-use smithay::xwayland::xwm::{Reorder, ResizeEdge, XwmId};
+use smithay::xwayland::xwm::{Reorder, ResizeEdge, X11SurfaceError, XwmId};
 use smithay::xwayland::{X11Surface, X11Wm, XwmHandler};
 
 use crate::session::{Session, SessionDriver};
@@ -193,6 +193,27 @@ enum FullscreenApplication {
     MapFinalization,
 }
 
+fn should_apply_fullscreen_update(changed: bool, application: FullscreenApplication) -> bool {
+    changed || application == FullscreenApplication::MapFinalization
+}
+
+fn authoritative_configure(
+    surface: &X11Surface,
+    geometry: Rectangle<i32, Logical>,
+) -> Result<(), X11SurfaceError> {
+    surface.configure(authoritative_configure_geometry(
+        surface.geometry(),
+        geometry,
+    ))
+}
+
+fn authoritative_configure_geometry(
+    current: Rectangle<i32, Logical>,
+    authoritative: Rectangle<i32, Logical>,
+) -> Option<Rectangle<i32, Logical>> {
+    (current != authoritative).then_some(authoritative)
+}
+
 fn update_fullscreen<D: SessionDriver>(
     session: &mut Session<D>,
     surface: &X11Surface,
@@ -247,7 +268,7 @@ fn apply_external_fullscreen_update<D: SessionDriver>(
     update: crate::wayland::fullscreen::ExternalFullscreenUpdate,
     application: FullscreenApplication,
 ) {
-    if !update.changed && application == FullscreenApplication::StateRequest {
+    if !should_apply_fullscreen_update(update.changed, application) {
         eventline::debug!(
             "xwayland: ignored duplicate fullscreen state for window=0x{:x}",
             surface.window_id()
@@ -261,12 +282,7 @@ fn apply_external_fullscreen_update<D: SessionDriver>(
         .wayland
         .space
         .map_element(window.clone(), update.location, true);
-    let configured = if surface.geometry() == update.geometry {
-        surface.configure(None::<Rectangle<i32, Logical>>)
-    } else {
-        surface.configure(update.geometry)
-    };
-    if let Err(err) = configured {
+    if let Err(err) = authoritative_configure(surface, update.geometry) {
         eventline::warn!("xwayland: failed to configure fullscreen transition: {err}");
     }
 }
@@ -573,11 +589,6 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
             // A fullscreen window has one geometry owner. Accepting transient
             // game resize requests here creates a windowed/fullscreen configure
             // loop and can move XWayland's relative-pointer anchor.
-            let configured = if surface.geometry() == geometry {
-                surface.configure(None::<Rectangle<i32, Logical>>)
-            } else {
-                surface.configure(geometry)
-            };
             eventline::debug!(
                 "xwayland: kept fullscreen geometry for window=0x{:x} requested={:?}x{:?} target={}x{}",
                 surface.window_id(),
@@ -586,7 +597,7 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
                 geometry.size.w,
                 geometry.size.h
             );
-            if let Err(err) = configured {
+            if let Err(err) = authoritative_configure(&surface, geometry) {
                 eventline::warn!("xwayland: fullscreen configure acknowledgement failed: {err}");
             }
             return;
@@ -725,5 +736,45 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
         }
         self.xwayland.clear();
         self.request_redraw();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn duplicate_state_request_does_not_reapply_fullscreen() {
+        assert!(!should_apply_fullscreen_update(
+            false,
+            FullscreenApplication::StateRequest
+        ));
+        assert!(should_apply_fullscreen_update(
+            true,
+            FullscreenApplication::StateRequest
+        ));
+    }
+
+    #[test]
+    fn map_finalization_reconciles_existing_fullscreen_state() {
+        assert!(should_apply_fullscreen_update(
+            false,
+            FullscreenApplication::MapFinalization
+        ));
+    }
+
+    #[test]
+    fn authoritative_geometry_rejects_only_real_divergence() {
+        let fullscreen = Rectangle::new((2560, 0).into(), (1920, 1200).into());
+        let windowed = Rectangle::new((3200, 360).into(), (640, 480).into());
+
+        assert_eq!(
+            authoritative_configure_geometry(fullscreen, fullscreen),
+            None
+        );
+        assert_eq!(
+            authoritative_configure_geometry(windowed, fullscreen),
+            Some(fullscreen)
+        );
     }
 }
