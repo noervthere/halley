@@ -535,6 +535,7 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
     }
 
     fn new_window(&mut self, _xwm: XwmId, window: X11Surface) {
+        eventline::debug!("window: X11 0x{:x} created", window.window_id());
         self.wayland.windows.register_x11(window, WindowKind::X11);
     }
 
@@ -562,6 +563,10 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
         crate::window::place_mapping(&mut self.wayland, &self.cameras, &transition);
         finalize_mapped_window(self, &surface);
         self.request_redraw();
+    }
+
+    fn map_window_notify(&mut self, _xwm: XwmId, surface: X11Surface) {
+        eventline::debug!("window: X11 0x{:x} map notified", surface.window_id());
     }
 
     fn mapped_override_redirect_window(&mut self, _xwm: XwmId, surface: X11Surface) {
