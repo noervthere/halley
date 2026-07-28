@@ -41,7 +41,7 @@ pub fn commit<D: 'static>(
                 .wl_surface()
                 .is_some_and(|surface| surface.as_ref() == &root)
         })
-        .or_else(|| wayland.windows.window_for_surface(&root));
+        .or_else(|| wayland.unmapped.get(&root));
     if let Some(window) = owning_window {
         window.on_commit();
     }

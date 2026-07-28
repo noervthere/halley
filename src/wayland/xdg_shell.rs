@@ -18,7 +18,7 @@ use super::WaylandState;
 pub fn new_toplevel(wayland: &mut WaylandState, surface: ToplevelSurface) {
     let wl_surface = surface.wl_surface().clone();
     let window = Window::new_wayland_window(surface);
-    wayland.windows.register_xdg(wl_surface, window);
+    wayland.unmapped.insert(wl_surface, window);
 }
 
 /// Removes a destroyed toplevel from whichever lifecycle state owns it.
@@ -28,7 +28,17 @@ pub fn new_toplevel(wayland: &mut WaylandState, surface: ToplevelSurface) {
 /// `Space::refresh()` can leave Halley's compositor-drawn border in the next
 /// frame. Focus clears to `None`; there is no fallback-refocus policy yet.
 pub fn toplevel_destroyed(wayland: &mut WaylandState, surface: &ToplevelSurface) {
-    if let Some(window) = wayland.windows.destroy_xdg(surface.wl_surface()) {
+    wayland.unmapped.remove(surface.wl_surface());
+    let mapped = wayland
+        .space
+        .elements()
+        .find(|window| {
+            window
+                .toplevel()
+                .is_some_and(|toplevel| toplevel.wl_surface() == surface.wl_surface())
+        })
+        .cloned();
+    if let Some(window) = mapped {
         wayland.space.unmap_elem(&window);
     }
     if wayland.focused_window.as_ref() == Some(surface.wl_surface()) {
@@ -48,8 +58,8 @@ pub fn handle_commit(
     cameras: &OutputCameras,
     surface: &WlSurface,
 ) -> Option<WlSurface> {
-    let id = wayland.windows.id_for_xdg(surface)?;
-    let toplevel = wayland.windows.window(id)?.toplevel()?;
+    let window = wayland.unmapped.get(surface)?;
+    let toplevel = window.toplevel()?;
 
     if !toplevel.is_initial_configure_sent() {
         toplevel.with_pending_state(super::decoration::apply_tiled_hint);
@@ -60,18 +70,7 @@ pub fn handle_commit(
     let has_buffer =
         with_renderer_surface_state(surface, |state| state.buffer().is_some()).unwrap_or(false);
     if has_buffer {
-        wayland.windows.request_map(id);
-        wayland.windows.set_surface_ready(id, true);
-        let admission = wayland.windows.admit(id)?;
-        eventline::debug!(
-            "window lifecycle: admitted {:?} generation={} first={}",
-            admission.id,
-            admission.generation,
-            admission.first
-        );
-        let window = admission.window;
-        wayland.windows.set_input_ready(id, true);
-        wayland.windows.present(id);
+        let window = wayland.unmapped.remove(surface).expect("checked above");
         let output = super::focus::selected_output(wayland).cloned();
         let location = output
             .as_ref()
@@ -88,12 +87,6 @@ pub fn handle_commit(
         return Some(surface.clone());
     }
 
-    if let Some(window) = wayland.windows.withdraw(id) {
-        wayland.space.unmap_elem(&window);
-        if wayland.focused_window.as_ref() == Some(surface) {
-            wayland.focused_window = None;
-        }
-    }
     None
 }
 

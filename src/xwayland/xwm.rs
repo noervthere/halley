@@ -1,7 +1,6 @@
 use std::os::fd::OwnedFd;
 use std::sync::Mutex;
 
-use smithay::backend::renderer::utils::with_renderer_surface_state;
 use smithay::desktop::Window;
 use smithay::output::Output;
 use smithay::utils::{Logical, Point, Rectangle, SERIAL_COUNTER};
@@ -11,7 +10,6 @@ use smithay::xwayland::xwm::{Reorder, ResizeEdge, XwmId};
 use smithay::xwayland::{X11Surface, X11Wm, XwmHandler};
 
 use crate::session::{Session, SessionDriver};
-use crate::window::lifecycle::{Placement, WindowKind};
 
 #[derive(Default)]
 struct RestoreGeometry(Mutex<Option<Rectangle<i32, Logical>>>);
@@ -22,16 +20,14 @@ fn window_for_surface<D: SessionDriver>(
 ) -> Option<Window> {
     session
         .wayland
-        .windows
-        .id_for_x11(surface)
-        .and_then(|id| session.wayland.windows.window(id))
+        .space
+        .elements()
+        .find(|window| {
+            window
+                .x11_surface()
+                .is_some_and(|candidate| candidate == surface)
+        })
         .cloned()
-}
-
-fn surface_has_buffer(
-    surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
-) -> bool {
-    with_renderer_surface_state(surface, |state| state.buffer().is_some()).unwrap_or(false)
 }
 
 pub(super) fn surface_associated<D: SessionDriver>(
@@ -39,143 +35,24 @@ pub(super) fn surface_associated<D: SessionDriver>(
     wl_surface: smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
     surface: X11Surface,
 ) {
-    let id = session
-        .wayland
-        .windows
-        .id_for_x11(&surface)
-        .unwrap_or_else(|| {
-            session
-                .wayland
-                .windows
-                .register_x11(surface.clone(), WindowKind::X11)
-        });
-    session.wayland.windows.associate(id, wl_surface.clone());
-    session
-        .wayland
-        .windows
-        .set_surface_ready(id, surface_has_buffer(&wl_surface));
-    eventline::debug!(
-        "window lifecycle: associated {:?} xid={} buffer={}",
-        id,
-        surface.window_id(),
-        surface_has_buffer(&wl_surface)
-    );
-    admit_window(session, &surface);
-    session.request_redraw();
-}
-
-pub(super) fn surface_committed<D: SessionDriver>(
-    session: &mut Session<D>,
-    surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
-) {
-    let Some(id) = session.wayland.windows.id_for_surface(surface) else {
-        return;
-    };
-    let Some(x11_surface) = session
-        .wayland
-        .windows
-        .window(id)
-        .and_then(|window| window.x11_surface())
-        .cloned()
-    else {
-        return;
-    };
-    session
-        .wayland
-        .windows
-        .set_surface_ready(id, surface_has_buffer(surface));
-    admit_window(session, &x11_surface);
-}
-
-fn admit_window<D: SessionDriver>(session: &mut Session<D>, surface: &X11Surface) {
-    let Some(id) = session.wayland.windows.id_for_x11(surface) else {
-        return;
-    };
-    let Some(admission) = session.wayland.windows.admit(id) else {
-        return;
-    };
-    let location = admission
-        .placement
-        .as_ref()
-        .map(|placement| placement.location)
-        .unwrap_or_else(|| surface.geometry().loc);
-    if let Some(output) = admission
-        .placement
-        .as_ref()
-        .and_then(|placement| placement.output.as_deref())
-        .and_then(|name| {
-            session
-                .wayland
-                .space
-                .outputs()
-                .find(|output| output.name() == name)
-        })
-        .cloned()
-    {
-        crate::wayland::set_window_output(&admission.window, &output);
-    }
-    let initially_fullscreen = surface.is_fullscreen();
-    if !initially_fullscreen {
-        present_window(session, id, &admission.window, location);
-    } else {
-        session.wayland.windows.begin_fullscreen_presentation(id);
-    }
-    let focus_deferred = if initially_fullscreen {
-        enter_fullscreen(session, surface)
-    } else if surface.is_maximized() {
-        maximize_window(session, surface);
-        false
-    } else {
-        let geometry = Rectangle::new(location, admission.window.geometry().size);
-        if let Err(err) = surface.configure(geometry) {
-            eventline::warn!("xwayland: failed to configure admitted window: {err}");
-        }
-        false
-    };
-    if !session.wayland.windows.is_presented(id) && !focus_deferred {
-        present_window(session, id, &admission.window, location);
-    }
-
-    let opening_started = if admission.first && !surface.is_fullscreen() {
-        admission.window.wl_surface().is_some_and(|wl_surface| {
-            session
-                .window_open_animations
-                .start(wl_surface.into_owned(), crate::frame_clock::monotonic_now())
-        })
-    } else {
-        false
-    };
-    if !initially_fullscreen {
-        if opening_started {
-            session.wayland.windows.begin_opening_presentation(id);
-        } else {
-            session.wayland.windows.finish_presentation(id);
-        }
-    }
-    if admission.kind.is_managed() && !focus_deferred {
-        crate::session::focus_window(session, &admission.window, SERIAL_COUNTER.next_serial());
-    }
-    eventline::debug!(
-        "window lifecycle: admitted {:?} xid={} generation={} first={}",
-        admission.id,
-        surface.window_id(),
-        admission.generation,
-        admission.first
-    );
-}
-
-fn present_window<D: SessionDriver>(
-    session: &mut Session<D>,
-    id: crate::window::lifecycle::WindowId,
-    window: &Window,
-    location: Point<i32, Logical>,
-) {
-    if session.wayland.windows.present(id) {
+    let pending = session
+        .xwayland
+        .pending_open_animations
+        .remove(&surface.window_id());
+    if pending {
         session
-            .wayland
-            .space
-            .map_element(window.clone(), location, false);
+            .window_open_animations
+            .start(wl_surface, crate::frame_clock::monotonic_now());
     }
+    if surface.is_fullscreen() {
+        enter_fullscreen(session, &surface);
+    }
+    if !surface.is_override_redirect()
+        && let Some(window) = window_for_surface(session, &surface)
+    {
+        crate::session::focus_window(session, &window, SERIAL_COUNTER.next_serial());
+    }
+    session.request_redraw();
 }
 
 fn output_for_geometry<D: SessionDriver>(
@@ -195,138 +72,35 @@ fn output_for_geometry<D: SessionDriver>(
         .or_else(|| crate::wayland::focus::selected_output(&session.wayland).cloned())
 }
 
-fn enter_fullscreen<D: SessionDriver>(session: &mut Session<D>, surface: &X11Surface) -> bool {
+fn enter_fullscreen<D: SessionDriver>(session: &mut Session<D>, surface: &X11Surface) {
+    let Some(window) = window_for_surface(session, surface) else {
+        return;
+    };
     if let Err(err) = surface.set_fullscreen(true) {
         eventline::warn!("xwayland: failed to set fullscreen state: {err}");
     }
-    let Some(id) = session.wayland.windows.id_for_x11(surface) else {
-        return false;
-    };
-    if !session.wayland.windows.is_admitted(id) {
-        return false;
-    }
-    let Some(window) = window_for_surface(session, surface) else {
-        return false;
-    };
-    let initial = session.wayland.windows.begin_fullscreen_presentation(id);
-    if initial && let Some(wl_surface) = window.wl_surface() {
-        if session
-            .window_open_animations
-            .is_animating(wl_surface.as_ref(), crate::frame_clock::monotonic_now())
-        {
-            eventline::debug!(
-                "window lifecycle: X11 fullscreen took over initial presentation {:?} xid={}",
-                id,
-                surface.window_id()
-            );
-        }
-        session.window_open_animations.remove(wl_surface.as_ref());
-    }
-    let captured = capture_fullscreen_snapshot(session, surface, true);
-    let Some((geometry, pending)) =
-        session
-            .fullscreen
-            .request_external(&mut session.wayland, &window, captured, initial)
-    else {
-        remove_fullscreen_snapshot(session, &window);
-        session.wayland.windows.set_input_ready(id, true);
-        return false;
-    };
-    if !pending {
-        return false;
-    }
-    let gate_input = initial;
-    if let Err(err) = surface.configure(geometry) {
+    if let Some(geometry) = session
+        .fullscreen
+        .request_external(&mut session.wayland, &window)
+        && let Err(err) = surface.configure(geometry)
+    {
         eventline::warn!("xwayland: failed to configure fullscreen window: {err}");
-        remove_fullscreen_snapshot(session, &window);
-        session.wayland.windows.set_input_ready(id, true);
-        return false;
     }
-    session
-        .wayland
-        .windows
-        .begin_geometry_settlement(id, geometry, gate_input);
-    gate_input
 }
 
 fn leave_fullscreen<D: SessionDriver>(session: &mut Session<D>, surface: &X11Surface) {
+    let Some(window) = window_for_surface(session, surface) else {
+        return;
+    };
     if let Err(err) = surface.set_fullscreen(false) {
         eventline::warn!("xwayland: failed to clear fullscreen state: {err}");
     }
-    let Some(id) = session.wayland.windows.id_for_x11(surface) else {
-        return;
-    };
-    if !session.wayland.windows.is_admitted(id) {
-        return;
-    }
-    let Some(window) = window_for_surface(session, surface) else {
-        return;
-    };
-    let initial = !session.wayland.windows.input_ready(id);
-    let captured = capture_fullscreen_snapshot(session, surface, false);
-    let Some((geometry, pending)) =
-        session
-            .fullscreen
-            .unrequest_external(&mut session.wayland, &window, captured, initial)
-    else {
-        remove_fullscreen_snapshot(session, &window);
-        session.wayland.windows.clear_geometry_target(id);
-        if initial {
-            session.wayland.windows.finish_presentation(id);
-        }
-        return;
-    };
-    if !pending {
-        return;
-    }
-    if let Err(err) = surface.configure(geometry) {
-        eventline::warn!("xwayland: failed to restore fullscreen window: {err}");
-        remove_fullscreen_snapshot(session, &window);
-        session.wayland.windows.clear_geometry_target(id);
-        if initial {
-            session.wayland.windows.finish_presentation(id);
-        }
-        return;
-    }
-    session
-        .wayland
-        .windows
-        .begin_geometry_settlement(id, geometry, false);
-}
-
-fn capture_fullscreen_snapshot<D: SessionDriver>(
-    session: &mut Session<D>,
-    surface: &X11Surface,
-    fullscreen: bool,
-) -> bool {
-    let Some(window) = window_for_surface(session, surface) else {
-        return false;
-    };
-    let Some(wl_surface) = window.wl_surface().map(|surface| surface.into_owned()) else {
-        return false;
-    };
-    if !session
+    if let Some(geometry) = session
         .fullscreen
-        .should_capture_external_snapshot(&wl_surface, fullscreen)
+        .unrequest_external(&mut session.wayland, &window)
+        && let Err(err) = surface.configure(geometry)
     {
-        return false;
-    }
-    let textures = &mut session.fullscreen_textures;
-    match session
-        .driver
-        .with_renderer(|renderer| textures.capture_previous(renderer, &window))
-    {
-        Ok(()) => true,
-        Err(err) => {
-            eventline::warn!("fullscreen: failed to capture X11 window texture: {err}");
-            false
-        }
-    }
-}
-
-fn remove_fullscreen_snapshot<D: SessionDriver>(session: &mut Session<D>, window: &Window) {
-    if let Some(surface) = window.wl_surface() {
-        session.fullscreen_textures.remove(surface.as_ref());
+        eventline::warn!("xwayland: failed to restore fullscreen window: {err}");
     }
 }
 
@@ -385,7 +159,7 @@ fn maximize_window<D: SessionDriver>(session: &mut Session<D>, surface: &X11Surf
     session
         .wayland
         .space
-        .relocate_element(&window, geometry.loc);
+        .map_element(window, geometry.loc, true);
 }
 
 fn restore_window<D: SessionDriver>(session: &mut Session<D>, surface: &X11Surface) {
@@ -412,7 +186,7 @@ fn restore_window<D: SessionDriver>(session: &mut Session<D>, surface: &X11Surfa
         session
             .wayland
             .space
-            .relocate_element(&window, geometry.loc);
+            .map_element(window, geometry.loc, true);
     }
 }
 
@@ -460,14 +234,14 @@ pub(super) fn configure_window(window: &Window, geometry: Rectangle<i32, Logical
     }
 }
 
-fn current_placement<D: SessionDriver>(session: &Session<D>, window: &Window) -> Option<Placement> {
-    Some(Placement {
-        location: session.wayland.space.element_location(window)?,
-        output: crate::wayland::window_output_name(window),
-    })
-}
-
-fn cleanup_window<D: SessionDriver>(session: &mut Session<D>, window: &Window) {
+fn forget_window<D: SessionDriver>(session: &mut Session<D>, surface: &X11Surface) {
+    session
+        .xwayland
+        .pending_open_animations
+        .remove(&surface.window_id());
+    let Some(window) = window_for_surface(session, surface) else {
+        return;
+    };
     if let Some(wl_surface) = window.wl_surface().map(|surface| surface.into_owned()) {
         session.fullscreen.remove(&wl_surface);
         session.fullscreen_textures.remove(&wl_surface);
@@ -477,44 +251,7 @@ fn cleanup_window<D: SessionDriver>(session: &mut Session<D>, window: &Window) {
             session.wayland.focused_window = None;
         }
     }
-    session.wayland.space.unmap_elem(window);
-}
-
-fn unmap_window<D: SessionDriver>(session: &mut Session<D>, surface: &X11Surface) {
-    let Some(id) = session.wayland.windows.id_for_x11(surface) else {
-        return;
-    };
-    if let Some(placement) = session
-        .wayland
-        .windows
-        .window(id)
-        .and_then(|window| current_placement(session, window))
-    {
-        session.wayland.windows.set_placement(id, placement);
-    }
-    if let Some(window) = session.wayland.windows.withdraw(id) {
-        cleanup_window(session, &window);
-    }
-}
-
-fn destroy_window<D: SessionDriver>(session: &mut Session<D>, surface: &X11Surface) {
-    let was_admitted = session
-        .wayland
-        .windows
-        .id_for_x11(surface)
-        .is_some_and(|id| session.wayland.windows.is_admitted(id));
-    unmap_window(session, surface);
-    if let Some(window) = session.wayland.windows.destroy_x11(surface)
-        && !was_admitted
-    {
-        cleanup_window(session, &window);
-    }
-}
-
-pub(super) fn clear_windows<D: SessionDriver>(session: &mut Session<D>) {
-    for window in session.wayland.windows.clear_x11() {
-        cleanup_window(session, &window);
-    }
+    session.wayland.space.unmap_elem(&window);
 }
 
 impl<D: SessionDriver> XwmHandler for Session<D> {
@@ -525,114 +262,69 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
             .expect("XWM event delivered without an active XWM")
     }
 
-    fn new_window(&mut self, _xwm: XwmId, window: X11Surface) {
-        self.wayland.windows.register_x11(window, WindowKind::X11);
-    }
+    fn new_window(&mut self, _xwm: XwmId, _window: X11Surface) {}
 
-    fn new_override_redirect_window(&mut self, _xwm: XwmId, window: X11Surface) {
-        self.wayland
-            .windows
-            .register_x11(window, WindowKind::X11OverrideRedirect);
-    }
+    fn new_override_redirect_window(&mut self, _xwm: XwmId, _window: X11Surface) {}
 
     fn map_window_request(&mut self, _xwm: XwmId, surface: X11Surface) {
         if let Err(err) = surface.set_mapped(true) {
             eventline::warn!("xwayland: failed to map window: {err}");
             return;
         }
-        let id = self
-            .wayland
-            .windows
-            .id_for_x11(&surface)
-            .unwrap_or_else(|| {
-                self.wayland
-                    .windows
-                    .register_x11(surface.clone(), WindowKind::X11)
-            });
-        self.wayland.windows.request_map(id);
-        let Some(window) = self.wayland.windows.window(id).cloned() else {
-            return;
-        };
-        let saved = self.wayland.windows.placement(id).cloned();
-        let output = saved
+        let window = Window::new_x11_window(surface.clone());
+        let output = crate::wayland::focus::selected_output(&self.wayland).cloned();
+        let location = output
             .as_ref()
-            .and_then(|placement| placement.output.as_deref())
-            .and_then(|name| {
-                self.wayland
-                    .space
-                    .outputs()
-                    .find(|output| output.name() == name)
+            .map(|output| {
+                crate::wayland::xdg_shell::centered_location(
+                    &self.wayland,
+                    &self.cameras,
+                    output,
+                    &window,
+                )
             })
-            .cloned()
-            .or_else(|| crate::wayland::focus::selected_output(&self.wayland).cloned());
-        let location = saved
-            .map(|placement| placement.location)
-            .unwrap_or_else(|| {
-                output
-                    .as_ref()
-                    .map(|output| {
-                        crate::wayland::xdg_shell::centered_location(
-                            &self.wayland,
-                            &self.cameras,
-                            output,
-                            &window,
-                        )
-                    })
-                    .unwrap_or_else(|| (0, 0).into())
-            });
+            .unwrap_or_else(|| (0, 0).into());
         if let Some(output) = output.as_ref() {
             crate::wayland::set_window_output(&window, output);
         }
-        self.wayland.windows.set_placement(
-            id,
-            Placement {
-                location,
-                output: output.as_ref().map(Output::name),
-            },
-        );
-        if let Some(wl_surface) = surface.wl_surface() {
-            self.wayland
-                .windows
-                .set_surface_ready(id, surface_has_buffer(&wl_surface));
+        self.wayland
+            .space
+            .map_element(window.clone(), location, true);
+        if surface.is_fullscreen() {
+            enter_fullscreen(self, &surface);
+        } else if surface.is_maximized() {
+            maximize_window(self, &surface);
+        } else if let Some(geometry) = self.wayland.space.element_bbox(&window)
+            && let Err(err) = surface.configure(geometry)
+        {
+            eventline::warn!("xwayland: failed to configure mapped window: {err}");
         }
-        admit_window(self, &surface);
+        if !surface.is_fullscreen() {
+            if let Some(wl_surface) = surface.wl_surface() {
+                self.window_open_animations
+                    .start(wl_surface, crate::frame_clock::monotonic_now());
+            } else {
+                self.xwayland
+                    .pending_open_animations
+                    .insert(surface.window_id());
+            }
+        }
+        crate::session::focus_window(self, &window, SERIAL_COUNTER.next_serial());
         self.request_redraw();
     }
 
     fn mapped_override_redirect_window(&mut self, _xwm: XwmId, surface: X11Surface) {
         let geometry = surface.geometry();
-        let id = self
-            .wayland
-            .windows
-            .id_for_x11(&surface)
-            .unwrap_or_else(|| {
-                self.wayland
-                    .windows
-                    .register_x11(surface.clone(), WindowKind::X11OverrideRedirect)
-            });
-        self.wayland.windows.request_map(id);
-        self.wayland.windows.set_placement(
-            id,
-            Placement {
-                location: geometry.loc,
-                output: output_for_geometry(self, geometry).map(|output| output.name()),
-            },
-        );
-        self.wayland.windows.set_surface_ready(id, true);
-        let Some(admission) = self.wayland.windows.admit(id) else {
-            return;
-        };
-        self.wayland.windows.set_input_ready(id, true);
-        let window = admission.window;
+        let window = Window::new_x11_window(surface);
         if let Some(output) = output_for_geometry(self, geometry) {
             crate::wayland::set_window_output(&window, &output);
         }
-        present_window(self, id, &window, geometry.loc);
+        self.wayland.space.map_element(window, geometry.loc, true);
         self.request_redraw();
     }
 
     fn unmapped_window(&mut self, _xwm: XwmId, surface: X11Surface) {
-        unmap_window(self, &surface);
+        forget_window(self, &surface);
         if !surface.is_override_redirect()
             && let Err(err) = surface.set_mapped(false)
         {
@@ -643,7 +335,7 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
     }
 
     fn destroyed_window(&mut self, _xwm: XwmId, surface: X11Surface) {
-        destroy_window(self, &surface);
+        forget_window(self, &surface);
         crate::session::sync_keyboard_focus(self, SERIAL_COUNTER.next_serial());
         self.request_redraw();
     }
@@ -658,17 +350,6 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
         height: Option<u32>,
         _reorder: Option<Reorder>,
     ) {
-        if let Some(target) = self
-            .wayland
-            .windows
-            .id_for_x11(&surface)
-            .and_then(|id| self.wayland.windows.geometry_target(id))
-        {
-            if let Err(err) = surface.configure(target) {
-                eventline::warn!("xwayland: fullscreen configure request failed: {err}");
-            }
-            return;
-        }
         let mut geometry = surface.geometry();
         if surface.is_override_redirect() {
             geometry.loc.x = x.unwrap_or(geometry.loc.x);
@@ -695,71 +376,7 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
         let Some(window) = window_for_surface(self, &surface) else {
             return;
         };
-        let id = self
-            .wayland
-            .windows
-            .id_for_x11(&surface)
-            .expect("registered X11 window");
-        if let Some(target) = self.wayland.windows.geometry_target(id) {
-            if geometry != target {
-                if let Err(err) = surface.configure(target) {
-                    eventline::warn!("xwayland: failed to retain fullscreen geometry: {err}");
-                }
-                self.request_redraw();
-                return;
-            }
-            let Some(focus) = self.wayland.windows.settle_geometry(id, geometry) else {
-                self.request_redraw();
-                return;
-            };
-            present_window(self, id, &window, target.loc);
-            let settlement = self.fullscreen.settle_external(
-                &mut self.wayland,
-                &window,
-                crate::frame_clock::monotonic_now(),
-            );
-            let location = self
-                .wayland
-                .space
-                .element_location(&window)
-                .unwrap_or(target.loc);
-            self.wayland.windows.set_placement(
-                id,
-                Placement {
-                    location,
-                    output: crate::wayland::window_output_name(&window),
-                },
-            );
-            if let Some(settlement) = settlement.as_ref() {
-                eventline::debug!(
-                    "fullscreen: settled X11 transaction {:?} xid={} fullscreen={}",
-                    id,
-                    surface.window_id(),
-                    settlement.fullscreen
-                );
-                if settlement.presentation_finished {
-                    self.wayland.windows.finish_presentation(id);
-                }
-            }
-            if settlement.is_some_and(|settlement| !settlement.fullscreen) {
-                self.wayland.windows.clear_geometry_target(id);
-            }
-            if focus {
-                crate::session::focus_window(self, &window, SERIAL_COUNTER.next_serial());
-            }
-            self.request_redraw();
-            return;
-        }
-        if self.wayland.windows.is_admitted(id) {
-            self.wayland.space.relocate_element(&window, geometry.loc);
-        }
-        self.wayland.windows.set_placement(
-            id,
-            Placement {
-                location: geometry.loc,
-                output: crate::wayland::window_output_name(&window),
-            },
-        );
+        self.wayland.space.map_element(window, geometry.loc, false);
         self.request_redraw();
     }
 
@@ -838,7 +455,6 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
 
     fn disconnected(&mut self, _xwm: XwmId) {
         eventline::warn!("xwayland: window manager disconnected");
-        clear_windows(self);
         self.xwayland.clear();
     }
 }

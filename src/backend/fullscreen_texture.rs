@@ -19,7 +19,6 @@ use smithay::desktop::Window;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::user_data::UserDataMap;
 use smithay::utils::{Buffer, Logical, Physical, Rectangle, Scale, Size, Transform};
-use smithay::wayland::seat::WaylandFocus;
 
 const FULLSCREEN_BLEND_SHADER: &str = r#"
 //_DEFINES_
@@ -97,9 +96,10 @@ impl FullscreenTextureTransitions {
         window: &Window,
     ) -> Result<(), Box<dyn Error>> {
         let surface = window
+            .toplevel()
+            .ok_or("fullscreen snapshot window has no toplevel")?
             .wl_surface()
-            .ok_or("fullscreen snapshot window has no surface")?
-            .into_owned();
+            .clone();
         self.windows.remove(&surface);
         let previous = render_window(renderer, window, None)?;
         self.windows.insert(
@@ -129,14 +129,15 @@ impl FullscreenTextureTransitions {
         progress: f64,
     ) -> Result<Option<FullscreenBlendElement>, Box<dyn Error>> {
         let surface = window
-            .wl_surface()
-            .ok_or("fullscreen blend window has no surface")?;
+            .toplevel()
+            .ok_or("fullscreen blend window has no toplevel")?
+            .wl_surface();
         let context = renderer.context_id();
-        let Some(entry) = self.windows.get_mut(surface.as_ref()) else {
+        let Some(entry) = self.windows.get_mut(surface) else {
             return Ok(None);
         };
         if entry.previous.context != context {
-            self.windows.remove(surface.as_ref());
+            self.windows.remove(surface);
             return Ok(None);
         }
 
@@ -144,7 +145,7 @@ impl FullscreenTextureTransitions {
         let current = match render_window(renderer, window, reusable) {
             Ok(current) => current,
             Err(err) => {
-                self.windows.remove(surface.as_ref());
+                self.windows.remove(surface);
                 return Err(err);
             }
         };
@@ -304,9 +305,9 @@ fn render_window(
     window: &Window,
     reusable: Option<GlesTexture>,
 ) -> Result<WindowTexture, Box<dyn Error>> {
-    let surface = window
-        .wl_surface()
-        .ok_or("fullscreen snapshot window has no surface")?;
+    let toplevel = window
+        .toplevel()
+        .ok_or("fullscreen snapshot window has no toplevel")?;
     let geometry = window.geometry();
     if geometry.size.w <= 0 || geometry.size.h <= 0 {
         return Err("fullscreen snapshot window has empty geometry".into());
@@ -317,7 +318,7 @@ fn render_window(
     let elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
         render_elements_from_surface_tree(
             renderer,
-            surface.as_ref(),
+            toplevel.wl_surface(),
             location,
             1.0,
             1.0,

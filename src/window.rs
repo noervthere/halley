@@ -3,8 +3,6 @@ use smithay::wayland::seat::WaylandFocus;
 
 use crate::wayland::WaylandState;
 
-pub(crate) mod lifecycle;
-
 pub fn focus_and_raise(wayland: &mut WaylandState, window: &Window) {
     wayland.focused_layer = None;
     for mapped in wayland.space.elements() {
