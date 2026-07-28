@@ -1,6 +1,7 @@
 use smithay::backend::renderer::utils::with_renderer_surface_state;
 use smithay::desktop::Window;
 use smithay::output::Output;
+use smithay::reexports::wayland_server::Resource;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Physical, Point, Size};
 use smithay::wayland::shell::xdg::ToplevelSurface;
@@ -63,6 +64,7 @@ pub fn handle_commit(
                 output: super::window_output_name(&window),
             });
         let transition = wayland.windows.unmap(&key, placement)?;
+        eventline::debug!("window: XDG surface {} unmapped", surface.id());
         return Some(CommitOutcome::Unmapped(transition));
     }
 
@@ -70,6 +72,7 @@ pub fn handle_commit(
         toplevel.with_pending_state(super::decoration::apply_tiled_hint);
         toplevel.send_configure();
         wayland.windows.mark_configured(&key);
+        eventline::debug!("window: XDG surface {} configured", surface.id());
         return None;
     }
 
@@ -115,6 +118,12 @@ pub fn handle_commit(
             .windows
             .finalize_map(&key)
             .expect("new XDG map generation must finalize once");
+        eventline::debug!(
+            "window: XDG surface {} mapped generation={} first={}",
+            surface.id(),
+            finalized.generation,
+            finalized.first_map
+        );
         return Some(CommitOutcome::Mapped(finalized));
     }
 
