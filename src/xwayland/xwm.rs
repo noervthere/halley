@@ -221,6 +221,21 @@ fn set_external_fullscreen<D: SessionDriver>(
     let Some(window) = window_for_surface(session, surface) else {
         return;
     };
+    if let Err(err) = surface.set_fullscreen(fullscreen) {
+        eventline::warn!("xwayland: failed to update fullscreen state: {err}");
+    }
+    if session
+        .fullscreen
+        .external_desired_matches(&window, fullscreen)
+    {
+        eventline::debug!(
+            "xwayland: coalesced fullscreen request xid={} fullscreen={fullscreen} \
+             origin={origin:?}",
+            surface.window_id()
+        );
+        crate::session::reconcile_pointer_constraints(session);
+        return;
+    }
     let opening = window.wl_surface().is_some_and(|wl_surface| {
         session
             .window_open_animations
@@ -236,9 +251,6 @@ fn set_external_fullscreen<D: SessionDriver>(
     }
     let animate = policy == ExternalPresentationPolicy::Animated
         && capture_fullscreen_snapshot(session, &window, fullscreen);
-    if let Err(err) = surface.set_fullscreen(fullscreen) {
-        eventline::warn!("xwayland: failed to update fullscreen state: {err}");
-    }
     if policy == ExternalPresentationPolicy::Opening {
         request_opening_fullscreen(session, surface, &window, fullscreen);
     } else if animate {

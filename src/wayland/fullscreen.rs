@@ -452,6 +452,12 @@ impl FullscreenManager {
                 .is_none_or(|entry| entry.desired != fullscreen)
     }
 
+    pub(crate) fn external_desired_matches(&self, window: &Window, fullscreen: bool) -> bool {
+        window
+            .wl_surface()
+            .is_some_and(|surface| desired_matches(self.windows.get(surface.as_ref()), fullscreen))
+    }
+
     pub fn handle_commit(
         &mut self,
         wayland: &mut WaylandState,
@@ -694,6 +700,10 @@ pub struct FullscreenCleanup {
 
 fn animations_enabled(animations: Animations) -> bool {
     animations.enabled && animations.fullscreen.enabled
+}
+
+fn desired_matches(entry: Option<&FullscreenWindow>, desired: bool) -> bool {
+    entry.is_some_and(|entry| entry.desired == desired)
 }
 
 fn settle_external_fullscreen(
@@ -1001,6 +1011,19 @@ mod tests {
             }
         );
         assert!(entry.transition.is_some());
+    }
+
+    #[test]
+    fn duplicate_external_request_preserves_the_active_transaction() {
+        let mut entry = test_entry(false);
+        let target = Rectangle::new((0, 0).into(), (1920, 1080).into());
+        begin_external_transaction(&mut entry, true, target, ExternalPresentationKind::Animated);
+        let pending = entry.external_pending;
+
+        assert!(desired_matches(Some(&entry), true));
+        assert!(!desired_matches(Some(&entry), false));
+        assert!(!desired_matches(None, true));
+        assert_eq!(entry.external_pending, pending);
     }
 
     #[test]
