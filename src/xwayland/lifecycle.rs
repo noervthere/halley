@@ -29,6 +29,17 @@ pub(super) struct OpeningPlacement {
 }
 
 impl OpeningPlacement {
+    pub(super) fn preferred_size(
+        initial_size: Size<i32, Logical>,
+        fallback: Size<i32, Logical>,
+    ) -> Size<i32, Logical> {
+        if initial_size.w > 0 && initial_size.h > 0 {
+            initial_size
+        } else {
+            fallback
+        }
+    }
+
     pub(super) fn new(geometry: Rectangle<i32, Logical>, initial_size: Size<i32, Logical>) -> Self {
         Self {
             center_x_twice: geometry.loc.x * 2 + geometry.size.w,
@@ -99,5 +110,17 @@ mod tests {
         );
 
         assert_eq!(placement.restore_geometry(), None);
+    }
+
+    #[test]
+    fn client_size_wins_over_a_later_output_sized_buffer() {
+        assert_eq!(
+            OpeningPlacement::preferred_size((640, 480).into(), (2560, 1440).into()),
+            (640, 480).into()
+        );
+        assert_eq!(
+            OpeningPlacement::preferred_size((0, 0).into(), (2560, 1440).into()),
+            (2560, 1440).into()
+        );
     }
 }

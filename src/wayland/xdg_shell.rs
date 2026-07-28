@@ -98,6 +98,15 @@ pub(crate) fn centered_location(
     output: &Output,
     window: &Window,
 ) -> Point<i32, Logical> {
+    centered_location_for_size(wayland, cameras, output, window.geometry().size)
+}
+
+pub(crate) fn centered_location_for_size(
+    wayland: &WaylandState,
+    cameras: &OutputCameras,
+    output: &Output,
+    window_size: Size<i32, Logical>,
+) -> Point<i32, Logical> {
     let Some(output_geo) = wayland.space.output_geometry(output) else {
         return (0, 0).into();
     };
@@ -111,7 +120,7 @@ pub(crate) fn centered_location(
             ))
         });
     let center = crate::camera::global_center(local_camera_center, output_geo);
-    center_window(center, window.geometry().size)
+    center_window(center, window_size)
 }
 
 fn center_window(
@@ -133,6 +142,14 @@ mod tests {
         assert_eq!(
             center_window(Point::from((3620.0, 550.0)), Size::from((1000, 700)),),
             Point::from((3120, 200))
+        );
+    }
+
+    #[test]
+    fn client_opening_size_is_centered_independently_of_its_buffer() {
+        assert_eq!(
+            center_window(Point::from((1280.0, 720.0)), Size::from((640, 480))),
+            Point::from((960, 480))
         );
     }
 }

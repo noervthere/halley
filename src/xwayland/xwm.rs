@@ -131,23 +131,26 @@ fn admit_window<D: SessionDriver>(session: &mut Session<D>, xid: u32) {
         return;
     };
     let output = session.driver.primary_output().clone();
-    let location = crate::wayland::xdg_shell::centered_location(
+    let opening_size = OpeningPlacement::preferred_size(initial_size, window.geometry().size);
+    let location = crate::wayland::xdg_shell::centered_location_for_size(
         &session.wayland,
         &session.cameras,
         &output,
-        &window,
+        opening_size,
     );
+    let opening_geometry = Rectangle::new(location, opening_size);
+    if let Err(err) = surface.configure(opening_geometry) {
+        eventline::warn!("xwayland: failed to prepare centered opening geometry: {err}");
+    }
     crate::wayland::set_window_output(&window, &output);
     session
         .wayland
         .space
         .map_element(window.clone(), location, true);
-    if let Some(geometry) = session.wayland.space.element_geometry(&window) {
-        session
-            .xwayland
-            .opening_placements
-            .insert(xid, OpeningPlacement::new(geometry, initial_size));
-    }
+    session
+        .xwayland
+        .opening_placements
+        .insert(xid, OpeningPlacement::new(opening_geometry, initial_size));
     let started = window.wl_surface().is_some_and(|wl_surface| {
         session
             .window_open_animations
@@ -157,10 +160,6 @@ fn admit_window<D: SessionDriver>(session: &mut Session<D>, xid: u32) {
         enter_fullscreen(session, &surface, FullscreenRequestOrigin::Initial);
     } else if surface.is_maximized() {
         maximize_window(session, &surface);
-    } else if let Some(geometry) = session.wayland.space.element_bbox(&window)
-        && let Err(err) = surface.configure(geometry)
-    {
-        eventline::warn!("xwayland: failed to configure mapped window: {err}");
     }
     if !surface.is_override_redirect() {
         crate::session::focus_window(session, &window, SERIAL_COUNTER.next_serial());
