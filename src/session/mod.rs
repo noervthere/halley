@@ -134,8 +134,8 @@ fn toggle_focused_fullscreen<D: SessionDriver>(session: &mut Session<D>) {
     };
 
     cancel_grab_for_surface(session, &focused);
-    let entering = !session.fullscreen.is_fullscreen_or_pending(&focused);
     if let Some(toplevel) = window.toplevel() {
+        let entering = !session.fullscreen.is_fullscreen_or_pending(&focused);
         if entering {
             session
                 .fullscreen
@@ -144,6 +144,9 @@ fn toggle_focused_fullscreen<D: SessionDriver>(session: &mut Session<D>) {
             session.fullscreen.unrequest(&session.wayland, toplevel);
         }
     } else {
+        let entering = window
+            .x11_surface()
+            .is_some_and(|surface| !surface.is_fullscreen());
         crate::xwayland::set_window_fullscreen(session, &window, entering);
     }
     session.request_redraw();

@@ -60,10 +60,6 @@ pub(super) fn handle_surface_commit<D: SessionDriver>(
     session: &mut Session<D>,
     wl_surface: &WlSurface,
 ) {
-    // Fullscreen geometry is applied while finalizing the lifecycle
-    // generation, before focus and pointer locking. A later commit may only
-    // supply a texture that was unavailable then; it must never configure,
-    // relocate, remap, or refocus this window.
     let Some(key @ WindowKey::X11(_)) = session.wayland.windows.key_for_wl_surface(wl_surface)
     else {
         return;
@@ -88,6 +84,26 @@ pub(super) fn handle_surface_commit<D: SessionDriver>(
             eventline::warn!("fullscreen: failed to capture XWayland texture on commit: {err}");
         }
     }
+
+    let committed_size =
+        with_renderer_surface_state(wl_surface, |state| state.surface_size()).flatten();
+    let Some(committed_size) = committed_size else {
+        return;
+    };
+    let Some(update) =
+        session
+            .fullscreen
+            .commit_external(&session.wayland, &window, committed_size, now)
+    else {
+        return;
+    };
+    apply_external_fullscreen_presentation(session, &window, &update);
+    eventline::debug!(
+        "xwayland: presented fullscreen={} for window={key:?} at {}x{}",
+        update.fullscreen,
+        update.geometry.size.w,
+        update.geometry.size.h
+    );
 }
 
 pub(super) fn surface_associated<D: SessionDriver>(
@@ -227,9 +243,6 @@ fn update_fullscreen<D: SessionDriver>(
     let window = mapped
         .then(|| window_for_surface(session, surface))
         .flatten();
-    let snapshot = window
-        .as_ref()
-        .and_then(|window| capture_fullscreen_snapshot(session, window, fullscreen));
 
     if let Err(err) = surface.set_fullscreen(fullscreen) {
         let action = if fullscreen { "set" } else { "clear" };
@@ -239,26 +252,26 @@ fn update_fullscreen<D: SessionDriver>(
         return;
     };
 
-    let now = crate::frame_clock::monotonic_now();
     let geometry = if fullscreen {
         session
             .fullscreen
-            .request_external(&session.wayland, &window, now)
+            .request_external(&session.wayland, &window)
     } else {
         session
             .fullscreen
-            .unrequest_external(&session.wayland, &window, now)
+            .unrequest_external(&session.wayland, &window)
     };
-    match geometry {
-        Some(update) => {
-            apply_external_fullscreen_update(session, surface, &window, update, application)
-        }
-        None => {
-            if let Some(snapshot) = snapshot {
-                session.fullscreen_textures.remove(&snapshot);
-            }
-        }
+    let Some(update) = geometry else {
+        return;
+    };
+    if update.changed && update.pending {
+        let _ = capture_fullscreen_snapshot(session, &window, fullscreen);
+    } else if !update.pending
+        && let Some(wl_surface) = window.wl_surface().map(|surface| surface.into_owned())
+    {
+        session.fullscreen_textures.remove(&wl_surface);
     }
+    apply_external_fullscreen_update(session, surface, &window, update, application);
 }
 
 fn apply_external_fullscreen_update<D: SessionDriver>(
@@ -275,6 +288,19 @@ fn apply_external_fullscreen_update<D: SessionDriver>(
         );
         return;
     }
+    if application == FullscreenApplication::MapFinalization {
+        apply_external_fullscreen_presentation(session, window, &update);
+    }
+    if let Err(err) = authoritative_configure(surface, update.geometry) {
+        eventline::warn!("xwayland: failed to configure fullscreen transition: {err}");
+    }
+}
+
+fn apply_external_fullscreen_presentation<D: SessionDriver>(
+    session: &mut Session<D>,
+    window: &Window,
+    update: &crate::wayland::fullscreen::ExternalFullscreenUpdate,
+) {
     if let Some(output) = update.output.as_ref() {
         crate::wayland::set_window_output(window, output);
     }
@@ -282,9 +308,6 @@ fn apply_external_fullscreen_update<D: SessionDriver>(
         .wayland
         .space
         .map_element(window.clone(), update.location, true);
-    if let Err(err) = authoritative_configure(surface, update.geometry) {
-        eventline::warn!("xwayland: failed to configure fullscreen transition: {err}");
-    }
 }
 
 fn capture_fullscreen_snapshot<D: SessionDriver>(
@@ -475,8 +498,7 @@ fn unmap_window<D: SessionDriver>(session: &mut Session<D>, surface: &X11Surface
         let fullscreen = window.wl_surface().is_some_and(|wl_surface| {
             session
                 .fullscreen
-                .external_geometry(&session.wayland, wl_surface.as_ref())
-                .is_some()
+                .is_fullscreen_or_pending(wl_surface.as_ref())
         });
         (!fullscreen)
             .then(|| current_placement(session, window))
@@ -633,6 +655,16 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
         let Some(window) = window_for_surface(self, &surface) else {
             return;
         };
+        if window
+            .wl_surface()
+            .is_some_and(|wl_surface| self.fullscreen.external_is_pending(wl_surface.as_ref()))
+        {
+            eventline::debug!(
+                "xwayland: held scene placement for pending fullscreen window=0x{:x}",
+                surface.window_id()
+            );
+            return;
+        }
         let fullscreen_geometry = authoritative_fullscreen_geometry(self, &surface);
         let location = fullscreen_geometry
             .map(|geometry| geometry.loc)
