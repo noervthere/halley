@@ -247,8 +247,8 @@ pub fn run() {
                 wayland::layer_shell::send_frames(&output, elapsed);
                 app.wayland.space.refresh();
                 wayland::layer_shell::cleanup(&mut app.wayland);
-                app.window_open_animations.cleanup(target_presentation_time);
-                if app.cleanup_fullscreen(target_presentation_time) {
+                let presentation_finished = app.cleanup_window_open(target_presentation_time);
+                if app.cleanup_fullscreen(target_presentation_time) || presentation_finished {
                     super::sync_keyboard_focus(app, smithay::utils::SERIAL_COUNTER.next_serial());
                     super::pointer::update_client_state(
                         app,

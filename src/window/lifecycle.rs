@@ -93,8 +93,41 @@ struct WindowRecord {
     mapping: MappingState,
     placement: Option<Placement>,
     presented: bool,
-    input_ready: bool,
+    presentation: PresentationPhase,
     geometry: GeometryState,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum PresentationPhase {
+    #[default]
+    Pending,
+    Opening,
+    Fullscreen,
+    Ready,
+}
+
+impl PresentationPhase {
+    fn begin_opening(&mut self) {
+        if *self != Self::Ready {
+            *self = Self::Opening;
+        }
+    }
+
+    fn begin_fullscreen(&mut self) -> bool {
+        let initial = *self != Self::Ready;
+        if initial {
+            *self = Self::Fullscreen;
+        }
+        initial
+    }
+
+    fn finish(&mut self) {
+        *self = Self::Ready;
+    }
+
+    fn is_ready(self) -> bool {
+        self == Self::Ready
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -146,7 +179,7 @@ impl WindowRegistry {
                 mapping: MappingState::default(),
                 placement: None,
                 presented: false,
-                input_ready: false,
+                presentation: PresentationPhase::Pending,
                 geometry: GeometryState::default(),
             },
         );
@@ -168,7 +201,7 @@ impl WindowRegistry {
                 mapping: MappingState::default(),
                 placement: None,
                 presented: false,
-                input_ready: false,
+                presentation: PresentationPhase::Pending,
                 geometry: GeometryState::default(),
             },
         );
@@ -218,8 +251,44 @@ impl WindowRegistry {
 
     pub(crate) fn set_input_ready(&mut self, id: WindowId, ready: bool) {
         if let Some(record) = self.records.get_mut(&id) {
-            record.input_ready = ready;
+            record.presentation = if ready {
+                PresentationPhase::Ready
+            } else {
+                PresentationPhase::Pending
+            };
         }
+    }
+
+    pub(crate) fn begin_opening_presentation(&mut self, id: WindowId) {
+        if let Some(record) = self.records.get_mut(&id) {
+            record.presentation.begin_opening();
+        }
+    }
+
+    pub(crate) fn begin_fullscreen_presentation(&mut self, id: WindowId) -> bool {
+        self.records
+            .get_mut(&id)
+            .is_some_and(|record| record.presentation.begin_fullscreen())
+    }
+
+    pub(crate) fn finish_presentation(&mut self, id: WindowId) {
+        if let Some(record) = self.records.get_mut(&id) {
+            record.presentation.finish();
+        }
+    }
+
+    pub(crate) fn finish_presentation_for_surface(&mut self, surface: &WlSurface) -> bool {
+        let Some(id) = self.id_for_surface(surface) else {
+            return false;
+        };
+        let Some(record) = self.records.get_mut(&id) else {
+            return false;
+        };
+        if record.presentation.is_ready() {
+            return false;
+        }
+        record.presentation.finish();
+        true
     }
 
     pub(crate) fn present(&mut self, id: WindowId) -> bool {
@@ -240,7 +309,7 @@ impl WindowRegistry {
     pub(crate) fn input_ready(&self, id: WindowId) -> bool {
         self.records
             .get(&id)
-            .is_some_and(|record| record.input_ready)
+            .is_some_and(|record| record.presentation.is_ready())
     }
 
     pub(crate) fn input_ready_for_surface(&self, surface: &WlSurface) -> Option<bool> {
@@ -258,7 +327,7 @@ impl WindowRegistry {
         };
         record.geometry.begin(target, gate_input);
         if gate_input {
-            record.input_ready = false;
+            record.presentation.begin_fullscreen();
         }
     }
 
@@ -273,14 +342,12 @@ impl WindowRegistry {
     ) -> Option<bool> {
         let record = self.records.get_mut(&id)?;
         let focus = record.geometry.settle(observed)?;
-        record.input_ready = true;
         Some(focus)
     }
 
     pub(crate) fn clear_geometry_target(&mut self, id: WindowId) {
         if let Some(record) = self.records.get_mut(&id) {
             record.geometry = GeometryState::default();
-            record.input_ready = record.mapping.admitted;
         }
     }
 
@@ -320,7 +387,7 @@ impl WindowRegistry {
         if !record.mapping.withdraw() {
             return None;
         }
-        record.input_ready = false;
+        record.presentation = PresentationPhase::Pending;
         record.presented = false;
         record.geometry = GeometryState::default();
         Some(record.window.clone())
@@ -352,7 +419,7 @@ impl WindowRegistry {
 mod tests {
     use smithay::utils::Rectangle;
 
-    use super::{GeometryState, MappingState};
+    use super::{GeometryState, MappingState, PresentationPhase};
 
     #[test]
     fn admission_requires_both_map_intent_and_a_surface() {
@@ -425,5 +492,21 @@ mod tests {
         state.begin(target, false);
 
         assert_eq!(state.settle(target), Some(false));
+    }
+
+    #[test]
+    fn presentation_readiness_has_one_lifecycle_owner() {
+        let mut phase = PresentationPhase::Pending;
+        assert!(!phase.is_ready());
+
+        phase.begin_opening();
+        assert_eq!(phase, PresentationPhase::Opening);
+        assert!(phase.begin_fullscreen());
+        assert_eq!(phase, PresentationPhase::Fullscreen);
+
+        phase.finish();
+        assert!(phase.is_ready());
+        assert!(!phase.begin_fullscreen());
+        assert_eq!(phase, PresentationPhase::Ready);
     }
 }

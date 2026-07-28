@@ -45,6 +45,11 @@ pub struct FullscreenPresentation {
     pub fullscreen_size: Size<i32, Logical>,
 }
 
+pub struct ExternalSettlement {
+    pub fullscreen: bool,
+    pub presentation_finished: bool,
+}
+
 impl FullscreenPresentation {
     pub fn fullscreen_rect(self, output_size: Size<i32, Physical>) -> Rectangle<i32, Physical> {
         let fullscreen_size = self.fullscreen_size.to_physical(1);
@@ -256,7 +261,7 @@ impl FullscreenManager {
                 desired: true,
                 active: false,
                 animate_external: animate,
-                initial_external_visual: initial && animate,
+                initial_external_visual: initial,
                 deferred_external: None,
                 target_output: target_name,
                 restore,
@@ -264,6 +269,9 @@ impl FullscreenManager {
                 transition: None,
                 snapshot_serials: Vec::new(),
             });
+        if initial && let Some(entry) = self.windows.get_mut(&wl_surface) {
+            entry.initial_external_visual = true;
+        }
         super::set_window_output(&window, &target);
         if deferred {
             return Some((output_geometry, false));
@@ -280,6 +288,7 @@ impl FullscreenManager {
         _wayland: &mut WaylandState,
         window: &Window,
         animate: bool,
+        initial: bool,
     ) -> Option<(Rectangle<i32, Logical>, bool)> {
         let wl_surface = window.wl_surface().map(|surface| surface.into_owned())?;
         let entry = self.windows.get_mut(&wl_surface)?;
@@ -290,6 +299,9 @@ impl FullscreenManager {
                 .map(|restore| (restore.geometry, false));
         }
         let pending = request_external_transition(entry, false, animate);
+        if initial {
+            entry.initial_external_visual = true;
+        }
         entry
             .restore
             .as_ref()
@@ -301,11 +313,16 @@ impl FullscreenManager {
         wayland: &mut WaylandState,
         window: &Window,
         now: Duration,
-    ) -> Option<bool> {
+    ) -> Option<ExternalSettlement> {
         let wl_surface = window.wl_surface().map(|surface| surface.into_owned())?;
         let entry = self.windows.get_mut(&wl_surface)?;
         settle_external_transition(entry, self.animations, now);
         let desired = entry.desired;
+        let presentation_finished = entry.initial_external_visual && entry.transition.is_none();
+        if presentation_finished {
+            entry.initial_external_visual = false;
+            entry.deferred_external = None;
+        }
         let target_output = entry.target_output.clone();
         let restore = entry.restore.clone();
 
@@ -324,7 +341,10 @@ impl FullscreenManager {
         };
         super::set_window_output(window, &output);
         wayland.space.relocate_element(window, location);
-        Some(desired)
+        Some(ExternalSettlement {
+            fullscreen: desired,
+            presentation_finished,
+        })
     }
 
     pub fn should_capture_external_snapshot(&self, surface: &WlSurface, fullscreen: bool) -> bool {
@@ -546,6 +566,7 @@ impl FullscreenManager {
         let mut finished = false;
         let mut finished_surfaces = Vec::new();
         let mut deferred_external = Vec::new();
+        let mut initial_presentations_finished = Vec::new();
         self.windows.retain(|surface, entry| {
             if entry
                 .transition
@@ -554,8 +575,14 @@ impl FullscreenManager {
                 entry.transition = None;
                 finished = true;
                 finished_surfaces.push(surface.clone());
-                if let Some(desired) = finish_initial_external_visual(entry) {
-                    deferred_external.push((surface.clone(), desired));
+                match finish_initial_external_visual(entry) {
+                    InitialVisualFinish::NotInitial => {}
+                    InitialVisualFinish::Ready => {
+                        initial_presentations_finished.push(surface.clone());
+                    }
+                    InitialVisualFinish::Reconcile(desired) => {
+                        deferred_external.push((surface.clone(), desired));
+                    }
                 }
             }
             entry.active || entry.desired || entry.transition.is_some()
@@ -564,6 +591,7 @@ impl FullscreenManager {
             visual_finished: finished,
             finished_surfaces,
             deferred_external,
+            initial_presentations_finished,
         }
     }
 
@@ -576,6 +604,7 @@ pub struct FullscreenCleanup {
     pub visual_finished: bool,
     pub finished_surfaces: Vec<WlSurface>,
     pub deferred_external: Vec<(WlSurface, bool)>,
+    pub initial_presentations_finished: Vec<WlSurface>,
 }
 
 fn animations_enabled(animations: Animations) -> bool {
@@ -624,14 +653,21 @@ fn defer_external_request(entry: &mut FullscreenWindow, desired: bool) -> bool {
     true
 }
 
-fn finish_initial_external_visual(entry: &mut FullscreenWindow) -> Option<bool> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InitialVisualFinish {
+    NotInitial,
+    Ready,
+    Reconcile(bool),
+}
+
+fn finish_initial_external_visual(entry: &mut FullscreenWindow) -> InitialVisualFinish {
     if !std::mem::take(&mut entry.initial_external_visual) {
-        return None;
+        return InitialVisualFinish::NotInitial;
     }
-    entry
-        .deferred_external
-        .take()
-        .filter(|desired| *desired != entry.active)
+    match entry.deferred_external.take() {
+        Some(desired) if desired != entry.active => InitialVisualFinish::Reconcile(desired),
+        Some(_) | None => InitialVisualFinish::Ready,
+    }
 }
 
 fn retarget_transition(
@@ -886,7 +922,10 @@ mod tests {
         assert!(entry.active);
         assert!(entry.desired);
         assert_eq!(entry.deferred_external, Some(true));
-        assert_eq!(finish_initial_external_visual(&mut entry), None);
+        assert_eq!(
+            finish_initial_external_visual(&mut entry),
+            InitialVisualFinish::Ready
+        );
         assert!(!entry.initial_external_visual);
         assert_eq!(entry.deferred_external, None);
     }
@@ -910,7 +949,10 @@ mod tests {
         ));
 
         assert!(defer_external_request(&mut entry, false));
-        assert_eq!(finish_initial_external_visual(&mut entry), Some(false));
+        assert_eq!(
+            finish_initial_external_visual(&mut entry),
+            InitialVisualFinish::Reconcile(false)
+        );
         assert!(!entry.initial_external_visual);
         assert_eq!(entry.deferred_external, None);
     }

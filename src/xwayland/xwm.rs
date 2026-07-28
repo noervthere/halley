@@ -117,32 +117,40 @@ fn admit_window<D: SessionDriver>(session: &mut Session<D>, surface: &X11Surface
     let initially_fullscreen = surface.is_fullscreen();
     if !initially_fullscreen {
         present_window(session, id, &admission.window, location);
+    } else {
+        session.wayland.windows.begin_fullscreen_presentation(id);
     }
     let focus_deferred = if initially_fullscreen {
         enter_fullscreen(session, surface)
     } else if surface.is_maximized() {
         maximize_window(session, surface);
-        session.wayland.windows.set_input_ready(id, true);
         false
     } else {
         let geometry = Rectangle::new(location, admission.window.geometry().size);
         if let Err(err) = surface.configure(geometry) {
             eventline::warn!("xwayland: failed to configure admitted window: {err}");
         }
-        session.wayland.windows.set_input_ready(id, true);
         false
     };
     if !session.wayland.windows.is_presented(id) && !focus_deferred {
         present_window(session, id, &admission.window, location);
     }
 
-    if admission.first
-        && !surface.is_fullscreen()
-        && let Some(wl_surface) = admission.window.wl_surface()
-    {
-        session
-            .window_open_animations
-            .start(wl_surface.into_owned(), crate::frame_clock::monotonic_now());
+    let opening_started = if admission.first && !surface.is_fullscreen() {
+        admission.window.wl_surface().is_some_and(|wl_surface| {
+            session
+                .window_open_animations
+                .start(wl_surface.into_owned(), crate::frame_clock::monotonic_now())
+        })
+    } else {
+        false
+    };
+    if !initially_fullscreen {
+        if opening_started {
+            session.wayland.windows.begin_opening_presentation(id);
+        } else {
+            session.wayland.windows.finish_presentation(id);
+        }
     }
     if admission.kind.is_managed() && !focus_deferred {
         crate::session::focus_window(session, &admission.window, SERIAL_COUNTER.next_serial());
@@ -200,7 +208,20 @@ fn enter_fullscreen<D: SessionDriver>(session: &mut Session<D>, surface: &X11Sur
     let Some(window) = window_for_surface(session, surface) else {
         return false;
     };
-    let initial = !session.wayland.windows.is_presented(id);
+    let initial = session.wayland.windows.begin_fullscreen_presentation(id);
+    if initial && let Some(wl_surface) = window.wl_surface() {
+        if session
+            .window_open_animations
+            .is_animating(wl_surface.as_ref(), crate::frame_clock::monotonic_now())
+        {
+            eventline::debug!(
+                "window lifecycle: X11 fullscreen took over initial presentation {:?} xid={}",
+                id,
+                surface.window_id()
+            );
+        }
+        session.window_open_animations.remove(wl_surface.as_ref());
+    }
     let captured = capture_fullscreen_snapshot(session, surface, true);
     let Some((geometry, pending)) =
         session
@@ -214,7 +235,7 @@ fn enter_fullscreen<D: SessionDriver>(session: &mut Session<D>, surface: &X11Sur
     if !pending {
         return false;
     }
-    let gate_input = !session.wayland.windows.input_ready(id);
+    let gate_input = initial;
     if let Err(err) = surface.configure(geometry) {
         eventline::warn!("xwayland: failed to configure fullscreen window: {err}");
         remove_fullscreen_snapshot(session, &window);
@@ -241,14 +262,18 @@ fn leave_fullscreen<D: SessionDriver>(session: &mut Session<D>, surface: &X11Sur
     let Some(window) = window_for_surface(session, surface) else {
         return;
     };
+    let initial = !session.wayland.windows.input_ready(id);
     let captured = capture_fullscreen_snapshot(session, surface, false);
     let Some((geometry, pending)) =
         session
             .fullscreen
-            .unrequest_external(&mut session.wayland, &window, captured)
+            .unrequest_external(&mut session.wayland, &window, captured, initial)
     else {
         remove_fullscreen_snapshot(session, &window);
         session.wayland.windows.clear_geometry_target(id);
+        if initial {
+            session.wayland.windows.finish_presentation(id);
+        }
         return;
     };
     if !pending {
@@ -258,6 +283,9 @@ fn leave_fullscreen<D: SessionDriver>(session: &mut Session<D>, surface: &X11Sur
         eventline::warn!("xwayland: failed to restore fullscreen window: {err}");
         remove_fullscreen_snapshot(session, &window);
         session.wayland.windows.clear_geometry_target(id);
+        if initial {
+            session.wayland.windows.finish_presentation(id);
+        }
         return;
     }
     session
@@ -685,7 +713,7 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
                 return;
             };
             present_window(self, id, &window, target.loc);
-            let fullscreen = self.fullscreen.settle_external(
+            let settlement = self.fullscreen.settle_external(
                 &mut self.wayland,
                 &window,
                 crate::frame_clock::monotonic_now(),
@@ -702,15 +730,18 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
                     output: crate::wayland::window_output_name(&window),
                 },
             );
-            if let Some(fullscreen) = fullscreen {
+            if let Some(settlement) = settlement.as_ref() {
                 eventline::debug!(
                     "fullscreen: settled X11 transaction {:?} xid={} fullscreen={}",
                     id,
                     surface.window_id(),
-                    fullscreen
+                    settlement.fullscreen
                 );
+                if settlement.presentation_finished {
+                    self.wayland.windows.finish_presentation(id);
+                }
             }
-            if fullscreen == Some(false) {
+            if settlement.is_some_and(|settlement| !settlement.fullscreen) {
                 self.wayland.windows.clear_geometry_target(id);
             }
             if focus {

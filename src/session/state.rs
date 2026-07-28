@@ -143,6 +143,22 @@ impl<D: SessionDriver> Session<D> {
                 crate::xwayland::set_window_fullscreen(self, &window, fullscreen);
             }
         }
+        for surface in cleanup.initial_presentations_finished {
+            self.wayland
+                .windows
+                .finish_presentation_for_surface(&surface);
+        }
         cleanup.visual_finished
+    }
+
+    pub fn cleanup_window_open(&mut self, now: std::time::Duration) -> bool {
+        let mut presentation_finished = false;
+        for surface in self.window_open_animations.cleanup(now) {
+            presentation_finished |= self
+                .wayland
+                .windows
+                .finish_presentation_for_surface(&surface);
+        }
+        presentation_finished
     }
 }

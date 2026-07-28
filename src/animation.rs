@@ -90,10 +90,10 @@ impl WindowOpenAnimations {
         }
     }
 
-    pub fn start(&mut self, surface: WlSurface, now: Duration) {
+    pub fn start(&mut self, surface: WlSurface, now: Duration) -> bool {
         let config = self.config.window_open;
         if !self.config.enabled || !config.enabled {
-            return;
+            return false;
         }
 
         self.active.insert(
@@ -103,6 +103,7 @@ impl WindowOpenAnimations {
                 animation_type: config.animation_type,
             },
         );
+        true
     }
 
     /// Updates policy for future windows without disturbing animations
@@ -132,9 +133,17 @@ impl WindowOpenAnimations {
         self.active.remove(surface);
     }
 
-    pub fn cleanup(&mut self, now: Duration) {
-        self.active
-            .retain(|_, timeline| !timeline.is_finished_at(now));
+    pub fn cleanup(&mut self, now: Duration) -> Vec<WlSurface> {
+        let mut finished = Vec::new();
+        self.active.retain(|surface, timeline| {
+            if timeline.is_finished_at(now) {
+                finished.push(surface.clone());
+                false
+            } else {
+                true
+            }
+        });
+        finished
     }
 }
 
