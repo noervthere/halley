@@ -119,9 +119,6 @@ where
                         crate::session::environment::activate_xwayland(OsStr::new(&display));
                     }
                     eventline::info!("xwayland: ready, DISPLAY={display}");
-                    // Clients that connect immediately still need a primary to
-                    // size themselves against.
-                    sync_randr_primary(session);
                     session.request_redraw();
                 }
                 Err(err) => {
@@ -136,18 +133,6 @@ where
         }
     })?;
     Ok(())
-}
-
-/// Publishes the compositor's primary output through RandR once the XWM exists.
-fn sync_randr_primary<D: SessionDriver>(session: &mut Session<D>) {
-    let primary = session.driver.primary_output().clone();
-    let Some(xwm) = session.xwayland.xwm.as_mut() else {
-        return;
-    };
-    match xwm.set_randr_primary_output(Some(&primary)) {
-        Ok(()) => eventline::debug!("xwayland: randr primary output set to {}", primary.name()),
-        Err(err) => eventline::warn!("xwayland: failed to set randr primary output: {err}"),
-    }
 }
 
 pub fn reconfigure_fullscreen(
