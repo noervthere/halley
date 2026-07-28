@@ -8,7 +8,7 @@ pub mod popup;
 pub mod selection;
 pub mod xdg_shell;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::RwLock;
 
 use smithay::desktop::{LayerSurface, PopupManager, Space, Window};
@@ -107,11 +107,9 @@ pub struct WaylandState {
     /// actually attached a buffer (see `unmapped`), not merely once its
     /// toplevel role exists.
     pub space: Space<Window>,
-    /// Toplevels that exist but haven't mapped a buffer yet, keyed by their
-    /// `wl_surface`. This defers entering `space` until there is a real
-    /// buffer to show, without mixing placement policy into surface
-    /// lifecycle tracking.
-    pub unmapped: HashMap<WlSurface, Window>,
+    /// Owns normal windows for their whole protocol lifetime. Only admitted
+    /// records enter `space`; surface association and mapping remain separate.
+    pub(crate) windows: crate::window::lifecycle::WindowRegistry,
     /// Layer surfaces that have not attached a buffer since creation (or
     /// since a null-buffer unmap). The Smithay `LayerMap` retains the role so
     /// it can calculate and send the next configure; this set records the
@@ -171,7 +169,7 @@ impl WaylandState {
             primary_selection_state,
             popup_manager: PopupManager::default(),
             space: Space::default(),
-            unmapped: HashMap::new(),
+            windows: crate::window::lifecycle::WindowRegistry::default(),
             unmapped_layers: HashSet::new(),
             focused_layer: None,
             focused_window: None,
