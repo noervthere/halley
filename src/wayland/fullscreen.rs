@@ -556,14 +556,23 @@ fn animations_enabled(animations: Animations) -> bool {
     animations.enabled && animations.fullscreen.enabled
 }
 
-fn settle_external_transition(entry: &mut FullscreenWindow, animations: Animations, now: Duration) {
-    if entry.animate_external {
+fn settle_external_transition(
+    entry: &mut FullscreenWindow,
+    animations: Animations,
+    now: Duration,
+) -> bool {
+    if entry.active == entry.desired {
+        entry.animate_external = false;
+        return false;
+    }
+    if std::mem::take(&mut entry.animate_external) {
         let desired = entry.desired;
         retarget_transition(entry, animations, now, desired);
     } else {
         entry.active = entry.desired;
         entry.transition = None;
     }
+    true
 }
 
 fn request_external_transition(entry: &mut FullscreenWindow, desired: bool, animate: bool) -> bool {
@@ -738,7 +747,11 @@ mod tests {
         let mut entry = test_entry(false);
         entry.desired = true;
 
-        settle_external_transition(&mut entry, animations, Duration::from_secs(1));
+        assert!(settle_external_transition(
+            &mut entry,
+            animations,
+            Duration::from_secs(1)
+        ));
 
         assert!(entry.desired);
         assert!(entry.active);
@@ -754,10 +767,15 @@ mod tests {
         assert!(!entry.active);
         assert!(entry.transition.is_none());
 
-        settle_external_transition(&mut entry, animations, Duration::from_secs(1));
+        assert!(settle_external_transition(
+            &mut entry,
+            animations,
+            Duration::from_secs(1)
+        ));
 
         assert!(entry.active);
         assert!(entry.transition.is_some());
+        assert!(!entry.animate_external);
     }
 
     #[test]
@@ -773,5 +791,34 @@ mod tests {
         let mut entry = test_entry(true);
         assert!(!request_external_transition(&mut entry, true, false));
         assert!(!entry.animate_external);
+    }
+
+    #[test]
+    fn repeated_external_settlement_does_not_restart_animation() {
+        let animations = Animations::default();
+        let started = Duration::from_secs(1);
+        let probe = started + Duration::from_millis(20);
+        let mut entry = test_entry(false);
+        entry.desired = true;
+        entry.animate_external = true;
+
+        assert!(settle_external_transition(&mut entry, animations, started));
+        let progress = entry
+            .transition
+            .expect("fullscreen transition")
+            .value_at(probe);
+
+        assert!(!settle_external_transition(
+            &mut entry,
+            animations,
+            started + Duration::from_millis(10)
+        ));
+        assert_eq!(
+            entry
+                .transition
+                .expect("original transition remains active")
+                .value_at(probe),
+            progress
+        );
     }
 }

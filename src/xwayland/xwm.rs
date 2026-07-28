@@ -188,7 +188,6 @@ fn output_for_geometry<D: SessionDriver>(
 }
 
 fn enter_fullscreen<D: SessionDriver>(session: &mut Session<D>, surface: &X11Surface) -> bool {
-    let captured = capture_fullscreen_snapshot(session, surface, true);
     if let Err(err) = surface.set_fullscreen(true) {
         eventline::warn!("xwayland: failed to set fullscreen state: {err}");
     }
@@ -201,6 +200,7 @@ fn enter_fullscreen<D: SessionDriver>(session: &mut Session<D>, surface: &X11Sur
     let Some(window) = window_for_surface(session, surface) else {
         return false;
     };
+    let captured = capture_fullscreen_snapshot(session, surface, true);
     let Some((geometry, pending)) =
         session
             .fullscreen
@@ -228,16 +228,19 @@ fn enter_fullscreen<D: SessionDriver>(session: &mut Session<D>, surface: &X11Sur
 }
 
 fn leave_fullscreen<D: SessionDriver>(session: &mut Session<D>, surface: &X11Surface) {
-    let Some(window) = window_for_surface(session, surface) else {
-        return;
-    };
-    let captured = capture_fullscreen_snapshot(session, surface, false);
     if let Err(err) = surface.set_fullscreen(false) {
         eventline::warn!("xwayland: failed to clear fullscreen state: {err}");
     }
     let Some(id) = session.wayland.windows.id_for_x11(surface) else {
         return;
     };
+    if !session.wayland.windows.is_admitted(id) {
+        return;
+    }
+    let Some(window) = window_for_surface(session, surface) else {
+        return;
+    };
+    let captured = capture_fullscreen_snapshot(session, surface, false);
     let Some((geometry, pending)) =
         session
             .fullscreen
@@ -676,6 +679,10 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
                 self.request_redraw();
                 return;
             }
+            let Some(focus) = self.wayland.windows.settle_geometry(id, geometry) else {
+                self.request_redraw();
+                return;
+            };
             present_window(self, id, &window, target.loc);
             let fullscreen = self.fullscreen.settle_external(
                 &mut self.wayland,
@@ -694,7 +701,14 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
                     output: crate::wayland::window_output_name(&window),
                 },
             );
-            let focus = self.wayland.windows.settle_geometry(id, geometry) == Some(true);
+            if let Some(fullscreen) = fullscreen {
+                eventline::debug!(
+                    "fullscreen: settled X11 transaction {:?} xid={} fullscreen={}",
+                    id,
+                    surface.window_id(),
+                    fullscreen
+                );
+            }
             if fullscreen == Some(false) {
                 self.wayland.windows.clear_geometry_target(id);
             }
