@@ -122,7 +122,11 @@ fn consider_map<D: SessionDriver>(
 }
 
 fn admit_window<D: SessionDriver>(session: &mut Session<D>, xid: u32) {
-    let Some(PendingWindow { surface, window }) = session.xwayland.pending_windows.remove(&xid)
+    let Some(PendingWindow {
+        surface,
+        window,
+        initial_size,
+    }) = session.xwayland.pending_windows.remove(&xid)
     else {
         return;
     };
@@ -142,7 +146,7 @@ fn admit_window<D: SessionDriver>(session: &mut Session<D>, xid: u32) {
         session
             .xwayland
             .opening_placements
-            .insert(xid, OpeningPlacement::from_geometry(geometry));
+            .insert(xid, OpeningPlacement::new(geometry, initial_size));
     }
     let started = window.wl_surface().is_some_and(|wl_surface| {
         session
@@ -324,9 +328,14 @@ fn request_opening_fullscreen<D: SessionDriver>(
         return;
     };
     let request = if fullscreen {
+        let restore = session
+            .xwayland
+            .opening_placements
+            .get(&surface.window_id())
+            .and_then(|placement| placement.restore_geometry());
         session
             .fullscreen
-            .request_external_opening(&mut session.wayland, window)
+            .request_external_opening(&mut session.wayland, window, restore)
     } else {
         session.fullscreen.unrequest_external_opening(window)
     };
@@ -677,6 +686,7 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
             );
             return;
         }
+        let initial_size = surface.geometry().size;
         if let Err(err) = surface.set_mapped(true) {
             eventline::warn!("xwayland: failed to map window: {err}");
             return;
@@ -687,13 +697,16 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
             PendingWindow {
                 surface: surface.clone(),
                 window,
+                initial_size,
             },
         );
         eventline::debug!(
-            "xwayland: map requested xid={} fullscreen={} maximized={}",
+            "xwayland: map requested xid={} fullscreen={} maximized={} initial={}x{}",
             surface.window_id(),
             surface.is_fullscreen(),
-            surface.is_maximized()
+            surface.is_maximized(),
+            initial_size.w,
+            initial_size.h
         );
         consider_map(self, surface.window_id(), None);
     }
@@ -808,8 +821,12 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
                         );
                     }
                 } else {
-                    self.wayland.space.map_element(window, geometry.loc, false);
+                    self.wayland
+                        .space
+                        .map_element(window.clone(), geometry.loc, false);
                 }
+                self.fullscreen
+                    .update_external_windowed_placement(&self.wayland, &window);
             }
             ExternalConfigureResult::Waiting => {}
             ExternalConfigureResult::Settled {

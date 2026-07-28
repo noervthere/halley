@@ -35,6 +35,7 @@ pub use focus::KeyboardFocusTarget;
 struct PendingWindow {
     surface: smithay::xwayland::X11Surface,
     window: Window,
+    initial_size: smithay::utils::Size<i32, smithay::utils::Logical>,
 }
 
 pub struct State {

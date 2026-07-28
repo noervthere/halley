@@ -295,15 +295,21 @@ impl FullscreenManager {
         wayland: &mut WaylandState,
         window: &Window,
     ) -> Option<ExternalTransactionRequest> {
-        self.request_external_transaction(wayland, window, ExternalPresentationKind::Animated)
+        self.request_external_transaction(wayland, window, ExternalPresentationKind::Animated, None)
     }
 
     pub(crate) fn request_external_opening(
         &mut self,
         wayland: &mut WaylandState,
         window: &Window,
+        restore_geometry: Option<Rectangle<i32, Logical>>,
     ) -> Option<ExternalTransactionRequest> {
-        self.request_external_transaction(wayland, window, ExternalPresentationKind::Opening)
+        self.request_external_transaction(
+            wayland,
+            window,
+            ExternalPresentationKind::Opening,
+            restore_geometry,
+        )
     }
 
     fn request_external_transaction(
@@ -311,6 +317,7 @@ impl FullscreenManager {
         wayland: &mut WaylandState,
         window: &Window,
         presentation: ExternalPresentationKind,
+        restore_geometry: Option<Rectangle<i32, Logical>>,
     ) -> Option<ExternalTransactionRequest> {
         let wl_surface = window.wl_surface().map(|surface| surface.into_owned())?;
         let window = find_window(wayland, &wl_surface).cloned()?;
@@ -319,17 +326,26 @@ impl FullscreenManager {
             .or_else(|| super::focus::selected_output(wayland).cloned())?;
         let output_geometry = wayland.space.output_geometry(&target)?;
         let target_name = target.name();
-        let restore = wayland
-            .space
-            .element_location(&window)
-            .map(|location| WindowedPlacement {
-                location,
-                geometry: wayland
-                    .space
-                    .element_geometry(&window)
-                    .unwrap_or_else(|| Rectangle::new(location, window.geometry().size)),
+        let current_restore =
+            wayland
+                .space
+                .element_location(&window)
+                .map(|location| WindowedPlacement {
+                    location,
+                    geometry: wayland
+                        .space
+                        .element_geometry(&window)
+                        .unwrap_or_else(|| Rectangle::new(location, window.geometry().size)),
+                    output: super::window_output_name(&window),
+                });
+        let restore = prefer_seeded_restore(
+            restore_geometry.map(|geometry| WindowedPlacement {
+                location: geometry.loc,
+                geometry,
                 output: super::window_output_name(&window),
-            });
+            }),
+            current_restore,
+        );
 
         let entry = self
             .windows
@@ -456,6 +472,33 @@ impl FullscreenManager {
         window
             .wl_surface()
             .is_some_and(|surface| desired_matches(self.windows.get(surface.as_ref()), fullscreen))
+    }
+
+    pub(crate) fn update_external_windowed_placement(
+        &mut self,
+        wayland: &WaylandState,
+        window: &Window,
+    ) {
+        let Some(surface) = window.wl_surface() else {
+            return;
+        };
+        let Some(entry) = self.windows.get_mut(surface.as_ref()) else {
+            return;
+        };
+        if !can_update_external_restore(entry) {
+            return;
+        }
+        let (Some(location), Some(geometry)) = (
+            wayland.space.element_location(window),
+            wayland.space.element_geometry(window),
+        ) else {
+            return;
+        };
+        entry.restore = Some(WindowedPlacement {
+            location,
+            geometry,
+            output: super::window_output_name(window),
+        });
     }
 
     pub fn handle_commit(
@@ -704,6 +747,17 @@ fn animations_enabled(animations: Animations) -> bool {
 
 fn desired_matches(entry: Option<&FullscreenWindow>, desired: bool) -> bool {
     entry.is_some_and(|entry| entry.desired == desired)
+}
+
+fn prefer_seeded_restore(
+    seeded: Option<WindowedPlacement>,
+    current: Option<WindowedPlacement>,
+) -> Option<WindowedPlacement> {
+    seeded.or(current)
+}
+
+fn can_update_external_restore(entry: &FullscreenWindow) -> bool {
+    !entry.desired && entry.external_pending.is_none()
 }
 
 fn settle_external_fullscreen(
@@ -1024,6 +1078,46 @@ mod tests {
         assert!(!desired_matches(Some(&entry), false));
         assert!(!desired_matches(None, true));
         assert_eq!(entry.external_pending, pending);
+    }
+
+    #[test]
+    fn seeded_restore_geometry_wins_over_the_buffered_fullscreen_size() {
+        let seeded_geometry = Rectangle::new((960, 480).into(), (640, 480).into());
+        let buffered_geometry = Rectangle::new((0, 0).into(), (2560, 1440).into());
+        let seeded = WindowedPlacement {
+            location: seeded_geometry.loc,
+            geometry: seeded_geometry,
+            output: Some("DP-1".to_string()),
+        };
+        let buffered = WindowedPlacement {
+            location: buffered_geometry.loc,
+            geometry: buffered_geometry,
+            output: Some("DP-1".to_string()),
+        };
+
+        let fallback =
+            prefer_seeded_restore(None, Some(buffered.clone())).expect("buffered fallback");
+        let restore = prefer_seeded_restore(Some(seeded), Some(buffered)).expect("seeded restore");
+
+        assert_eq!(fallback.geometry, buffered_geometry);
+        assert_eq!(restore.geometry, seeded_geometry);
+        assert_eq!(restore.location, seeded_geometry.loc);
+    }
+
+    #[test]
+    fn settled_windowed_resize_can_replace_the_saved_restore() {
+        let mut entry = test_entry(false);
+        assert!(can_update_external_restore(&entry));
+
+        entry.desired = true;
+        assert!(!can_update_external_restore(&entry));
+
+        entry.desired = false;
+        entry.external_pending = Some(ExternalPending {
+            geometry: Rectangle::new((320, 180).into(), (1280, 720).into()),
+            presentation: ExternalPresentationKind::Animated,
+        });
+        assert!(!can_update_external_restore(&entry));
     }
 
     #[test]

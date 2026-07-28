@@ -25,13 +25,15 @@ pub(super) fn map_admission(
 pub(super) struct OpeningPlacement {
     center_x_twice: i32,
     center_y_twice: i32,
+    initial_size: Option<Size<i32, Logical>>,
 }
 
 impl OpeningPlacement {
-    pub(super) fn from_geometry(geometry: Rectangle<i32, Logical>) -> Self {
+    pub(super) fn new(geometry: Rectangle<i32, Logical>, initial_size: Size<i32, Logical>) -> Self {
         Self {
             center_x_twice: geometry.loc.x * 2 + geometry.size.w,
             center_y_twice: geometry.loc.y * 2 + geometry.size.h,
+            initial_size: (initial_size.w > 0 && initial_size.h > 0).then_some(initial_size),
         }
     }
 
@@ -44,6 +46,10 @@ impl OpeningPlacement {
                 .into(),
             size,
         )
+    }
+
+    pub(super) fn restore_geometry(self) -> Option<Rectangle<i32, Logical>> {
+        self.initial_size.map(|size| self.centered(size))
     }
 }
 
@@ -69,7 +75,7 @@ mod tests {
     #[test]
     fn opening_size_changes_preserve_the_original_center() {
         let preliminary = Rectangle::new((1264, 704).into(), (32, 32).into());
-        let placement = OpeningPlacement::from_geometry(preliminary);
+        let placement = OpeningPlacement::new(preliminary, (640, 480).into());
 
         assert_eq!(
             placement.centered((1920, 1080).into()),
@@ -79,5 +85,19 @@ mod tests {
             placement.centered((1280, 720).into()),
             Rectangle::new((640, 360).into(), (1280, 720).into())
         );
+        assert_eq!(
+            placement.restore_geometry(),
+            Some(Rectangle::new((960, 480).into(), (640, 480).into()))
+        );
+    }
+
+    #[test]
+    fn invalid_client_geometry_has_no_seeded_restore() {
+        let placement = OpeningPlacement::new(
+            Rectangle::new((320, 180).into(), (1920, 1080).into()),
+            (0, 480).into(),
+        );
+
+        assert_eq!(placement.restore_geometry(), None);
     }
 }
