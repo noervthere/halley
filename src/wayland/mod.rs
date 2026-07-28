@@ -8,7 +8,7 @@ pub mod popup;
 pub mod selection;
 pub mod xdg_shell;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::RwLock;
 
 use smithay::desktop::{LayerSurface, PopupManager, Space, Window};
@@ -103,11 +103,15 @@ pub struct WaylandState {
     /// Rendering and input can then ask Smithay for the same canonical tree
     /// instead of each subsystem inventing its own parent/offset bookkeeping.
     pub popup_manager: PopupManager,
-    /// Real, visible windows. Lifecycle records own both mapped and unmapped
-    /// normal windows; only the mapped records enter this space.
+    /// Real, visible windows - a surface only enters `space` once it has
+    /// actually attached a buffer (see `unmapped`), not merely once its
+    /// toplevel role exists.
     pub space: Space<Window>,
-    /// Protocol-independent ownership for normal XDG and X11 windows.
-    pub windows: crate::window::lifecycle::WindowLifecycle,
+    /// Toplevels that exist but haven't mapped a buffer yet, keyed by their
+    /// `wl_surface`. This defers entering `space` until there is a real
+    /// buffer to show, without mixing placement policy into surface
+    /// lifecycle tracking.
+    pub unmapped: HashMap<WlSurface, Window>,
     /// Layer surfaces that have not attached a buffer since creation (or
     /// since a null-buffer unmap). The Smithay `LayerMap` retains the role so
     /// it can calculate and send the next configure; this set records the
@@ -167,7 +171,7 @@ impl WaylandState {
             primary_selection_state,
             popup_manager: PopupManager::default(),
             space: Space::default(),
-            windows: crate::window::lifecycle::WindowLifecycle::default(),
+            unmapped: HashMap::new(),
             unmapped_layers: HashSet::new(),
             focused_layer: None,
             focused_window: None,

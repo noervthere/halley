@@ -104,45 +104,6 @@ pub(super) fn update_client_state<D: SessionDriver>(session: &mut Session<D>, ti
     finish_frame(session, &pointer);
 }
 
-pub(super) fn retire_surface<D: SessionDriver>(
-    session: &mut Session<D>,
-    removed_root: &WlSurface,
-    time: u32,
-) {
-    let pointer = session
-        .seat
-        .get_pointer()
-        .expect("pointer capability added at seat setup");
-    let Some(focused) = pointer.current_focus() else {
-        return;
-    };
-    if crate::wayland::compositor::root_surface(&focused) != *removed_root {
-        return;
-    }
-
-    let route = route_client(session);
-    let location = route
-        .as_ref()
-        .map(|route| route.location)
-        .unwrap_or_else(|| Point::from(session.pointer.position()));
-    let focus = route.and_then(|route| route.focus);
-
-    // Surface retirement is the one absolute-focus update that must bypass
-    // active-lock suppression. Delivering this leave deactivates the old
-    // pointer constraint; without it, an unmapped game can leave relative
-    // input anchored to a surface that is no longer in the scene.
-    pointer.motion(
-        session,
-        focus,
-        &MotionEvent {
-            location,
-            serial: SERIAL_COUNTER.next_serial(),
-            time,
-        },
-    );
-    finish_frame(session, &pointer);
-}
-
 pub(super) struct ConstraintSnapshot(Option<constraints::ActiveConstraint>);
 
 pub(super) enum ConstrainedMotion {

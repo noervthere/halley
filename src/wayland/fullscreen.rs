@@ -70,15 +70,6 @@ pub struct FullscreenManager {
     windows: HashMap<WlSurface, FullscreenWindow>,
 }
 
-pub(crate) struct ExternalFullscreenUpdate {
-    pub changed: bool,
-    pub pending: bool,
-    pub fullscreen: bool,
-    pub geometry: Rectangle<i32, Logical>,
-    pub location: Point<i32, Logical>,
-    pub output: Option<Output>,
-}
-
 impl FullscreenManager {
     pub fn new(animations: Animations) -> Self {
         Self {
@@ -206,11 +197,11 @@ impl FullscreenManager {
         }
     }
 
-    pub(crate) fn request_external(
+    pub fn request_external(
         &mut self,
-        wayland: &WaylandState,
+        wayland: &mut WaylandState,
         window: &Window,
-    ) -> Option<ExternalFullscreenUpdate> {
+    ) -> Option<Rectangle<i32, Logical>> {
         let wl_surface = window.wl_surface().map(|surface| surface.into_owned())?;
         let window = find_window(wayland, &wl_surface).cloned()?;
         let target = super::window_output_name(&window)
@@ -219,13 +210,15 @@ impl FullscreenManager {
         let target = target?;
         let output_geometry = wayland.space.output_geometry(&target)?;
         let target_name = target.name();
-        let entry = self
-            .windows
+        self.windows
             .entry(wl_surface)
+            .and_modify(|entry| {
+                settle_external_fullscreen(entry, &target_name, output_geometry.size);
+            })
             .or_insert_with(|| FullscreenWindow {
-                desired: false,
-                active: false,
-                target_output: target_name.clone(),
+                desired: true,
+                active: true,
+                target_output: target_name,
                 restore: Some(WindowedPlacement {
                     location: wayland
                         .space
@@ -241,122 +234,32 @@ impl FullscreenManager {
                 transition: None,
                 snapshot_serials: Vec::new(),
             });
-        entry.target_output = target_name;
-        entry.fullscreen_size = output_geometry.size;
-        let changed = request_external_state(entry, true);
-        Some(ExternalFullscreenUpdate {
-            changed,
-            pending: entry.desired != entry.active,
-            fullscreen: true,
-            geometry: output_geometry,
-            location: output_geometry.loc,
-            output: Some(target),
-        })
+        super::set_window_output(&window, &target);
+        wayland.space.map_element(window, output_geometry.loc, true);
+        Some(output_geometry)
     }
 
-    pub(crate) fn unrequest_external(
+    pub fn unrequest_external(
         &mut self,
-        wayland: &WaylandState,
+        wayland: &mut WaylandState,
         window: &Window,
-    ) -> Option<ExternalFullscreenUpdate> {
+    ) -> Option<Rectangle<i32, Logical>> {
         let wl_surface = window.wl_surface().map(|surface| surface.into_owned())?;
-        let entry = self.windows.get_mut(&wl_surface)?;
-        let restore = entry.restore.clone()?;
-        entry.fullscreen_size = window.geometry().size;
-        let changed = request_external_state(entry, false);
-        let output = restore
+        let restore = self
+            .windows
+            .remove(&wl_surface)
+            .and_then(|entry| entry.restore)?;
+        if let Some(output) = restore
             .output
             .as_deref()
-            .and_then(|name| output_by_name(wayland, name));
-        Some(ExternalFullscreenUpdate {
-            changed,
-            pending: entry.desired != entry.active,
-            fullscreen: false,
-            geometry: restore.geometry,
-            location: restore.location,
-            output,
-        })
-    }
-
-    pub fn should_capture_external_snapshot(&self, surface: &WlSurface, fullscreen: bool) -> bool {
-        animations_enabled(self.animations)
-            && self
-                .windows
-                .get(surface)
-                .is_some_and(|entry| entry.active != fullscreen)
-    }
-
-    pub(crate) fn commit_external(
-        &mut self,
-        wayland: &WaylandState,
-        window: &Window,
-        committed_size: Size<i32, Logical>,
-        now: Duration,
-    ) -> Option<ExternalFullscreenUpdate> {
-        let wl_surface = window.wl_surface().map(|surface| surface.into_owned())?;
-        let entry = self.windows.get_mut(&wl_surface)?;
-        if entry.active == entry.desired {
-            return None;
+            .and_then(|name| output_by_name(wayland, name))
+        {
+            super::set_window_output(window, &output);
         }
-
-        let (geometry, location, output) = if entry.desired {
-            let output = output_by_name(wayland, &entry.target_output)?;
-            let geometry = wayland.space.output_geometry(&output)?;
-            (geometry, geometry.loc, Some(output))
-        } else {
-            let restore = entry.restore.clone()?;
-            let output = restore
-                .output
-                .as_deref()
-                .and_then(|name| output_by_name(wayland, name));
-            (restore.geometry, restore.location, output)
-        };
-        if !external_commit_ready(entry, committed_size, geometry.size) {
-            return None;
-        }
-
-        commit_external_state(entry, self.animations, now);
-        Some(ExternalFullscreenUpdate {
-            changed: true,
-            pending: false,
-            fullscreen: entry.desired,
-            geometry,
-            location,
-            output,
-        })
-    }
-
-    pub fn is_transitioning(&self, surface: &WlSurface, now: Duration) -> bool {
-        self.windows.get(surface).is_some_and(|entry| {
-            entry
-                .transition
-                .is_some_and(|transition| !transition.is_finished_at(now))
-        })
-    }
-
-    pub(crate) fn external_geometry(
-        &self,
-        wayland: &WaylandState,
-        surface: &WlSurface,
-    ) -> Option<Rectangle<i32, Logical>> {
-        let entry = self.windows.get(surface).filter(|entry| entry.desired)?;
-        output_by_name(wayland, &entry.target_output)
-            .and_then(|output| wayland.space.output_geometry(&output))
-    }
-
-    pub(crate) fn external_is_pending(&self, surface: &WlSurface) -> bool {
-        self.windows
-            .get(surface)
-            .is_some_and(|entry| entry.active != entry.desired)
-    }
-
-    pub fn reassociate_external(&mut self, previous: &WlSurface, current: WlSurface) {
-        if previous == &current || self.windows.contains_key(&current) {
-            return;
-        }
-        if let Some(entry) = self.windows.remove(previous) {
-            self.windows.insert(current, entry);
-        }
+        wayland
+            .space
+            .map_element(window.clone(), restore.location, true);
+        Some(restore.geometry)
     }
 
     pub fn handle_commit(
@@ -426,7 +329,7 @@ impl FullscreenManager {
                 Some(restore) if restore.output.as_deref() == Some(target_output.as_str()) => {
                     restore.location
                 }
-                _ => crate::window::centered_location(wayland, cameras, &output, &window),
+                _ => super::xdg_shell::centered_location(wayland, cameras, &output, &window),
             };
             super::set_window_output(&window, &output);
             wayland.space.map_element(window.clone(), location, true);
@@ -589,12 +492,6 @@ impl FullscreenManager {
     pub fn remove(&mut self, surface: &WlSurface) {
         self.windows.remove(surface);
     }
-
-    pub fn suspend(&mut self, surface: &WlSurface) {
-        if let Some(entry) = self.windows.get_mut(surface) {
-            suspend_entry(entry);
-        }
-    }
 }
 
 pub struct FullscreenCleanup {
@@ -606,37 +503,16 @@ fn animations_enabled(animations: Animations) -> bool {
     animations.enabled && animations.fullscreen.enabled
 }
 
-fn request_external_state(entry: &mut FullscreenWindow, desired: bool) -> bool {
-    if entry.desired == desired {
-        return false;
-    }
-    entry.desired = desired;
-    true
-}
-
-fn commit_external_state(
+fn settle_external_fullscreen(
     entry: &mut FullscreenWindow,
-    animations: Animations,
-    now: Duration,
-) -> bool {
-    if entry.active == entry.desired {
-        return false;
-    }
-    retarget_transition(entry, animations, now, entry.desired);
-    true
-}
-
-fn external_commit_ready(
-    entry: &FullscreenWindow,
-    committed_size: Size<i32, Logical>,
-    target_size: Size<i32, Logical>,
-) -> bool {
-    entry.active != entry.desired && committed_size == target_size
-}
-
-fn suspend_entry(entry: &mut FullscreenWindow) {
+    target_output: &str,
+    fullscreen_size: Size<i32, Logical>,
+) {
+    entry.desired = true;
+    entry.active = true;
+    entry.target_output = target_output.to_string();
+    entry.fullscreen_size = fullscreen_size;
     entry.transition = None;
-    entry.snapshot_serials.clear();
 }
 
 fn retarget_transition(
@@ -677,7 +553,7 @@ fn find_window<'a>(wayland: &'a WaylandState, surface: &WlSurface) -> Option<&'a
                 .wl_surface()
                 .is_some_and(|candidate| candidate.as_ref() == surface)
         })
-        .or_else(|| wayland.windows.window_for_wl_surface(surface))
+        .or_else(|| wayland.unmapped.get(surface))
 }
 
 fn output_by_name(wayland: &WaylandState, name: &str) -> Option<Output> {
@@ -793,101 +669,17 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_external_request_remains_pending_without_motion() {
-        let mut entry = test_entry(false);
-
-        assert!(request_external_state(&mut entry, true));
-        assert!(!request_external_state(&mut entry, true));
-
-        assert!(entry.desired);
-        assert!(!entry.active);
-        assert!(entry.transition.is_none());
-    }
-
-    #[test]
-    fn external_commit_starts_motion_only_after_state_is_requested() {
+    fn external_fullscreen_is_logically_settled_without_animation() {
         let animations = Animations::default();
         let mut entry = test_entry(false);
-        let now = Duration::from_secs(1);
+        retarget_transition(&mut entry, animations, Duration::from_secs(1), true);
 
-        assert!(request_external_state(&mut entry, true));
-        assert!(entry.transition.is_none());
-        assert!(commit_external_state(&mut entry, animations, now));
-
-        assert!(entry.active);
-        assert!(entry.transition.is_some());
-    }
-
-    #[test]
-    fn rapid_external_reentry_before_commit_collapses_to_presented_state() {
-        let animations = Animations::default();
-        let mut entry = test_entry(true);
-
-        assert!(request_external_state(&mut entry, false));
-        assert!(request_external_state(&mut entry, true));
-        assert!(!commit_external_state(
-            &mut entry,
-            animations,
-            Duration::ZERO
-        ));
+        settle_external_fullscreen(&mut entry, "HDMI-A-1", (2560, 1440).into());
 
         assert!(entry.desired);
         assert!(entry.active);
+        assert_eq!(entry.target_output, "HDMI-A-1");
+        assert_eq!(entry.fullscreen_size, Size::from((2560, 1440)));
         assert!(entry.transition.is_none());
-    }
-
-    #[test]
-    fn external_state_waits_for_the_requested_buffer_size() {
-        let mut entry = test_entry(false);
-        request_external_state(&mut entry, true);
-
-        assert!(!external_commit_ready(
-            &entry,
-            (640, 480).into(),
-            (1920, 1080).into()
-        ));
-        assert!(external_commit_ready(
-            &entry,
-            (1920, 1080).into(),
-            (1920, 1080).into()
-        ));
-    }
-
-    #[test]
-    fn external_killswitch_commits_without_motion() {
-        let mut animations = Animations::default();
-        animations.fullscreen.enabled = false;
-        let mut entry = test_entry(false);
-
-        assert!(request_external_state(&mut entry, true));
-        assert!(commit_external_state(
-            &mut entry,
-            animations,
-            Duration::ZERO
-        ));
-
-        assert!(entry.desired);
-        assert!(entry.active);
-        assert!(entry.transition.is_none());
-    }
-
-    #[test]
-    fn suspend_keeps_fullscreen_state_but_retires_visual_work() {
-        let mut entry = test_entry(true);
-        entry.transition = Some(MotionTimeline::between(
-            Animations::default().fullscreen.motion,
-            Duration::ZERO,
-            0.0,
-            1.0,
-            0.0,
-        ));
-        entry.snapshot_serials.push(1.into());
-
-        suspend_entry(&mut entry);
-
-        assert!(entry.active);
-        assert!(entry.desired);
-        assert!(entry.transition.is_none());
-        assert!(entry.snapshot_serials.is_empty());
     }
 }

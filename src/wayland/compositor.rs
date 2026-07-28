@@ -16,7 +16,7 @@ pub fn commit<D: 'static>(
     wayland: &mut WaylandState,
     cameras: &crate::camera::OutputCameras,
     surface: &WlSurface,
-) -> Option<xdg_shell::CommitOutcome> {
+) -> Option<WlSurface> {
     on_commit_buffer_handler::<D>(surface);
 
     if is_sync_subsurface(surface) {
@@ -41,7 +41,7 @@ pub fn commit<D: 'static>(
                 .wl_surface()
                 .is_some_and(|surface| surface.as_ref() == &root)
         })
-        .or_else(|| wayland.windows.window_for_wl_surface(&root));
+        .or_else(|| wayland.unmapped.get(&root));
     if let Some(window) = owning_window {
         window.on_commit();
     }
