@@ -41,6 +41,13 @@ pub(super) fn route_client<D: SessionDriver>(
     )
 }
 
+pub(super) fn has_active_constraint<D: SessionDriver>(session: &Session<D>) -> bool {
+    session
+        .seat
+        .get_pointer()
+        .is_some_and(|pointer| constraints::active(session, &pointer).is_some())
+}
+
 fn route_and_update_client_focus<D: SessionDriver>(
     session: &mut Session<D>,
     time: u32,

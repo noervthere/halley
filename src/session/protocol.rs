@@ -341,6 +341,12 @@ impl<D: SessionDriver> FractionalScaleHandler for Session<D> {
 
 impl<D: SessionDriver> PointerConstraintsHandler for Session<D> {
     fn new_constraint(&mut self, surface: &WlSurface, pointer: &PointerHandle<Self>) {
+        // A lock must be established against stable geometry. Finishing an
+        // in-flight X11 presentation first prevents the lock origin from
+        // following an animated surface and corrupting relative mouselook.
+        if self.finish_x11_fullscreen_presentation(surface) {
+            self.request_redraw();
+        }
         super::pointer::activate_new(self, surface, pointer);
     }
 

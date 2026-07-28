@@ -10,9 +10,41 @@ use smithay::xwayland::xwm::{Reorder, ResizeEdge, XwmId};
 use smithay::xwayland::{X11Surface, X11Wm, XwmHandler};
 
 use crate::session::{Session, SessionDriver};
+use crate::wayland::fullscreen::{ExternalConfigureResult, ExternalTransactionRequest};
 
 #[derive(Default)]
 struct RestoreGeometry(Mutex<Option<Rectangle<i32, Logical>>>);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FullscreenRequestOrigin {
+    Initial,
+    Client,
+    Compositor,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExternalPresentationPolicy {
+    Initial,
+    Opening,
+    Constrained,
+    Animated,
+}
+
+fn external_presentation_policy(
+    origin: FullscreenRequestOrigin,
+    opening: bool,
+    constrained: bool,
+) -> ExternalPresentationPolicy {
+    if origin == FullscreenRequestOrigin::Initial {
+        ExternalPresentationPolicy::Initial
+    } else if opening {
+        ExternalPresentationPolicy::Opening
+    } else if constrained {
+        ExternalPresentationPolicy::Constrained
+    } else {
+        ExternalPresentationPolicy::Animated
+    }
+}
 
 fn window_for_surface<D: SessionDriver>(
     session: &Session<D>,
@@ -64,7 +96,7 @@ pub(super) fn surface_associated<D: SessionDriver>(
     // timeline renders against current bounds, so later fullscreen requests
     // retarget it without introducing a second visual owner.
     if surface.is_fullscreen() {
-        enter_fullscreen(session, &surface);
+        enter_fullscreen(session, &surface, FullscreenRequestOrigin::Initial);
     }
     if pending {
         let started = session
@@ -100,35 +132,148 @@ fn output_for_geometry<D: SessionDriver>(
         .or_else(|| crate::wayland::focus::selected_output(&session.wayland).cloned())
 }
 
-fn enter_fullscreen<D: SessionDriver>(session: &mut Session<D>, surface: &X11Surface) {
+fn enter_fullscreen<D: SessionDriver>(
+    session: &mut Session<D>,
+    surface: &X11Surface,
+    origin: FullscreenRequestOrigin,
+) {
+    set_external_fullscreen(session, surface, true, origin);
+}
+
+fn leave_fullscreen<D: SessionDriver>(
+    session: &mut Session<D>,
+    surface: &X11Surface,
+    origin: FullscreenRequestOrigin,
+) {
+    set_external_fullscreen(session, surface, false, origin);
+}
+
+fn set_external_fullscreen<D: SessionDriver>(
+    session: &mut Session<D>,
+    surface: &X11Surface,
+    fullscreen: bool,
+    origin: FullscreenRequestOrigin,
+) {
     let Some(window) = window_for_surface(session, surface) else {
         return;
     };
-    if let Err(err) = surface.set_fullscreen(true) {
-        eventline::warn!("xwayland: failed to set fullscreen state: {err}");
+    let opening = window.wl_surface().is_some_and(|wl_surface| {
+        session
+            .window_open_animations
+            .is_animating(wl_surface.as_ref(), crate::frame_clock::monotonic_now())
+    });
+    let policy = external_presentation_policy(
+        origin,
+        opening,
+        crate::session::has_active_pointer_constraint(session),
+    );
+    let animate = policy == ExternalPresentationPolicy::Animated
+        && capture_fullscreen_snapshot(session, &window, fullscreen);
+    if let Err(err) = surface.set_fullscreen(fullscreen) {
+        eventline::warn!("xwayland: failed to update fullscreen state: {err}");
     }
-    if let Some(geometry) = session
-        .fullscreen
-        .request_external(&mut session.wayland, &window)
+    if animate {
+        let request = if fullscreen {
+            session
+                .fullscreen
+                .request_external_animated(&mut session.wayland, &window)
+        } else {
+            session.fullscreen.unrequest_external_animated(&window)
+        };
+        match request {
+            Some(ExternalTransactionRequest::Configure(geometry)) => {
+                if let Err(err) = surface.configure(geometry) {
+                    eventline::warn!("xwayland: failed to configure animated fullscreen: {err}");
+                    remove_fullscreen_snapshot(session, &window);
+                    settle_external_immediately(session, surface, &window, fullscreen);
+                } else {
+                    eventline::debug!(
+                        "xwayland: fullscreen policy xid={} fullscreen={fullscreen} \
+                         origin={origin:?} policy=animated",
+                        surface.window_id(),
+                    );
+                }
+            }
+            Some(ExternalTransactionRequest::NoChange) => {
+                remove_fullscreen_snapshot(session, &window);
+            }
+            None => {
+                remove_fullscreen_snapshot(session, &window);
+                settle_external_immediately(session, surface, &window, fullscreen);
+            }
+        }
+    } else {
+        let reason = presentation_policy_name(policy);
+        eventline::debug!(
+            "xwayland: fullscreen policy xid={} fullscreen={fullscreen} \
+             origin={origin:?} policy={reason}",
+            surface.window_id(),
+        );
+        settle_external_immediately(session, surface, &window, fullscreen);
+    }
+}
+
+fn presentation_policy_name(policy: ExternalPresentationPolicy) -> &'static str {
+    match policy {
+        ExternalPresentationPolicy::Initial => "initial",
+        ExternalPresentationPolicy::Opening => "opening",
+        ExternalPresentationPolicy::Constrained => "constrained",
+        ExternalPresentationPolicy::Animated => "snapshot-fallback",
+    }
+}
+
+fn settle_external_immediately<D: SessionDriver>(
+    session: &mut Session<D>,
+    surface: &X11Surface,
+    window: &Window,
+    fullscreen: bool,
+) {
+    let geometry = if fullscreen {
+        session
+            .fullscreen
+            .request_external(&mut session.wayland, window)
+    } else {
+        session
+            .fullscreen
+            .unrequest_external(&mut session.wayland, window)
+    };
+    if let Some(geometry) = geometry
         && let Err(err) = surface.configure(geometry)
     {
         eventline::warn!("xwayland: failed to configure fullscreen window: {err}");
     }
 }
 
-fn leave_fullscreen<D: SessionDriver>(session: &mut Session<D>, surface: &X11Surface) {
-    let Some(window) = window_for_surface(session, surface) else {
-        return;
+fn capture_fullscreen_snapshot<D: SessionDriver>(
+    session: &mut Session<D>,
+    window: &Window,
+    fullscreen: bool,
+) -> bool {
+    let Some(surface) = window.wl_surface().map(|surface| surface.into_owned()) else {
+        return false;
     };
-    if let Err(err) = surface.set_fullscreen(false) {
-        eventline::warn!("xwayland: failed to clear fullscreen state: {err}");
-    }
-    if let Some(geometry) = session
+    if !session
         .fullscreen
-        .unrequest_external(&mut session.wayland, &window)
-        && let Err(err) = surface.configure(geometry)
+        .should_capture_external_snapshot(&surface, fullscreen)
     {
-        eventline::warn!("xwayland: failed to restore fullscreen window: {err}");
+        return false;
+    }
+    let textures = &mut session.fullscreen_textures;
+    match session
+        .driver
+        .with_renderer(|renderer| textures.capture_previous(renderer, window))
+    {
+        Ok(()) => true,
+        Err(err) => {
+            eventline::warn!("fullscreen: failed to capture X11 window texture: {err}");
+            false
+        }
+    }
+}
+
+fn remove_fullscreen_snapshot<D: SessionDriver>(session: &mut Session<D>, window: &Window) {
+    if let Some(surface) = window.wl_surface() {
+        session.fullscreen_textures.remove(surface.as_ref());
     }
 }
 
@@ -141,9 +286,9 @@ pub(super) fn set_window_fullscreen<D: SessionDriver>(
         return;
     };
     if fullscreen {
-        enter_fullscreen(session, &surface);
+        enter_fullscreen(session, &surface, FullscreenRequestOrigin::Compositor);
     } else {
-        leave_fullscreen(session, &surface);
+        leave_fullscreen(session, &surface, FullscreenRequestOrigin::Compositor);
     }
 }
 
@@ -326,7 +471,7 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
             .space
             .map_element(window.clone(), location, true);
         if surface.is_fullscreen() {
-            enter_fullscreen(self, &surface);
+            enter_fullscreen(self, &surface, FullscreenRequestOrigin::Initial);
         } else if surface.is_maximized() {
             maximize_window(self, &surface);
         } else if let Some(geometry) = self.wayland.space.element_bbox(&window)
@@ -408,7 +553,29 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
         let Some(window) = window_for_surface(self, &surface) else {
             return;
         };
-        self.wayland.space.map_element(window, geometry.loc, false);
+        match self.fullscreen.settle_external_configure(
+            &mut self.wayland,
+            &window,
+            geometry,
+            crate::frame_clock::monotonic_now(),
+        ) {
+            ExternalConfigureResult::NotPending => {
+                self.wayland.space.map_element(window, geometry.loc, false);
+            }
+            ExternalConfigureResult::Waiting => {}
+            ExternalConfigureResult::Settled {
+                fullscreen,
+                animated,
+            } => {
+                eventline::debug!(
+                    "xwayland: fullscreen configure settled xid={} fullscreen={fullscreen} animated={animated}",
+                    surface.window_id()
+                );
+                if !animated {
+                    remove_fullscreen_snapshot(self, &window);
+                }
+            }
+        }
         self.request_redraw();
     }
 
@@ -423,12 +590,12 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
     }
 
     fn fullscreen_request(&mut self, _xwm: XwmId, surface: X11Surface) {
-        enter_fullscreen(self, &surface);
+        enter_fullscreen(self, &surface, FullscreenRequestOrigin::Client);
         self.request_redraw();
     }
 
     fn unfullscreen_request(&mut self, _xwm: XwmId, surface: X11Surface) {
-        leave_fullscreen(self, &surface);
+        leave_fullscreen(self, &surface, FullscreenRequestOrigin::Client);
         self.request_redraw();
     }
 
@@ -488,5 +655,63 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
     fn disconnected(&mut self, _xwm: XwmId) {
         eventline::warn!("xwayland: window manager disconnected");
         self.xwayland.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        ExternalPresentationPolicy, FullscreenRequestOrigin, external_presentation_policy,
+    };
+
+    #[test]
+    fn initial_fullscreen_never_animates() {
+        assert_eq!(
+            external_presentation_policy(FullscreenRequestOrigin::Initial, false, false),
+            ExternalPresentationPolicy::Initial
+        );
+        assert_eq!(
+            external_presentation_policy(FullscreenRequestOrigin::Initial, true, true),
+            ExternalPresentationPolicy::Initial
+        );
+    }
+
+    #[test]
+    fn opening_fullscreen_never_animates() {
+        for origin in [
+            FullscreenRequestOrigin::Client,
+            FullscreenRequestOrigin::Compositor,
+        ] {
+            assert_eq!(
+                external_presentation_policy(origin, true, false),
+                ExternalPresentationPolicy::Opening
+            );
+        }
+    }
+
+    #[test]
+    fn constrained_fullscreen_never_animates() {
+        for origin in [
+            FullscreenRequestOrigin::Client,
+            FullscreenRequestOrigin::Compositor,
+        ] {
+            assert_eq!(
+                external_presentation_policy(origin, false, true),
+                ExternalPresentationPolicy::Constrained
+            );
+        }
+    }
+
+    #[test]
+    fn settled_unconstrained_fullscreen_animates() {
+        for origin in [
+            FullscreenRequestOrigin::Client,
+            FullscreenRequestOrigin::Compositor,
+        ] {
+            assert_eq!(
+                external_presentation_policy(origin, false, false),
+                ExternalPresentationPolicy::Animated
+            );
+        }
     }
 }

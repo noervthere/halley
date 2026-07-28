@@ -78,6 +78,10 @@ fn cancel_grab_for_surface<D: SessionDriver>(
     }
 }
 
+pub(crate) fn has_active_pointer_constraint<D: SessionDriver>(session: &Session<D>) -> bool {
+    pointer::has_active_constraint(session)
+}
+
 fn toggle_focused_fullscreen<D: SessionDriver>(session: &mut Session<D>) {
     let Some(focused) = session.wayland.focused_window.clone() else {
         return;

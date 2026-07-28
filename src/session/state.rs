@@ -3,6 +3,7 @@ use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::input::{Seat, SeatState};
 use smithay::output::Output;
 use smithay::reexports::wayland_server::DisplayHandle;
+use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::wayland::compositor::CompositorState;
 use smithay::wayland::dmabuf::DmabufState;
 use smithay::wayland::fractional_scale::FractionalScaleManagerState;
@@ -10,6 +11,7 @@ use smithay::wayland::keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitState;
 use smithay::wayland::output::OutputManagerState;
 use smithay::wayland::pointer_constraints::PointerConstraintsState;
 use smithay::wayland::relative_pointer::RelativePointerManagerState;
+use smithay::wayland::seat::WaylandFocus;
 use smithay::wayland::selection::data_device::DataDeviceState;
 use smithay::wayland::selection::primary_selection::PrimarySelectionState;
 use smithay::wayland::shell::wlr_layer::WlrLayerShellState;
@@ -135,5 +137,31 @@ impl<D: SessionDriver> Session<D> {
             self.fullscreen_textures.remove(&surface);
         }
         cleanup.visual_finished
+    }
+
+    pub fn finish_x11_fullscreen_presentation(&mut self, surface: &WlSurface) -> bool {
+        let root = crate::wayland::compositor::root_surface(surface);
+        let window = self
+            .wayland
+            .space
+            .elements()
+            .find(|window| {
+                window.x11_surface().is_some()
+                    && window
+                        .wl_surface()
+                        .is_some_and(|candidate| candidate.as_ref() == &root)
+            })
+            .cloned();
+        let Some(window) = window else {
+            return false;
+        };
+        if !self
+            .fullscreen
+            .finish_external_presentation(&mut self.wayland, &window)
+        {
+            return false;
+        }
+        self.fullscreen_textures.remove(&root);
+        true
     }
 }
