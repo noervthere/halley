@@ -8,11 +8,11 @@ use smithay::input::pointer::AxisFrame;
 use smithay::output::Output;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point, Rectangle};
-use smithay::wayland::seat::WaylandFocus;
 use smithay::wayland::shell::wlr_layer::Layer;
 
 use crate::camera::OutputCameras;
 use crate::input::keybinds::WheelDirection;
+use crate::input::presentation::WindowPresentation;
 
 #[derive(Debug)]
 pub enum PointerTarget {
@@ -351,70 +351,25 @@ fn window_under(
     output_local: Point<f64, Logical>,
     now: std::time::Duration,
 ) -> Option<PointerRoute> {
-    let output_geometry = space.output_geometry(output)?;
-    let view = cameras.view(&output.name())?;
-    let camera_center = crate::camera::global_center(view.center, output_geometry);
-    let output_size = output_geometry.size.to_physical(1);
     let screen_position = (
-        output_geometry.loc.x as f64 + output_local.x,
-        output_geometry.loc.y as f64 + output_local.y,
+        space.output_geometry(output)?.loc.x as f64 + output_local.x,
+        space.output_geometry(output)?.loc.y as f64 + output_local.y,
     );
-    let world = crate::input::grab::screen_to_world_on_output(
-        screen_position,
-        cameras.get(&output.name())?,
-        output_geometry,
-    );
-    let normal_location = Point::<f64, Logical>::from((world.x as f64, world.y as f64));
+    let screen_location = Point::<f64, Logical>::from(screen_position);
 
     for window in space.elements().rev() {
         if !crate::wayland::window_is_on_output(window, output, primary) {
             continue;
         }
-        let Some(window_surface) = window.wl_surface() else {
+        let Some(presentation) =
+            WindowPresentation::for_window(space, cameras, fullscreen, window, output, now)
+        else {
             continue;
         };
-        let Some(source_geometry) = space.element_geometry(window) else {
-            continue;
-        };
-        let (location, hit, visual_geometry) =
-            match fullscreen.presentation(window_surface.as_ref(), output, now) {
-                Some(presentation) => {
-                    let windowed_geometry = presentation
-                        .windowed_geometry
-                        .unwrap_or(source_geometry)
-                        .to_physical(1);
-                    let windowed_screen = crate::backend::camera_rect(
-                        windowed_geometry,
-                        camera_center,
-                        output_size,
-                        view.scale,
-                    );
-                    let visual = presentation.client_rect(windowed_screen, output_size);
-                    (
-                        inverse_map_point(output_local, visual, source_geometry),
-                        visual.to_f64().contains(output_local.to_physical(1.0)),
-                        visual,
-                    )
-                }
-                None => {
-                    let Some(bbox) = space.element_bbox(window) else {
-                        continue;
-                    };
-                    (
-                        normal_location,
-                        bbox.to_f64().contains(normal_location),
-                        crate::backend::camera_rect(
-                            source_geometry.to_physical(1),
-                            camera_center,
-                            output_size,
-                            view.scale,
-                        ),
-                    )
-                }
-            };
-        if !hit {
+        if !presentation.contains_screen(screen_location) {
             continue;
         }
+        let location = presentation.source_from_screen(screen_location);
 
         let Some(element_location) = space.element_location(window) else {
             continue;
@@ -433,27 +388,10 @@ fn window_under(
             location,
             focus,
             target: PointerTarget::Window(window.clone()),
-            visual_geometry: Some(Rectangle::new(
-                output_geometry.loc + visual_geometry.loc.to_logical(1),
-                visual_geometry.size.to_logical(1),
-            )),
+            visual_geometry: Some(presentation.visual_geometry()),
         });
     }
     None
-}
-
-fn inverse_map_point(
-    point: Point<f64, Logical>,
-    visual: Rectangle<i32, smithay::utils::Physical>,
-    source: Rectangle<i32, Logical>,
-) -> Point<f64, Logical> {
-    let scale_x = f64::from(source.size.w) / f64::from(visual.size.w.max(1));
-    let scale_y = f64::from(source.size.h) / f64::from(visual.size.h.max(1));
-    (
-        f64::from(source.loc.x) + (point.x - f64::from(visual.loc.x)) * scale_x,
-        f64::from(source.loc.y) + (point.y - f64::from(visual.loc.y)) * scale_y,
-    )
-        .into()
 }
 
 /// Converts one backend scroll event into the complete Smithay/Wayland axis
@@ -556,11 +494,11 @@ mod tests {
         Axis, AxisRelativeDirection, AxisSource, Device, DeviceCapability, Event, InputBackend,
         PointerAxisEvent, UnusedEvent,
     };
-    use smithay::utils::{Logical, Physical, Rectangle};
+    use smithay::utils::Rectangle;
 
     use super::{
         WheelAccumulator, axis_frame, axis_frame_filtered, clamp_to_outputs, desktop_bounds,
-        inverse_map_point, process_wheel_bindings, wheel_delta_v120, wheel_direction,
+        process_wheel_bindings, wheel_delta_v120, wheel_direction,
     };
     use crate::input::keybinds::WheelDirection;
 
@@ -671,17 +609,6 @@ mod tests {
         let outputs = configured_outputs();
         assert_eq!(clamp_to_outputs((100.0, 200.0), &outputs), (100.0, 200.0));
         assert_eq!(clamp_to_outputs((3000.0, 800.0), &outputs), (3000.0, 800.0));
-    }
-
-    #[test]
-    fn fullscreen_pointer_coordinates_invert_the_visual_transform() {
-        let visual = Rectangle::<i32, Physical>::new((100, 50).into(), (1600, 1200).into());
-        let source = Rectangle::<i32, Logical>::new((400, 200).into(), (800, 600).into());
-
-        assert_eq!(
-            inverse_map_point((900.0, 650.0).into(), visual, source),
-            (800.0, 500.0).into()
-        );
     }
 
     #[test]

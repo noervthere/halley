@@ -1,6 +1,7 @@
 pub mod grab;
 pub mod keybinds;
 pub mod pointer;
+pub mod presentation;
 pub mod zoom;
 
 use std::collections::HashSet;
