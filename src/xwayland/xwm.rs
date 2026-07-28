@@ -52,6 +52,8 @@ fn finalize_mapped_window<D: SessionDriver>(session: &mut Session<D>, surface: &
 
     if surface.is_fullscreen() {
         enter_fullscreen(session, surface);
+    } else if session.fullscreen.is_fullscreen_or_pending(&wl_surface) {
+        leave_fullscreen(session, surface);
     } else if surface.is_maximized() {
         maximize_window(session, surface);
     } else if let Some(geometry) = session.wayland.space.element_bbox(&transition.window)
@@ -91,6 +93,13 @@ fn enter_fullscreen<D: SessionDriver>(session: &mut Session<D>, surface: &X11Sur
     if let Err(err) = surface.set_fullscreen(true) {
         eventline::warn!("xwayland: failed to set fullscreen state: {err}");
     }
+    if !session
+        .wayland
+        .windows
+        .is_mapped(&WindowLifecycle::x11_key(surface))
+    {
+        return;
+    }
     let Some(window) = window_for_surface(session, surface) else {
         return;
     };
@@ -106,6 +115,13 @@ fn enter_fullscreen<D: SessionDriver>(session: &mut Session<D>, surface: &X11Sur
 fn leave_fullscreen<D: SessionDriver>(session: &mut Session<D>, surface: &X11Surface) {
     if let Err(err) = surface.set_fullscreen(false) {
         eventline::warn!("xwayland: failed to clear fullscreen state: {err}");
+    }
+    if !session
+        .wayland
+        .windows
+        .is_mapped(&WindowLifecycle::x11_key(surface))
+    {
+        return;
     }
     let Some(window) = window_for_surface(session, surface) else {
         return;
@@ -135,6 +151,16 @@ pub(super) fn set_window_fullscreen<D: SessionDriver>(
 }
 
 fn maximize_window<D: SessionDriver>(session: &mut Session<D>, surface: &X11Surface) {
+    if let Err(err) = surface.set_maximized(true) {
+        eventline::warn!("xwayland: failed to set maximized state: {err}");
+    }
+    if !session
+        .wayland
+        .windows
+        .is_mapped(&WindowLifecycle::x11_key(surface))
+    {
+        return;
+    }
     let Some(window) = window_for_surface(session, surface) else {
         return;
     };
@@ -165,9 +191,6 @@ fn maximize_window<D: SessionDriver>(session: &mut Session<D>, surface: &X11Surf
         *restore = session.wayland.space.element_bbox(&window);
     }
     drop(restore);
-    if let Err(err) = surface.set_maximized(true) {
-        eventline::warn!("xwayland: failed to set maximized state: {err}");
-    }
     if let Err(err) = surface.configure(geometry) {
         eventline::warn!("xwayland: failed to maximize window: {err}");
     }
@@ -178,12 +201,19 @@ fn maximize_window<D: SessionDriver>(session: &mut Session<D>, surface: &X11Surf
 }
 
 fn restore_window<D: SessionDriver>(session: &mut Session<D>, surface: &X11Surface) {
-    let Some(window) = window_for_surface(session, surface) else {
-        return;
-    };
     if let Err(err) = surface.set_maximized(false) {
         eventline::warn!("xwayland: failed to clear maximized state: {err}");
     }
+    if !session
+        .wayland
+        .windows
+        .is_mapped(&WindowLifecycle::x11_key(surface))
+    {
+        return;
+    }
+    let Some(window) = window_for_surface(session, surface) else {
+        return;
+    };
     let restore = surface
         .user_data()
         .get::<RestoreGeometry>()
@@ -420,13 +450,16 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
         geometry: Rectangle<i32, Logical>,
         _above: Option<u32>,
     ) {
+        let key = WindowLifecycle::x11_key(&surface);
+        if !self.wayland.windows.is_mapped(&key) {
+            return;
+        }
         let Some(window) = window_for_surface(self, &surface) else {
             return;
         };
         self.wayland
             .space
             .map_element(window.clone(), geometry.loc, false);
-        let key = WindowLifecycle::x11_key(&surface);
         self.wayland.windows.update_placement(
             &key,
             Placement {

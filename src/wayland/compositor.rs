@@ -16,7 +16,7 @@ pub fn commit<D: 'static>(
     wayland: &mut WaylandState,
     cameras: &crate::camera::OutputCameras,
     surface: &WlSurface,
-) -> Option<WlSurface> {
+) -> Option<xdg_shell::CommitOutcome> {
     on_commit_buffer_handler::<D>(surface);
 
     if is_sync_subsurface(surface) {

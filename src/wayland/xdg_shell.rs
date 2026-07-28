@@ -6,8 +6,14 @@ use smithay::utils::{Logical, Physical, Point, Size};
 use smithay::wayland::shell::xdg::ToplevelSurface;
 
 use crate::camera::OutputCameras;
+use crate::window::lifecycle::{MapTransition, Placement, UnmapTransition, WindowLifecycle};
 
 use super::WaylandState;
+
+pub enum CommitOutcome {
+    Mapped(MapTransition),
+    Unmapped(UnmapTransition),
+}
 
 /// Registers a new toplevel as unmapped. Placement, rules, focus, and reveal
 /// policy run only after the client attaches a visible buffer.
@@ -44,30 +50,62 @@ pub fn handle_commit(
     wayland: &mut WaylandState,
     cameras: &OutputCameras,
     surface: &WlSurface,
-) -> Option<WlSurface> {
-    let key = crate::window::lifecycle::WindowLifecycle::xdg_key(surface);
-    if wayland.windows.is_mapped(&key) {
-        return None;
-    }
-    let window = wayland.windows.window(&key)?;
+) -> Option<CommitOutcome> {
+    let key = WindowLifecycle::xdg_key(surface);
+    let window = wayland.windows.window(&key)?.clone();
     let toplevel = window.toplevel()?;
-
-    if !toplevel.is_initial_configure_sent() {
-        toplevel.with_pending_state(super::decoration::apply_tiled_hint);
-        toplevel.send_configure();
-        return None;
-    }
 
     let has_buffer =
         with_renderer_surface_state(surface, |state| state.buffer().is_some()).unwrap_or(false);
+    if wayland.windows.is_mapped(&key) {
+        if has_buffer {
+            return None;
+        }
+        let placement = wayland
+            .space
+            .element_location(&window)
+            .map(|location| Placement {
+                location,
+                output: super::window_output_name(&window),
+            });
+        let transition = wayland.windows.unmap(&key, placement)?;
+        wayland.space.unmap_elem(&transition.window);
+        if wayland.focused_window.as_ref() == Some(surface) {
+            wayland.focused_window = None;
+        }
+        return Some(CommitOutcome::Unmapped(transition));
+    }
+
+    if wayland.windows.needs_configure(&key) {
+        toplevel.with_pending_state(super::decoration::apply_tiled_hint);
+        toplevel.send_configure();
+        wayland.windows.mark_configured(&key);
+        return None;
+    }
+
     if has_buffer {
         let transition = wayland.windows.begin_map(&key)?;
-        let window = transition.window;
-        let output = super::focus::selected_output(wayland).cloned();
-        let location = output
+        let window = transition.window.clone();
+        let restored_output = transition
+            .placement
             .as_ref()
-            .map(|output| centered_location(wayland, cameras, output, &window))
-            .unwrap_or_else(|| Point::from((0, 0)));
+            .and_then(|placement| placement.output.as_deref())
+            .and_then(|name| wayland.space.outputs().find(|output| output.name() == name))
+            .cloned();
+        let restoring = restored_output.is_some();
+        let output = restored_output.or_else(|| super::focus::selected_output(wayland).cloned());
+        let location = if restoring {
+            transition
+                .placement
+                .as_ref()
+                .map(|placement| placement.location)
+                .unwrap_or_else(|| Point::from((0, 0)))
+        } else {
+            output
+                .as_ref()
+                .map(|output| centered_location(wayland, cameras, output, &window))
+                .unwrap_or_else(|| Point::from((0, 0)))
+        };
         if let Some(output) = output.as_ref() {
             super::set_window_output(&window, output);
         }
@@ -76,8 +114,18 @@ pub fn handle_commit(
         // Also raises+activates via `focus_and_raise`, same as clicking a
         // window now does.
         crate::window::focus_and_raise(wayland, &window);
-        wayland.windows.finalize_map(&key);
-        return Some(surface.clone());
+        wayland.windows.update_placement(
+            &key,
+            Placement {
+                location,
+                output: super::window_output_name(&window),
+            },
+        );
+        let finalized = wayland
+            .windows
+            .finalize_map(&key)
+            .expect("new XDG map generation must finalize once");
+        return Some(CommitOutcome::Mapped(finalized));
     }
 
     None

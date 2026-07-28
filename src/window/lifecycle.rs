@@ -61,6 +61,7 @@ struct MappingState {
     ever_mapped: bool,
     generation: u64,
     finalized_generation: Option<u64>,
+    configured_generation: Option<u64>,
 }
 
 impl MappingState {
@@ -91,6 +92,16 @@ impl MappingState {
         self.mapped = false;
         self.finalized_generation = None;
         true
+    }
+
+    fn needs_configure(&self) -> bool {
+        !self.mapped && self.configured_generation != Some(self.generation.saturating_add(1))
+    }
+
+    fn mark_configured(&mut self) {
+        if !self.mapped {
+            self.configured_generation = Some(self.generation.saturating_add(1));
+        }
     }
 }
 
@@ -171,6 +182,18 @@ impl WindowLifecycle {
         self.records
             .get(key)
             .is_some_and(|record| record.mapping.mapped)
+    }
+
+    pub fn needs_configure(&self, key: &WindowKey) -> bool {
+        self.records
+            .get(key)
+            .is_some_and(|record| record.mapping.needs_configure())
+    }
+
+    pub fn mark_configured(&mut self, key: &WindowKey) {
+        if let Some(record) = self.records.get_mut(key) {
+            record.mapping.mark_configured();
+        }
     }
 
     pub fn begin_map(&mut self, key: &WindowKey) -> Option<MapTransition> {
@@ -267,5 +290,20 @@ mod tests {
         assert!(!state.unmap());
         assert_eq!(state.begin(), Some((2, false)));
         assert_eq!(state.finalize(), Some((2, false)));
+    }
+
+    #[test]
+    fn every_unmapped_generation_requires_one_configure() {
+        let mut state = MappingState::default();
+        assert!(state.needs_configure());
+        state.mark_configured();
+        assert!(!state.needs_configure());
+        state.begin();
+        state.finalize();
+        assert!(!state.needs_configure());
+        state.unmap();
+        assert!(state.needs_configure());
+        state.mark_configured();
+        assert!(!state.needs_configure());
     }
 }

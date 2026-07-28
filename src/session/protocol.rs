@@ -109,12 +109,22 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
 
     fn commit(&mut self, surface: &WlSurface) {
         let root = wayland::compositor::root_surface(surface);
-        if let Some(mapped) =
-            wayland::compositor::commit::<Self>(&mut self.wayland, &self.cameras, surface)
-                .filter(|mapped| !self.fullscreen.is_fullscreen_or_pending(mapped))
-        {
-            self.window_open_animations
-                .start(mapped, crate::frame_clock::monotonic_now());
+        match wayland::compositor::commit::<Self>(&mut self.wayland, &self.cameras, surface) {
+            Some(wayland::xdg_shell::CommitOutcome::Mapped(transition)) => {
+                if transition.first_map
+                    && let Some(mapped) = transition.window.wl_surface()
+                    && !self.fullscreen.is_fullscreen_or_pending(mapped.as_ref())
+                {
+                    self.window_open_animations
+                        .start(mapped.into_owned(), crate::frame_clock::monotonic_now());
+                }
+            }
+            Some(wayland::xdg_shell::CommitOutcome::Unmapped(transition)) => {
+                if let Some(unmapped) = transition.window.wl_surface() {
+                    self.window_open_animations.remove(unmapped.as_ref());
+                }
+            }
+            None => {}
         }
         self.fullscreen.handle_commit(
             &mut self.wayland,
