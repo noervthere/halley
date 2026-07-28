@@ -2,9 +2,30 @@ use std::collections::HashMap;
 
 use smithay::desktop::Window;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+use smithay::utils::{Logical, Point};
+use smithay::xwayland::X11Surface;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct WindowId(u64);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WindowKind {
+    Xdg,
+    X11,
+    X11OverrideRedirect,
+}
+
+impl WindowKind {
+    pub(crate) fn is_managed(self) -> bool {
+        !matches!(self, Self::X11OverrideRedirect)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Placement {
+    pub(crate) location: Point<i32, Logical>,
+    pub(crate) output: Option<String>,
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct MappingState {
@@ -19,6 +40,8 @@ struct MappingState {
 pub(crate) struct Admission {
     pub(crate) id: WindowId,
     pub(crate) window: Window,
+    pub(crate) kind: WindowKind,
+    pub(crate) placement: Option<Placement>,
     pub(crate) generation: u64,
     pub(crate) first: bool,
 }
@@ -66,7 +89,9 @@ impl MappingState {
 
 struct WindowRecord {
     window: Window,
+    kind: WindowKind,
     mapping: MappingState,
+    placement: Option<Placement>,
 }
 
 #[derive(Default)]
@@ -74,21 +99,58 @@ pub(crate) struct WindowRegistry {
     next_id: u64,
     records: HashMap<WindowId, WindowRecord>,
     xdg: HashMap<WlSurface, WindowId>,
+    x11: HashMap<u32, WindowId>,
+    associated: HashMap<WlSurface, WindowId>,
 }
 
 impl WindowRegistry {
-    pub(crate) fn register_xdg(&mut self, surface: WlSurface, window: Window) -> WindowId {
+    fn next_id(&mut self) -> WindowId {
         let id = WindowId(self.next_id);
         self.next_id = self.next_id.saturating_add(1);
+        id
+    }
+
+    pub(crate) fn register_xdg(&mut self, surface: WlSurface, window: Window) -> WindowId {
+        let id = self.next_id();
         self.records.insert(
             id,
             WindowRecord {
                 window,
+                kind: WindowKind::Xdg,
                 mapping: MappingState::default(),
+                placement: None,
             },
         );
         self.xdg.insert(surface, id);
         id
+    }
+
+    pub(crate) fn register_x11(&mut self, surface: X11Surface, kind: WindowKind) -> WindowId {
+        let xid = surface.window_id();
+        if let Some(id) = self.x11.get(&xid).copied() {
+            return id;
+        }
+        let id = self.next_id();
+        self.records.insert(
+            id,
+            WindowRecord {
+                window: Window::new_x11_window(surface),
+                kind,
+                mapping: MappingState::default(),
+                placement: None,
+            },
+        );
+        self.x11.insert(xid, id);
+        id
+    }
+
+    pub(crate) fn id_for_x11(&self, surface: &X11Surface) -> Option<WindowId> {
+        self.x11.get(&surface.window_id()).copied()
+    }
+
+    pub(crate) fn associate(&mut self, id: WindowId, surface: WlSurface) {
+        self.associated.retain(|_, candidate| candidate != &id);
+        self.associated.insert(surface, id);
     }
 
     pub(crate) fn id_for_xdg(&self, surface: &WlSurface) -> Option<WindowId> {
@@ -100,7 +162,26 @@ impl WindowRegistry {
     }
 
     pub(crate) fn window_for_surface(&self, surface: &WlSurface) -> Option<&Window> {
-        self.id_for_xdg(surface).and_then(|id| self.window(id))
+        self.id_for_surface(surface).and_then(|id| self.window(id))
+    }
+
+    pub(crate) fn id_for_surface(&self, surface: &WlSurface) -> Option<WindowId> {
+        self.xdg
+            .get(surface)
+            .or_else(|| self.associated.get(surface))
+            .copied()
+    }
+
+    pub(crate) fn placement(&self, id: WindowId) -> Option<&Placement> {
+        self.records
+            .get(&id)
+            .and_then(|record| record.placement.as_ref())
+    }
+
+    pub(crate) fn set_placement(&mut self, id: WindowId, placement: Placement) {
+        if let Some(record) = self.records.get_mut(&id) {
+            record.placement = Some(placement);
+        }
     }
 
     pub(crate) fn request_map(&mut self, id: WindowId) {
@@ -115,12 +196,20 @@ impl WindowRegistry {
         }
     }
 
+    pub(crate) fn is_admitted(&self, id: WindowId) -> bool {
+        self.records
+            .get(&id)
+            .is_some_and(|record| record.mapping.admitted)
+    }
+
     pub(crate) fn admit(&mut self, id: WindowId) -> Option<Admission> {
         let record = self.records.get_mut(&id)?;
         let admission = record.mapping.admit()?;
         Some(Admission {
             id,
             window: record.window.clone(),
+            kind: record.kind,
+            placement: record.placement.clone(),
             generation: admission.generation,
             first: admission.first,
         })
@@ -133,7 +222,23 @@ impl WindowRegistry {
 
     pub(crate) fn destroy_xdg(&mut self, surface: &WlSurface) -> Option<Window> {
         let id = self.xdg.remove(surface)?;
+        self.associated.retain(|_, candidate| candidate != &id);
         self.records.remove(&id).map(|record| record.window)
+    }
+
+    pub(crate) fn destroy_x11(&mut self, surface: &X11Surface) -> Option<Window> {
+        let id = self.x11.remove(&surface.window_id())?;
+        self.associated.retain(|_, candidate| candidate != &id);
+        self.records.remove(&id).map(|record| record.window)
+    }
+
+    pub(crate) fn clear_x11(&mut self) -> Vec<Window> {
+        let ids: Vec<_> = self.x11.drain().map(|(_, id)| id).collect();
+        self.associated
+            .retain(|_, candidate| !ids.contains(candidate));
+        ids.into_iter()
+            .filter_map(|id| self.records.remove(&id).map(|record| record.window))
+            .collect()
     }
 }
 

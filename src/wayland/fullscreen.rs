@@ -235,7 +235,7 @@ impl FullscreenManager {
                 snapshot_serials: Vec::new(),
             });
         super::set_window_output(&window, &target);
-        wayland.space.map_element(window, output_geometry.loc, true);
+        wayland.space.relocate_element(&window, output_geometry.loc);
         Some(output_geometry)
     }
 
@@ -256,9 +256,7 @@ impl FullscreenManager {
         {
             super::set_window_output(window, &output);
         }
-        wayland
-            .space
-            .map_element(window.clone(), restore.location, true);
+        wayland.space.relocate_element(window, restore.location);
         Some(restore.geometry)
     }
 
