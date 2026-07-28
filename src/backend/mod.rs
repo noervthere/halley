@@ -48,6 +48,7 @@ pub fn window_surface_elements(
     renderer: &mut GlesRenderer,
     window: &Window,
     surface_location: Point<i32, Physical>,
+    alpha: f32,
 ) -> (
     Vec<WaylandSurfaceRenderElement<GlesRenderer>>,
     Vec<WaylandSurfaceRenderElement<GlesRenderer>>,
@@ -68,7 +69,7 @@ pub fn window_surface_elements(
                         popup.wl_surface(),
                         surface_location + offset,
                         scale,
-                        1.0,
+                        alpha,
                         Kind::ScanoutCandidate,
                     )
                 })
@@ -80,7 +81,7 @@ pub fn window_surface_elements(
         surface.as_ref(),
         surface_location,
         scale,
-        1.0,
+        alpha,
         Kind::ScanoutCandidate,
     );
 

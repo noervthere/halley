@@ -38,20 +38,14 @@ use smithay::utils::{
 pub struct RescaledElement {
     inner: WaylandSurfaceRenderElement<GlesRenderer>,
     dst: Rectangle<i32, Physical>,
-    alpha: f32,
 }
 
 impl RescaledElement {
     pub fn new(
         inner: WaylandSurfaceRenderElement<GlesRenderer>,
         dst: Rectangle<i32, Physical>,
-        alpha: f32,
     ) -> Self {
-        Self {
-            inner,
-            dst,
-            alpha: alpha.clamp(0.0, 1.0),
-        }
+        Self { inner, dst }
     }
 }
 
@@ -81,7 +75,7 @@ impl Element for RescaledElement {
     }
 
     fn alpha(&self) -> f32 {
-        self.inner.alpha() * self.alpha
+        self.inner.alpha()
     }
 
     fn kind(&self) -> Kind {

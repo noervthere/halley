@@ -128,8 +128,12 @@ pub fn build(
         // at the underlying surface origin. Popups remain uncropped because
         // they may legitimately extend beyond the toplevel geometry.
         let surface_location = super::window_surface_location(location, window.geometry());
-        let (popup_elements, surface_elements) =
-            super::window_surface_elements(renderer, window, surface_location);
+        let (popup_elements, surface_elements) = super::window_surface_elements(
+            renderer,
+            window,
+            surface_location,
+            opening_visual.alpha(),
+        );
         elements.extend(popup_elements.into_iter().map(|surface_element| {
             let native_geometry = surface_element.geometry(Scale::from(1.0));
             let destination = if fullscreen.is_some() {
@@ -144,7 +148,6 @@ pub fn build(
             SceneElement::Rescaled(super::rescale::RescaledElement::new(
                 surface_element,
                 destination,
-                opening_visual.alpha(),
             ))
         }));
         let fullscreen_blend = if let Some(presentation) = fullscreen {
@@ -177,11 +180,7 @@ pub fn build(
                         super::camera_rect(native_geometry, camera_center, output_size, zoom_scale);
                     opening_visual.transform_rect(final_destination, scaled_bbox)
                 };
-                let element = super::rescale::RescaledElement::new(
-                    surface_element,
-                    destination,
-                    opening_visual.alpha(),
-                );
+                let element = super::rescale::RescaledElement::new(surface_element, destination);
                 CropRenderElement::from_element(element, 1.0, animated_bbox)
                     .map(SceneElement::Cropped)
             }));
