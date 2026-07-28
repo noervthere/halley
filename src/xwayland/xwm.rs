@@ -452,21 +452,17 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
             return;
         }
         let window = Window::new_x11_window(surface.clone());
-        let output = crate::wayland::focus::selected_output(&self.wayland).cloned();
-        let location = output
-            .as_ref()
-            .map(|output| {
-                crate::wayland::xdg_shell::centered_location(
-                    &self.wayland,
-                    &self.cameras,
-                    output,
-                    &window,
-                )
-            })
-            .unwrap_or_else(|| (0, 0).into());
-        if let Some(output) = output.as_ref() {
-            crate::wayland::set_window_output(&window, output);
-        }
+        // X11 clients may choose their own monitor after mapping. Keep their
+        // initial placement stable instead of coupling it to the last output
+        // clicked immediately before launch.
+        let output = self.driver.primary_output().clone();
+        let location = crate::wayland::xdg_shell::centered_location(
+            &self.wayland,
+            &self.cameras,
+            &output,
+            &window,
+        );
+        crate::wayland::set_window_output(&window, &output);
         self.wayland
             .space
             .map_element(window.clone(), location, true);
