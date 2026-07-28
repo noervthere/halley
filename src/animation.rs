@@ -90,19 +90,20 @@ impl WindowOpenAnimations {
         }
     }
 
-    pub fn start(&mut self, surface: WlSurface, now: Duration) {
+    pub fn start(&mut self, surface: WlSurface, now: Duration) -> bool {
         let config = self.config.window_open;
         if !self.config.enabled || !config.enabled {
-            return;
+            return false;
         }
 
-        self.active.insert(
-            surface,
-            WindowOpenTimeline {
-                motion: MotionTimeline::new(config.motion, now),
-                animation_type: config.animation_type,
-            },
-        );
+        let std::collections::hash_map::Entry::Vacant(entry) = self.active.entry(surface) else {
+            return false;
+        };
+        entry.insert(WindowOpenTimeline {
+            motion: MotionTimeline::new(config.motion, now),
+            animation_type: config.animation_type,
+        });
+        true
     }
 
     /// Updates policy for future windows without disturbing animations
@@ -283,6 +284,20 @@ mod tests {
 
         assert_eq!(start.scale, ELASTIC_MAX_START_SCALE);
         assert_eq!(start.alpha(), 0.0);
+    }
+
+    #[test]
+    fn active_opening_uses_updated_final_bounds_without_restarting() {
+        let animation = timeline(WindowOpenAnimationType::Elastic, AnimationCurve::Linear);
+        let now = Duration::from_millis(1150);
+
+        let windowed = animation.visual_at(now, Size::from((800, 600)));
+        let fullscreen = animation.visual_at(now, Size::from((1920, 1080)));
+
+        assert_eq!(animation.motion.value_at(now), 0.5);
+        assert_eq!(windowed.alpha(), fullscreen.alpha());
+        assert!(fullscreen.scale < windowed.scale);
+        assert_eq!(animation.motion.value_at(Duration::from_millis(1300)), 1.0);
     }
 
     #[test]

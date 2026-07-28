@@ -30,6 +30,27 @@ fn window_for_surface<D: SessionDriver>(
         .cloned()
 }
 
+fn start_or_defer_open_animation<D: SessionDriver>(session: &mut Session<D>, surface: &X11Surface) {
+    if let Some(wl_surface) = surface.wl_surface() {
+        let started = session
+            .window_open_animations
+            .start(wl_surface, crate::frame_clock::monotonic_now());
+        eventline::debug!(
+            "xwayland: opening admission xid={} started={started}",
+            surface.window_id()
+        );
+    } else {
+        let deferred = session
+            .xwayland
+            .pending_open_animations
+            .insert(surface.window_id());
+        eventline::debug!(
+            "xwayland: opening admission xid={} deferred={deferred}",
+            surface.window_id()
+        );
+    }
+}
+
 pub(super) fn surface_associated<D: SessionDriver>(
     session: &mut Session<D>,
     wl_surface: smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
@@ -39,13 +60,20 @@ pub(super) fn surface_associated<D: SessionDriver>(
         .xwayland
         .pending_open_animations
         .remove(&surface.window_id());
-    if pending {
-        session
-            .window_open_animations
-            .start(wl_surface, crate::frame_clock::monotonic_now());
-    }
+    // Settle initial state before the single opening timeline begins. The
+    // timeline renders against current bounds, so later fullscreen requests
+    // retarget it without introducing a second visual owner.
     if surface.is_fullscreen() {
         enter_fullscreen(session, &surface);
+    }
+    if pending {
+        let started = session
+            .window_open_animations
+            .start(wl_surface, crate::frame_clock::monotonic_now());
+        eventline::debug!(
+            "xwayland: deferred opening admitted xid={} started={started}",
+            surface.window_id()
+        );
     }
     if !surface.is_override_redirect()
         && let Some(window) = window_for_surface(session, &surface)
@@ -267,6 +295,13 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
     fn new_override_redirect_window(&mut self, _xwm: XwmId, _window: X11Surface) {}
 
     fn map_window_request(&mut self, _xwm: XwmId, surface: X11Surface) {
+        if window_for_surface(self, &surface).is_some() {
+            eventline::debug!(
+                "xwayland: ignored duplicate map request xid={}",
+                surface.window_id()
+            );
+            return;
+        }
         if let Err(err) = surface.set_mapped(true) {
             eventline::warn!("xwayland: failed to map window: {err}");
             return;
@@ -299,17 +334,14 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
         {
             eventline::warn!("xwayland: failed to configure mapped window: {err}");
         }
-        if !surface.is_fullscreen() {
-            if let Some(wl_surface) = surface.wl_surface() {
-                self.window_open_animations
-                    .start(wl_surface, crate::frame_clock::monotonic_now());
-            } else {
-                self.xwayland
-                    .pending_open_animations
-                    .insert(surface.window_id());
-            }
-        }
+        start_or_defer_open_animation(self, &surface);
         crate::session::focus_window(self, &window, SERIAL_COUNTER.next_serial());
+        eventline::debug!(
+            "xwayland: mapped xid={} fullscreen={} maximized={}",
+            surface.window_id(),
+            surface.is_fullscreen(),
+            surface.is_maximized()
+        );
         self.request_redraw();
     }
 
