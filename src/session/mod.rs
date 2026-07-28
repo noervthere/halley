@@ -113,9 +113,7 @@ fn toggle_focused_fullscreen<D: SessionDriver>(session: &mut Session<D>) {
     };
 
     cancel_grab_for_surface(session, &focused);
-    let entering = crate::xwayland::opening_fullscreen_intent(&session.xwayland, &window)
-        .map(|desired| !desired)
-        .unwrap_or_else(|| !session.fullscreen.is_fullscreen_or_pending(&focused));
+    let entering = !session.fullscreen.is_fullscreen_or_pending(&focused);
     if let Some(toplevel) = window.toplevel() {
         if entering {
             session
