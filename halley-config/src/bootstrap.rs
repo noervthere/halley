@@ -2,11 +2,9 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-/// The default config file contents - identical to the shipped example
-/// (top-level `examples/halley.rune`, not nested in this crate - matches old
-/// halley's own layout and keeps one example for the whole project instead
-/// of one per crate), so there's exactly one copy of "what a fresh install
-/// starts with," not two that can drift out of sync.
+/// The default config file contents are identical to the shipped top-level
+/// example. Keeping one canonical template for the whole workspace prevents
+/// fresh-install behavior and user-facing documentation from drifting apart.
 pub const DEFAULT_CONFIG: &str = include_str!("../../examples/halley.rune");
 
 /// Resolve the config file path: `$XDG_CONFIG_HOME/halley/halley.rune`,

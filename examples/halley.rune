@@ -1,6 +1,19 @@
-# Halley compositor config.
-# Everything else (gestures, ...) comes later, in its own section, once it
-# actually exists.
+# Halley compositor configuration.
+#
+# The default location is:
+#   $XDG_CONFIG_HOME/halley/halley.rune
+# or, when XDG_CONFIG_HOME is unset:
+#   $HOME/.config/halley/halley.rune
+#
+# Halley creates this file only when it does not already exist. While Halley
+# is running, valid saves are applied automatically. A syntactically invalid
+# or incomplete save is rejected as one unit and the last valid configuration
+# remains active.
+#
+# Sections and fields may be omitted unless noted otherwise; omitted values
+# use their built-in defaults. `keybinds:` is required because it defines the
+# compositor's input map. Strings are quoted, booleans are `true` or `false`,
+# and each nested block ends with `end`.
 
 # One `output:` block per physical monitor - not a wrapper section, just
 # repeat the block for each one. Commented out by default: an active block
@@ -10,121 +23,167 @@
 # connector names/modes with `halleyctl outputs`).
 #
 # output:
+#   # DRM connector name exactly as printed by `halleyctl outputs`.
 #   name "DP-1"
+#
+#   # Pixel dimensions of an advertised mode. Width and height are required
+#   # whenever an output block is present.
 #   width 2560
 #   height 1440
+#
+#   # Position in the shared desktop coordinate space. (0, 0) is the desktop
+#   # origin; place another output to the right by setting its offset-x to the
+#   # first output's width. Negative positions are allowed.
 #   offset-x 0
 #   offset-y 0
 #
 #   # Must match one of the connector's real modes exactly - no closest-rate
 #   # guessing. Omit this line to use the highest refresh available at this
-#   # resolution.
+#   # resolution. If the entire output block is omitted, the connector uses
+#   # its hardware-preferred mode instead.
 #   rate 179.998
 #
-#   # Rotation in degrees - 0, 90, 180, or 270.
+#   # Clockwise output rotation in degrees: 0, 90, 180, or 270.
 #   transform 0
 #
-#   # "off", "on", or "auto" (variable refresh rate). "auto" is accepted but
-#   # not yet content-aware - it behaves like "off" until there's a real
-#   # signal to drive it.
+#   # Variable refresh rate: "off", "on", or "auto". "on" enables VRR
+#   # whenever the connector supports it. "auto" is reserved for automatic
+#   # content-aware switching and currently behaves like "off".
 #   vrr "auto"
 # end
+#
+# Output reloads are diffed per connector. Changing one output does not force
+# an unchanged output through a redundant mode set.
 
+# Window decoration settings. At present Halley draws one flat, fully opaque
+# border around each managed window.
 decorations:
   border:
-    # Border width in pixels, drawn around every window.
+    # Border width in output pixels. It follows camera zoom visually.
     size 3
 
-    # Color of the border around the focused window.
+    # Focused and unfocused colors accept "#rrggbb" or shorthand "#rgb".
     colour-focused "#38d1eb"
-
-    # Color of the border around every other (unfocused) window.
     colour-unfocused "#474d59"
   end
 end
 
-# Screenshots are written here after an interactive area selection.
+# Destination for PNG files created by the native screenshot menu and the
+# desktop portal. `$env.HOME`, `$HOME`, and `~` home-directory spellings are
+# supported. Missing directories are created when a screenshot is saved.
 screenshot:
   directory "$env.HOME/Pictures/Screenshots/"
 end
 
-# A "zoom out" effect - visually shrinks everything toward the screen
-# center, and back in again. Capped at 1.0x - zooming in only ever walks
-# zoom-out steps back, it never magnifies past normal size.
+# Camera zoom changes both presentation and input coordinates. Halley only
+# zooms outward: 1.0 is native size, and zooming in walks back toward 1.0
+# without magnifying beyond it.
 zoom:
+  # Master switch for zoom input and any in-flight zoom motion.
   enabled true
 
-  # How far out you can zoom - 0.35 means windows can shrink to 35% size.
+  # Smallest permitted presentation scale. 0.35 means 35% of native size.
+  # Runtime safety clamps this value to the range 0.05 through 1.0.
   min 0.35
 
-  # Multiplicative zoom factor applied per zoom-out keypress.
+  # Multiplicative change injected by each zoom action. Values must be above
+  # 1.0 to produce a visible step.
   step 1.10
 
-  # How quickly the zoom eases toward its target - higher is snappier.
+  # Response and settling rate. Higher values feel faster and more abrupt;
+  # lower values feel softer. Runtime safety clamps it from 0.1 through 120.
   smooth-rate 12.5
 end
 
-# Animation settings.
+# Animation settings are reloaded for future motion. Existing window-open
+# animations keep the parameters with which they started.
 animations:
-  # Master switch for all animations.
+  # Master switch for window-open and fullscreen animations.
   enabled true
 
   window-open:
-    # Enable or disable just the window-open animation.
+    # Independent switch for newly mapped windows.
     enabled true
 
-    # Types: "center-out" or "elastic".
+    # Visual style:
+    #   "center-out" - scale the window outward from its final center.
+    #   "elastic"    - begin from a visible proxy size, fade in, and permit
+    #                  a small overshoot before settling.
     type "center-out"
 
+    # Easing duration in milliseconds and curve name. Supported curves:
+    # "linear", "ease-out-quad", "ease-out-cubic", "ease-out-expo", and
+    # "ease-out-back".
     duration-ms 300
     curve "linear"
+
+    # Window-open motion also accepts `motion "spring"`. With spring motion,
+    # use damping-ratio, stiffness, and epsilon as documented below instead
+    # of duration-ms and curve.
   end
 
   fullscreen:
-    # Enable or disable just the fullscreen transition.
+    # Independent switch for fullscreen enter and exit transitions.
     enabled true
 
-    # Motion can be "spring" or "easing". Spring uses the three values
-    # below; easing instead uses duration-ms and curve.
+    # Motion model:
+    #   "spring" - physically settles toward the target using the values
+    #              below.
+    #   "easing" - uses `duration-ms` and `curve` instead.
     motion "spring"
+
+    # 1.0 is critically damped. Values below 1.0 permit bounce; values above
+    # 1.0 remove overshoot but can settle more slowly.
     damping-ratio 1.0
+
+    # Spring strength. Higher values reach the target more aggressively.
     stiffness 800.0
+
+    # Motion is considered finished once its remaining displacement and
+    # velocity fall beneath this threshold.
     epsilon 0.0001
+
+    # Example easing alternative:
+    # motion "easing"
+    # duration-ms 250
+    # curve "ease-out-cubic"
   end
 end
 
+# A keybind entry is `"chord" "action"`. Modifiers are matched exactly:
+# extra held modifiers prevent a chord from matching unless they are written
+# into that chord. Trigger names are case-insensitive.
 keybinds:
+  # `$var.mod` in chord names expands to this modifier. Accepted values are
+  # "super", "alt", "ctrl", and "shift".
   mod "super"
 
-  # Exit the compositor. No confirmation dialog - straight quit.
+  # Built-in compositor actions.
+  # `quit` exits immediately without a confirmation dialog.
   "$var.mod+shift+e" "quit"
-
-  # Close the focused window.
   "$var.mod+c" "close-focused"
-
-  # Toggle the focused window between windowed and fullscreen.
   "$var.mod+f" "toggle-fullscreen"
 
-  # Open a terminal. "auto" detects an installed terminal from a priority
-  # list (alacritty, kitty, ghostty, wezterm, ...); set an explicit command
-  # here instead to skip detection.
+  # `open-terminal` uses `default-terminal` near the end of this section.
   "$var.mod+t" "open-terminal"
 
-  # Control the default PipeWire output through WirePlumber.
+  # Any action string that is not a built-in action is executed as a command
+  # line. These bindings control the default PipeWire sink through `wpctl`.
   "XF86AudioRaiseVolume" "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+ --limit 1.0"
   "XF86AudioLowerVolume" "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-"
   "XF86AudioMute" "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle"
 
-  # Zoom out one step, back in one step, or reset straight to 1.0x.
+  # Zoom out, walk back inward, or reset directly to native scale.
   "$var.mod+minus" "zoom-out"
   "$var.mod+equal" "zoom-in"
   "$var.mod+0" "zoom-reset"
 
-  # Open the native Region, Screen, and Window screenshot menu.
+  # Open the Region, Screen, and Window screenshot menu.
   "Print" "screenshot"
 
-  # Other keyboard, mouse, and physical-wheel triggers use the same chord
-  # syntax. These are examples only; uncomment only the bindings you want.
+  # Keyboard, pointer-button, and physical-wheel triggers all use the same
+  # chord syntax. Pointer and wheel bindings may also include `$var.mod`.
+  # These are examples only; uncomment only the bindings you want.
   #
   # "$var.mod+Page_Up" "some-command"
   # "$var.mod+click-forward" "some-command"
@@ -137,5 +196,7 @@ keybinds:
   #
   # See docs/keybinds.md for the complete trigger reference.
 
+  # "auto" selects the first available terminal from Halley's detection
+  # list. Replace it with an exact command such as "kitty" to skip detection.
   default-terminal "auto"
 end
