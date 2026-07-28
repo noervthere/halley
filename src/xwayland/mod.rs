@@ -45,6 +45,7 @@ pub struct State {
     display: Option<u32>,
     pending_windows: HashMap<u32, PendingWindow>,
     opening_placements: HashMap<u32, lifecycle::OpeningPlacement>,
+    opening_fullscreen_intents: lifecycle::OpeningFullscreenIntents,
 }
 
 impl State {
@@ -65,6 +66,7 @@ impl State {
             display: None,
             pending_windows: HashMap::new(),
             opening_placements: HashMap::new(),
+            opening_fullscreen_intents: lifecycle::OpeningFullscreenIntents::default(),
         }
     }
 
@@ -90,6 +92,7 @@ impl State {
         self.display = None;
         self.pending_windows.clear();
         self.opening_placements.clear();
+        self.opening_fullscreen_intents.clear();
     }
 }
 
@@ -182,11 +185,24 @@ pub fn set_window_fullscreen<D: SessionDriver>(
     xwm::set_window_fullscreen(session, window, fullscreen);
 }
 
+pub fn opening_fullscreen_intent(state: &State, window: &smithay::desktop::Window) -> Option<bool> {
+    window
+        .x11_surface()
+        .and_then(|surface| state.opening_fullscreen_intents.get(surface.window_id()))
+}
+
 pub fn handle_commit<D: SessionDriver>(
     session: &mut Session<D>,
     surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
 ) {
     xwm::handle_commit(session, surface);
+}
+
+pub fn finish_window_openings<D: SessionDriver>(
+    session: &mut Session<D>,
+    surfaces: Vec<smithay::reexports::wayland_server::protocol::wl_surface::WlSurface>,
+) -> bool {
+    xwm::finish_window_openings(session, surfaces)
 }
 
 pub fn is_override_redirect(window: &smithay::desktop::Window) -> bool {

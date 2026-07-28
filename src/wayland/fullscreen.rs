@@ -36,15 +36,8 @@ struct FullscreenWindow {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ExternalPresentationKind {
-    Opening,
-    Animated,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ExternalPending {
     geometry: Rectangle<i32, Logical>,
-    presentation: ExternalPresentationKind,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -295,29 +288,13 @@ impl FullscreenManager {
         wayland: &mut WaylandState,
         window: &Window,
     ) -> Option<ExternalTransactionRequest> {
-        self.request_external_transaction(wayland, window, ExternalPresentationKind::Animated, None)
-    }
-
-    pub(crate) fn request_external_opening(
-        &mut self,
-        wayland: &mut WaylandState,
-        window: &Window,
-        restore_geometry: Option<Rectangle<i32, Logical>>,
-    ) -> Option<ExternalTransactionRequest> {
-        self.request_external_transaction(
-            wayland,
-            window,
-            ExternalPresentationKind::Opening,
-            restore_geometry,
-        )
+        self.request_external_transaction(wayland, window)
     }
 
     fn request_external_transaction(
         &mut self,
         wayland: &mut WaylandState,
         window: &Window,
-        presentation: ExternalPresentationKind,
-        restore_geometry: Option<Rectangle<i32, Logical>>,
     ) -> Option<ExternalTransactionRequest> {
         let wl_surface = window.wl_surface().map(|surface| surface.into_owned())?;
         let window = find_window(wayland, &wl_surface).cloned()?;
@@ -338,14 +315,7 @@ impl FullscreenManager {
                         .unwrap_or_else(|| Rectangle::new(location, window.geometry().size)),
                     output: super::window_output_name(&window),
                 });
-        let restore = prefer_seeded_restore(
-            restore_geometry.map(|geometry| WindowedPlacement {
-                location: geometry.loc,
-                geometry,
-                output: super::window_output_name(&window),
-            }),
-            current_restore,
-        );
+        let restore = current_restore;
 
         let entry = self
             .windows
@@ -366,42 +336,24 @@ impl FullscreenManager {
             entry.restore = restore;
         }
         super::set_window_output(&window, &target);
-        Some(begin_external_transaction(
-            entry,
-            true,
-            output_geometry,
-            presentation,
-        ))
+        Some(begin_external_transaction(entry, true, output_geometry))
     }
 
     pub(crate) fn unrequest_external_animated(
         &mut self,
         window: &Window,
     ) -> Option<ExternalTransactionRequest> {
-        self.unrequest_external_transaction(window, ExternalPresentationKind::Animated)
-    }
-
-    pub(crate) fn unrequest_external_opening(
-        &mut self,
-        window: &Window,
-    ) -> Option<ExternalTransactionRequest> {
-        self.unrequest_external_transaction(window, ExternalPresentationKind::Opening)
+        self.unrequest_external_transaction(window)
     }
 
     fn unrequest_external_transaction(
         &mut self,
         window: &Window,
-        presentation: ExternalPresentationKind,
     ) -> Option<ExternalTransactionRequest> {
         let wl_surface = window.wl_surface().map(|surface| surface.into_owned())?;
         let entry = self.windows.get_mut(&wl_surface)?;
         let geometry = entry.restore.as_ref()?.geometry;
-        Some(begin_external_transaction(
-            entry,
-            false,
-            geometry,
-            presentation,
-        ))
+        Some(begin_external_transaction(entry, false, geometry))
     }
 
     pub(crate) fn settle_external_configure(
@@ -749,13 +701,6 @@ fn desired_matches(entry: Option<&FullscreenWindow>, desired: bool) -> bool {
     entry.is_some_and(|entry| entry.desired == desired)
 }
 
-fn prefer_seeded_restore(
-    seeded: Option<WindowedPlacement>,
-    current: Option<WindowedPlacement>,
-) -> Option<WindowedPlacement> {
-    seeded.or(current)
-}
-
 fn can_update_external_restore(entry: &FullscreenWindow) -> bool {
     !entry.desired && entry.external_pending.is_none()
 }
@@ -777,16 +722,12 @@ fn begin_external_transaction(
     entry: &mut FullscreenWindow,
     desired: bool,
     geometry: Rectangle<i32, Logical>,
-    presentation: ExternalPresentationKind,
 ) -> ExternalTransactionRequest {
     if entry.desired == desired {
         return ExternalTransactionRequest::NoChange;
     }
     entry.desired = desired;
-    entry.external_pending = Some(ExternalPending {
-        geometry,
-        presentation,
-    });
+    entry.external_pending = Some(ExternalPending { geometry });
     ExternalTransactionRequest::Configure(geometry)
 }
 
@@ -804,15 +745,7 @@ fn acknowledge_external_transaction(
     }
     entry.external_pending = None;
     let fullscreen = entry.desired;
-    match pending.presentation {
-        ExternalPresentationKind::Opening => {
-            entry.active = fullscreen;
-            entry.transition = None;
-        }
-        ExternalPresentationKind::Animated => {
-            retarget_transition(entry, animations, now, fullscreen);
-        }
-    }
+    retarget_transition(entry, animations, now, fullscreen);
     ExternalConfigureResult::Settled {
         fullscreen,
         animated: entry.transition.is_some(),
@@ -1034,12 +967,7 @@ mod tests {
         let intermediate = Rectangle::new((0, 0).into(), (1280, 720).into());
 
         assert_eq!(
-            begin_external_transaction(
-                &mut entry,
-                true,
-                target,
-                ExternalPresentationKind::Animated
-            ),
+            begin_external_transaction(&mut entry, true, target),
             ExternalTransactionRequest::Configure(target)
         );
         assert_eq!(
@@ -1071,37 +999,13 @@ mod tests {
     fn duplicate_external_request_preserves_the_active_transaction() {
         let mut entry = test_entry(false);
         let target = Rectangle::new((0, 0).into(), (1920, 1080).into());
-        begin_external_transaction(&mut entry, true, target, ExternalPresentationKind::Animated);
+        begin_external_transaction(&mut entry, true, target);
         let pending = entry.external_pending;
 
         assert!(desired_matches(Some(&entry), true));
         assert!(!desired_matches(Some(&entry), false));
         assert!(!desired_matches(None, true));
         assert_eq!(entry.external_pending, pending);
-    }
-
-    #[test]
-    fn seeded_restore_geometry_wins_over_the_buffered_fullscreen_size() {
-        let seeded_geometry = Rectangle::new((960, 480).into(), (640, 480).into());
-        let buffered_geometry = Rectangle::new((0, 0).into(), (2560, 1440).into());
-        let seeded = WindowedPlacement {
-            location: seeded_geometry.loc,
-            geometry: seeded_geometry,
-            output: Some("DP-1".to_string()),
-        };
-        let buffered = WindowedPlacement {
-            location: buffered_geometry.loc,
-            geometry: buffered_geometry,
-            output: Some("DP-1".to_string()),
-        };
-
-        let fallback =
-            prefer_seeded_restore(None, Some(buffered.clone())).expect("buffered fallback");
-        let restore = prefer_seeded_restore(Some(seeded), Some(buffered)).expect("seeded restore");
-
-        assert_eq!(fallback.geometry, buffered_geometry);
-        assert_eq!(restore.geometry, seeded_geometry);
-        assert_eq!(restore.location, seeded_geometry.loc);
     }
 
     #[test]
@@ -1115,77 +1019,8 @@ mod tests {
         entry.desired = false;
         entry.external_pending = Some(ExternalPending {
             geometry: Rectangle::new((320, 180).into(), (1280, 720).into()),
-            presentation: ExternalPresentationKind::Animated,
         });
         assert!(!can_update_external_restore(&entry));
-    }
-
-    #[test]
-    fn external_state_churn_keeps_only_the_latest_geometry() {
-        let mut entry = test_entry(false);
-        let fullscreen = Rectangle::new((0, 0).into(), (1920, 1080).into());
-        let restore = Rectangle::new((320, 180).into(), (1280, 720).into());
-
-        assert_eq!(
-            begin_external_transaction(
-                &mut entry,
-                true,
-                fullscreen,
-                ExternalPresentationKind::Opening
-            ),
-            ExternalTransactionRequest::Configure(fullscreen)
-        );
-        assert_eq!(
-            begin_external_transaction(
-                &mut entry,
-                false,
-                restore,
-                ExternalPresentationKind::Opening
-            ),
-            ExternalTransactionRequest::Configure(restore)
-        );
-        assert_eq!(
-            begin_external_transaction(
-                &mut entry,
-                true,
-                fullscreen,
-                ExternalPresentationKind::Opening
-            ),
-            ExternalTransactionRequest::Configure(fullscreen)
-        );
-        assert_eq!(
-            entry.external_pending,
-            Some(ExternalPending {
-                geometry: fullscreen,
-                presentation: ExternalPresentationKind::Opening
-            })
-        );
-        assert!(entry.desired);
-        assert!(entry.transition.is_none());
-    }
-
-    #[test]
-    fn opening_transaction_settles_without_a_second_animation() {
-        let animations = Animations::default();
-        let mut entry = test_entry(false);
-        let target = Rectangle::new((0, 0).into(), (1920, 1080).into());
-
-        begin_external_transaction(&mut entry, true, target, ExternalPresentationKind::Opening);
-
-        assert_eq!(
-            acknowledge_external_transaction(
-                &mut entry,
-                target,
-                animations,
-                Duration::from_secs(1)
-            ),
-            ExternalConfigureResult::Settled {
-                fullscreen: true,
-                animated: false
-            }
-        );
-        assert!(entry.active);
-        assert!(entry.transition.is_none());
     }
 
     #[test]
@@ -1193,7 +1028,7 @@ mod tests {
         let animations = Animations::default();
         let mut entry = test_entry(false);
         let target = Rectangle::new((0, 0).into(), (1920, 1080).into());
-        begin_external_transaction(&mut entry, true, target, ExternalPresentationKind::Animated);
+        begin_external_transaction(&mut entry, true, target);
         acknowledge_external_transaction(&mut entry, target, animations, Duration::from_secs(1));
         assert!(entry.transition.is_some());
 

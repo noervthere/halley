@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use smithay::utils::{Logical, Rectangle, Size};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -5,6 +7,36 @@ pub(super) enum MapAdmission {
     Wait,
     Admit,
     Ignore,
+}
+
+/// Fullscreen changes received during the opening animation are client intent,
+/// not separate presentation steps. Keeping only the latest value prevents
+/// startup state churn from replaying as multiple visible transitions.
+#[derive(Default)]
+pub(super) struct OpeningFullscreenIntents {
+    desired_by_window: HashMap<u32, bool>,
+}
+
+impl OpeningFullscreenIntents {
+    pub(super) fn update(&mut self, xid: u32, fullscreen: bool) {
+        self.desired_by_window.insert(xid, fullscreen);
+    }
+
+    pub(super) fn take(&mut self, xid: u32) -> Option<bool> {
+        self.desired_by_window.remove(&xid)
+    }
+
+    pub(super) fn get(&self, xid: u32) -> Option<bool> {
+        self.desired_by_window.get(&xid).copied()
+    }
+
+    pub(super) fn remove(&mut self, xid: u32) {
+        self.desired_by_window.remove(&xid);
+    }
+
+    pub(super) fn clear(&mut self) {
+        self.desired_by_window.clear();
+    }
 }
 
 pub(super) fn map_admission(
@@ -57,7 +89,7 @@ impl OpeningPlacement {
 mod tests {
     use smithay::utils::Rectangle;
 
-    use super::{MapAdmission, OpeningPlacement, map_admission};
+    use super::{MapAdmission, OpeningFullscreenIntents, OpeningPlacement, map_admission};
 
     #[test]
     fn pending_window_waits_for_surface_and_buffer() {
@@ -99,5 +131,30 @@ mod tests {
         );
 
         assert_eq!(placement.restore_geometry(), None);
+    }
+
+    #[test]
+    fn opening_fullscreen_churn_collapses_to_the_latest_intent() {
+        let mut intents = OpeningFullscreenIntents::default();
+
+        intents.update(42, true);
+        intents.update(42, false);
+        intents.update(42, true);
+
+        assert_eq!(intents.get(42), Some(true));
+        assert_eq!(intents.take(42), Some(true));
+        assert_eq!(intents.take(42), None);
+    }
+
+    #[test]
+    fn opening_fullscreen_intents_are_independent_per_window() {
+        let mut intents = OpeningFullscreenIntents::default();
+
+        intents.update(10, true);
+        intents.update(20, false);
+        intents.remove(10);
+
+        assert_eq!(intents.take(10), None);
+        assert_eq!(intents.take(20), Some(false));
     }
 }

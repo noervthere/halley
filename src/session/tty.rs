@@ -491,7 +491,7 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
             RenderOutcome::new(RenderStatus::Skipped, None)
         }
     };
-    app.window_open_animations.cleanup(target_presentation_time);
+    app.cleanup_window_openings(target_presentation_time);
     if app.cleanup_fullscreen(target_presentation_time) {
         super::sync_keyboard_focus(app, smithay::utils::SERIAL_COUNTER.next_serial());
         super::pointer::update_client_state(app, app.start_time.elapsed().as_millis() as u32);

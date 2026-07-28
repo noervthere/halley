@@ -29,20 +29,16 @@ enum FullscreenRequestOrigin {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ExternalPresentationPolicy {
     Initial,
-    Opening,
     Confined,
     Animated,
 }
 
 fn external_presentation_policy(
     origin: FullscreenRequestOrigin,
-    opening: bool,
     confined: bool,
 ) -> ExternalPresentationPolicy {
     if confined {
         ExternalPresentationPolicy::Confined
-    } else if opening {
-        ExternalPresentationPolicy::Opening
     } else if origin == FullscreenRequestOrigin::Initial {
         ExternalPresentationPolicy::Initial
     } else {
@@ -142,22 +138,32 @@ fn admit_window<D: SessionDriver>(session: &mut Session<D>, xid: u32) {
         .wayland
         .space
         .map_element(window.clone(), location, true);
-    if let Some(geometry) = session.wayland.space.element_geometry(&window) {
-        session
-            .xwayland
-            .opening_placements
-            .insert(xid, OpeningPlacement::new(geometry, initial_size));
-    }
+    let opening_geometry = session
+        .wayland
+        .space
+        .element_geometry(&window)
+        .and_then(|geometry| {
+            let placement = OpeningPlacement::new(geometry, initial_size);
+            let opening_geometry = placement.restore_geometry();
+            session.xwayland.opening_placements.insert(xid, placement);
+            opening_geometry
+        });
     let started = window.wl_surface().is_some_and(|wl_surface| {
         session
             .window_open_animations
             .start(wl_surface.into_owned(), crate::frame_clock::monotonic_now())
     });
     if surface.is_fullscreen() {
+        if let Some(geometry) = opening_geometry
+            && let Err(err) = surface.configure(geometry)
+        {
+            eventline::warn!("xwayland: failed to configure opening window: {err}");
+        }
         enter_fullscreen(session, &surface, FullscreenRequestOrigin::Initial);
     } else if surface.is_maximized() {
         maximize_window(session, &surface);
-    } else if let Some(geometry) = session.wayland.space.element_bbox(&window)
+    } else if let Some(geometry) =
+        opening_geometry.or_else(|| session.wayland.space.element_bbox(&window))
         && let Err(err) = surface.configure(geometry)
     {
         eventline::warn!("xwayland: failed to configure mapped window: {err}");
@@ -228,6 +234,24 @@ fn set_external_fullscreen<D: SessionDriver>(
     if let Err(err) = surface.set_fullscreen(fullscreen) {
         eventline::warn!("xwayland: failed to update fullscreen state: {err}");
     }
+    let opening = window.wl_surface().is_some_and(|wl_surface| {
+        session
+            .window_open_animations
+            .is_animating(wl_surface.as_ref(), crate::frame_clock::monotonic_now())
+    });
+    if opening {
+        session
+            .xwayland
+            .opening_fullscreen_intents
+            .update(surface.window_id(), fullscreen);
+        eventline::debug!(
+            "xwayland: deferred opening fullscreen intent xid={} fullscreen={fullscreen} \
+             origin={origin:?}",
+            surface.window_id()
+        );
+        crate::session::reconcile_pointer_constraints(session);
+        return;
+    }
     if session
         .fullscreen
         .external_desired_matches(&window, fullscreen)
@@ -240,24 +264,13 @@ fn set_external_fullscreen<D: SessionDriver>(
         crate::session::reconcile_pointer_constraints(session);
         return;
     }
-    let opening = window.wl_surface().is_some_and(|wl_surface| {
-        session
-            .window_open_animations
-            .is_animating(wl_surface.as_ref(), crate::frame_clock::monotonic_now())
-    });
     let policy = external_presentation_policy(
         origin,
-        opening,
         crate::session::has_active_pointer_confinement(session),
     );
-    if policy == ExternalPresentationPolicy::Opening {
-        preserve_opening_center(session, surface, &window);
-    }
     let animate = policy == ExternalPresentationPolicy::Animated
         && capture_fullscreen_snapshot(session, &window, fullscreen);
-    if policy == ExternalPresentationPolicy::Opening {
-        request_opening_fullscreen(session, surface, &window, fullscreen);
-    } else if animate {
+    if animate {
         let request = if fullscreen {
             session
                 .fullscreen
@@ -299,133 +312,9 @@ fn set_external_fullscreen<D: SessionDriver>(
     crate::session::reconcile_pointer_constraints(session);
 }
 
-fn preserve_opening_center<D: SessionDriver>(
-    session: &mut Session<D>,
-    surface: &X11Surface,
-    window: &Window,
-) {
-    let Some(placement) = session
-        .xwayland
-        .opening_placements
-        .get(&surface.window_id())
-        .copied()
-    else {
-        return;
-    };
-    let centered = placement.centered(window.geometry().size);
-    session.wayland.space.relocate_element(window, centered.loc);
-}
-
-fn request_opening_fullscreen<D: SessionDriver>(
-    session: &mut Session<D>,
-    surface: &X11Surface,
-    window: &Window,
-    fullscreen: bool,
-) {
-    let now = crate::frame_clock::monotonic_now();
-    let Some((output, current_bounds)) = opening_presentation_bounds(session, window, now) else {
-        settle_external_immediately(session, surface, window, fullscreen);
-        return;
-    };
-    let request = if fullscreen {
-        let restore = session
-            .xwayland
-            .opening_placements
-            .get(&surface.window_id())
-            .and_then(|placement| placement.restore_geometry());
-        session
-            .fullscreen
-            .request_external_opening(&mut session.wayland, window, restore)
-    } else {
-        session.fullscreen.unrequest_external_opening(window)
-    };
-    match request {
-        Some(ExternalTransactionRequest::Configure(geometry)) => {
-            let target_bounds = opening_target_bounds(session, &output, geometry, fullscreen)
-                .unwrap_or_else(|| Rectangle::new((0, 0).into(), geometry.size.to_physical(1)));
-            let Some(wl_surface) = window.wl_surface() else {
-                settle_external_immediately(session, surface, window, fullscreen);
-                return;
-            };
-            session.window_open_animations.retarget_for_fullscreen(
-                wl_surface.as_ref(),
-                now,
-                current_bounds,
-                target_bounds,
-            );
-            if let Err(err) = surface.configure(geometry) {
-                eventline::warn!("xwayland: failed to configure opening fullscreen: {err}");
-                settle_external_immediately(session, surface, window, fullscreen);
-            } else {
-                eventline::debug!(
-                    "xwayland: fullscreen policy xid={} fullscreen={fullscreen} policy=opening",
-                    surface.window_id()
-                );
-            }
-        }
-        Some(ExternalTransactionRequest::NoChange) => {}
-        None => settle_external_immediately(session, surface, window, fullscreen),
-    }
-}
-
-fn opening_presentation_bounds<D: SessionDriver>(
-    session: &Session<D>,
-    window: &Window,
-    now: std::time::Duration,
-) -> Option<(Output, Rectangle<i32, smithay::utils::Physical>)> {
-    let output = crate::wayland::window_output_name(window)
-        .and_then(|name| {
-            session
-                .wayland
-                .space
-                .outputs()
-                .find(|output| output.name() == name)
-        })
-        .or_else(|| crate::wayland::focus::selected_output(&session.wayland))
-        .cloned()?;
-    let output_geometry = session.wayland.space.output_geometry(&output)?;
-    let presentation = crate::input::presentation::WindowPresentation::for_window(
-        &session.wayland.space,
-        &session.cameras,
-        &session.fullscreen,
-        window,
-        &output,
-        now,
-    )?;
-    let local = presentation.visual_geometry().loc - output_geometry.loc;
-    Some((
-        output,
-        Rectangle::new(
-            local.to_physical(1),
-            presentation.visual_geometry().size.to_physical(1),
-        ),
-    ))
-}
-
-fn opening_target_bounds<D: SessionDriver>(
-    session: &Session<D>,
-    output: &Output,
-    geometry: Rectangle<i32, Logical>,
-    fullscreen: bool,
-) -> Option<Rectangle<i32, smithay::utils::Physical>> {
-    let output_geometry = session.wayland.space.output_geometry(output)?;
-    let output_size = output_geometry.size.to_physical(1);
-    if fullscreen {
-        return Some(Rectangle::new((0, 0).into(), output_size));
-    }
-    let view = session.cameras.view(&output.name())?;
-    Some(crate::backend::camera_rect(
-        geometry.to_physical(1),
-        crate::camera::global_center(view.center, output_geometry),
-        output_size,
-        view.scale,
-    ))
-}
-
 fn presentation_policy_name(policy: ExternalPresentationPolicy) -> &'static str {
     match policy {
         ExternalPresentationPolicy::Initial => "initial",
-        ExternalPresentationPolicy::Opening => "opening",
         ExternalPresentationPolicy::Confined => "confined",
         ExternalPresentationPolicy::Animated => "snapshot-fallback",
     }
@@ -645,6 +534,10 @@ fn forget_window<D: SessionDriver>(session: &mut Session<D>, surface: &X11Surfac
         .xwayland
         .opening_placements
         .remove(&surface.window_id());
+    session
+        .xwayland
+        .opening_fullscreen_intents
+        .remove(surface.window_id());
     let Some(window) = window_for_surface(session, surface) else {
         return;
     };
@@ -659,6 +552,46 @@ fn forget_window<D: SessionDriver>(session: &mut Session<D>, surface: &X11Surfac
         }
     }
     session.wayland.space.unmap_elem(&window);
+}
+
+pub(super) fn finish_window_openings<D: SessionDriver>(
+    session: &mut Session<D>,
+    surfaces: Vec<smithay::reexports::wayland_server::protocol::wl_surface::WlSurface>,
+) -> bool {
+    let mut changed = false;
+    for wl_surface in surfaces {
+        let window = session
+            .wayland
+            .space
+            .elements()
+            .find(|window| {
+                window.x11_surface().is_some()
+                    && window
+                        .wl_surface()
+                        .is_some_and(|candidate| candidate.as_ref() == &wl_surface)
+            })
+            .cloned();
+        let Some(window) = window else {
+            continue;
+        };
+        let Some(surface) = window.x11_surface().cloned() else {
+            continue;
+        };
+        let xid = surface.window_id();
+        session.xwayland.opening_placements.remove(&xid);
+        let Some(fullscreen) = session.xwayland.opening_fullscreen_intents.take(xid) else {
+            continue;
+        };
+        eventline::debug!(
+            "xwayland: applying deferred opening fullscreen intent xid={xid} \
+             fullscreen={fullscreen}"
+        );
+        if fullscreen {
+            enter_fullscreen(session, &surface, FullscreenRequestOrigin::Client);
+            changed = true;
+        }
+    }
+    changed
 }
 
 impl<D: SessionDriver> XwmHandler for Session<D> {
@@ -932,28 +865,11 @@ mod tests {
     };
 
     #[test]
-    fn initial_fullscreen_uses_the_existing_opening_when_available() {
+    fn initial_fullscreen_without_an_opening_settles_immediately() {
         assert_eq!(
-            external_presentation_policy(FullscreenRequestOrigin::Initial, false, false),
+            external_presentation_policy(FullscreenRequestOrigin::Initial, false),
             ExternalPresentationPolicy::Initial
         );
-        assert_eq!(
-            external_presentation_policy(FullscreenRequestOrigin::Initial, true, false),
-            ExternalPresentationPolicy::Opening
-        );
-    }
-
-    #[test]
-    fn opening_fullscreen_retargets_the_existing_opening() {
-        for origin in [
-            FullscreenRequestOrigin::Client,
-            FullscreenRequestOrigin::Compositor,
-        ] {
-            assert_eq!(
-                external_presentation_policy(origin, true, false),
-                ExternalPresentationPolicy::Opening
-            );
-        }
     }
 
     #[test]
@@ -964,7 +880,7 @@ mod tests {
             FullscreenRequestOrigin::Compositor,
         ] {
             assert_eq!(
-                external_presentation_policy(origin, true, true),
+                external_presentation_policy(origin, true),
                 ExternalPresentationPolicy::Confined
             );
         }
@@ -977,7 +893,7 @@ mod tests {
             FullscreenRequestOrigin::Compositor,
         ] {
             assert_eq!(
-                external_presentation_policy(origin, false, false),
+                external_presentation_policy(origin, false),
                 ExternalPresentationPolicy::Animated
             );
         }

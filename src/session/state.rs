@@ -140,6 +140,13 @@ impl<D: SessionDriver> Session<D> {
         cleanup.visual_finished
     }
 
+    pub fn cleanup_window_openings(&mut self, now: std::time::Duration) {
+        let finished = self.window_open_animations.cleanup(now);
+        if crate::xwayland::finish_window_openings(self, finished) {
+            self.request_redraw();
+        }
+    }
+
     pub fn finish_x11_fullscreen_presentation(&mut self, surface: &WlSurface) -> bool {
         let root = crate::wayland::compositor::root_surface(surface);
         let window = self
