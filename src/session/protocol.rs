@@ -126,6 +126,7 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
             }
             None => {}
         }
+        crate::xwayland::handle_surface_commit(self, &root);
         if process_fullscreen_commit {
             self.fullscreen.handle_commit(
                 &mut self.wayland,

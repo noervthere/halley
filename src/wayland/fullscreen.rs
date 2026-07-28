@@ -201,6 +201,7 @@ impl FullscreenManager {
         &mut self,
         wayland: &mut WaylandState,
         window: &Window,
+        now: Duration,
     ) -> Option<Rectangle<i32, Logical>> {
         let wl_surface = window.wl_surface().map(|surface| surface.into_owned())?;
         let window = find_window(wayland, &wl_surface).cloned()?;
@@ -210,15 +211,13 @@ impl FullscreenManager {
         let target = target?;
         let output_geometry = wayland.space.output_geometry(&target)?;
         let target_name = target.name();
-        self.windows
+        let entry = self
+            .windows
             .entry(wl_surface)
-            .and_modify(|entry| {
-                settle_external_fullscreen(entry, &target_name, output_geometry.size);
-            })
             .or_insert_with(|| FullscreenWindow {
-                desired: true,
-                active: true,
-                target_output: target_name,
+                desired: false,
+                active: false,
+                target_output: target_name.clone(),
                 restore: Some(WindowedPlacement {
                     location: wayland
                         .space
@@ -234,6 +233,9 @@ impl FullscreenManager {
                 transition: None,
                 snapshot_serials: Vec::new(),
             });
+        entry.target_output = target_name;
+        entry.fullscreen_size = output_geometry.size;
+        retarget_external(entry, self.animations, now, true);
         super::set_window_output(&window, &target);
         wayland.space.map_element(window, output_geometry.loc, true);
         Some(output_geometry)
@@ -243,12 +245,13 @@ impl FullscreenManager {
         &mut self,
         wayland: &mut WaylandState,
         window: &Window,
+        now: Duration,
     ) -> Option<Rectangle<i32, Logical>> {
         let wl_surface = window.wl_surface().map(|surface| surface.into_owned())?;
-        let restore = self
-            .windows
-            .remove(&wl_surface)
-            .and_then(|entry| entry.restore)?;
+        let entry = self.windows.get_mut(&wl_surface)?;
+        let restore = entry.restore.clone()?;
+        entry.fullscreen_size = window.geometry().size;
+        retarget_external(entry, self.animations, now, false);
         if let Some(output) = restore
             .output
             .as_deref()
@@ -260,6 +263,18 @@ impl FullscreenManager {
             .space
             .map_element(window.clone(), restore.location, true);
         Some(restore.geometry)
+    }
+
+    pub fn should_capture_external_snapshot(&self, surface: &WlSurface, fullscreen: bool) -> bool {
+        animations_enabled(self.animations) && self.is_fullscreen_or_pending(surface) != fullscreen
+    }
+
+    pub fn is_transitioning(&self, surface: &WlSurface, now: Duration) -> bool {
+        self.windows.get(surface).is_some_and(|entry| {
+            entry
+                .transition
+                .is_some_and(|transition| !transition.is_finished_at(now))
+        })
     }
 
     pub fn handle_commit(
@@ -509,16 +524,18 @@ fn animations_enabled(animations: Animations) -> bool {
     animations.enabled && animations.fullscreen.enabled
 }
 
-fn settle_external_fullscreen(
+fn retarget_external(
     entry: &mut FullscreenWindow,
-    target_output: &str,
-    fullscreen_size: Size<i32, Logical>,
-) {
-    entry.desired = true;
-    entry.active = true;
-    entry.target_output = target_output.to_string();
-    entry.fullscreen_size = fullscreen_size;
-    entry.transition = None;
+    animations: Animations,
+    now: Duration,
+    active: bool,
+) -> bool {
+    if entry.desired == active && entry.active == active {
+        return false;
+    }
+    entry.desired = active;
+    retarget_transition(entry, animations, now, active);
+    true
 }
 
 fn suspend_entry(entry: &mut FullscreenWindow) {
@@ -680,17 +697,44 @@ mod tests {
     }
 
     #[test]
-    fn external_fullscreen_is_logically_settled_without_animation() {
+    fn duplicate_external_request_does_not_restart_motion() {
         let animations = Animations::default();
         let mut entry = test_entry(false);
-        retarget_transition(&mut entry, animations, Duration::from_secs(1), true);
+        let started = Duration::from_secs(1);
 
-        settle_external_fullscreen(&mut entry, "HDMI-A-1", (2560, 1440).into());
+        assert!(retarget_external(&mut entry, animations, started, true));
+        let original = entry.transition.expect("external transition");
+        assert!(!retarget_external(
+            &mut entry,
+            animations,
+            started + Duration::from_millis(50),
+            true
+        ));
+        let retained = entry.transition.expect("retained external transition");
 
         assert!(entry.desired);
         assert!(entry.active);
-        assert_eq!(entry.target_output, "HDMI-A-1");
-        assert_eq!(entry.fullscreen_size, Size::from((2560, 1440)));
+        assert_eq!(
+            original.value_at(started + Duration::from_millis(100)),
+            retained.value_at(started + Duration::from_millis(100))
+        );
+    }
+
+    #[test]
+    fn external_killswitch_settles_without_motion() {
+        let mut animations = Animations::default();
+        animations.fullscreen.enabled = false;
+        let mut entry = test_entry(false);
+
+        assert!(retarget_external(
+            &mut entry,
+            animations,
+            Duration::ZERO,
+            true
+        ));
+
+        assert!(entry.desired);
+        assert!(entry.active);
         assert!(entry.transition.is_none());
     }
 
