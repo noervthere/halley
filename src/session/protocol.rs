@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 use std::ffi::OsString;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use calloop::generic::Generic;
 use calloop::{EventLoop, Interest, Mode as CalloopMode, PostAction};
@@ -43,15 +44,25 @@ use smithay::wayland::shell::xdg::{
 use smithay::wayland::shm::{ShmHandler, ShmState};
 use smithay::wayland::socket::ListeningSocketSource;
 use smithay::wayland::seat::WaylandFocus;
+use smithay::wayland::xdg_activation::{
+    XdgActivationHandler, XdgActivationState, XdgActivationToken, XdgActivationTokenData,
+};
 use smithay::{
     delegate_compositor, delegate_data_device, delegate_dmabuf, delegate_fractional_scale,
     delegate_keyboard_shortcuts_inhibit, delegate_layer_shell, delegate_output,
     delegate_pointer_constraints, delegate_primary_selection, delegate_relative_pointer,
     delegate_seat, delegate_shm, delegate_viewporter, delegate_xdg_decoration, delegate_xdg_shell,
+    delegate_xdg_activation,
 };
 
 use super::state::{Session, SessionDriver};
 use crate::wayland::{self, ClientState};
+
+const XDG_ACTIVATION_TOKEN_TIMEOUT: Duration = Duration::from_secs(10);
+
+fn activation_token_is_fresh(created_at: Instant, now: Instant) -> bool {
+    now.saturating_duration_since(created_at) < XDG_ACTIVATION_TOKEN_TIMEOUT
+}
 
 pub fn init_wayland_listener<D: SessionDriver>(
     display: Display<Session<D>>,
@@ -111,10 +122,15 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
         let root = wayland::compositor::root_surface(surface);
         if let Some(mapped) =
             wayland::compositor::commit::<Self>(&mut self.wayland, &self.cameras, surface)
-                .filter(|mapped| !self.fullscreen.is_fullscreen_or_pending(mapped))
         {
-            self.window_open_animations
-                .start(mapped, crate::frame_clock::monotonic_now());
+            if self.fullscreen.is_fullscreen_or_pending(&mapped) {
+                self.opening_origins.forget(&mapped);
+            } else if let Some(output) = super::opening::output_for_surface(self, &mapped) {
+                super::opening::start(self, mapped, &output, crate::frame_clock::monotonic_now());
+            } else {
+                self.window_open_animations
+                    .start(mapped, crate::frame_clock::monotonic_now());
+            }
         }
         crate::xwayland::handle_commit(self, &root);
         self.fullscreen.handle_commit(
@@ -163,6 +179,9 @@ impl<D: SessionDriver> XdgShellHandler for Session<D> {
 
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
         let wl_surface = surface.wl_surface().clone();
+        if let Some(output) = wayland::focus::selected_output(&self.wayland).cloned() {
+            super::opening::prepare(self, wl_surface.clone(), &output);
+        }
         wayland::xdg_shell::new_toplevel(&mut self.wayland, surface);
         add_pre_commit_hook::<Self, _>(&wl_surface, |session, _display, surface| {
             let commit_serial = with_states(surface, |states| {
@@ -205,6 +224,7 @@ impl<D: SessionDriver> XdgShellHandler for Session<D> {
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         super::prepare_window_unmap(self, surface.wl_surface());
+        self.opening_origins.forget(surface.wl_surface());
         self.window_open_animations.remove(surface.wl_surface());
         self.fullscreen.remove(surface.wl_surface());
         self.fullscreen_textures.remove(surface.wl_surface());
@@ -252,6 +272,79 @@ impl<D: SessionDriver> XdgShellHandler for Session<D> {
         if let Some(grab) = grab {
             wayland::popup::install_grab(self, &seat, grab, serial);
         }
+    }
+}
+
+impl<D: SessionDriver> XdgActivationHandler for Session<D> {
+    fn activation_state(&mut self) -> &mut XdgActivationState {
+        &mut self.wayland.xdg_activation_state
+    }
+
+    fn token_created(&mut self, _token: XdgActivationToken, data: XdgActivationTokenData) -> bool {
+        self.wayland
+            .xdg_activation_state
+            .retain_tokens(|_, token| activation_token_is_fresh(token.timestamp, Instant::now()));
+        if let Some(surface) = data.surface.as_ref()
+            && let Some(origin) = super::opening::surface_visual_center(self, surface)
+        {
+            data.user_data
+                .insert_if_missing_threadsafe(|| super::opening::ActivationOrigin(origin));
+        }
+
+        let Some((serial, seat_resource)) = data.serial else {
+            data.user_data
+                .insert_if_missing_threadsafe(|| super::opening::OriginOnlyActivation);
+            return true;
+        };
+        let Some(seat) = Seat::<Self>::from_resource(&seat_resource) else {
+            return false;
+        };
+        let keyboard_valid = seat
+            .get_keyboard()
+            .and_then(|keyboard| keyboard.last_enter())
+            .is_some_and(|last_enter| serial.is_no_older_than(&last_enter));
+        let pointer_valid = seat
+            .get_pointer()
+            .and_then(|pointer| pointer.last_enter())
+            .is_some_and(|last_enter| serial.is_no_older_than(&last_enter));
+        keyboard_valid || pointer_valid
+    }
+
+    fn request_activation(
+        &mut self,
+        token: XdgActivationToken,
+        token_data: XdgActivationTokenData,
+        surface: WlSurface,
+    ) {
+        if activation_token_is_fresh(token_data.timestamp, Instant::now()) {
+            let root = wayland::compositor::root_surface(&surface);
+            let mapped = self
+                .wayland
+                .space
+                .elements()
+                .find(|window| {
+                    window
+                        .wl_surface()
+                        .is_some_and(|candidate| candidate.as_ref() == &root)
+                })
+                .cloned();
+            if let Some(window) = mapped {
+                if token_data
+                    .user_data
+                    .get::<super::opening::OriginOnlyActivation>()
+                    .is_none()
+                {
+                    super::focus_window(self, &window, SERIAL_COUNTER.next_serial());
+                    self.request_redraw();
+                }
+            } else if let Some(origin) = token_data
+                .user_data
+                .get::<super::opening::ActivationOrigin>()
+            {
+                self.opening_origins.remember_launcher(root, origin.0);
+            }
+        }
+        self.wayland.xdg_activation_state.remove_token(&token);
     }
 }
 
@@ -413,6 +506,7 @@ delegate_compositor!(@<D: SessionDriver> Session<D>);
 delegate_dmabuf!(@<D: SessionDriver> Session<D>);
 delegate_shm!(@<D: SessionDriver> Session<D>);
 delegate_xdg_shell!(@<D: SessionDriver> Session<D>);
+delegate_xdg_activation!(@<D: SessionDriver> Session<D>);
 delegate_layer_shell!(@<D: SessionDriver> Session<D>);
 delegate_xdg_decoration!(@<D: SessionDriver> Session<D>);
 delegate_seat!(@<D: SessionDriver> Session<D>);
@@ -424,3 +518,22 @@ delegate_pointer_constraints!(@<D: SessionDriver> Session<D>);
 delegate_keyboard_shortcuts_inhibit!(@<D: SessionDriver> Session<D>);
 delegate_data_device!(@<D: SessionDriver> Session<D>);
 delegate_primary_selection!(@<D: SessionDriver> Session<D>);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn activation_tokens_expire_at_ten_seconds() {
+        let created = Instant::now();
+
+        assert!(activation_token_is_fresh(
+            created,
+            created + Duration::from_secs(9)
+        ));
+        assert!(!activation_token_is_fresh(
+            created,
+            created + XDG_ACTIVATION_TOKEN_TIMEOUT
+        ));
+    }
+}

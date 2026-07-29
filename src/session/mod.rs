@@ -9,6 +9,7 @@ use crate::spawn;
 use crate::wayland::{self, WaylandState};
 
 mod input;
+pub(crate) mod opening;
 mod pointer;
 mod protocol;
 mod state;

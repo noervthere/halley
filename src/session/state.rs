@@ -19,6 +19,7 @@ use smithay::wayland::shell::xdg::XdgShellState;
 use smithay::wayland::shell::xdg::decoration::XdgDecorationState;
 use smithay::wayland::shm::ShmState;
 use smithay::wayland::viewporter::ViewporterState;
+use smithay::wayland::xdg_activation::XdgActivationState;
 
 use crate::camera::OutputCameras;
 use crate::cursor::CursorImage;
@@ -71,6 +72,7 @@ pub struct Session<D: SessionDriver> {
     pub suppressed_keys: SuppressedKeys,
     pub wheel_accumulator: WheelAccumulator,
     pub pointer_constraints: super::pointer::PointerConstraintLifecycle,
+    pub opening_origins: super::opening::OpeningOrigins,
     pub window_open_animations: crate::animation::WindowOpenAnimations,
     pub fullscreen: crate::wayland::fullscreen::FullscreenManager,
     pub fullscreen_textures: crate::backend::fullscreen_texture::FullscreenTextureTransitions,
@@ -93,6 +95,7 @@ impl<D: SessionDriver> Session<D> {
             dmabuf_state,
             dmabuf_global,
             XdgShellState::new::<Self>(&display_handle),
+            XdgActivationState::new::<Self>(&display_handle),
             WlrLayerShellState::new::<Self>(&display_handle),
             XdgDecorationState::new::<Self>(&display_handle),
             ViewporterState::new::<Self>(&display_handle),

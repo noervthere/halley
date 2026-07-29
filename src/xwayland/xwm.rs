@@ -143,6 +143,9 @@ fn admit_window<D: SessionDriver>(session: &mut Session<D>, xid: u32) {
         eventline::warn!("xwayland: failed to prepare centered opening geometry: {err}");
     }
     crate::wayland::set_window_output(&window, &output);
+    if let Some(wl_surface) = window.wl_surface() {
+        crate::session::opening::prepare(session, wl_surface.into_owned(), &output);
+    }
     session
         .wayland
         .space
@@ -152,9 +155,12 @@ fn admit_window<D: SessionDriver>(session: &mut Session<D>, xid: u32) {
         .opening_placements
         .insert(xid, OpeningPlacement::new(opening_geometry, initial_size));
     let started = window.wl_surface().is_some_and(|wl_surface| {
-        session
-            .window_open_animations
-            .start(wl_surface.into_owned(), crate::frame_clock::monotonic_now())
+        crate::session::opening::start(
+            session,
+            wl_surface.into_owned(),
+            &output,
+            crate::frame_clock::monotonic_now(),
+        )
     });
     if surface.is_fullscreen() {
         enter_fullscreen(session, &surface, FullscreenRequestOrigin::Initial);
@@ -649,6 +655,7 @@ fn forget_window<D: SessionDriver>(session: &mut Session<D>, surface: &X11Surfac
     };
     if let Some(wl_surface) = window.wl_surface().map(|surface| surface.into_owned()) {
         crate::session::prepare_window_unmap(session, &wl_surface);
+        session.opening_origins.forget(&wl_surface);
         session.fullscreen.remove(&wl_surface);
         session.fullscreen_textures.remove(&wl_surface);
         session.window_open_animations.remove(&wl_surface);

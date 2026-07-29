@@ -30,6 +30,7 @@ use smithay::wayland::shell::xdg::XdgShellState;
 use smithay::wayland::shell::xdg::decoration::XdgDecorationState;
 use smithay::wayland::shm::ShmState;
 use smithay::wayland::viewporter::ViewporterState;
+use smithay::wayland::xdg_activation::XdgActivationState;
 
 /// The one output responsible for painting a window. Smithay's `Space`
 /// still owns output geometry and pointer routing; this is only Halley's
@@ -79,6 +80,7 @@ pub struct WaylandState {
     pub dmabuf_state: DmabufState,
     pub dmabuf_global: Option<DmabufGlobal>,
     pub xdg_shell_state: XdgShellState,
+    pub xdg_activation_state: XdgActivationState,
     pub layer_shell_state: WlrLayerShellState,
     // Retained for the lifetime of its advertised global.
     _xdg_decoration_state: XdgDecorationState,
@@ -140,6 +142,7 @@ impl WaylandState {
         dmabuf_state: DmabufState,
         dmabuf_global: Option<DmabufGlobal>,
         xdg_shell_state: XdgShellState,
+        xdg_activation_state: XdgActivationState,
         layer_shell_state: WlrLayerShellState,
         xdg_decoration_state: XdgDecorationState,
         viewporter_state: ViewporterState,
@@ -158,6 +161,7 @@ impl WaylandState {
             dmabuf_state,
             dmabuf_global,
             xdg_shell_state,
+            xdg_activation_state,
             layer_shell_state,
             _xdg_decoration_state: xdg_decoration_state,
             _viewporter_state: viewporter_state,
