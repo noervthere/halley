@@ -1,3 +1,5 @@
+//! D-Bus caller authorization used by accessibility services.
+
 use zbus::fdo;
 use zbus::message::Header;
 use zbus::names::{BusName, OwnedUniqueName, UniqueName, WellKnownName};
@@ -6,7 +8,7 @@ fn same_unique_name(sender: &UniqueName<'_>, owner: &UniqueName<'_>) -> bool {
     sender == owner
 }
 
-pub async fn require_name_owner(
+pub(super) async fn require_name_owner(
     connection: &zbus::Connection,
     header: Header<'_>,
     authorized_name: &str,

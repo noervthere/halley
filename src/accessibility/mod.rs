@@ -1,3 +1,4 @@
+mod dbus;
 mod keyboard_monitor;
 
 use std::time::Duration;

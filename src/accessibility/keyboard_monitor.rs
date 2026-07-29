@@ -187,7 +187,7 @@ impl KeyboardMonitor {
             .connection
             .get()
             .ok_or_else(|| fdo::Error::Failed("keyboard monitor is not started".to_owned()))?;
-        crate::dbus::require_name_owner(
+        super::dbus::require_name_owner(
             connection.inner(),
             header,
             AUTHORIZED_MONITOR,
