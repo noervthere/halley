@@ -31,6 +31,7 @@ use smithay::wayland::shell::xdg::XdgShellState;
 use smithay::wayland::shell::xdg::decoration::XdgDecorationState;
 use smithay::wayland::shm::ShmState;
 use smithay::wayland::viewporter::ViewporterState;
+use smithay::wayland::virtual_keyboard::VirtualKeyboardManagerState;
 use smithay::wayland::xdg_activation::XdgActivationState;
 
 /// The one output responsible for painting a window. Smithay's `Space`
@@ -89,6 +90,7 @@ pub struct WaylandState {
     _fractional_scale_manager_state: FractionalScaleManagerState,
     _relative_pointer_manager_state: RelativePointerManagerState,
     _pointer_constraints_state: PointerConstraintsState,
+    _virtual_keyboard_manager_state: VirtualKeyboardManagerState,
     pub keyboard_shortcuts_inhibit_state: KeyboardShortcutsInhibitState,
     pub shm_state: ShmState,
     // Retained alongside the wl_output globals it serves.
@@ -156,6 +158,7 @@ impl WaylandState {
         fractional_scale_manager_state: FractionalScaleManagerState,
         relative_pointer_manager_state: RelativePointerManagerState,
         pointer_constraints_state: PointerConstraintsState,
+        virtual_keyboard_manager_state: VirtualKeyboardManagerState,
         keyboard_shortcuts_inhibit_state: KeyboardShortcutsInhibitState,
         shm_state: ShmState,
         output_manager_state: OutputManagerState,
@@ -175,6 +178,7 @@ impl WaylandState {
             _fractional_scale_manager_state: fractional_scale_manager_state,
             _relative_pointer_manager_state: relative_pointer_manager_state,
             _pointer_constraints_state: pointer_constraints_state,
+            _virtual_keyboard_manager_state: virtual_keyboard_manager_state,
             keyboard_shortcuts_inhibit_state,
             shm_state,
             _output_manager_state: output_manager_state,

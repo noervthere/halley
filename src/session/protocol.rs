@@ -52,8 +52,8 @@ use smithay::{
     delegate_compositor, delegate_data_device, delegate_dmabuf, delegate_fractional_scale,
     delegate_keyboard_shortcuts_inhibit, delegate_layer_shell, delegate_output,
     delegate_pointer_constraints, delegate_primary_selection, delegate_relative_pointer,
-    delegate_seat, delegate_shm, delegate_viewporter, delegate_xdg_decoration, delegate_xdg_shell,
-    delegate_xdg_activation,
+    delegate_seat, delegate_shm, delegate_viewporter, delegate_virtual_keyboard_manager,
+    delegate_xdg_activation, delegate_xdg_decoration, delegate_xdg_shell,
 };
 
 use super::state::{Session, SessionDriver};
@@ -551,6 +551,7 @@ delegate_viewporter!(@<D: SessionDriver> Session<D>);
 delegate_fractional_scale!(@<D: SessionDriver> Session<D>);
 delegate_relative_pointer!(@<D: SessionDriver> Session<D>);
 delegate_pointer_constraints!(@<D: SessionDriver> Session<D>);
+delegate_virtual_keyboard_manager!(@<D: SessionDriver> Session<D>);
 delegate_keyboard_shortcuts_inhibit!(@<D: SessionDriver> Session<D>);
 delegate_data_device!(@<D: SessionDriver> Session<D>);
 delegate_primary_selection!(@<D: SessionDriver> Session<D>);

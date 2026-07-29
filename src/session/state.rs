@@ -19,6 +19,7 @@ use smithay::wayland::shell::xdg::XdgShellState;
 use smithay::wayland::shell::xdg::decoration::XdgDecorationState;
 use smithay::wayland::shm::ShmState;
 use smithay::wayland::viewporter::ViewporterState;
+use smithay::wayland::virtual_keyboard::VirtualKeyboardManagerState;
 use smithay::wayland::xdg_activation::XdgActivationState;
 
 use crate::camera::OutputCameras;
@@ -26,7 +27,7 @@ use crate::cursor::CursorImage;
 use crate::input::grab::{Grab, ResizeAnchor};
 use crate::input::pointer::{Pointer, WheelAccumulator};
 use crate::input::{Keyboard, SuppressedButtons, SuppressedKeys};
-use crate::wayland::WaylandState;
+use crate::wayland::{ClientState, WaylandState};
 
 /// The narrow contract shared compositor policy needs from a session driver.
 /// Hardware setup, rendering, output reconfiguration, and event sources stay
@@ -104,6 +105,9 @@ impl<D: SessionDriver> Session<D> {
             FractionalScaleManagerState::new::<Self>(&display_handle),
             RelativePointerManagerState::new::<Self>(&display_handle),
             PointerConstraintsState::new::<Self>(&display_handle),
+            VirtualKeyboardManagerState::new::<Self, _>(&display_handle, |client| {
+                client.get_data::<ClientState>().is_some()
+            }),
             KeyboardShortcutsInhibitState::new::<Self>(&display_handle),
             ShmState::new::<Self>(&display_handle, vec![]),
             OutputManagerState::new_with_xdg_output::<Self>(&display_handle),
