@@ -15,6 +15,28 @@
 # compositor's input map. Strings are quoted, booleans are `true` or `false`,
 # and each nested block ends with `end`.
 
+# Optional environment variables for applications launched by Halley.
+# Additions and changes apply to future launches after a valid live reload;
+# already-running applications keep the environment they started with.
+# Removing a variable takes effect after restarting Halley.
+#
+# env:
+#   QT_QPA_PLATFORM "wayland"
+#   QT_QPA_PLATFORMTHEME "qt6ct"
+# end
+
+# Autostart launches session services through the same shell and environment
+# as configured keybind commands. `once` runs only when a real TTY compositor
+# session starts. `on-reload` runs after every valid config reload. Nested
+# Winit development sessions run neither category.
+autostart:
+  # once "waybar"
+  # once "mako"
+  # once "dms run"
+
+  # on-reload "notify-send 'Halley configuration reloaded'"
+end
+
 # One `output:` block per physical monitor - not a wrapper section, just
 # repeat the block for each one. Commented out by default: an active block
 # whose `name` happens to match a real connector on your machine would force

@@ -106,6 +106,16 @@ fn example_config_parses_end_to_end() {
     assert_eq!(screenshot.modifiers, halley_config::Modifiers::default());
 }
 
+#[test]
+fn example_config_keeps_environment_and_autostart_inactive() {
+    let config = RuneConfig::from_file(EXAMPLE_PATH).expect("example config parses");
+    let runtime = halley_config::parse_runtime_config(&config).expect("runtime config parses");
+
+    assert!(runtime.env.is_empty());
+    assert!(runtime.autostart.once.is_empty());
+    assert!(runtime.autostart.on_reload.is_empty());
+}
+
 /// Confirms the shipped example's `zoom:` section parses to non-default
 /// values matching the file's own documented settings - a lighter version of
 /// `example_config_parses_end_to_end` for the zoom section specifically.
