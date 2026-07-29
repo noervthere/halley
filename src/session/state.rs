@@ -58,6 +58,8 @@ pub struct Session<D: SessionDriver> {
     pub keyboard: Keyboard,
     pub pointer: Pointer,
     pub cursor: CursorManager,
+    pub(super) cursor_policy: super::cursor::Policy<D>,
+    pub(super) publish_session_environment: bool,
     pub wayland: WaylandState,
     pub seat_state: SeatState<Self>,
     pub seat: Seat<Self>,
@@ -131,6 +133,10 @@ impl<D: SessionDriver> Session<D> {
     pub fn apply_common_config(&mut self, config: &halley_config::RuntimeConfig) {
         self.keyboard.reload(&config.keybinds, D::BACKEND_KIND);
         let cursor_changed = self.cursor.reload(&config.cursor);
+        self.cursor_policy.reload(&config.cursor);
+        if cursor_changed && self.publish_session_environment {
+            super::environment::publish_cursor(&config.cursor);
+        }
         let redraw =
             self.decorations != config.decorations || self.zoom != config.zoom || cursor_changed;
         self.decorations = config.decorations;

@@ -123,6 +123,8 @@ pub fn run() {
         keyboard: Keyboard::from_config(&runtime_config.keybinds, BackendKind::Winit),
         pointer: Pointer::new((100.0, 100.0)),
         cursor: CursorManager::new(&runtime_config.cursor),
+        cursor_policy: super::cursor::Policy::new(&runtime_config.cursor, event_loop.handle()),
+        publish_session_environment: false,
         wayland,
         seat_state,
         seat,

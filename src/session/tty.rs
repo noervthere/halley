@@ -162,6 +162,8 @@ pub fn run(session_mode: bool) {
         keyboard: Keyboard::from_config(&runtime_config.keybinds, BackendKind::Tty),
         pointer: Pointer::new((100.0, 100.0)),
         cursor: CursorManager::new(&runtime_config.cursor),
+        cursor_policy: super::cursor::Policy::new(&runtime_config.cursor, loop_handle.clone()),
+        publish_session_environment: session_mode,
         wayland,
         seat_state,
         seat,
@@ -207,7 +209,7 @@ pub fn run(session_mode: bool) {
     let socket_name = super::protocol::init_wayland_listener(display, &mut event_loop);
     eventline::info!("wayland socket ready, WAYLAND_DISPLAY={socket_name:?}");
     if session_mode {
-        super::environment::activate_session(&socket_name);
+        super::environment::activate_session(&socket_name, &runtime_config.cursor);
     }
     if let Err(err) = crate::xwayland::start(&event_loop.handle(), &mut app, session_mode) {
         eventline::warn!("xwayland: unavailable: {err}");

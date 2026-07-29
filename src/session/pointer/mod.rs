@@ -174,7 +174,14 @@ pub(super) fn constrain_motion<D: SessionDriver>(
 }
 
 pub(super) fn cursor_visible<D: SessionDriver>(session: &Session<D>) -> bool {
-    constraints::cursor_visible(session)
+    cursor_presentation_visible(
+        session.cursor_policy.visible(),
+        constraints::cursor_visible(session),
+    )
+}
+
+fn cursor_presentation_visible(policy_visible: bool, constraint_visible: bool) -> bool {
+    policy_visible && constraint_visible
 }
 
 pub(super) fn prepare_keyboard_focus_change<D: SessionDriver>(
@@ -210,7 +217,7 @@ pub(super) fn apply_position_hint<D: SessionDriver>(
 mod tests {
     use super::{
         AbsoluteMotionPolicy, constraint_requires_stable_presentation, constraints,
-        should_emit_absolute_motion,
+        cursor_presentation_visible, should_emit_absolute_motion,
     };
 
     #[test]
@@ -259,5 +266,13 @@ mod tests {
             constraints::ConstraintKind::Confined
         )));
         assert!(constraint_requires_stable_presentation(None));
+    }
+
+    #[test]
+    fn policy_hiding_and_pointer_lock_independently_mask_presentation() {
+        assert!(cursor_presentation_visible(true, true));
+        assert!(!cursor_presentation_visible(false, true));
+        assert!(!cursor_presentation_visible(true, false));
+        assert!(!cursor_presentation_visible(false, false));
     }
 }

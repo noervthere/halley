@@ -15,8 +15,16 @@ pub(super) fn spawn_detached(
     command_line: &str,
     wayland_display: &OsStr,
     x11_display: Option<&OsStr>,
+    cursor_theme: &str,
+    cursor_size: u8,
 ) {
-    let mut process = detached_process(command_line, wayland_display, x11_display);
+    let mut process = detached_process(
+        command_line,
+        wayland_display,
+        x11_display,
+        cursor_theme,
+        cursor_size,
+    );
 
     match process.spawn() {
         Ok(mut child) => {
@@ -39,12 +47,16 @@ fn detached_process(
     command_line: &str,
     wayland_display: &OsStr,
     x11_display: Option<&OsStr>,
+    cursor_theme: &str,
+    cursor_size: u8,
 ) -> Command {
     let mut process = Command::new("sh");
     process
         .arg("-c")
         .arg(command_line)
         .env("WAYLAND_DISPLAY", wayland_display)
+        .env("XCURSOR_THEME", cursor_theme)
+        .env("XCURSOR_SIZE", cursor_size.to_string())
         .env_remove("DISPLAY")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -78,6 +90,8 @@ mod tests {
             "grim -g \"$(slurp)\" ~/shot.png",
             OsStr::new("wayland-9"),
             Some(OsStr::new(":12")),
+            "Breeze",
+            32,
         );
         assert_eq!(process.get_program(), "sh");
         assert_eq!(
@@ -92,11 +106,19 @@ mod tests {
                 .get_envs()
                 .any(|(name, value)| name == "DISPLAY" && value == Some(OsStr::new(":12")))
         );
+        assert!(process.get_envs().any(|(name, value)| {
+            name == "XCURSOR_THEME" && value == Some(OsStr::new("Breeze"))
+        }));
+        assert!(
+            process
+                .get_envs()
+                .any(|(name, value)| { name == "XCURSOR_SIZE" && value == Some(OsStr::new("32")) })
+        );
     }
 
     #[test]
     fn unavailable_xwayland_removes_ambient_display() {
-        let process = detached_process("foot", OsStr::new("wayland-2"), None);
+        let process = detached_process("foot", OsStr::new("wayland-2"), None, "default", 24);
         assert!(
             process
                 .get_envs()

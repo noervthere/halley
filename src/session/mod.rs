@@ -8,6 +8,7 @@ use smithay::wayland::seat::WaylandFocus;
 use crate::wayland::{self, WaylandState};
 
 pub(crate) mod closing;
+mod cursor;
 mod input;
 mod lifecycle;
 pub(crate) mod opening;
@@ -31,6 +32,14 @@ enum SessionControl {
     ToggleFullscreen,
 }
 
+#[derive(Clone, Copy)]
+struct SpawnContext<'a> {
+    socket_name: &'a OsStr,
+    x11_display: Option<&'a OsStr>,
+    cursor_theme: &'a str,
+    cursor_size: u8,
+}
+
 /// Interprets every configured action once for both session backends.
 /// Backends provide the camera selected by their own output routing and
 /// translate the returned quit request into their loop's native mechanism.
@@ -38,8 +47,7 @@ fn dispatch_action(
     action: Action,
     wayland: &WaylandState,
     terminal_command: Option<&str>,
-    socket_name: &OsStr,
-    x11_display: Option<&OsStr>,
+    spawn_context: SpawnContext<'_>,
     camera: Option<&mut Camera>,
     zoom: &halley_config::Zoom,
 ) -> SessionControl {
@@ -48,7 +56,13 @@ fn dispatch_action(
         Action::CloseFocusedWindow => crate::window::close_focused(wayland),
         Action::ToggleFullscreen => return SessionControl::ToggleFullscreen,
         Action::OpenTerminal => match terminal_command {
-            Some(command) => spawn::spawn_detached(command, socket_name, x11_display),
+            Some(command) => spawn::spawn_detached(
+                command,
+                spawn_context.socket_name,
+                spawn_context.x11_display,
+                spawn_context.cursor_theme,
+                spawn_context.cursor_size,
+            ),
             None => eventline::warn!("keybinds: no terminal configured or found on PATH"),
         },
         Action::ZoomOut => {
@@ -67,7 +81,13 @@ fn dispatch_action(
             }
         }
         Action::Screenshot => return SessionControl::Screenshot,
-        Action::Spawn(command) => spawn::spawn_detached(&command, socket_name, x11_display),
+        Action::Spawn(command) => spawn::spawn_detached(
+            &command,
+            spawn_context.socket_name,
+            spawn_context.x11_display,
+            spawn_context.cursor_theme,
+            spawn_context.cursor_size,
+        ),
     }
     SessionControl::Continue
 }

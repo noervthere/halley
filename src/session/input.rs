@@ -68,8 +68,12 @@ fn dispatch_action<D: SessionDriver>(
         action,
         &session.wayland,
         session.keyboard.terminal_command(),
-        socket_name,
-        x11_display.as_deref(),
+        super::SpawnContext {
+            socket_name,
+            x11_display: x11_display.as_deref(),
+            cursor_theme: session.cursor.theme_name(),
+            cursor_size: session.cursor.size(),
+        },
         camera,
         &session.zoom,
     ) {
@@ -139,6 +143,16 @@ where
     B: InputBackend,
 {
     let position_before = session.pointer.position();
+    if matches!(
+        event,
+        InputEvent::PointerMotion { .. }
+            | InputEvent::PointerMotionAbsolute { .. }
+            | InputEvent::PointerButton { .. }
+            | InputEvent::PointerAxis { .. }
+    ) && session.cursor_policy.pointer_activity()
+    {
+        session.request_redraw();
+    }
     let pointer_handle = session
         .seat
         .get_pointer()
@@ -551,6 +565,9 @@ where
         let keycode = key_event.key_code();
         let state = key_event.state();
         let time = key_event.time_msec();
+        if state == KeyState::Pressed && session.cursor_policy.keyboard_press() {
+            session.request_redraw();
+        }
         let release_is_suppressed =
             state == KeyState::Released && session.suppressed_keys.release_is_suppressed(keycode);
         let accessibility = crate::accessibility::process_key(

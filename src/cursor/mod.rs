@@ -1,4 +1,5 @@
 mod theme;
+mod visibility;
 
 pub(crate) mod render;
 pub(crate) mod surface;
@@ -15,6 +16,7 @@ use xcursor::CursorTheme;
 
 pub(crate) use theme::CursorFrame;
 use theme::{PreparedCursor, load_prepared_cursor};
+pub(crate) use visibility::{TimerDirective, Visibility};
 
 pub(crate) enum RenderCursor {
     Hidden,
@@ -121,6 +123,14 @@ impl CursorManager {
             CursorImageStatus::Named(icon) => self.is_animated(*icon, output_scale),
             CursorImageStatus::Surface(_) | CursorImageStatus::Hidden => false,
         }
+    }
+
+    pub fn theme_name(&self) -> &str {
+        &self.theme_name
+    }
+
+    pub fn size(&self) -> u8 {
+        self.size
     }
 
     fn prepared(&self, icon: CursorIcon, output_scale: i32) -> Rc<PreparedCursor> {
