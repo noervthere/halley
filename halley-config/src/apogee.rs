@@ -39,7 +39,7 @@ pub fn parse_apogee(config: &RuneConfig) -> Apogee {
         gap: config.get_or("apogee.gap", defaults.gap).clamp(0.0, 256.0),
         max_rows: config
             .get_or("apogee.max-rows", defaults.max_rows)
-            .clamp(1, 32),
+            .clamp(1, 5),
         background_dim: config
             .get_or("apogee.background-dim", defaults.background_dim)
             .clamp(0.0, 1.0),

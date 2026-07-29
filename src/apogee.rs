@@ -5,6 +5,8 @@ use halley_core::field::NodeId;
 use smithay::desktop::{Space, Window};
 use smithay::utils::{Logical, Point, Rectangle};
 
+mod layout;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Direction {
     Left,
@@ -394,20 +396,17 @@ fn build_layout(
             .or_default()
             .push(record.id);
     }
-    for ids in by_output.values_mut() {
-        ids.sort_by_key(|id| {
-            (
-                std::cmp::Reverse(nodes.last_focus_ms().get(id).copied().unwrap_or(0)),
-                std::cmp::Reverse(id.as_u64()),
-            )
-        });
-    }
-
     let mut tiles = Vec::new();
-    for output in space.outputs() {
-        let Some(output_rect) = space.output_geometry(output) else {
-            continue;
-        };
+    let mut outputs = space
+        .outputs()
+        .filter_map(|output| {
+            space
+                .output_geometry(output)
+                .map(|geometry| (output, geometry))
+        })
+        .collect::<Vec<_>>();
+    outputs.sort_by_key(|(output, geometry)| (geometry.loc.x, geometry.loc.y, output.name()));
+    for (output, output_rect) in outputs {
         let Some(ids) = by_output.get(&output.name()) else {
             continue;
         };
@@ -432,43 +431,56 @@ fn layout_output(
     if ids.is_empty() {
         return Vec::new();
     }
-    let gap = config.gap.round() as i32;
-    let rows = (ids.len() as u32).min(config.max_rows).max(1) as usize;
-    let columns = ids.len().div_ceil(rows);
-    let outer = gap.max(16);
-    let available_w = (bounds.size.w - outer * 2 - gap * (columns as i32 - 1)).max(1);
-    let available_h = (bounds.size.h - outer * 2 - gap * (rows as i32 - 1)).max(1);
-    let cell_w = (available_w / columns as i32).max(1);
-    let cell_h = (available_h / rows as i32).max(1);
-    ids.iter()
-        .enumerate()
-        .filter_map(|(index, id)| {
+    let entries = ids
+        .iter()
+        .filter_map(|id| {
             let record = nodes.record(*id)?;
-            let column = index / rows;
-            let row = index % rows;
-            let aspect =
-                record.geometry.size.w.max(1) as f32 / record.geometry.size.h.max(1) as f32;
-            let preview_h = (cell_h - 48).max(1);
-            let scale = (cell_w as f32 / record.geometry.size.w.max(1) as f32)
-                .min(preview_h as f32 / record.geometry.size.h.max(1) as f32);
-            let width = (record.geometry.size.w as f32 * scale)
-                .round()
-                .clamp(1.0, cell_w as f32) as i32;
-            let height = (width as f32 / aspect).round().clamp(1.0, preview_h as f32) as i32;
-            let cell_x = bounds.loc.x + outer + column as i32 * (cell_w + gap);
-            let cell_y = bounds.loc.y + outer + row as i32 * (cell_h + gap);
-            Some(Tile {
-                id: *id,
+            let node = nodes.field.node(*id)?;
+            let width = record.geometry.size.w.max(1) as f32;
+            let height = record.geometry.size.h.max(1) as f32;
+            Some((
+                *id,
+                layout::Item {
+                    x: node.pos.x,
+                    y: node.pos.y,
+                    aspect: (width / height).clamp(0.25, 4.5),
+                    stable_key: id.as_u64(),
+                    weight: width * height,
+                },
+            ))
+        })
+        .collect::<Vec<_>>();
+    // Old Halley reserved its upper core rail even when no cluster cores were
+    // present. Keeping the same band is part of Apogee's recognizable layout.
+    let upper_band = (bounds.size.h.max(1) as f32 * 0.215).clamp(140.0, 236.0);
+    let mosaic_height = (bounds.size.h as f32 - upper_band).round().max(64.0) as i32;
+    let slots = layout::mosaic(
+        &entries.iter().map(|(_, item)| *item).collect::<Vec<_>>(),
+        bounds.size.w,
+        mosaic_height,
+        config.gap.max(0.0),
+        config.max_rows.clamp(1, 5) as usize,
+    );
+    entries
+        .into_iter()
+        .zip(slots)
+        .map(|((id, _), slot)| {
+            let width = slot.w.round().max(1.0) as i32;
+            let height = slot.h.round().max(1.0) as i32;
+            Tile {
+                id,
                 output: output.clone(),
                 target: Rectangle::new(
                     (
-                        cell_x + (cell_w - width) / 2,
-                        cell_y + (cell_h - height) / 2,
+                        bounds.loc.x + (slot.cx - slot.w * 0.5).round() as i32,
+                        bounds.loc.y
+                            + upper_band.round() as i32
+                            + (slot.cy - slot.h * 0.5).round() as i32,
                     )
                         .into(),
                     (width, height).into(),
                 ),
-            })
+            }
         })
         .collect()
 }
