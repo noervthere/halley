@@ -138,6 +138,16 @@ struct Layout {
     alpha: f32,
 }
 
+#[derive(Clone, Copy)]
+struct LayoutContext<'a> {
+    output_name: &'a str,
+    output_geometry: Rectangle<i32, Logical>,
+    config: halley_config::Bearings,
+    mix: f32,
+    nodes: &'a crate::nodes::NodesState,
+    camera: &'a halley_core::camera::Camera,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn elements(
     renderer: &mut GlesRenderer,
@@ -150,26 +160,29 @@ pub fn elements(
     node_renderer: &mut super::node::NodeRenderer,
     ui_text: &mut super::text::UiTextRenderer,
 ) -> Result<Vec<SceneElement>, Box<dyn Error>> {
-    let mix = bearings.mix(&output.name());
+    let output_name = output.name();
+    let mix = bearings.mix(&output_name);
     if mix <= 0.002 {
-        bearings.set_hitboxes(&output.name(), Vec::new());
+        bearings.set_hitboxes(&output_name, Vec::new());
         return Ok(Vec::new());
     }
-    let Some(camera) = cameras.get(&output.name()) else {
+    let Some(camera) = cameras.get(&output_name) else {
         return Ok(Vec::new());
     };
     let layouts = collect_layouts(
         renderer,
-        &output.name(),
-        output_geometry,
-        bearings.config,
-        mix,
-        nodes,
-        camera,
+        LayoutContext {
+            output_name: &output_name,
+            output_geometry,
+            config: bearings.config,
+            mix,
+            nodes,
+            camera,
+        },
         ui_text,
     )?;
     bearings.set_hitboxes(
-        &output.name(),
+        &output_name,
         layouts
             .iter()
             .map(|layout| crate::bearings::BearingHitbox {
@@ -179,21 +192,19 @@ pub fn elements(
             .collect(),
     );
 
-    let blur_patches = bearings
-        .config
-        .blur
-        .then(|| {
-            layouts
-                .iter()
-                .filter(|layout| layout.alpha >= 0.04)
-                .map(|layout| super::bearing_blur::BlurPatch {
-                    rect: layout.chip,
-                    radius: 11.0,
-                    alpha: layout.alpha,
-                })
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
+    let blur_patches = if bearings.config.blur {
+        layouts
+            .iter()
+            .filter(|layout| layout.alpha >= 0.04)
+            .map(|layout| super::bearing_blur::BlurPatch {
+                rect: layout.chip,
+                radius: 11.0,
+                alpha: layout.alpha,
+            })
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
     let mut foreground = Vec::new();
     let mut backgrounds = Vec::new();
     for layout in layouts {
@@ -286,7 +297,7 @@ pub fn elements(
     foreground.extend(backgrounds);
     if let Some(blur) = bearings_renderer.blur_element(
         renderer,
-        &output.name(),
+        &output_name,
         output_geometry.size,
         blur_patches,
     )? {
@@ -297,14 +308,17 @@ pub fn elements(
 
 fn collect_layouts(
     renderer: &mut GlesRenderer,
-    output_name: &str,
-    output_geometry: Rectangle<i32, Logical>,
-    config: halley_config::Bearings,
-    mix: f32,
-    nodes: &crate::nodes::NodesState,
-    camera: &halley_core::camera::Camera,
+    context: LayoutContext<'_>,
     ui_text: &mut super::text::UiTextRenderer,
 ) -> Result<Vec<Layout>, Box<dyn Error>> {
+    let LayoutContext {
+        output_name,
+        output_geometry,
+        config,
+        mix,
+        nodes,
+        camera,
+    } = context;
     let center =
         crate::camera::global_center((camera.center.x, camera.center.y).into(), output_geometry);
     let viewport = Viewport::new(
