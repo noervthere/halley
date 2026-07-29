@@ -149,6 +149,40 @@ impl Default for WindowOpenAnimation {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WindowCloseAnimationType {
+    #[default]
+    Shrink,
+    Fade,
+}
+
+impl WindowCloseAnimationType {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "shrink" => Some(Self::Shrink),
+            "fade" => Some(Self::Fade),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WindowCloseAnimation {
+    pub enabled: bool,
+    pub animation_type: WindowCloseAnimationType,
+    pub duration_ms: u32,
+}
+
+impl Default for WindowCloseAnimation {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            animation_type: WindowCloseAnimationType::default(),
+            duration_ms: 270,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FullscreenAnimation {
     pub enabled: bool,
@@ -168,6 +202,7 @@ impl Default for FullscreenAnimation {
 pub struct Animations {
     pub enabled: bool,
     pub window_open: WindowOpenAnimation,
+    pub window_close: WindowCloseAnimation,
     pub fullscreen: FullscreenAnimation,
 }
 
@@ -176,6 +211,7 @@ impl Default for Animations {
         Self {
             enabled: true,
             window_open: WindowOpenAnimation::default(),
+            window_close: WindowCloseAnimation::default(),
             fullscreen: FullscreenAnimation::default(),
         }
     }
@@ -218,6 +254,22 @@ pub fn parse_animations(config: &RuneConfig) -> Animations {
             ),
             animation_type,
             motion: window_open_motion,
+        },
+        window_close: WindowCloseAnimation {
+            enabled: config.get_or(
+                "animations.window-close.enabled",
+                defaults.window_close.enabled,
+            ),
+            animation_type: config
+                .get_optional::<String>("animations.window-close.type")
+                .ok()
+                .flatten()
+                .and_then(|value| WindowCloseAnimationType::parse(&value))
+                .unwrap_or(defaults.window_close.animation_type),
+            duration_ms: config.get_or(
+                "animations.window-close.duration-ms",
+                defaults.window_close.duration_ms,
+            ),
         },
         fullscreen: FullscreenAnimation {
             enabled: config.get_or("animations.fullscreen.enabled", defaults.fullscreen.enabled),
@@ -282,7 +334,33 @@ end
                         curve: AnimationCurve::Elastic,
                     }),
                 },
+                window_close: WindowCloseAnimation::default(),
                 fullscreen: FullscreenAnimation::default(),
+            }
+        );
+    }
+
+    #[test]
+    fn parses_window_close_animation() {
+        let config = RuneConfig::from_str(
+            r#"
+animations:
+  window-close:
+    enabled false
+    type "fade"
+    duration-ms 410
+  end
+end
+"#,
+        )
+        .expect("valid rune-cfg source");
+
+        assert_eq!(
+            parse_animations(&config).window_close,
+            WindowCloseAnimation {
+                enabled: false,
+                animation_type: WindowCloseAnimationType::Fade,
+                duration_ms: 410,
             }
         );
     }
@@ -295,6 +373,14 @@ end
         assert_eq!(parse_animations(&config), Animations::default());
         assert!(Animations::default().enabled);
         assert!(Animations::default().window_open.enabled);
+        assert_eq!(
+            Animations::default().window_close,
+            WindowCloseAnimation {
+                enabled: true,
+                animation_type: WindowCloseAnimationType::Shrink,
+                duration_ms: 270,
+            }
+        );
         assert_eq!(
             Animations::default().window_open.animation_type,
             WindowOpenAnimationType::CenterOut
@@ -378,6 +464,21 @@ end
                 duration_ms: 300,
                 curve: AnimationCurve::Linear,
             })
+        );
+
+        let config = RuneConfig::from_str(
+            r#"
+animations:
+  window-close:
+    type "vanish"
+  end
+end
+"#,
+        )
+        .expect("valid rune-cfg source");
+        assert_eq!(
+            parse_animations(&config).window_close.animation_type,
+            WindowCloseAnimationType::Shrink
         );
     }
 

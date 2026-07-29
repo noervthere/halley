@@ -12,7 +12,8 @@ pub mod zoom;
 
 pub use animations::{
     AnimationCurve, AnimationMotion, Animations, EasingMotion, FullscreenAnimation, SpringMotion,
-    WindowOpenAnimation, WindowOpenAnimationType, load_animations, parse_animations,
+    WindowCloseAnimation, WindowCloseAnimationType, WindowOpenAnimation, WindowOpenAnimationType,
+    load_animations, parse_animations,
 };
 pub use bootstrap::{
     DEFAULT_CONFIG, bootstrap_default_config, bootstrap_default_config_at, config_path,
