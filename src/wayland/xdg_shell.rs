@@ -136,7 +136,7 @@ pub fn handle_commit(
 
     if mapping_transition(false, has_buffer) == MappingTransition::Map {
         let window = wayland.unmapped.remove(surface).expect("checked above");
-        let placement = crate::session::routing::initial_window_placement(
+        let placement = crate::window::routing::initial_window_placement(
             wayland,
             cameras,
             primary_output,

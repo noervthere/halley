@@ -14,7 +14,6 @@ mod lifecycle;
 pub(crate) mod opening;
 mod pointer;
 mod protocol;
-pub(crate) mod routing;
 mod state;
 mod tty_frame;
 

@@ -9,7 +9,7 @@ pub(crate) struct InitialWindowPlacement {
     pub location: Point<i32, Logical>,
 }
 
-/// Resolves one initial-placement policy for every normal toplevel protocol.
+/// Resolves the initial-placement policy shared by every normal toplevel protocol.
 ///
 /// The most recently click-selected output is authoritative. The backend
 /// primary is only a startup or output-removal fallback.

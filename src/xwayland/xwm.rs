@@ -131,7 +131,7 @@ fn admit_window<D: SessionDriver>(session: &mut Session<D>, xid: u32) {
         return;
     };
     let opening_size = OpeningPlacement::preferred_size(initial_size, window.geometry().size);
-    let placement = crate::session::routing::initial_window_placement(
+    let placement = crate::window::routing::initial_window_placement(
         &session.wayland,
         &session.cameras,
         session.driver.primary_output(),

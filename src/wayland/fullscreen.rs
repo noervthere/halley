@@ -568,7 +568,7 @@ impl FullscreenManager {
                 Some(restore) if restore.output.as_deref() == Some(target_output.as_str()) => {
                     restore.location
                 }
-                _ => crate::session::routing::centered_location_for_size(
+                _ => crate::window::routing::centered_location_for_size(
                     wayland,
                     cameras,
                     &output,
