@@ -121,6 +121,14 @@ fn example_config_zoom_section_parses() {
 }
 
 #[test]
+fn example_config_cursor_section_parses() {
+    let config = RuneConfig::from_file(EXAMPLE_PATH).expect("example config parses");
+    let cursor = halley_config::parse_cursor(&config);
+
+    assert_eq!(cursor, halley_config::Cursor::default());
+}
+
+#[test]
 fn example_config_window_open_animation_parses() {
     let config = RuneConfig::from_file(EXAMPLE_PATH).expect("example config parses");
     let animations = halley_config::parse_animations(&config);

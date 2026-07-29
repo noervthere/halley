@@ -4,9 +4,9 @@ use std::path::Path;
 use rune_cfg::RuneConfig;
 
 use crate::{
-    Animations, Decorations, Keybinds, OutputConfig, OutputParseError, Screenshot, Zoom,
-    parse_animations, parse_decorations, parse_keybinds, parse_outputs_checked, parse_screenshot,
-    parse_zoom,
+    Animations, Cursor, Decorations, Keybinds, OutputConfig, OutputParseError, Screenshot, Zoom,
+    parse_animations, parse_cursor, parse_decorations, parse_keybinds, parse_outputs_checked,
+    parse_screenshot, parse_zoom,
 };
 
 /// One validated snapshot of every setting the running compositor currently
@@ -18,6 +18,7 @@ pub struct RuntimeConfig {
     pub decorations: Decorations,
     pub zoom: Zoom,
     pub screenshot: Screenshot,
+    pub cursor: Cursor,
     pub animations: Animations,
     pub outputs: Vec<OutputConfig>,
 }
@@ -65,6 +66,7 @@ pub fn parse_runtime_config(config: &RuneConfig) -> Result<RuntimeConfig, Runtim
         decorations: parse_decorations(config),
         zoom: parse_zoom(config),
         screenshot: parse_screenshot(config),
+        cursor: parse_cursor(config),
         animations: parse_animations(config),
         outputs: parse_outputs_checked(config)?,
     })
@@ -97,6 +99,13 @@ screenshot:
   directory "/tmp/screenshots"
 end
 
+cursor:
+  theme "Breeze"
+  size 32
+  hide-when-typing true
+  hide-after-ms 750
+end
+
 decorations:
   border:
     size 7
@@ -119,6 +128,10 @@ end
         assert_eq!(runtime.outputs.len(), 1);
         assert!(!runtime.zoom.enabled);
         assert_eq!(runtime.screenshot.directory, "/tmp/screenshots");
+        assert_eq!(runtime.cursor.theme, "Breeze");
+        assert_eq!(runtime.cursor.size, 32);
+        assert!(runtime.cursor.hide_when_typing);
+        assert_eq!(runtime.cursor.hide_after_ms, Some(750));
         assert_eq!(runtime.decorations.border_width_px, 7);
         assert!(!runtime.animations.enabled);
         assert_eq!(runtime.keybinds.binds.len(), 1);

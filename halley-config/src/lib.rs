@@ -1,6 +1,7 @@
 pub mod animations;
 pub mod bootstrap;
 pub mod chord;
+pub mod cursor;
 pub mod decorations;
 pub mod keybinds;
 pub mod output;
@@ -19,6 +20,7 @@ pub use bootstrap::{
     DEFAULT_CONFIG, bootstrap_default_config, bootstrap_default_config_at, config_path,
 };
 pub use chord::parse_chord;
+pub use cursor::{Cursor, parse_cursor};
 pub use decorations::{BorderColor, Decorations, load_decorations, parse_decorations};
 pub use keybinds::{Action, DefaultTerminal, Keybind, Keybinds, ModifierKey, Modifiers};
 pub use output::{

@@ -55,6 +55,27 @@
 # Output reloads are diffed per connector. Changing one output does not force
 # an unchanged output through a redundant mode set.
 
+# Cursor themes use the standard Xcursor search path and inheritance rules.
+# Changes are applied immediately to Halley's cursor and exported to programs
+# launched after the reload.
+cursor:
+  # `"default"` follows the desktop's configured Xcursor theme. Theme names
+  # are case-sensitive; use `"Adwaita"` to require that theme explicitly.
+  theme "default"
+
+  # Base logical size. Halley selects the closest frame supplied by the theme
+  # for each output scale.
+  size 24
+
+  # Hide after a physical keyboard press, without changing pointer focus,
+  # grabs, or constraints. Pointer motion, buttons, and scrolling reveal it.
+  hide-when-typing false
+
+  # Hide after this many milliseconds without pointer activity. Set to 0 to
+  # disable inactivity hiding.
+  hide-after-ms 2000
+end
+
 # Window decoration settings. At present Halley draws one flat, fully opaque
 # border around each managed window.
 decorations:
