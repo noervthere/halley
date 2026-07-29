@@ -126,13 +126,13 @@ impl WindowCloseAnimations {
         true
     }
 
+    pub fn has_pending(&self, surface: &WlSurface) -> bool {
+        self.pending.contains_key(surface)
+    }
+
     pub fn cancel(&mut self, surface: &WlSurface) {
         self.pending.remove(surface);
         self.active.remove(surface);
-    }
-
-    pub fn discard_pending(&mut self, surface: &WlSurface) {
-        self.pending.remove(surface);
     }
 
     pub fn reload(&mut self, config: Animations) {

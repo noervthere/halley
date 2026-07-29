@@ -16,6 +16,7 @@ use smithay::output::Output;
 use smithay::reexports::wayland_server::DisplayHandle;
 use smithay::reexports::wayland_server::backend::{ClientData, ClientId, DisconnectReason};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+use smithay::utils::{Logical, Point};
 use smithay::wayland::compositor::{CompositorClientState, CompositorState};
 use smithay::wayland::dmabuf::{DmabufGlobal, DmabufState};
 use smithay::wayland::fractional_scale::FractionalScaleManagerState;
@@ -114,6 +115,9 @@ pub struct WaylandState {
     /// buffer to show, without mixing placement policy into surface
     /// lifecycle tracking.
     pub unmapped: HashMap<WlSurface, Window>,
+    /// Last mapped position retained across a null-buffer unmap. Initial maps
+    /// have no entry and use normal placement policy.
+    pub unmapped_locations: HashMap<WlSurface, Point<i32, Logical>>,
     /// Layer surfaces that have not attached a buffer since creation (or
     /// since a null-buffer unmap). The Smithay `LayerMap` retains the role so
     /// it can calculate and send the next configure; this set records the
@@ -176,6 +180,7 @@ impl WaylandState {
             popup_manager: PopupManager::default(),
             space: Space::default(),
             unmapped: HashMap::new(),
+            unmapped_locations: HashMap::new(),
             unmapped_layers: HashSet::new(),
             focused_layer: None,
             focused_window: None,

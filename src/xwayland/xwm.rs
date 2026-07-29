@@ -150,6 +150,9 @@ fn admit_window<D: SessionDriver>(session: &mut Session<D>, xid: u32) {
         .wayland
         .space
         .map_element(window.clone(), location, true);
+    if let Some(wl_surface) = window.wl_surface() {
+        crate::session::closing::mapped(session, wl_surface.as_ref());
+    }
     session
         .xwayland
         .opening_placements
@@ -653,13 +656,10 @@ fn forget_window<D: SessionDriver>(session: &mut Session<D>, surface: &X11Surfac
     let Some(window) = window_for_surface(session, surface) else {
         return;
     };
+    crate::session::closing::capture_window(session, &window);
     if let Some(wl_surface) = window.wl_surface().map(|surface| surface.into_owned()) {
         crate::session::prepare_window_unmap(session, &wl_surface);
-        session.opening_origins.forget(&wl_surface);
-        session.fullscreen.remove(&wl_surface);
-        session.fullscreen_textures.remove(&wl_surface);
-        session.window_open_animations.remove(&wl_surface);
-        crate::input::grab::forget_resize_anchor(&mut session.resize_anchor, &wl_surface);
+        crate::session::finish_window_unmap(session, &wl_surface);
         if session.wayland.focused_window.as_ref() == Some(&wl_surface) {
             session.wayland.focused_window = None;
         }

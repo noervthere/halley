@@ -16,11 +16,11 @@ pub fn commit<D: 'static>(
     wayland: &mut WaylandState,
     cameras: &crate::camera::OutputCameras,
     surface: &WlSurface,
-) -> Option<WlSurface> {
+) -> xdg_shell::ToplevelCommit {
     on_commit_buffer_handler::<D>(surface);
 
     if is_sync_subsurface(surface) {
-        return None;
+        return xdg_shell::ToplevelCommit::None;
     }
 
     // Subsurface commits should still refresh/potentially-map the root
@@ -30,7 +30,7 @@ pub fn commit<D: 'static>(
     popup::handle_commit(&mut wayland.popup_manager, surface);
 
     if layer_shell::handle_commit(wayland, &root) {
-        return None;
+        return xdg_shell::ToplevelCommit::None;
     }
 
     let owning_window = wayland

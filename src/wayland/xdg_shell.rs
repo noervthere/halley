@@ -9,6 +9,38 @@ use crate::camera::OutputCameras;
 
 use super::WaylandState;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ToplevelCommit {
+    None,
+    Mapped(WlSurface),
+    Unmapped(WlSurface),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MappingTransition {
+    StayMapped,
+    Unmap,
+    Map,
+    StayUnmapped,
+}
+
+fn mapping_transition(currently_mapped: bool, has_buffer: bool) -> MappingTransition {
+    match (currently_mapped, has_buffer) {
+        (true, true) => MappingTransition::StayMapped,
+        (true, false) => MappingTransition::Unmap,
+        (false, true) => MappingTransition::Map,
+        (false, false) => MappingTransition::StayUnmapped,
+    }
+}
+
+pub fn will_unmap(wayland: &WaylandState, surface: &WlSurface) -> bool {
+    wayland.space.elements().any(|window| {
+        window
+            .toplevel()
+            .is_some_and(|toplevel| toplevel.wl_surface() == surface)
+    }) && !with_renderer_surface_state(surface, |state| state.buffer().is_some()).unwrap_or(false)
+}
+
 /// A new toplevel role was created - stash it as unmapped, nothing shown
 /// yet. Deliberately just this: no spawn-rule resolution, no monitor/
 /// cluster placement, no reveal animation. Old halley fused exactly this
@@ -29,6 +61,7 @@ pub fn new_toplevel(wayland: &mut WaylandState, surface: ToplevelSurface) {
 /// frame. Focus clears to `None`; there is no fallback-refocus policy yet.
 pub fn toplevel_destroyed(wayland: &mut WaylandState, surface: &ToplevelSurface) {
     wayland.unmapped.remove(surface.wl_surface());
+    wayland.unmapped_locations.remove(surface.wl_surface());
     let mapped = wayland
         .space
         .elements()
@@ -57,24 +90,61 @@ pub fn handle_commit(
     wayland: &mut WaylandState,
     cameras: &OutputCameras,
     surface: &WlSurface,
-) -> Option<WlSurface> {
-    let window = wayland.unmapped.get(surface)?;
-    let toplevel = window.toplevel()?;
+) -> ToplevelCommit {
+    let has_buffer =
+        with_renderer_surface_state(surface, |state| state.buffer().is_some()).unwrap_or(false);
+    let mapped = {
+        wayland
+            .space
+            .elements()
+            .find(|window| {
+                window
+                    .toplevel()
+                    .is_some_and(|toplevel| toplevel.wl_surface() == surface)
+            })
+            .cloned()
+    };
+    if let Some(window) = mapped {
+        match mapping_transition(true, has_buffer) {
+            MappingTransition::StayMapped => return ToplevelCommit::None,
+            MappingTransition::Unmap => {}
+            MappingTransition::Map | MappingTransition::StayUnmapped => unreachable!(),
+        }
+        if let Some(location) = wayland.space.element_location(&window) {
+            wayland.unmapped_locations.insert(surface.clone(), location);
+        }
+        wayland.space.unmap_elem(&window);
+        wayland.unmapped.insert(surface.clone(), window);
+        if wayland.focused_window.as_ref() == Some(surface) {
+            wayland.focused_window = None;
+        }
+        return ToplevelCommit::Unmapped(surface.clone());
+    }
+
+    let Some(window) = wayland.unmapped.get(surface) else {
+        return ToplevelCommit::None;
+    };
+    let Some(toplevel) = window.toplevel() else {
+        return ToplevelCommit::None;
+    };
 
     if !toplevel.is_initial_configure_sent() {
         toplevel.with_pending_state(super::decoration::apply_tiled_hint);
         toplevel.send_configure();
-        return None;
+        return ToplevelCommit::None;
     }
 
-    let has_buffer =
-        with_renderer_surface_state(surface, |state| state.buffer().is_some()).unwrap_or(false);
-    if has_buffer {
+    if mapping_transition(false, has_buffer) == MappingTransition::Map {
         let window = wayland.unmapped.remove(surface).expect("checked above");
         let output = super::focus::selected_output(wayland).cloned();
-        let location = output
-            .as_ref()
-            .map(|output| centered_location(wayland, cameras, output, &window))
+        let location = wayland
+            .unmapped_locations
+            .remove(surface)
+            .or_else(|| {
+                output
+                    .as_ref()
+                    .map(|output| centered_location(wayland, cameras, output, &window))
+            })
             .unwrap_or_else(|| Point::from((0, 0)));
         if let Some(output) = output.as_ref() {
             super::set_window_output(&window, output);
@@ -84,10 +154,10 @@ pub fn handle_commit(
         // Also raises+activates via `focus_and_raise`, same as clicking a
         // window now does.
         crate::window::focus_and_raise(wayland, &window);
-        return Some(surface.clone());
+        return ToplevelCommit::Mapped(surface.clone());
     }
 
-    None
+    ToplevelCommit::None
 }
 
 /// Centers a newly-mapped window on the selected output's live camera.
@@ -150,6 +220,20 @@ mod tests {
         assert_eq!(
             center_window(Point::from((1280.0, 720.0)), Size::from((640, 480))),
             Point::from((960, 480))
+        );
+    }
+
+    #[test]
+    fn mapped_null_buffer_unmaps_and_a_later_buffer_remaps() {
+        assert_eq!(mapping_transition(true, false), MappingTransition::Unmap);
+        assert_eq!(
+            mapping_transition(false, false),
+            MappingTransition::StayUnmapped
+        );
+        assert_eq!(mapping_transition(false, true), MappingTransition::Map);
+        assert_eq!(
+            mapping_transition(true, true),
+            MappingTransition::StayMapped
         );
     }
 }

@@ -38,13 +38,10 @@ pub fn build(
     output_geometry: Rectangle<i32, Logical>,
     request: RenderRequest<'_>,
 ) -> Result<Vec<SceneElement>, Box<dyn Error>> {
-    let output_size = output_geometry.size.to_physical(1);
-    let view = request
+    request
         .cameras
         .view(&output.name())
         .ok_or_else(|| format!("output {:?} has no camera", output.name()))?;
-    let camera_center = crate::camera::global_center(view.center, output_geometry);
-    let zoom_scale = view.scale;
 
     let mut elements = capture_overlay_elements(
         renderer,
@@ -99,9 +96,8 @@ pub fn build(
     let context = LiveWindowContext {
         space: request.space,
         output,
-        output_size,
-        camera_center,
-        zoom_scale,
+        output_geometry,
+        cameras: request.cameras,
         target_presentation_time: request.target_presentation_time,
         focused: request.focused,
         decorations: request.decorations,
@@ -165,14 +161,83 @@ struct StackGroup {
 struct LiveWindowContext<'a> {
     space: &'a smithay::desktop::Space<smithay::desktop::Window>,
     output: &'a Output,
-    output_size: smithay::utils::Size<i32, Physical>,
-    camera_center: Point<f32, Physical>,
-    zoom_scale: f32,
+    output_geometry: Rectangle<i32, Logical>,
+    cameras: &'a crate::camera::OutputCameras,
     target_presentation_time: std::time::Duration,
     focused: Option<&'a smithay::reexports::wayland_server::protocol::wl_surface::WlSurface>,
     decorations: &'a halley_config::Decorations,
     window_open_animations: &'a crate::animation::WindowOpenAnimations,
     fullscreen: &'a crate::wayland::fullscreen::FullscreenManager,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct WindowVisualState {
+    pub(crate) source_geometry: Rectangle<i32, Logical>,
+    pub(crate) camera_rect: Rectangle<i32, Physical>,
+    pub(crate) presentation_rect: Rectangle<i32, Physical>,
+    pub(crate) animated_rect: Rectangle<i32, Physical>,
+    pub(crate) opening_alpha: f32,
+    pub(crate) opening_is_animating: bool,
+    pub(crate) fullscreen: Option<crate::wayland::fullscreen::FullscreenPresentation>,
+    pub(crate) camera_center: Point<f32, Physical>,
+    pub(crate) zoom_scale: f32,
+}
+
+pub(crate) fn window_visual_state(
+    space: &smithay::desktop::Space<smithay::desktop::Window>,
+    cameras: &crate::camera::OutputCameras,
+    window: &smithay::desktop::Window,
+    output: &Output,
+    window_open_animations: &crate::animation::WindowOpenAnimations,
+    fullscreen: &crate::wayland::fullscreen::FullscreenManager,
+    now: std::time::Duration,
+) -> Option<WindowVisualState> {
+    let output_geometry = space.output_geometry(output)?;
+    let output_size = output_geometry.size.to_physical(1);
+    let view = cameras.view(&output.name())?;
+    let camera_center = crate::camera::global_center(view.center, output_geometry);
+    let source_geometry = space.element_geometry(window)?;
+    let window_surface = window.wl_surface()?;
+    let camera_rect = super::camera_rect(
+        source_geometry.to_physical(1),
+        camera_center,
+        output_size,
+        view.scale,
+    );
+    let opening_is_animating = window_open_animations.is_animating(window_surface.as_ref(), now);
+    let opening_visual = window_open_animations
+        .visual(window_surface.as_ref(), now, camera_rect)
+        .unwrap_or_default();
+    let fullscreen = fullscreen.presentation(window_surface.as_ref(), output, now);
+    let presentation_rect = fullscreen
+        .map(|presentation| {
+            let windowed = presentation
+                .windowed_geometry
+                .map(|geometry| {
+                    super::camera_rect(
+                        geometry.to_physical(1),
+                        camera_center,
+                        output_size,
+                        view.scale,
+                    )
+                })
+                .unwrap_or_else(|| presentation.fullscreen_rect(output_size));
+            presentation.client_rect(windowed, output_size)
+        })
+        .unwrap_or(camera_rect);
+    let animated_rect = opening_visual.transform_rect(presentation_rect, presentation_rect);
+
+    Some(WindowVisualState {
+        source_geometry,
+        camera_rect,
+        presentation_rect,
+        animated_rect,
+        opening_alpha: opening_visual.alpha(),
+        opening_is_animating,
+        fullscreen,
+        camera_center,
+        zoom_scale: view.scale,
+    })
 }
 
 fn live_window_elements(
@@ -181,88 +246,61 @@ fn live_window_elements(
     context: LiveWindowContext<'_>,
     fullscreen_textures: &mut super::fullscreen_texture::FullscreenTextureTransitions,
 ) -> Result<Vec<SceneElement>, Box<dyn Error>> {
-    let Some(geometry) = context.space.element_geometry(window) else {
-        return Ok(Vec::new());
-    };
     let Some(location) = context.space.element_location(window) else {
         return Ok(Vec::new());
     };
     let Some(window_surface) = window.wl_surface() else {
         return Ok(Vec::new());
     };
-    let scaled_bbox = super::camera_rect(
-        geometry.to_physical(1),
-        context.camera_center,
-        context.output_size,
-        context.zoom_scale,
-    );
-    let opening_is_animating = context
-        .window_open_animations
-        .is_animating(window_surface.as_ref(), context.target_presentation_time);
-    let opening_visual = context
-        .window_open_animations
-        .visual(
-            window_surface.as_ref(),
-            context.target_presentation_time,
-            scaled_bbox,
-        )
-        .unwrap_or_default();
-    let fullscreen = context.fullscreen.presentation(
-        window_surface.as_ref(),
+    let Some(visual) = window_visual_state(
+        context.space,
+        context.cameras,
+        window,
         context.output,
+        context.window_open_animations,
+        context.fullscreen,
         context.target_presentation_time,
-    );
-    let presentation_bbox = fullscreen
-        .map(|presentation| {
-            let windowed_bbox = presentation
-                .windowed_geometry
-                .map(|geometry| {
-                    super::camera_rect(
-                        geometry.to_physical(1),
-                        context.camera_center,
-                        context.output_size,
-                        context.zoom_scale,
-                    )
-                })
-                .unwrap_or_else(|| presentation.fullscreen_rect(context.output_size));
-            presentation.client_rect(windowed_bbox, context.output_size)
-        })
-        .unwrap_or(scaled_bbox);
-    let animated_bbox = opening_visual.transform_rect(presentation_bbox, presentation_bbox);
-    if animated_bbox.size.w == 0 || animated_bbox.size.h == 0 {
+    ) else {
+        return Ok(Vec::new());
+    };
+    if visual.animated_rect.size.w == 0 || visual.animated_rect.size.h == 0 {
         return Ok(Vec::new());
     }
 
     let mut elements = Vec::new();
     let surface_location = super::window_surface_location(location, window.geometry());
     let (popup_elements, surface_elements) =
-        super::window_surface_elements(renderer, window, surface_location, opening_visual.alpha());
+        super::window_surface_elements(renderer, window, surface_location, visual.opening_alpha);
     elements.extend(popup_elements.into_iter().map(|surface_element| {
         let native_geometry = surface_element.geometry(Scale::from(1.0));
-        let destination = if fullscreen.is_some() {
-            let destination = map_rect(native_geometry, geometry.to_physical(1), presentation_bbox);
-            opening_visual.transform_rect(destination, presentation_bbox)
+        let destination = if visual.fullscreen.is_some() {
+            let destination = map_rect(
+                native_geometry,
+                visual.source_geometry.to_physical(1),
+                visual.presentation_rect,
+            );
+            crate::animation::map_rect(destination, visual.presentation_rect, visual.animated_rect)
         } else {
             let final_destination = super::camera_rect(
                 native_geometry,
-                context.camera_center,
-                context.output_size,
-                context.zoom_scale,
+                visual.camera_center,
+                context.output_geometry.size.to_physical(1),
+                visual.zoom_scale,
             );
-            opening_visual.transform_rect(final_destination, scaled_bbox)
+            crate::animation::map_rect(final_destination, visual.camera_rect, visual.animated_rect)
         };
         SceneElement::Rescaled(super::rescale::RescaledElement::new(
             surface_element,
             destination,
         ))
     }));
-    let fullscreen_blend = if let Some(presentation) = fullscreen {
+    let fullscreen_blend = if let Some(presentation) = visual.fullscreen {
         match fullscreen_textures.blend_element(
             renderer,
             window,
-            animated_bbox,
+            visual.animated_rect,
             presentation.transition_completion,
-            opening_visual.alpha(),
+            visual.opening_alpha,
         ) {
             Ok(blend) => blend,
             Err(err) => {
@@ -278,44 +316,59 @@ fn live_window_elements(
     } else {
         elements.extend(surface_elements.into_iter().filter_map(|surface_element| {
             let native_geometry = surface_element.geometry(Scale::from(1.0));
-            let destination = if fullscreen.is_some() {
-                let destination =
-                    map_rect(native_geometry, geometry.to_physical(1), presentation_bbox);
-                opening_visual.transform_rect(destination, presentation_bbox)
+            let destination = if visual.fullscreen.is_some() {
+                let destination = map_rect(
+                    native_geometry,
+                    visual.source_geometry.to_physical(1),
+                    visual.presentation_rect,
+                );
+                crate::animation::map_rect(
+                    destination,
+                    visual.presentation_rect,
+                    visual.animated_rect,
+                )
             } else {
                 let final_destination = super::camera_rect(
                     native_geometry,
-                    context.camera_center,
-                    context.output_size,
-                    context.zoom_scale,
+                    visual.camera_center,
+                    context.output_geometry.size.to_physical(1),
+                    visual.zoom_scale,
                 );
-                opening_visual.transform_rect(final_destination, scaled_bbox)
+                crate::animation::map_rect(
+                    final_destination,
+                    visual.camera_rect,
+                    visual.animated_rect,
+                )
             };
             let element = super::rescale::RescaledElement::new(surface_element, destination);
-            CropRenderElement::from_element(element, 1.0, animated_bbox).map(SceneElement::Cropped)
+            CropRenderElement::from_element(element, 1.0, visual.animated_rect)
+                .map(SceneElement::Cropped)
         }));
     }
 
     let is_focused = Some(window_surface.as_ref()) == context.focused;
     let border_color = super::window_border_color(context.decorations, is_focused)
-        * opening_visual.alpha()
-        * fullscreen
+        * visual.opening_alpha
+        * visual
+            .fullscreen
             .map(|presentation| (1.0 - presentation.progress) as f32)
             .unwrap_or(1.0);
-    let border_width = ((context.decorations.border_width_px as f64 * context.zoom_scale as f64)
+    let border_width = ((context.decorations.border_width_px as f64 * visual.zoom_scale as f64)
         .round() as i32)
         .max(1);
     if !crate::xwayland::is_override_redirect(window) {
         elements.extend(
-            super::border_strips(animated_bbox, border_width, border_color)
+            super::border_strips(visual.animated_rect, border_width, border_color)
                 .into_iter()
                 .map(SceneElement::Border),
         );
     }
-    if let Some(backdrop_alpha) = fullscreen_backdrop_alpha(fullscreen, opening_is_animating) {
+    if let Some(backdrop_alpha) =
+        fullscreen_backdrop_alpha(visual.fullscreen, visual.opening_is_animating)
+    {
         elements.push(SceneElement::Border(SolidColorRenderElement::new(
             Id::new(),
-            Rectangle::new((0, 0).into(), context.output_size),
+            Rectangle::new((0, 0).into(), context.output_geometry.size.to_physical(1)),
             CommitCounter::default(),
             smithay::backend::renderer::Color32F::new(0.0, 0.0, 0.0, backdrop_alpha),
             Kind::Unspecified,
