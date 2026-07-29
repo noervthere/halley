@@ -1,25 +1,21 @@
 use std::collections::HashMap;
 use std::error::Error;
 
-use smithay::backend::allocator::Fourcc;
-use smithay::backend::renderer::element::surface::{
-    WaylandSurfaceRenderElement, render_elements_from_surface_tree,
-};
 use smithay::backend::renderer::element::texture::TextureRenderElement;
 use smithay::backend::renderer::element::{Element, Id, Kind, RenderElement, UnderlyingStorage};
 use smithay::backend::renderer::gles::{
     GlesError, GlesFrame, GlesRenderer, GlesTexProgram, GlesTexture, Uniform, UniformName,
     UniformType, ffi,
 };
-use smithay::backend::renderer::utils::{
-    CommitCounter, DamageSet, OpaqueRegions, draw_render_elements,
-};
-use smithay::backend::renderer::{Bind, Color32F, ContextId, Frame, Offscreen, Renderer, Texture};
+use smithay::backend::renderer::utils::{CommitCounter, DamageSet, OpaqueRegions};
+use smithay::backend::renderer::{ContextId, Renderer};
 use smithay::desktop::Window;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::user_data::UserDataMap;
-use smithay::utils::{Buffer, Logical, Physical, Rectangle, Scale, Size, Transform};
+use smithay::utils::{Buffer, Physical, Rectangle, Scale, Transform};
 use smithay::wayland::seat::WaylandFocus;
+
+use super::window_texture::WindowTexture;
 
 const FULLSCREEN_BLEND_SHADER: &str = r#"
 //_DEFINES_
@@ -63,12 +59,6 @@ void main() {
 "#;
 
 #[derive(Debug)]
-struct WindowTexture {
-    texture: GlesTexture,
-    context: ContextId<GlesTexture>,
-}
-
-#[derive(Debug)]
 struct TransitionTextures {
     id: Id,
     previous: WindowTexture,
@@ -101,7 +91,7 @@ impl FullscreenTextureTransitions {
             .ok_or("fullscreen snapshot window has no surface")?
             .into_owned();
         self.windows.remove(&surface);
-        let previous = render_window(renderer, window, None)?;
+        let previous = super::window_texture::capture(renderer, window, None)?;
         self.windows.insert(
             surface,
             TransitionTextures {
@@ -142,7 +132,7 @@ impl FullscreenTextureTransitions {
         }
 
         let reusable = entry.current.take();
-        let current = match render_window(renderer, window, reusable) {
+        let current = match super::window_texture::capture(renderer, window, reusable) {
             Ok(current) => current,
             Err(err) => {
                 self.windows.remove(surface.as_ref());
@@ -167,20 +157,7 @@ impl FullscreenTextureTransitions {
                 program
             }
         };
-        let (source, destination_size) = texture_mapping(previous.size(), destination.size);
-        let previous_element = TextureRenderElement::from_static_texture(
-            id,
-            context,
-            destination.loc.to_f64(),
-            previous.clone(),
-            1,
-            Transform::Normal,
-            Some(alpha.clamp(0.0, 1.0)),
-            Some(source),
-            Some(destination_size),
-            None,
-            Kind::Unspecified,
-        );
+        let previous_element = entry.previous.render_element(id, destination, alpha);
 
         Ok(Some(FullscreenBlendElement {
             previous: previous_element,
@@ -190,16 +167,6 @@ impl FullscreenTextureTransitions {
             progress: progress.clamp(0.0, 1.0) as f32,
         }))
     }
-}
-
-fn texture_mapping(
-    texture_size: Size<i32, Buffer>,
-    destination_size: Size<i32, Physical>,
-) -> (Rectangle<f64, Logical>, Size<i32, Logical>) {
-    (
-        Rectangle::from_size(texture_size.to_logical(1, Transform::Normal).to_f64()),
-        destination_size.to_logical(1),
-    )
 }
 
 impl Element for FullscreenBlendElement {
@@ -297,78 +264,5 @@ impl RenderElement<GlesRenderer> for FullscreenBlendElement {
 
     fn underlying_storage(&self, _renderer: &mut GlesRenderer) -> Option<UnderlyingStorage<'_>> {
         None
-    }
-}
-
-fn render_window(
-    renderer: &mut GlesRenderer,
-    window: &Window,
-    reusable: Option<GlesTexture>,
-) -> Result<WindowTexture, Box<dyn Error>> {
-    let surface = window
-        .wl_surface()
-        .ok_or("fullscreen snapshot window has no surface")?;
-    let geometry = window.geometry();
-    if geometry.size.w <= 0 || geometry.size.h <= 0 {
-        return Err("fullscreen snapshot window has empty geometry".into());
-    }
-
-    let size = geometry.size.to_physical(1);
-    let location = smithay::utils::Point::from((-geometry.loc.x, -geometry.loc.y)).to_physical(1);
-    let elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
-        render_elements_from_surface_tree(
-            renderer,
-            surface.as_ref(),
-            location,
-            1.0,
-            1.0,
-            Kind::Unspecified,
-        );
-    if elements.is_empty() {
-        return Err("fullscreen snapshot surface tree is empty".into());
-    }
-
-    let context = renderer.context_id();
-    let buffer_size = geometry.size.to_buffer(1, Transform::Normal);
-    let mut reusable = reusable;
-    let can_reuse = reusable
-        .as_mut()
-        .is_some_and(|texture| texture.size() == buffer_size && texture.is_unique_reference());
-    let mut texture = if can_reuse {
-        reusable.expect("reusable texture checked above")
-    } else {
-        <GlesRenderer as Offscreen<GlesTexture>>::create_buffer(
-            renderer,
-            Fourcc::Abgr8888,
-            buffer_size,
-        )?
-    };
-    let damage = Rectangle::<i32, Physical>::from_size(size);
-    {
-        let mut target = renderer.bind(&mut texture)?;
-        let mut frame = renderer.render(&mut target, size, Transform::Normal)?;
-        frame.clear(Color32F::TRANSPARENT, &[damage])?;
-        draw_render_elements(&mut frame, 1.0, &elements, &[damage])?;
-        let _ = frame.finish()?;
-    }
-
-    Ok(WindowTexture { texture, context })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn growing_destination_does_not_expand_texture_source() {
-        let (source, destination) = texture_mapping((800, 600).into(), (1920, 1080).into());
-
-        assert_eq!(
-            source,
-            Rectangle::<f64, Logical>::from_size((800.0, 600.0).into())
-        );
-        assert_eq!(destination, Size::<i32, Logical>::from((1920, 1080)));
-        assert_eq!(source.size.w / 800.0, 1.0);
-        assert_eq!(source.size.h / 600.0, 1.0);
     }
 }

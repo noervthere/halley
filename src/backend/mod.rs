@@ -6,6 +6,7 @@ pub mod scene;
 pub mod tty;
 mod tty_dmabuf;
 mod tty_output;
+pub mod window_texture;
 pub mod winit;
 
 use halley_config::Decorations;
