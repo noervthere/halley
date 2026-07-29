@@ -9,6 +9,7 @@ use crate::wayland::{self, WaylandState};
 
 pub(crate) mod closing;
 mod cursor;
+mod focus;
 mod input;
 mod lifecycle;
 pub(crate) mod opening;
@@ -22,6 +23,7 @@ pub mod environment;
 pub mod tty;
 pub mod winit;
 
+pub(crate) use focus::focus_window;
 pub use state::{Session, SessionDriver};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -189,25 +191,6 @@ pub(crate) fn sync_keyboard_focus<D: SessionDriver>(
     pointer::reconcile_state(session);
 }
 
-fn focus_layer<D: SessionDriver>(
-    session: &mut Session<D>,
-    layer: Option<smithay::desktop::LayerSurface>,
-    serial: smithay::utils::Serial,
-) {
-    wayland::focus::select_layer(&mut session.wayland, layer);
-    sync_keyboard_focus(session, serial);
-}
-
-pub(crate) fn focus_window<D: SessionDriver>(
-    session: &mut Session<D>,
-    window: &smithay::desktop::Window,
-    serial: smithay::utils::Serial,
-) {
-    crate::window::focus_and_raise(&mut session.wayland, window);
-    session.xwayland.raise_window(window);
-    sync_keyboard_focus(session, serial);
-}
-
 pub(crate) fn begin_window_resize<D: SessionDriver>(
     session: &mut Session<D>,
     window: &smithay::desktop::Window,
@@ -219,7 +202,7 @@ pub(crate) fn begin_window_resize<D: SessionDriver>(
     let Some(start_rect) = session.wayland.space.element_geometry(window) else {
         return false;
     };
-    focus_window(session, window, serial);
+    focus::focus_window_from_pointer(session, window, serial);
     session.grab = crate::input::grab::Grab::ResizeWindow(crate::input::grab::ResizeState {
         window: window.clone(),
         handle,

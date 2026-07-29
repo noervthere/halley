@@ -50,6 +50,13 @@ pub(super) fn has_active_confinement<D: SessionDriver>(session: &Session<D>) -> 
         .is_some_and(|pointer| constraints::has_active_confinement(session, &pointer))
 }
 
+pub(super) fn has_active_constraint<D: SessionDriver>(session: &Session<D>) -> bool {
+    session
+        .seat
+        .get_pointer()
+        .is_some_and(|pointer| constraints::active(session, &pointer).is_some())
+}
+
 fn constraint_requires_stable_presentation(kind: Option<constraints::ConstraintKind>) -> bool {
     kind != Some(constraints::ConstraintKind::Locked)
 }

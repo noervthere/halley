@@ -13,7 +13,7 @@ use smithay::utils::{Logical, Point, Rectangle, SERIAL_COUNTER};
 use smithay::wayland::keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitorSeat;
 use smithay::wayland::seat::WaylandFocus;
 
-use super::{Session, SessionDriver, focus_layer, focus_window};
+use super::{Session, SessionDriver};
 use crate::input::pointer::{axis_frame_filtered, process_wheel_bindings};
 use crate::input::{
     PointerBindingResult, match_keyboard_bind, match_wheel_bind, process_pointer_binding,
@@ -349,7 +349,7 @@ where
         let route = super::pointer::route_for_motion(session, time_msec);
         pointer_handle.relative_motion(
             session,
-            route.and_then(|route| route.focus),
+            route.as_ref().and_then(|route| route.focus.clone()),
             &RelativeMotionEvent {
                 delta,
                 delta_unaccel,
@@ -357,6 +357,9 @@ where
             },
         );
         super::pointer::finish_frame(session, &pointer_handle);
+        if let Some(route) = route.as_ref() {
+            super::focus::update_hover(session, route, SERIAL_COUNTER.next_serial());
+        }
     }
 
     if let InputEvent::PointerButton {
@@ -467,7 +470,7 @@ where
                                 x: (window_location.x as f32 - world.x) * scale,
                                 y: (window_location.y as f32 - world.y) * scale,
                             };
-                            focus_window(session, window, serial);
+                            super::focus::focus_window_from_pointer(session, window, serial);
                             session.grab = crate::input::grab::Grab::MoveWindow {
                                 window: window.clone(),
                                 screen_offset,
@@ -475,13 +478,13 @@ where
                             intercepted = true;
                         }
                         Some(crate::input::pointer::PointerTarget::Window(window)) => {
-                            focus_window(session, window, serial);
+                            super::focus::focus_window_from_pointer(session, window, serial);
                         }
                         Some(crate::input::pointer::PointerTarget::Layer(layer)) => {
-                            focus_layer(session, Some(layer.clone()), serial);
+                            super::focus::focus_layer(session, Some(layer.clone()), serial);
                         }
                         Some(crate::input::pointer::PointerTarget::Background) => {
-                            focus_layer(session, None, serial);
+                            super::focus::focus_layer(session, None, serial);
                             session.grab = crate::input::grab::Grab::Pan {
                                 output: route.as_ref().expect("matched above").output.name(),
                             };
