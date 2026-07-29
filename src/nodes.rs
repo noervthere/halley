@@ -30,6 +30,18 @@ fn release_lock_is_active(until: Duration, now: Duration) -> bool {
     now < until
 }
 
+fn logical_focus_after_collapse(
+    focused: Option<NodeId>,
+    collapsed: NodeId,
+    client_was_focused: bool,
+) -> Option<NodeId> {
+    if client_was_focused || focused == Some(collapsed) {
+        Some(collapsed)
+    } else {
+        focused
+    }
+}
+
 #[derive(Clone, Copy)]
 struct LandmarkSlide {
     from: Vec2,
@@ -1115,9 +1127,17 @@ pub fn collapse<D: crate::session::SessionDriver>(
     let Some(geometry) = session.wayland.space.element_geometry(&record.window) else {
         return false;
     };
+    let client_was_focused = session.wayland.focused_window.as_ref() == Some(&record.surface);
+    let logical_focus =
+        logical_focus_after_collapse(session.nodes.focused(), id, client_was_focused);
 
     let _ = crate::session::closing::capture_window(session, &record.window);
     crate::session::cancel_grab_for_surface(session, &record.surface);
+    if client_was_focused {
+        // A collapsed surface must not keep receiving keyboard input, but the
+        // node remains Halley's logical command/focus target.
+        crate::window::clear_focus(&mut session.wayland);
+    }
     session.wayland.space.unmap_elem(&record.window);
     if record.window.toplevel().is_some() {
         session
@@ -1155,32 +1175,7 @@ pub fn collapse<D: crate::session::SessionDriver>(
         crate::frame_clock::monotonic_now(),
     );
     let _ = crate::session::closing::start(session, &record.surface);
-
-    if session.wayland.focused_window.as_ref() == Some(&record.surface) {
-        let successor = session
-            .wayland
-            .managed_windows
-            .top_to_bottom()
-            .filter(|surface| *surface != &record.surface)
-            .find_map(|surface| {
-                session
-                    .wayland
-                    .space
-                    .elements()
-                    .find(|window| {
-                        window
-                            .wl_surface()
-                            .is_some_and(|candidate| candidate.as_ref() == surface)
-                    })
-                    .cloned()
-            });
-        if let Some(successor) = successor {
-            crate::window::focus_and_raise(&mut session.wayland, &successor);
-            session.xwayland.raise_window(&successor);
-        } else {
-            session.wayland.focused_window = None;
-        }
-    }
+    session.nodes.focus(logical_focus, now_ms);
     crate::session::sync_keyboard_focus(session, serial);
     crate::session::reconcile_pointer_constraints(session);
     session.request_redraw();
@@ -1719,10 +1714,10 @@ fn relation_metadata<D: crate::session::SessionDriver>(
 #[cfg(test)]
 mod tests {
     use super::{
-        nearest_free_landmark, nearest_free_window_rect, physics_frame_delta,
-        release_lock_deadline, release_lock_is_active,
+        logical_focus_after_collapse, nearest_free_landmark, nearest_free_window_rect,
+        physics_frame_delta, release_lock_deadline, release_lock_is_active,
     };
-    use halley_core::field::Vec2;
+    use halley_core::field::{NodeId, Vec2};
     use smithay::utils::{Logical, Rectangle};
     use std::time::Duration;
 
@@ -1750,6 +1745,31 @@ mod tests {
             now + Duration::from_millis(349)
         ));
         assert!(!release_lock_is_active(until, until));
+    }
+
+    #[test]
+    fn collapsing_focused_window_preserves_its_logical_node_focus() {
+        let collapsed = NodeId::new(7);
+        let other = NodeId::new(9);
+        assert_eq!(
+            logical_focus_after_collapse(Some(other), collapsed, true),
+            Some(collapsed)
+        );
+        assert_eq!(
+            logical_focus_after_collapse(Some(collapsed), collapsed, false),
+            Some(collapsed)
+        );
+    }
+
+    #[test]
+    fn collapsing_unfocused_window_does_not_steal_focus() {
+        let collapsed = NodeId::new(7);
+        let focused = NodeId::new(9);
+        assert_eq!(
+            logical_focus_after_collapse(Some(focused), collapsed, false),
+            Some(focused)
+        );
+        assert_eq!(logical_focus_after_collapse(None, collapsed, false), None);
     }
 
     #[test]
