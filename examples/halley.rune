@@ -114,10 +114,13 @@ animations:
     #                  is capped and the window settles after a tiny overshoot.
     type "center-out"
 
-    # Easing duration in milliseconds and curve name. Supported curves:
-    # "linear", "ease-out-quad", "ease-out-cubic", "ease-out-expo", and
-    # "elastic". The elastic curve overshoots before settling and is
-    # independent of the visual style above.
+    # duration-ms is the complete time from the first frame through the
+    # settled final frame. Curves redistribute progress inside that time:
+    # "linear" advances evenly; "ease-out-quad", "ease-out-cubic", and
+    # "ease-out-expo" cover increasingly more distance near the beginning;
+    # "elastic" crosses the destination, then settles back. Launch applies
+    # the curve once to travel while keeping its opacity and scale phases
+    # anchored to the configured duration.
     duration-ms 300
     curve "linear"
 

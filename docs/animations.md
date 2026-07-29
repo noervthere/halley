@@ -36,6 +36,10 @@ end
 
 Available curves are `linear`, `ease-out-quad`, `ease-out-cubic`,
 `ease-out-expo`, and `elastic`. The elastic curve overshoots before settling.
+`duration-ms` is always the complete timeline from the first animated frame
+through the settled final frame. Curves redistribute progress inside that
+time: ease-out curves cover more distance near the beginning, while `linear`
+advances at a constant rate.
 
 Window opening separates visual style from motion:
 
@@ -64,7 +68,10 @@ end
 
 Every type can use any easing curve through `duration-ms` and `curve`, or
 select `motion "spring"` and use the same spring fields. Changing the type
-never selects a different curve or duration implicitly.
+never selects a different curve or duration implicitly. Launch applies the
+selected curve once to spatial travel; its opacity and 80% -> 102% -> 100%
+scale choreography remain anchored to elapsed time so they finish exactly at
+`duration-ms`.
 
 Window closing freezes the last visible frame, removes the real window from
 input immediately, then animates the inert snapshot:
