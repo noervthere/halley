@@ -33,6 +33,14 @@ struct FullscreenWindow {
     transition: Option<MotionTimeline>,
     external_pending: Option<ExternalPending>,
     snapshot_serials: Vec<Serial>,
+    origin: FullscreenOrigin,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FullscreenOrigin {
+    Client,
+    Compositor,
+    Maximize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -123,6 +131,32 @@ impl FullscreenManager {
         toplevel: &ToplevelSurface,
         requested: Option<WlOutput>,
     ) {
+        self.request_with_origin(wayland, toplevel, requested, FullscreenOrigin::Client);
+    }
+
+    pub(crate) fn request_compositor(
+        &mut self,
+        wayland: &mut WaylandState,
+        toplevel: &ToplevelSurface,
+    ) {
+        self.request_with_origin(wayland, toplevel, None, FullscreenOrigin::Compositor);
+    }
+
+    pub(crate) fn request_maximize(
+        &mut self,
+        wayland: &mut WaylandState,
+        toplevel: &ToplevelSurface,
+    ) {
+        self.request_with_origin(wayland, toplevel, None, FullscreenOrigin::Maximize);
+    }
+
+    fn request_with_origin(
+        &mut self,
+        wayland: &mut WaylandState,
+        toplevel: &ToplevelSurface,
+        requested: Option<WlOutput>,
+        origin: FullscreenOrigin,
+    ) {
         let window = find_window(wayland, toplevel.wl_surface()).cloned();
         let requested = requested.filter(|resource| {
             Output::from_resource(resource)
@@ -165,10 +199,12 @@ impl FullscreenManager {
                 transition: None,
                 external_pending: None,
                 snapshot_serials: Vec::new(),
+                origin,
             });
         let transition_requested = !entry.active;
         entry.desired = true;
         entry.target_output = target.name();
+        entry.origin = origin;
 
         toplevel.with_pending_state(|state| {
             state.states.set(State::Fullscreen);
@@ -184,6 +220,22 @@ impl FullscreenManager {
         {
             entry.snapshot_serials.push(serial);
         }
+    }
+
+    pub(crate) fn unrequest_maximize(
+        &mut self,
+        wayland: &WaylandState,
+        toplevel: &ToplevelSurface,
+    ) -> bool {
+        if !self
+            .windows
+            .get(toplevel.wl_surface())
+            .is_some_and(|entry| entry.origin == FullscreenOrigin::Maximize)
+        {
+            return false;
+        }
+        self.unrequest(wayland, toplevel);
+        true
     }
 
     pub fn unrequest(&mut self, wayland: &WaylandState, toplevel: &ToplevelSurface) {
@@ -261,6 +313,7 @@ impl FullscreenManager {
                 transition: None,
                 external_pending: None,
                 snapshot_serials: Vec::new(),
+                origin: FullscreenOrigin::Client,
             });
         super::set_window_output(&window, &target);
         wayland.space.map_element(window, output_geometry.loc, true);
@@ -359,6 +412,7 @@ impl FullscreenManager {
                 transition: None,
                 external_pending: None,
                 snapshot_serials: Vec::new(),
+                origin: FullscreenOrigin::Client,
             });
         entry.target_output = target_name;
         entry.fullscreen_size = output_geometry.size;
@@ -626,16 +680,10 @@ impl FullscreenManager {
         })
     }
 
-    pub fn covers_top(&self, focused: Option<&WlSurface>, output: &Output, now: Duration) -> bool {
-        focused
-            .and_then(|surface| self.windows.get(surface))
-            .is_some_and(|entry| {
-                entry.target_output == output.name()
-                    && entry.active
-                    && entry
-                        .transition
-                        .is_none_or(|transition| transition.is_finished_at(now))
-            })
+    pub fn covers_top(&self, _focused: Option<&WlSurface>, output: &Output, now: Duration) -> bool {
+        self.windows
+            .values()
+            .any(|entry| entry_covers_top(entry, &output.name(), now))
     }
 
     pub fn covers_any_top(
@@ -748,6 +796,14 @@ pub struct FullscreenCleanup {
 
 fn animations_enabled(animations: Animations) -> bool {
     animations.enabled && animations.fullscreen.enabled
+}
+
+fn entry_covers_top(entry: &FullscreenWindow, output: &str, now: Duration) -> bool {
+    entry.target_output == output
+        && entry.active
+        && entry
+            .transition
+            .is_none_or(|transition| transition.is_finished_at(now))
 }
 
 fn desired_matches(entry: Option<&FullscreenWindow>, desired: bool) -> bool {
@@ -960,6 +1016,7 @@ mod tests {
             transition: None,
             external_pending: None,
             snapshot_serials: Vec::new(),
+            origin: FullscreenOrigin::Client,
         }
     }
 
@@ -969,6 +1026,13 @@ mod tests {
             center_in_rect((1280, 720).into(), (1920, 0).into(), (2560, 1440).into()),
             (2560, 360).into()
         );
+    }
+
+    #[test]
+    fn fullscreen_hides_top_layer_by_output_without_focus_dependency() {
+        let entry = test_entry(true);
+        assert!(entry_covers_top(&entry, "DP-1", Duration::ZERO));
+        assert!(!entry_covers_top(&entry, "DP-2", Duration::ZERO));
     }
 
     #[test]

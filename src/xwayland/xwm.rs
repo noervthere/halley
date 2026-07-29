@@ -17,13 +17,14 @@ use super::PendingWindow;
 use super::lifecycle::{MapAdmission, OpeningPlacement, map_admission};
 
 #[derive(Default)]
-struct RestoreGeometry(Mutex<Option<Rectangle<i32, Logical>>>);
+struct MaximizeFullscreen(Mutex<bool>);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FullscreenRequestOrigin {
     Initial,
     Client,
     Compositor,
+    Maximize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -187,7 +188,12 @@ fn admit_window<D: SessionDriver>(session: &mut Session<D>, xid: u32) {
     if surface.is_fullscreen() {
         enter_fullscreen(session, &surface, FullscreenRequestOrigin::Initial);
     } else if surface.is_maximized() {
-        maximize_window(session, &surface);
+        // Startup maximize hints are not user decoration clicks. Keeping the
+        // centered opening prevents monitor-sized remaps from becoming the
+        // client's next remembered "normal" size (notably Steam).
+        if let Err(err) = surface.set_maximized(false) {
+            eventline::warn!("xwayland: failed to suppress initial maximized state: {err}");
+        }
     }
     if !surface.is_override_redirect() {
         crate::session::focus_window(session, &window, SERIAL_COUNTER.next_serial());
@@ -239,6 +245,17 @@ fn set_external_fullscreen<D: SessionDriver>(
     fullscreen: bool,
     origin: FullscreenRequestOrigin,
 ) {
+    if fullscreen && origin != FullscreenRequestOrigin::Maximize {
+        *surface
+            .user_data()
+            .get_or_insert_threadsafe(MaximizeFullscreen::default)
+            .0
+            .lock()
+            .expect("X11 maximize origin lock poisoned") = false;
+        if let Err(err) = surface.set_maximized(false) {
+            eventline::warn!("xwayland: failed to clear maximized state for fullscreen: {err}");
+        }
+    }
     if session
         .xwayland
         .pending_windows
@@ -534,51 +551,21 @@ fn maximize_window<D: SessionDriver>(session: &mut Session<D>, surface: &X11Surf
         .pending_windows
         .contains_key(&surface.window_id())
     {
-        if let Err(err) = surface.set_maximized(true) {
-            eventline::warn!("xwayland: failed to update pending maximized state: {err}");
+        if let Err(err) = surface.set_maximized(false) {
+            eventline::warn!("xwayland: failed to suppress initial maximized state: {err}");
         }
         return;
     }
-    let Some(window) = window_for_surface(session, surface) else {
-        return;
-    };
-    let Some(output) = crate::wayland::window_output_name(&window)
-        .and_then(|name| {
-            session
-                .wayland
-                .space
-                .outputs()
-                .find(|output| output.name() == name)
-        })
-        .or_else(|| crate::wayland::focus::selected_output(&session.wayland))
-        .cloned()
-    else {
-        return;
-    };
-    let Some(geometry) = session.wayland.space.output_geometry(&output) else {
-        return;
-    };
-    let restore = surface
+    *surface
         .user_data()
-        .get_or_insert_threadsafe(RestoreGeometry::default);
-    let mut restore = restore
+        .get_or_insert_threadsafe(MaximizeFullscreen::default)
         .0
         .lock()
-        .expect("X11 restore geometry lock poisoned");
-    if restore.is_none() {
-        *restore = session.wayland.space.element_bbox(&window);
-    }
-    drop(restore);
+        .expect("X11 maximize origin lock poisoned") = true;
     if let Err(err) = surface.set_maximized(true) {
         eventline::warn!("xwayland: failed to set maximized state: {err}");
     }
-    if let Err(err) = surface.configure(geometry) {
-        eventline::warn!("xwayland: failed to maximize window: {err}");
-    }
-    session
-        .wayland
-        .space
-        .map_element(window, geometry.loc, true);
+    enter_fullscreen(session, surface, FullscreenRequestOrigin::Maximize);
 }
 
 fn restore_window<D: SessionDriver>(session: &mut Session<D>, surface: &X11Surface) {
@@ -592,30 +579,21 @@ fn restore_window<D: SessionDriver>(session: &mut Session<D>, surface: &X11Surfa
         }
         return;
     }
-    let Some(window) = window_for_surface(session, surface) else {
-        return;
-    };
     if let Err(err) = surface.set_maximized(false) {
         eventline::warn!("xwayland: failed to clear maximized state: {err}");
     }
-    let restore = surface
-        .user_data()
-        .get::<RestoreGeometry>()
-        .and_then(|restore| {
-            restore
-                .0
-                .lock()
-                .expect("X11 restore geometry lock poisoned")
-                .take()
-        });
-    if let Some(geometry) = restore {
-        if let Err(err) = surface.configure(geometry) {
-            eventline::warn!("xwayland: failed to restore window: {err}");
-        }
-        session
-            .wayland
-            .space
-            .map_element(window, geometry.loc, true);
+    let was_maximize_fullscreen =
+        surface
+            .user_data()
+            .get::<MaximizeFullscreen>()
+            .is_some_and(|origin| {
+                let mut origin = origin.0.lock().expect("X11 maximize origin lock poisoned");
+                let was_set = *origin;
+                *origin = false;
+                was_set
+            });
+    if was_maximize_fullscreen {
+        leave_fullscreen(session, surface, FullscreenRequestOrigin::Maximize);
     }
 }
 

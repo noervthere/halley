@@ -349,6 +349,40 @@ impl<D: SessionDriver> XdgShellHandler for Session<D> {
         self.request_redraw();
     }
 
+    fn maximize_request(&mut self, surface: ToplevelSurface) {
+        // Ignore startup maximize hints. Honoring them during the first reveal
+        // creates a monitor-sized configure/remap feedback loop in clients such
+        // as Steam. A later decoration-button request is deliberate and maps to
+        // Halley's fullscreen presentation.
+        if !surface.is_initial_configure_sent() {
+            surface.with_pending_state(|state| {
+                state.states.unset(
+                    smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Maximized,
+                );
+                wayland::decoration::apply_tiled_hint(state);
+            });
+            surface.send_configure();
+            return;
+        }
+        if let Some(id) = self.nodes.id_for_surface(surface.wl_surface())
+            && self.nodes.record(id).is_some_and(|record| record.collapsed)
+        {
+            crate::nodes::restore(self, id, SERIAL_COUNTER.next_serial());
+        }
+        super::cancel_grab_for_surface(self, surface.wl_surface());
+        self.fullscreen
+            .request_maximize(&mut self.wayland, &surface);
+        super::pointer::reconcile_state(self);
+        self.request_redraw();
+    }
+
+    fn unmaximize_request(&mut self, surface: ToplevelSurface) {
+        if self.fullscreen.unrequest_maximize(&self.wayland, &surface) {
+            super::pointer::reconcile_state(self);
+            self.request_redraw();
+        }
+    }
+
     fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
         wayland::popup::track(&mut self.wayland, &self.cameras, surface);
         self.request_redraw();

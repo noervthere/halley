@@ -198,7 +198,7 @@ fn toggle_focused_fullscreen<D: SessionDriver>(session: &mut Session<D>, output:
         if entering {
             session
                 .fullscreen
-                .request(&mut session.wayland, toplevel, None);
+                .request_compositor(&mut session.wayland, toplevel);
         } else {
             session.fullscreen.unrequest(&session.wayland, toplevel);
         }
