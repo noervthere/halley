@@ -1,5 +1,4 @@
 mod compositor;
-mod global_shortcuts;
 mod pipewire;
 mod screencast;
 mod screenshot;
@@ -50,7 +49,7 @@ fn main() {
 fn print_help() {
     println!("xdg-desktop-portal-halley {}", env!("CARGO_PKG_VERSION"));
     println!();
-    println!("Halley ScreenCast, Screenshot, and Global Shortcuts portal backend.");
+    println!("Halley ScreenCast and Screenshot portal backend.");
     println!("Normally started by xdg-desktop-portal through D-Bus activation.");
     println!();
     println!("Options:");
@@ -68,10 +67,6 @@ fn run() -> zbus::Result<()> {
     connection.object_server().at(
         OBJECT_PATH,
         screenshot::ScreenshotInterface::new(connection.clone()),
-    )?;
-    connection.object_server().at(
-        OBJECT_PATH,
-        global_shortcuts::GlobalShortcutsInterface::new(connection.clone()),
     )?;
     connection.request_name(BUS_NAME)?;
     eventline::info!("portal ready: bus={BUS_NAME} object={OBJECT_PATH}");

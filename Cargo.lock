@@ -1124,7 +1124,6 @@ name = "halley-portal"
 version = "0.1.0"
 dependencies = [
  "eventline",
- "futures-util",
  "halley-ipc",
  "pipewire",
  "pollster",
