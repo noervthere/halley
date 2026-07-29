@@ -2,55 +2,78 @@ use std::error::Error;
 
 use smithay::backend::renderer::element::Kind;
 use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
+use smithay::backend::renderer::element::surface::{
+    WaylandSurfaceRenderElement, render_elements_from_surface_tree,
+};
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::output::Output;
 use smithay::utils::{Logical, Physical, Point, Rectangle, Scale};
 
-use super::CursorFrame;
+use super::{CursorFrame, CursorManager, RenderCursor};
 
 smithay::backend::renderer::element::render_elements! {
     pub CursorRenderElement<=GlesRenderer>;
     Named=MemoryRenderBufferRenderElement<GlesRenderer>,
+    Surface=WaylandSurfaceRenderElement<GlesRenderer>,
 }
 
-pub fn named_element(
+pub fn elements(
     renderer: &mut GlesRenderer,
+    manager: &CursorManager,
+    output: &Output,
+    output_geometry: Rectangle<i32, Logical>,
+    pointer_position: (f64, f64),
+    time: std::time::Duration,
+) -> Result<Vec<CursorRenderElement>, Box<dyn Error>> {
+    match manager.render_cursor(output.current_scale().integer_scale(), time) {
+        RenderCursor::Hidden => Ok(Vec::new()),
+        RenderCursor::Named(frame) => {
+            let Some(position) =
+                named_cursor_origin(output, output_geometry, pointer_position, &frame)
+            else {
+                return Ok(Vec::new());
+            };
+            Ok(vec![
+                MemoryRenderBufferRenderElement::from_buffer(
+                    renderer,
+                    position,
+                    &frame.buffer,
+                    None,
+                    None,
+                    None,
+                    Kind::Cursor,
+                )?
+                .into(),
+            ])
+        }
+        RenderCursor::Surface(surface) => {
+            let Some(position) = surface_cursor_origin(
+                output,
+                output_geometry,
+                pointer_position,
+                super::surface::hotspot(&surface),
+            ) else {
+                return Ok(Vec::new());
+            };
+            let elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
+                render_elements_from_surface_tree(
+                    renderer,
+                    &surface,
+                    position,
+                    Scale::from(output.current_scale().fractional_scale()),
+                    1.0,
+                    Kind::Cursor,
+                );
+            Ok(elements.into_iter().map(Into::into).collect())
+        }
+    }
+}
+
+fn named_cursor_origin(
     output: &Output,
     output_geometry: Rectangle<i32, Logical>,
     pointer_position: (f64, f64),
     frame: &CursorFrame,
-) -> Result<Option<CursorRenderElement>, Box<dyn Error>> {
-    let Some(position) = cursor_origin(
-        output,
-        output_geometry,
-        pointer_position,
-        frame.hotspot_x,
-        frame.hotspot_y,
-        frame.scale,
-    ) else {
-        return Ok(None);
-    };
-    Ok(Some(
-        MemoryRenderBufferRenderElement::from_buffer(
-            renderer,
-            position,
-            &frame.buffer,
-            None,
-            None,
-            None,
-            Kind::Cursor,
-        )?
-        .into(),
-    ))
-}
-
-fn cursor_origin(
-    output: &Output,
-    output_geometry: Rectangle<i32, Logical>,
-    pointer_position: (f64, f64),
-    hotspot_x: i32,
-    hotspot_y: i32,
-    cursor_scale: i32,
 ) -> Option<Point<f64, Physical>> {
     let pointer = Point::<f64, Logical>::from(pointer_position);
     if !output_geometry.to_f64().contains(pointer) {
@@ -58,14 +81,31 @@ fn cursor_origin(
     }
     let local = pointer - output_geometry.loc.to_f64();
     let hotspot = Point::<f64, Logical>::from((
-        f64::from(hotspot_x) / f64::from(cursor_scale.max(1)),
-        f64::from(hotspot_y) / f64::from(cursor_scale.max(1)),
+        f64::from(frame.hotspot_x) / f64::from(frame.scale.max(1)),
+        f64::from(frame.hotspot_y) / f64::from(frame.scale.max(1)),
     ));
     Some((local - hotspot).to_physical(Scale::from(output.current_scale().fractional_scale())))
 }
 
+fn surface_cursor_origin(
+    output: &Output,
+    output_geometry: Rectangle<i32, Logical>,
+    pointer_position: (f64, f64),
+    hotspot: Point<i32, Logical>,
+) -> Option<Point<i32, Physical>> {
+    let pointer = Point::<f64, Logical>::from(pointer_position);
+    if !output_geometry.to_f64().contains(pointer) {
+        return None;
+    }
+    Some(
+        (pointer - output_geometry.loc.to_f64() - hotspot.to_f64())
+            .to_physical_precise_round(Scale::from(output.current_scale().fractional_scale())),
+    )
+}
+
 #[cfg(test)]
 mod tests {
+    use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
     use smithay::output::{Mode, PhysicalProperties, Subpixel};
     use smithay::utils::{Physical, Size, Transform};
 
@@ -100,7 +140,27 @@ mod tests {
         let geometry = Rectangle::new((100, 50).into(), (960, 540).into());
 
         assert_eq!(
-            cursor_origin(&output, geometry, (120.0, 70.0), 4, 6, 2),
+            named_cursor_origin(
+                &output,
+                geometry,
+                (120.0, 70.0),
+                &CursorFrame {
+                    buffer: MemoryRenderBuffer::from_slice(
+                        &[0, 0, 0, 0],
+                        smithay::backend::allocator::Fourcc::Abgr8888,
+                        (1, 1),
+                        2,
+                        Transform::Normal,
+                        None,
+                    ),
+                    metadata_bgra: vec![0, 0, 0, 0].into(),
+                    width: 1,
+                    height: 1,
+                    hotspot_x: 4,
+                    hotspot_y: 6,
+                    scale: 2,
+                }
+            ),
             Some(Point::from((36.0, 34.0)))
         );
     }
@@ -111,7 +171,27 @@ mod tests {
         let geometry = Rectangle::new((0, 0).into(), (1920, 1080).into());
 
         assert_eq!(
-            cursor_origin(&output, geometry, (1920.0, 100.0), 0, 0, 1),
+            named_cursor_origin(
+                &output,
+                geometry,
+                (1920.0, 100.0),
+                &CursorFrame {
+                    buffer: MemoryRenderBuffer::from_slice(
+                        &[0, 0, 0, 0],
+                        smithay::backend::allocator::Fourcc::Abgr8888,
+                        (1, 1),
+                        1,
+                        Transform::Normal,
+                        None,
+                    ),
+                    metadata_bgra: vec![0, 0, 0, 0].into(),
+                    width: 1,
+                    height: 1,
+                    hotspot_x: 0,
+                    hotspot_y: 0,
+                    scale: 1,
+                }
+            ),
             None
         );
     }

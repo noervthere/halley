@@ -18,6 +18,7 @@ use smithay::reexports::wayland_server::backend::{ClientData, ClientId, Disconne
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point};
 use smithay::wayland::compositor::{CompositorClientState, CompositorState};
+use smithay::wayland::cursor_shape::CursorShapeManagerState;
 use smithay::wayland::dmabuf::{DmabufGlobal, DmabufState};
 use smithay::wayland::fractional_scale::FractionalScaleManagerState;
 use smithay::wayland::keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitState;
@@ -90,6 +91,7 @@ pub struct WaylandState {
     _fractional_scale_manager_state: FractionalScaleManagerState,
     _relative_pointer_manager_state: RelativePointerManagerState,
     _pointer_constraints_state: PointerConstraintsState,
+    _cursor_shape_manager_state: CursorShapeManagerState,
     _virtual_keyboard_manager_state: VirtualKeyboardManagerState,
     pub keyboard_shortcuts_inhibit_state: KeyboardShortcutsInhibitState,
     pub shm_state: ShmState,
@@ -158,6 +160,7 @@ impl WaylandState {
         fractional_scale_manager_state: FractionalScaleManagerState,
         relative_pointer_manager_state: RelativePointerManagerState,
         pointer_constraints_state: PointerConstraintsState,
+        cursor_shape_manager_state: CursorShapeManagerState,
         virtual_keyboard_manager_state: VirtualKeyboardManagerState,
         keyboard_shortcuts_inhibit_state: KeyboardShortcutsInhibitState,
         shm_state: ShmState,
@@ -178,6 +181,7 @@ impl WaylandState {
             _fractional_scale_manager_state: fractional_scale_manager_state,
             _relative_pointer_manager_state: relative_pointer_manager_state,
             _pointer_constraints_state: pointer_constraints_state,
+            _cursor_shape_manager_state: cursor_shape_manager_state,
             _virtual_keyboard_manager_state: virtual_keyboard_manager_state,
             keyboard_shortcuts_inhibit_state,
             shm_state,

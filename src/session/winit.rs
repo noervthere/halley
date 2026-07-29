@@ -222,10 +222,11 @@ pub fn run() {
                 }
                 let position = app.pointer.position();
                 let show_cursor = super::pointer::cursor_visible(app);
+                crate::cursor::surface::refresh_outputs(&app.cursor, &app.wayland.space, position);
                 let cursor_animating = show_cursor
                     && app
                         .cursor
-                        .default_is_animated(output.current_scale().integer_scale());
+                        .current_is_animated(output.current_scale().integer_scale());
                 if let Err(err) = app.driver.backend.render(
                     &output,
                     RenderRequest {
@@ -259,6 +260,13 @@ pub fn run() {
                     });
                 });
                 wayland::layer_shell::send_frames(&output, elapsed);
+                crate::cursor::surface::send_frame(
+                    &app.cursor,
+                    &app.wayland.space,
+                    &output,
+                    app.pointer.position(),
+                    elapsed,
+                );
                 app.wayland.space.refresh();
                 wayland::layer_shell::cleanup(&mut app.wayland);
                 app.window_open_animations.cleanup(target_presentation_time);

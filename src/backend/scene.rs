@@ -132,20 +132,17 @@ pub fn build(
     );
 
     if request.show_cursor {
-        let frame = request.cursor.default_frame(
-            output.current_scale().integer_scale(),
-            request.target_presentation_time,
-        );
-        if let Some(cursor) = crate::cursor::render::named_element(
+        let cursor = crate::cursor::render::elements(
             renderer,
+            request.cursor,
             output,
             output_geometry,
             request.cursor_position,
-            &frame,
-        )? {
-            // Element lists are front-to-back, so the cursor belongs at index 0.
-            elements.insert(0, SceneElement::Cursor(cursor));
-        }
+            request.target_presentation_time,
+        )?;
+        // Element lists are front-to-back, so cursor surface trees belong
+        // before every compositor and client element.
+        elements.splice(0..0, cursor.into_iter().map(SceneElement::Cursor));
     }
 
     Ok(elements)

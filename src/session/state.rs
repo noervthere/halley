@@ -5,6 +5,7 @@ use smithay::output::Output;
 use smithay::reexports::wayland_server::DisplayHandle;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::wayland::compositor::CompositorState;
+use smithay::wayland::cursor_shape::CursorShapeManagerState;
 use smithay::wayland::dmabuf::DmabufState;
 use smithay::wayland::fractional_scale::FractionalScaleManagerState;
 use smithay::wayland::keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitState;
@@ -105,6 +106,7 @@ impl<D: SessionDriver> Session<D> {
             FractionalScaleManagerState::new::<Self>(&display_handle),
             RelativePointerManagerState::new::<Self>(&display_handle),
             PointerConstraintsState::new::<Self>(&display_handle),
+            CursorShapeManagerState::new::<Self>(&display_handle),
             VirtualKeyboardManagerState::new::<Self, _>(&display_handle, |client| {
                 client.get_data::<ClientState>().is_some()
             }),

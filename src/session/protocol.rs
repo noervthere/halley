@@ -16,6 +16,7 @@ use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{Client, Display};
 use smithay::utils::{Logical, Point, SERIAL_COUNTER, Serial};
 use smithay::wayland::buffer::BufferHandler;
+use smithay::wayland::tablet_manager::TabletSeatHandler;
 use smithay::wayland::compositor::{
     BufferAssignment, CompositorClientState, CompositorHandler, CompositorState, SurfaceAttributes,
     add_pre_commit_hook, with_states,
@@ -49,7 +50,8 @@ use smithay::wayland::xdg_activation::{
     XdgActivationHandler, XdgActivationState, XdgActivationToken, XdgActivationTokenData,
 };
 use smithay::{
-    delegate_compositor, delegate_data_device, delegate_dmabuf, delegate_fractional_scale,
+    delegate_compositor, delegate_cursor_shape, delegate_data_device, delegate_dmabuf,
+    delegate_fractional_scale,
     delegate_keyboard_shortcuts_inhibit, delegate_layer_shell, delegate_output,
     delegate_pointer_constraints, delegate_primary_selection, delegate_relative_pointer,
     delegate_seat, delegate_shm, delegate_viewporter, delegate_virtual_keyboard_manager,
@@ -156,6 +158,7 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
             }
             wayland::xdg_shell::ToplevelCommit::None => {}
         }
+        crate::cursor::surface::handle_commit(&self.cursor, surface, &root);
         crate::xwayland::handle_commit(self, &root);
         self.fullscreen.handle_commit(
             &mut self.wayland,
@@ -171,6 +174,9 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
     fn destroyed(&mut self, surface: &WlSurface) {
         let root = wayland::compositor::root_surface(surface);
         super::closing::capture_surface(self, &root);
+        if self.cursor.surface_destroyed(surface) {
+            self.request_redraw();
+        }
     }
 }
 
@@ -454,7 +460,25 @@ impl<D: SessionDriver> SeatHandler for Session<D> {
         let focused = focused.and_then(|target| target.wl_surface().map(Cow::into_owned));
         wayland::selection::sync_selection_focus(&display_handle, seat, focused.as_ref());
     }
+
+    fn cursor_image(
+        &mut self,
+        _seat: &Seat<Self>,
+        image: smithay::input::pointer::CursorImageStatus,
+    ) {
+        if let Some(previous) = self.cursor.set_image(image) {
+            crate::cursor::surface::clear_outputs(&previous, &self.wayland.space);
+        }
+        crate::cursor::surface::refresh_outputs(
+            &self.cursor,
+            &self.wayland.space,
+            self.pointer.position(),
+        );
+        self.request_redraw();
+    }
 }
+
+impl<D: SessionDriver> TabletSeatHandler for Session<D> {}
 
 impl<D: SessionDriver> OutputHandler for Session<D> {}
 
@@ -546,6 +570,7 @@ delegate_xdg_activation!(@<D: SessionDriver> Session<D>);
 delegate_layer_shell!(@<D: SessionDriver> Session<D>);
 delegate_xdg_decoration!(@<D: SessionDriver> Session<D>);
 delegate_seat!(@<D: SessionDriver> Session<D>);
+delegate_cursor_shape!(@<D: SessionDriver> Session<D>);
 delegate_output!(@<D: SessionDriver> Session<D>);
 delegate_viewporter!(@<D: SessionDriver> Session<D>);
 delegate_fractional_scale!(@<D: SessionDriver> Session<D>);

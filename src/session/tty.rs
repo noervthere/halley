@@ -342,6 +342,13 @@ fn on_vblank(app: &mut TtyApp, crtc: crtc::Handle, metadata: Option<&DrmEventMet
             });
         });
     wayland::layer_shell::send_frames(&output, elapsed);
+    crate::cursor::surface::send_frame(
+        &app.cursor,
+        &app.wayland.space,
+        &output,
+        app.pointer.position(),
+        elapsed,
+    );
     app.wayland.space.refresh();
     wayland::layer_shell::cleanup(&mut app.wayland);
 }
@@ -471,10 +478,15 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
         .window_close_animations
         .is_animating_on_output(output, target_presentation_time);
     let show_cursor = super::pointer::cursor_visible(app);
+    crate::cursor::surface::refresh_outputs(
+        &app.cursor,
+        &app.wayland.space,
+        app.pointer.position(),
+    );
     let cursor_animating = show_cursor
         && app
             .cursor
-            .default_is_animated(output.current_scale().integer_scale());
+            .current_is_animated(output.current_scale().integer_scale());
     let animating = camera_animating
         || window_animating
         || closing_animating
