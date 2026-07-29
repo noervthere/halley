@@ -42,6 +42,7 @@ struct SpawnContext<'a> {
     x11_display: Option<&'a OsStr>,
     cursor_theme: &'a str,
     cursor_size: u8,
+    environment: &'a environment::LaunchEnvironment,
 }
 
 /// Interprets every configured action once for both session backends.
@@ -66,6 +67,7 @@ fn dispatch_action(
                 spawn_context.x11_display,
                 spawn_context.cursor_theme,
                 spawn_context.cursor_size,
+                spawn_context.environment,
             ),
             None => eventline::warn!("keybinds: no terminal configured or found on PATH"),
         },
@@ -91,6 +93,7 @@ fn dispatch_action(
             spawn_context.x11_display,
             spawn_context.cursor_theme,
             spawn_context.cursor_size,
+            spawn_context.environment,
         ),
     }
     SessionControl::Continue

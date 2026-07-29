@@ -1,3 +1,5 @@
+use std::ffi::OsStr;
+
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::input::{Seat, SeatState};
@@ -57,6 +59,7 @@ pub trait SessionDriver: crate::ipc::OutputInfoSource + 'static {
 pub struct Session<D: SessionDriver> {
     pub driver: D,
     pub keyboard: Keyboard,
+    pub(super) launch_environment: super::environment::LaunchEnvironment,
     pub pointer: Pointer,
     pub cursor: CursorManager,
     pub(super) cursor_policy: super::cursor::Policy<D>,
@@ -90,6 +93,10 @@ pub struct Session<D: SessionDriver> {
 }
 
 impl<D: SessionDriver> Session<D> {
+    pub(crate) fn launch_environment(&self) -> impl Iterator<Item = (&OsStr, &OsStr)> {
+        self.launch_environment.iter()
+    }
+
     pub fn create_wayland_state(display_handle: DisplayHandle, driver: &mut D) -> WaylandState {
         let capabilities = driver.dmabuf_capabilities();
         let mut dmabuf_state = DmabufState::new();
@@ -145,7 +152,10 @@ impl<D: SessionDriver> Session<D> {
         if cancel_gestures {
             super::gesture::cancel_all(self);
         }
-        self.keyboard.reload(&config.keybinds, D::BACKEND_KIND);
+        self.launch_environment.reload(&config.env);
+        let launch_path = self.launch_environment.path();
+        self.keyboard
+            .reload(&config.keybinds, D::BACKEND_KIND, launch_path.as_deref());
         crate::input::config::reload(self, &config.input);
         let cursor_changed = self.cursor.reload(&config.cursor);
         let cursor_visibility_changed = self.cursor_policy.reload(&config.cursor);

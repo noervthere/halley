@@ -41,5 +41,6 @@ pub use runtime::{
 pub use screenshot::{Screenshot, parse_screenshot};
 pub use terminal::{
     TERMINAL_PRIORITY, resolve_default_terminal, resolve_default_terminal_from_path,
+    resolve_default_terminal_in_path,
 };
 pub use zoom::{Zoom, load_zoom, parse_zoom};

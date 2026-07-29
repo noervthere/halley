@@ -202,11 +202,15 @@ pub struct Keyboard {
 }
 
 impl Keyboard {
-    pub fn from_config(keybinds: &halley_config::Keybinds, backend: BackendKind) -> Self {
+    pub fn from_config(
+        keybinds: &halley_config::Keybinds,
+        backend: BackendKind,
+        path: Option<&std::ffi::OsStr>,
+    ) -> Self {
         let binds = keybinds::resolve_binds(keybinds, backend);
         let effective_mod = keybinds::effective_mod(keybinds.modifier, backend);
         let terminal_command =
-            halley_config::resolve_default_terminal_from_path(&keybinds.default_terminal);
+            halley_config::resolve_default_terminal_in_path(&keybinds.default_terminal, path);
 
         Self {
             binds,
@@ -215,8 +219,13 @@ impl Keyboard {
         }
     }
 
-    pub fn reload(&mut self, keybinds: &halley_config::Keybinds, backend: BackendKind) {
-        *self = Self::from_config(keybinds, backend);
+    pub fn reload(
+        &mut self,
+        keybinds: &halley_config::Keybinds,
+        backend: BackendKind,
+        path: Option<&std::ffi::OsStr>,
+    ) {
+        *self = Self::from_config(keybinds, backend, path);
     }
 
     /// The command `Action::OpenTerminal` should launch - `None` if nothing

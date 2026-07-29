@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::path::Path;
@@ -11,6 +12,49 @@ const SESSION_VARIABLES: [&str; 6] = [
     "DESKTOP_SESSION",
     "PATH",
 ];
+
+/// Effective environment overrides for every process launched by Halley.
+///
+/// Reloads intentionally merge rather than replace: old Halley applied
+/// variables to its process environment, so removing a key from a live
+/// config did not unset it until the compositor restarted.
+#[derive(Clone, Debug, Default)]
+pub(super) struct LaunchEnvironment {
+    values: BTreeMap<String, String>,
+}
+
+impl LaunchEnvironment {
+    pub fn new(values: &BTreeMap<String, String>) -> Self {
+        Self {
+            values: values.clone(),
+        }
+    }
+
+    pub fn reload(&mut self, values: &BTreeMap<String, String>) {
+        self.values.extend(
+            values
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone())),
+        );
+    }
+
+    pub fn apply_to(&self, command: &mut Command) {
+        command.envs(&self.values);
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&OsStr, &OsStr)> {
+        self.values
+            .iter()
+            .map(|(key, value)| (OsStr::new(key), OsStr::new(value)))
+    }
+
+    pub fn path(&self) -> Option<OsString> {
+        self.values
+            .get("PATH")
+            .map(OsString::from)
+            .or_else(|| std::env::var_os("PATH"))
+    }
+}
 
 /// Establishes the environment that selects the real session backend.
 ///
@@ -132,7 +176,11 @@ fn cursor_assignments(cursor: &halley_config::Cursor) -> [OsString; 2] {
 
 #[cfg(test)]
 mod tests {
-    use super::{SESSION_VARIABLES, cursor_assignments};
+    use std::collections::BTreeMap;
+    use std::ffi::OsStr;
+    use std::process::Command;
+
+    use super::{LaunchEnvironment, SESSION_VARIABLES, cursor_assignments};
 
     #[test]
     fn activation_exports_portal_and_wayland_identity() {
@@ -154,6 +202,42 @@ mod tests {
                 std::ffi::OsString::from("XCURSOR_THEME=Breeze"),
                 std::ffi::OsString::from("XCURSOR_SIZE=32"),
             ]
+        );
+    }
+
+    #[test]
+    fn launch_environment_keeps_live_reload_values_until_restart() {
+        let mut environment =
+            LaunchEnvironment::new(&BTreeMap::from([("FIRST".to_string(), "one".to_string())]));
+        environment.reload(&BTreeMap::from([("SECOND".to_string(), "two".to_string())]));
+
+        let mut command = Command::new("true");
+        environment.apply_to(&mut command);
+        let env = command.get_envs().collect::<BTreeMap<_, _>>();
+        assert_eq!(env.get(OsStr::new("FIRST")), Some(&Some(OsStr::new("one"))));
+        assert_eq!(
+            env.get(OsStr::new("SECOND")),
+            Some(&Some(OsStr::new("two")))
+        );
+        assert_eq!(
+            environment.iter().collect::<BTreeMap<_, _>>(),
+            BTreeMap::from([
+                (OsStr::new("FIRST"), OsStr::new("one")),
+                (OsStr::new("SECOND"), OsStr::new("two")),
+            ])
+        );
+    }
+
+    #[test]
+    fn configured_path_overrides_the_ambient_path() {
+        let environment = LaunchEnvironment::new(&BTreeMap::from([(
+            "PATH".to_string(),
+            "/configured/bin".to_string(),
+        )]));
+
+        assert_eq!(
+            environment.path().as_deref(),
+            Some(OsStr::new("/configured/bin"))
         );
     }
 }

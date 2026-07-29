@@ -105,7 +105,7 @@ where
     let (source, client) = XWayland::spawn(
         &display_handle,
         None,
-        std::iter::empty::<(&OsStr, &OsStr)>(),
+        session.launch_environment(),
         true,
         Stdio::null(),
         Stdio::null(),

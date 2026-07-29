@@ -5,6 +5,8 @@ use std::io;
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 
+use super::environment::LaunchEnvironment;
+
 /// Spawns a user-provided command line detached from the compositor, with
 /// `WAYLAND_DISPLAY` set to Halley's socket rather than the ambient host.
 ///
@@ -17,6 +19,7 @@ pub(super) fn spawn_detached(
     x11_display: Option<&OsStr>,
     cursor_theme: &str,
     cursor_size: u8,
+    environment: &LaunchEnvironment,
 ) {
     let mut process = detached_process(
         command_line,
@@ -24,6 +27,7 @@ pub(super) fn spawn_detached(
         x11_display,
         cursor_theme,
         cursor_size,
+        environment,
     );
 
     match process.spawn() {
@@ -49,8 +53,10 @@ fn detached_process(
     x11_display: Option<&OsStr>,
     cursor_theme: &str,
     cursor_size: u8,
+    environment: &LaunchEnvironment,
 ) -> Command {
     let mut process = Command::new("sh");
+    environment.apply_to(&mut process);
     process
         .arg("-c")
         .arg(command_line)
@@ -92,6 +98,7 @@ mod tests {
             Some(OsStr::new(":12")),
             "Breeze",
             32,
+            &LaunchEnvironment::default(),
         );
         assert_eq!(process.get_program(), "sh");
         assert_eq!(
@@ -118,11 +125,56 @@ mod tests {
 
     #[test]
     fn unavailable_xwayland_removes_ambient_display() {
-        let process = detached_process("foot", OsStr::new("wayland-2"), None, "default", 24);
+        let process = detached_process(
+            "foot",
+            OsStr::new("wayland-2"),
+            None,
+            "default",
+            24,
+            &LaunchEnvironment::default(),
+        );
         assert!(
             process
                 .get_envs()
                 .any(|(name, value)| name == "DISPLAY" && value.is_none())
+        );
+    }
+
+    #[test]
+    fn configured_environment_is_inherited_but_session_values_win() {
+        let environment = LaunchEnvironment::new(&std::collections::BTreeMap::from([
+            ("CUSTOM".to_string(), "value".to_string()),
+            ("DISPLAY".to_string(), ":99".to_string()),
+            ("WAYLAND_DISPLAY".to_string(), "wrong".to_string()),
+            ("XCURSOR_SIZE".to_string(), "99".to_string()),
+        ]));
+        let process = detached_process(
+            "true",
+            OsStr::new("wayland-4"),
+            Some(OsStr::new(":8")),
+            "Adwaita",
+            24,
+            &environment,
+        );
+        let env = process
+            .get_envs()
+            .collect::<std::collections::BTreeMap<_, _>>();
+
+        assert_eq!(
+            env.get(OsStr::new("CUSTOM")),
+            Some(&Some(OsStr::new("value")))
+        );
+        assert_eq!(
+            env.get(OsStr::new("WAYLAND_DISPLAY")),
+            Some(&Some(OsStr::new("wayland-4")))
+        );
+        assert_eq!(
+            env.get(OsStr::new("DISPLAY")),
+            Some(&Some(OsStr::new(":8")))
+        );
+        assert_eq!(
+            env.get(OsStr::new("XCURSOR_SIZE")),
+            Some(&Some(OsStr::new("24")))
         );
     }
 }

@@ -73,6 +73,7 @@ fn dispatch_action<D: SessionDriver>(
             x11_display: x11_display.as_deref(),
             cursor_theme: session.cursor.theme_name(),
             cursor_size: session.cursor.size(),
+            environment: &session.launch_environment,
         },
         camera,
         &session.zoom,

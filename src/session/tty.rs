@@ -161,9 +161,16 @@ pub fn run(session_mode: bool) {
     };
     let mut applied_input = runtime_config.input.clone();
     applied_input.keyboard = applied_keyboard;
+    let launch_environment = super::environment::LaunchEnvironment::new(&runtime_config.env);
+    let launch_path = launch_environment.path();
     let mut app = TtyApp {
         driver,
-        keyboard: Keyboard::from_config(&runtime_config.keybinds, BackendKind::Tty),
+        keyboard: Keyboard::from_config(
+            &runtime_config.keybinds,
+            BackendKind::Tty,
+            launch_path.as_deref(),
+        ),
+        launch_environment,
         pointer: Pointer::new((100.0, 100.0)),
         cursor: CursorManager::new(&runtime_config.cursor),
         cursor_policy: super::cursor::Policy::new(&runtime_config.cursor, loop_handle.clone()),

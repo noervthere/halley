@@ -120,9 +120,16 @@ pub fn run() {
     let xwayland = crate::xwayland::State::new::<App>(&dh);
     let mut applied_input = runtime_config.input.clone();
     applied_input.keyboard = applied_keyboard;
+    let launch_environment = super::environment::LaunchEnvironment::new(&runtime_config.env);
+    let launch_path = launch_environment.path();
     let mut app = App {
         driver,
-        keyboard: Keyboard::from_config(&runtime_config.keybinds, BackendKind::Winit),
+        keyboard: Keyboard::from_config(
+            &runtime_config.keybinds,
+            BackendKind::Winit,
+            launch_path.as_deref(),
+        ),
+        launch_environment,
         pointer: Pointer::new((100.0, 100.0)),
         cursor: CursorManager::new(&runtime_config.cursor),
         cursor_policy: super::cursor::Policy::new(&runtime_config.cursor, event_loop.handle()),

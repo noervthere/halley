@@ -1,3 +1,5 @@
+use std::ffi::OsStr;
+
 use crate::keybinds::DefaultTerminal;
 
 /// Terminal candidates for `DefaultTerminal::Auto`, in priority order.
@@ -41,14 +43,21 @@ pub fn resolve_default_terminal(
 
 /// Real-PATH-scanning version of `resolve_default_terminal`.
 pub fn resolve_default_terminal_from_path(setting: &DefaultTerminal) -> Option<String> {
-    resolve_default_terminal(setting, command_exists_in_path)
+    let path = std::env::var_os("PATH");
+    resolve_default_terminal_in_path(setting, path.as_deref())
 }
 
-fn command_exists_in_path(command: &str) -> bool {
-    let Some(path) = std::env::var_os("PATH") else {
-        return false;
-    };
-    std::env::split_paths(&path).any(|dir| dir.join(command).is_file())
+/// PATH-injectable terminal resolution for compositor-managed launch
+/// environments. `None` means no search path is available.
+pub fn resolve_default_terminal_in_path(
+    setting: &DefaultTerminal,
+    path: Option<&OsStr>,
+) -> Option<String> {
+    resolve_default_terminal(setting, |command| command_exists_in_path(command, path))
+}
+
+fn command_exists_in_path(command: &str, path: Option<&OsStr>) -> bool {
+    path.is_some_and(|path| std::env::split_paths(path).any(|dir| dir.join(command).is_file()))
 }
 
 #[cfg(test)]
