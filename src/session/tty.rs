@@ -150,6 +150,13 @@ pub fn run(session_mode: bool) {
     };
     let wayland = TtyApp::create_wayland_state(dh.clone(), &mut driver);
     let xwayland = crate::xwayland::State::new::<TtyApp>(&dh);
+    let keyboard_monitor = match crate::accessibility::KeyboardMonitorService::start() {
+        Ok(service) => Some(service),
+        Err(err) => {
+            eventline::warn!("accessibility: keyboard monitor unavailable: {err}");
+            None
+        }
+    };
     let mut app = TtyApp {
         driver,
         keyboard: Keyboard::from_config(&runtime_config.keybinds, BackendKind::Tty),
@@ -171,6 +178,7 @@ pub fn run(session_mode: bool) {
         suppressed_keys: SuppressedKeys::default(),
         wheel_accumulator: WheelAccumulator::default(),
         pointer_constraints: super::pointer::PointerConstraintLifecycle::default(),
+        keyboard_monitor,
         opening_origins: super::opening::OpeningOrigins::default(),
         window_open_animations: crate::animation::WindowOpenAnimations::new(
             runtime_config.animations,

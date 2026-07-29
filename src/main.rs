@@ -1,3 +1,4 @@
+mod accessibility;
 mod animation;
 mod backend;
 mod camera;

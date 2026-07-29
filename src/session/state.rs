@@ -72,6 +72,7 @@ pub struct Session<D: SessionDriver> {
     pub suppressed_keys: SuppressedKeys,
     pub wheel_accumulator: WheelAccumulator,
     pub pointer_constraints: super::pointer::PointerConstraintLifecycle,
+    pub keyboard_monitor: Option<crate::accessibility::KeyboardMonitorService>,
     pub opening_origins: super::opening::OpeningOrigins,
     pub window_open_animations: crate::animation::WindowOpenAnimations,
     pub window_close_animations: crate::backend::close::WindowCloseAnimations,

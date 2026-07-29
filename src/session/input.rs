@@ -104,6 +104,7 @@ fn dispatch_action<D: SessionDriver>(
 
 enum KeyboardOutcome {
     Action(halley_config::Action),
+    AccessibilityIntercept,
     CaptureAccept,
     CaptureCancel,
     CapturePrevious,
@@ -552,6 +553,15 @@ where
         let time = key_event.time_msec();
         let release_is_suppressed =
             state == KeyState::Released && session.suppressed_keys.release_is_suppressed(keycode);
+        let accessibility = crate::accessibility::process_key(
+            session,
+            std::time::Duration::from_millis(u64::from(time)),
+            keycode,
+            state,
+        );
+        if accessibility == crate::accessibility::KeyboardDisposition::InterceptWithoutState {
+            return;
+        }
         let keyboard = session
             .seat
             .get_keyboard()
@@ -564,6 +574,9 @@ where
             SERIAL_COUNTER.next_serial(),
             time,
             |data, modifiers, handle| {
+                if accessibility == crate::accessibility::KeyboardDisposition::Intercept {
+                    return FilterResult::Intercept(KeyboardOutcome::AccessibilityIntercept);
+                }
                 match capture_key_routing(data.capture.is_active(), state, release_is_suppressed) {
                     CaptureKeyRouting::SuppressRelease => {
                         return FilterResult::Intercept(KeyboardOutcome::CaptureIntercept);
@@ -620,8 +633,10 @@ where
 
         match action {
             Some(KeyboardOutcome::Action(action)) => {
+                session.suppressed_keys.suppress(keycode);
                 dispatch_action(session, action, socket_name, pointer_output.as_deref());
             }
+            Some(KeyboardOutcome::AccessibilityIntercept) => {}
             Some(KeyboardOutcome::CaptureAccept) => {
                 if session.capture.kind() == Some(crate::capture::CaptureKind::Menu) {
                     if session
