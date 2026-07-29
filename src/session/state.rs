@@ -73,7 +73,6 @@ pub struct Session<D: SessionDriver> {
     pub wheel_accumulator: WheelAccumulator,
     pub pointer_constraints: super::pointer::PointerConstraintLifecycle,
     pub keyboard_monitor: Option<crate::accessibility::KeyboardMonitorService>,
-    pub global_shortcuts: Option<crate::global_shortcuts::GlobalShortcutService>,
     pub opening_origins: super::opening::OpeningOrigins,
     pub window_open_animations: crate::animation::WindowOpenAnimations,
     pub window_close_animations: crate::backend::close::WindowCloseAnimations,

@@ -7,7 +7,6 @@ mod config;
 mod cursor;
 mod dbus;
 mod frame_clock;
-mod global_shortcuts;
 mod input;
 mod ipc;
 mod logging;
