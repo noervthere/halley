@@ -6,6 +6,7 @@ pub mod fullscreen;
 pub mod layer_shell;
 pub mod popup;
 pub mod selection;
+pub mod wlr_output_management;
 pub mod xdg_shell;
 
 use std::collections::{HashMap, HashSet};
@@ -99,6 +100,8 @@ pub struct WaylandState {
     pub shm_state: ShmState,
     // Retained alongside the wl_output globals it serves.
     _output_manager_state: OutputManagerState,
+    // Read-only wlr-output-management snapshot used by desktop shells.
+    _wlr_output_management_state: wlr_output_management::State,
     /// Clipboard (ctrl+c/ctrl+v) and drag-and-drop. Smithay owns the actual
     /// transfer - it hands the source client's fd straight to the receiving
     /// client - so this is only the global's state, with no compositor-side
@@ -173,6 +176,7 @@ impl WaylandState {
         keyboard_shortcuts_inhibit_state: KeyboardShortcutsInhibitState,
         shm_state: ShmState,
         output_manager_state: OutputManagerState,
+        wlr_output_management_state: wlr_output_management::State,
         data_device_state: DataDeviceState,
         primary_selection_state: PrimarySelectionState,
     ) -> Self {
@@ -195,6 +199,7 @@ impl WaylandState {
             keyboard_shortcuts_inhibit_state,
             shm_state,
             _output_manager_state: output_manager_state,
+            _wlr_output_management_state: wlr_output_management_state,
             data_device_state,
             primary_selection_state,
             popup_manager: PopupManager::default(),

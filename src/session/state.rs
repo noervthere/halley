@@ -163,6 +163,7 @@ impl<D: SessionDriver> Session<D> {
             KeyboardShortcutsInhibitState::new::<Self>(&display_handle),
             ShmState::new::<Self>(&display_handle, vec![]),
             OutputManagerState::new_with_xdg_output::<Self>(&display_handle),
+            crate::wayland::wlr_output_management::State::new::<Self>(&display_handle),
             DataDeviceState::new::<Self>(&display_handle),
             PrimarySelectionState::new::<Self>(&display_handle),
         )
