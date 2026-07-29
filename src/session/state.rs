@@ -138,8 +138,7 @@ impl<D: SessionDriver> Session<D> {
     pub fn apply_common_config(&mut self, config: &halley_config::RuntimeConfig) {
         let cancel_touch =
             self.input.gestures.touch_passthrough && !config.input.gestures.touch_passthrough;
-        let cancel_gestures = self.input.gestures.enabled
-            && (!config.input.gestures.enabled || !config.input.gestures.client_passthrough);
+        let cancel_gestures = self.input.gestures != config.input.gestures;
         if cancel_touch {
             super::touch::cancel_all(self);
         }

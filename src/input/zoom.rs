@@ -18,7 +18,12 @@ const ZOOM_MAX: f32 = 1.0;
 /// damage-driven redraw scheduler needs to know whether to keep requesting
 /// redraws until the ease settles; the nested backend uses the same signal
 /// to request another host-window frame only while motion remains.
-pub fn tick(camera: &mut Camera, zoom: &halley_config::Zoom, dt: f32) -> (f32, bool) {
+pub fn tick(
+    camera: &mut Camera,
+    zoom: &halley_config::Zoom,
+    pan_decay_rate: f32,
+    dt: f32,
+) -> (f32, bool) {
     // `dt` is wall-clock time since the last tick, and the tty backend only
     // redraws on demand (damage-driven) - after any idle gap it can be huge.
     // Left unclamped, a large `dt` fed into the inertial branch's
@@ -32,13 +37,9 @@ pub fn tick(camera: &mut Camera, zoom: &halley_config::Zoom, dt: f32) -> (f32, b
         zoom_enabled: zoom.enabled,
         zoom_smooth: true,
         smooth_rate: zoom.smooth_rate,
-        // Only read by `Camera::tick`'s pan-velocity integration, which
-        // only ever runs after `fling_pan` seeds a nonzero velocity -
-        // `input::grab`'s drag-to-pan calls `pan_target` directly and never
-        // `fling_pan` (no momentum on release, by design), so this value is
-        // never actually read; the center-easing `pan_target` itself
-        // triggers is driven by `smooth_rate` above, same as zoom.
-        pan_decay_rate: 8.0,
+        // Only inertial gesture releases seed `pan_vel`; direct mouse drags
+        // and live touchpad deltas keep using `pan_target`.
+        pan_decay_rate,
         zoom_min: zoom.min,
         zoom_max: ZOOM_MAX,
     };
@@ -112,7 +113,7 @@ mod tests {
         zoom_out(&mut camera, &zoom);
         let mut scale = 1.0;
         for _ in 0..1000 {
-            let (s, animating) = tick(&mut camera, &zoom, 1.0 / 60.0);
+            let (s, animating) = tick(&mut camera, &zoom, 8.0, 1.0 / 60.0);
             scale = s;
             assert!(s <= 1.0, "scale must never exceed 1.0, got {s}");
             if !animating {
@@ -140,7 +141,7 @@ mod tests {
 
         zoom_out(&mut camera, &zoom);
         for _ in 0..1000 {
-            let (_, animating) = tick(&mut camera, &zoom, 1.0 / 60.0);
+            let (_, animating) = tick(&mut camera, &zoom, 8.0, 1.0 / 60.0);
             if !animating {
                 break;
             }
@@ -150,7 +151,7 @@ mod tests {
         camera.reset_zoom_target();
         let mut scale = 0.0;
         for _ in 0..1000 {
-            let (s, animating) = tick(&mut camera, &zoom, 1.0 / 60.0);
+            let (s, animating) = tick(&mut camera, &zoom, 8.0, 1.0 / 60.0);
             scale = s;
             if !animating {
                 break;
@@ -162,7 +163,7 @@ mod tests {
     fn settle(camera: &mut Camera, zoom: &halley_config::Zoom) -> f32 {
         let mut scale = 1.0;
         for _ in 0..1000 {
-            let (s, animating) = tick(camera, zoom, 1.0 / 60.0);
+            let (s, animating) = tick(camera, zoom, 8.0, 1.0 / 60.0);
             scale = s;
             if !animating {
                 break;

@@ -485,10 +485,15 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
     let view_before = pointer_is_on_output
         .then(|| app.cameras.view(&output.name()))
         .flatten();
-    let camera_animating = app
-        .cameras
-        .get_mut(&output.name())
-        .is_some_and(|camera| crate::input::zoom::tick(camera, &app.zoom, dt.as_secs_f32()).1);
+    let camera_animating = app.cameras.get_mut(&output.name()).is_some_and(|camera| {
+        crate::input::zoom::tick(
+            camera,
+            &app.zoom,
+            app.input.gestures.pan_decay_rate,
+            dt.as_secs_f32(),
+        )
+        .1
+    });
     let primary = app.driver.backend.primary_output();
     let window_animating = app.wayland.space.elements().any(|window| {
         wayland::window_is_on_output(window, output, primary)

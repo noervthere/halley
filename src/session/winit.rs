@@ -199,7 +199,13 @@ pub fn run() {
                 let view_before = app.cameras.view(&output_name);
                 let mut animating = false;
                 for camera in app.cameras.iter_mut() {
-                    animating |= crate::input::zoom::tick(camera, &app.zoom, dt).1;
+                    animating |= crate::input::zoom::tick(
+                        camera,
+                        &app.zoom,
+                        app.input.gestures.pan_decay_rate,
+                        dt,
+                    )
+                    .1;
                 }
                 if view_before != app.cameras.view(&output_name) {
                     super::pointer::update_client_state(

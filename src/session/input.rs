@@ -536,6 +536,10 @@ where
     }
 
     if let InputEvent::PointerAxis { event: axis_event } = event {
+        if super::gesture::handle_axis_pan(session, axis_event) {
+            super::pointer::finish_frame(session, &pointer_handle);
+            return;
+        }
         let route = super::pointer::route_for_discrete_input(session, axis_event.time_msec());
         let output_name = route.as_ref().map(|route| route.output.name().to_string());
         let bindings_enabled = bindings_enabled(session);
