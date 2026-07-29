@@ -201,12 +201,13 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
         crate::input::grab::finish_resize_commit(&mut self.resize_anchor, &mut self.wayland.space);
         crate::nodes::reconcile_landmarks(self, None);
         super::pointer::reconcile_state(self);
+        let preview_node = self.nodes.id_for_surface(&root);
+        if let Some(id) = preview_node {
+            self.overlay_previews.mark_dirty(id);
+        }
         let apogee_preview_commit = self.apogee_config.live_previews
             && self.apogee.accepts_live_previews()
-            && self
-                .nodes
-                .id_for_surface(&root)
-                .is_some_and(|id| self.apogee.contains(id));
+            && preview_node.is_some_and(|id| self.apogee.contains(id));
         if apogee_preview_commit {
             self.apogee.mark_preview_dirty();
         } else {

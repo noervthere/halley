@@ -56,6 +56,7 @@ pub fn save_region<D: SessionDriver>(
     let window_close_animations = &mut session.window_close_animations;
     let fullscreen = &session.fullscreen;
     let fullscreen_textures = &mut session.fullscreen_textures;
+    let overlay_previews = &mut session.overlay_previews;
     let nodes = &session.nodes;
     let bearings = &session.bearings;
     let bearings_renderer = &mut session.bearings_renderer;
@@ -85,6 +86,7 @@ pub fn save_region<D: SessionDriver>(
                         window_close_animations: &mut *window_close_animations,
                         fullscreen,
                         fullscreen_textures: &mut *fullscreen_textures,
+                        overlay_previews: &mut *overlay_previews,
                         nodes,
                         bearings,
                         bearings_renderer: &mut *bearings_renderer,
@@ -272,6 +274,7 @@ where
     let window_close_animations = &mut session.window_close_animations;
     let fullscreen = &session.fullscreen;
     let fullscreen_textures = &mut session.fullscreen_textures;
+    let overlay_previews = &mut session.overlay_previews;
     let nodes = &session.nodes;
     let bearings = &session.bearings;
     let bearings_renderer = &mut session.bearings_renderer;
@@ -298,6 +301,7 @@ where
                 window_close_animations,
                 fullscreen,
                 fullscreen_textures,
+                overlay_previews,
                 nodes,
                 bearings,
                 bearings_renderer,

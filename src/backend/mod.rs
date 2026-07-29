@@ -6,6 +6,7 @@ pub mod close;
 pub mod dmabuf;
 pub mod fullscreen_texture;
 pub mod node;
+pub mod overlay_preview;
 pub mod rescale;
 pub mod scene;
 pub mod text;
@@ -197,6 +198,7 @@ pub struct RenderRequest<'a> {
     pub fullscreen: &'a crate::wayland::fullscreen::FullscreenManager,
     pub fullscreen_textures:
         &'a mut crate::backend::fullscreen_texture::FullscreenTextureTransitions,
+    pub overlay_previews: &'a mut crate::backend::overlay_preview::OverlayPreviewCache,
     pub nodes: &'a crate::nodes::NodesState,
     pub bearings: &'a crate::bearings::BearingsState,
     pub bearings_renderer: &'a mut crate::backend::bearing_blur::BearingsRenderer,

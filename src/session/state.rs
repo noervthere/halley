@@ -95,6 +95,7 @@ pub struct Session<D: SessionDriver> {
     pub window_close_animations: crate::backend::close::WindowCloseAnimations,
     pub fullscreen: crate::wayland::fullscreen::FullscreenManager,
     pub fullscreen_textures: crate::backend::fullscreen_texture::FullscreenTextureTransitions,
+    pub overlay_previews: crate::backend::overlay_preview::OverlayPreviewCache,
     pub node_renderer: crate::backend::node::NodeRenderer,
     pub bearings_renderer: crate::backend::bearing_blur::BearingsRenderer,
     pub ui_text: crate::backend::text::UiTextRenderer,

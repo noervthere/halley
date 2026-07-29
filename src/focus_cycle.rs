@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::time::Duration;
 
 use halley_config::FocusCycleDirection;
@@ -27,16 +26,17 @@ impl Session {
     }
 
     pub fn visible_slots(&self, radius: i32) -> Vec<(i32, NodeId)> {
-        if self.candidates.is_empty() {
+        let len = self.candidates.len() as i32;
+        if len == 0 {
             return Vec::new();
         }
-        let len = self.candidates.len() as i32;
-        let mut seen = HashSet::new();
-        (-radius..=radius)
-            .filter_map(|offset| {
+        let visible_count = len.min(radius * 2 + 1).max(1);
+        let left_count = (visible_count - 1) / 2;
+        let right_count = visible_count - 1 - left_count;
+        (-left_count..=right_count)
+            .map(|offset| {
                 let index = (self.preview_index as i32 + offset).rem_euclid(len) as usize;
-                let id = self.candidates[index];
-                seen.insert(id).then_some((offset, id))
+                (offset, self.candidates[index])
             })
             .collect()
     }
