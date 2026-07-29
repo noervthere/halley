@@ -100,7 +100,7 @@ pub fn run() {
     // Advertises capabilities and creates the wl_keyboard/wl_pointer
     // protocol objects clients expect a seat to offer - not real input
     // forwarding, which stays deferred (see `seat`'s doc comment above).
-    crate::input::config::add_keyboard(&mut seat, &runtime_config.input)
+    let applied_keyboard = crate::input::config::add_keyboard(&mut seat, &runtime_config.input)
         .expect("failed to advertise keyboard capability on the wl_seat");
     seat.add_pointer();
 
@@ -118,6 +118,8 @@ pub fn run() {
     };
     let wayland = App::create_wayland_state(dh.clone(), &mut driver);
     let xwayland = crate::xwayland::State::new::<App>(&dh);
+    let mut applied_input = runtime_config.input.clone();
+    applied_input.keyboard = applied_keyboard;
     let mut app = App {
         driver,
         keyboard: Keyboard::from_config(&runtime_config.keybinds, BackendKind::Winit),
@@ -129,7 +131,7 @@ pub fn run() {
         seat_state,
         seat,
         start_time: Instant::now(),
-        input: runtime_config.input.clone(),
+        input: applied_input,
         decorations: runtime_config.decorations,
         cameras,
         zoom: runtime_config.zoom,

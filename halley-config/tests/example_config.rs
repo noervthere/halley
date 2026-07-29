@@ -129,6 +129,20 @@ fn example_config_cursor_section_parses() {
 }
 
 #[test]
+fn example_config_input_section_parses() {
+    let config = RuneConfig::from_file(EXAMPLE_PATH).expect("example config parses");
+    let input = halley_config::parse_input(&config).expect("example input section parses");
+
+    assert_eq!(input.repeat_rate, 30);
+    assert_eq!(input.repeat_delay, 500);
+    assert_eq!(input.focus_mode, halley_config::FocusMode::Click);
+    assert!(input.raise_on_click);
+    assert_eq!(input.keyboard.layout, "us");
+    assert_eq!(input.mouse, halley_config::MouseSettings::default());
+    assert!(input.devices.is_empty());
+}
+
+#[test]
 fn example_config_window_open_animation_parses() {
     let config = RuneConfig::from_file(EXAMPLE_PATH).expect("example config parses");
     let animations = halley_config::parse_animations(&config);

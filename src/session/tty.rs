@@ -120,7 +120,7 @@ pub fn run(session_mode: bool) {
 
     let mut seat_state = SeatState::new();
     let mut seat: Seat<TtyApp> = seat_state.new_wl_seat(&dh, "seat0");
-    crate::input::config::add_keyboard(&mut seat, &runtime_config.input)
+    let applied_keyboard = crate::input::config::add_keyboard(&mut seat, &runtime_config.input)
         .expect("failed to advertise keyboard capability on the wl_seat");
     seat.add_pointer();
 
@@ -159,6 +159,8 @@ pub fn run(session_mode: bool) {
             None
         }
     };
+    let mut applied_input = runtime_config.input.clone();
+    applied_input.keyboard = applied_keyboard;
     let mut app = TtyApp {
         driver,
         keyboard: Keyboard::from_config(&runtime_config.keybinds, BackendKind::Tty),
@@ -170,7 +172,7 @@ pub fn run(session_mode: bool) {
         seat_state,
         seat,
         start_time: Instant::now(),
-        input: runtime_config.input.clone(),
+        input: applied_input,
         decorations: runtime_config.decorations,
         cameras: crate::camera::OutputCameras::default(),
         zoom: runtime_config.zoom,

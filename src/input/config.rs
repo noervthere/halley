@@ -16,16 +16,27 @@ pub fn xkb_config(keyboard: &halley_config::KeyboardConfig) -> XkbConfig<'_> {
 pub fn add_keyboard<D>(
     seat: &mut Seat<Session<D>>,
     input: &halley_config::Input,
-) -> Result<(), smithay::input::keyboard::Error>
+) -> Result<halley_config::KeyboardConfig, smithay::input::keyboard::Error>
 where
     D: SessionDriver,
 {
-    seat.add_keyboard(
+    match seat.add_keyboard(
         xkb_config(&input.keyboard),
         input.repeat_delay,
         input.repeat_rate,
-    )?;
-    Ok(())
+    ) {
+        Ok(_) => Ok(input.keyboard.clone()),
+        Err(_) => {
+            let fallback = halley_config::KeyboardConfig::default();
+            eventline::warn!(
+                "input: failed to compile startup XKB layout {:?}; using {:?}",
+                input.keyboard.layout,
+                fallback.layout
+            );
+            seat.add_keyboard(xkb_config(&fallback), input.repeat_delay, input.repeat_rate)?;
+            Ok(fallback)
+        }
+    }
 }
 
 /// Applies seat-level input policy while preserving the last working keymap
