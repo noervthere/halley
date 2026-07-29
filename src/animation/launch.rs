@@ -1,9 +1,10 @@
 use smithay::utils::{Physical, Point, Rectangle};
 
-use super::VisualRect;
+use super::{VisualRect, motion::MotionSample};
 
 const MAX_TRAVEL: f64 = 320.0;
 const MAX_ARC: f64 = 24.0;
+const MAX_TRAVEL_PROGRESS: f64 = 1.08;
 const START_SCALE: f64 = 0.8;
 const OVERSHOOT_SCALE: f64 = 1.02;
 const OVERSHOOT_PROGRESS: f64 = 0.78;
@@ -13,17 +14,16 @@ const OPAQUE_PROGRESS: f64 = 0.65;
 pub(super) fn rect(
     bounds: Rectangle<i32, Physical>,
     origin: Option<Point<f64, Physical>>,
-    progress: f64,
+    sample: MotionSample,
 ) -> VisualRect {
-    rect_and_derivative(bounds, origin, progress).0
+    rect_and_velocity(bounds, origin, sample).0
 }
 
-pub(super) fn rect_and_derivative(
+pub(super) fn rect_and_velocity(
     bounds: Rectangle<i32, Physical>,
     origin: Option<Point<f64, Physical>>,
-    progress: f64,
+    sample: MotionSample,
 ) -> (VisualRect, VisualRect) {
-    let progress = progress.clamp(0.0, 1.0);
     let end = rect_center(bounds);
     let origin = origin.unwrap_or(end);
     let delta = origin - end;
@@ -38,19 +38,23 @@ pub(super) fn rect_and_derivative(
     let travel = travel_delta.x.hypot(travel_delta.y);
     let arc = (travel * 0.08).min(MAX_ARC);
     let control = Point::from(((start.x + end.x) / 2.0, (start.y + end.y) / 2.0 - arc));
-    let path_progress = ease_out_cubic(progress);
-    let path_derivative = 3.0 * (1.0 - progress).powi(2);
+    let path_progress = sample.value.clamp(0.0, MAX_TRAVEL_PROGRESS);
+    let path_progress_velocity = if (0.0..=MAX_TRAVEL_PROGRESS).contains(&sample.value) {
+        sample.velocity
+    } else {
+        0.0
+    };
     let center = quadratic_point(start, control, end, path_progress);
     let path_velocity = quadratic_derivative(start, control, end, path_progress);
     let center_derivative = Point::<f64, Physical>::from((
-        path_velocity.x * path_derivative,
-        path_velocity.y * path_derivative,
+        path_velocity.x * path_progress_velocity,
+        path_velocity.y * path_progress_velocity,
     ));
-    let (scale, scale_derivative) = scale(progress);
+    let (scale, scale_derivative) = scale(sample.linear_progress);
     let width = f64::from(bounds.size.w) * scale;
     let height = f64::from(bounds.size.h) * scale;
-    let width_derivative = f64::from(bounds.size.w) * scale_derivative;
-    let height_derivative = f64::from(bounds.size.h) * scale_derivative;
+    let width_derivative = f64::from(bounds.size.w) * scale_derivative * sample.linear_velocity;
+    let height_derivative = f64::from(bounds.size.h) * scale_derivative * sample.linear_velocity;
     (
         VisualRect {
             x: center.x - width / 2.0,

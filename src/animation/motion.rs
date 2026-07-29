@@ -16,6 +16,14 @@ pub struct MotionTimeline {
     initial_velocity: f64,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct MotionSample {
+    pub linear_progress: f64,
+    pub linear_velocity: f64,
+    pub value: f64,
+    pub velocity: f64,
+}
+
 impl MotionTimeline {
     pub fn new(motion: AnimationMotion, started_at: Duration) -> Self {
         Self::between(motion, started_at, 0.0, 1.0, 0.0)
@@ -67,6 +75,33 @@ impl MotionTimeline {
                         )
                 }
             }
+        }
+    }
+
+    pub fn sample_at(self, now: Duration) -> MotionSample {
+        MotionSample {
+            linear_progress: self.linear_progress_at(now),
+            linear_velocity: self.linear_velocity_at(now),
+            value: self.value_at(now),
+            velocity: self.velocity_at(now),
+        }
+    }
+
+    pub fn linear_progress_at(self, now: Duration) -> f64 {
+        if self.duration.is_zero() {
+            return 1.0;
+        }
+
+        (now.saturating_sub(self.started_at).as_secs_f64() / self.duration.as_secs_f64())
+            .clamp(0.0, 1.0)
+    }
+
+    pub fn linear_velocity_at(self, now: Duration) -> f64 {
+        let elapsed = now.saturating_sub(self.started_at);
+        if self.duration.is_zero() || elapsed >= self.duration {
+            0.0
+        } else {
+            self.duration.as_secs_f64().recip()
         }
     }
 
@@ -214,6 +249,41 @@ mod tests {
         ] {
             assert_eq!(apply_curve(curve, 0.0), 0.0);
             assert_eq!(apply_curve(curve, 1.0), 1.0);
+        }
+    }
+
+    #[test]
+    fn every_easing_curve_obeys_the_configured_duration() {
+        let started_at = Duration::from_secs(1);
+        let duration = Duration::from_millis(850);
+
+        for curve in [
+            AnimationCurve::Linear,
+            AnimationCurve::EaseOutQuad,
+            AnimationCurve::EaseOutCubic,
+            AnimationCurve::EaseOutExpo,
+            AnimationCurve::Elastic,
+        ] {
+            let timeline = MotionTimeline::new(
+                AnimationMotion::Easing(EasingMotion {
+                    duration_ms: duration.as_millis() as u32,
+                    curve,
+                }),
+                started_at,
+            );
+            let halfway = timeline.sample_at(started_at + duration / 2);
+            let before_end = timeline.sample_at(started_at + duration - Duration::from_millis(1));
+            let end = timeline.sample_at(started_at + duration);
+
+            assert_eq!(timeline.value_at(started_at), 0.0, "{curve:?}");
+            assert_eq!(halfway.linear_progress, 0.5, "{curve:?}");
+            assert!(!timeline.is_finished_at(started_at + duration - Duration::from_millis(1)));
+            assert!(before_end.linear_progress < 1.0, "{curve:?}");
+            assert_eq!(end.linear_progress, 1.0, "{curve:?}");
+            assert_eq!(end.value, 1.0, "{curve:?}");
+            assert_eq!(end.linear_velocity, 0.0, "{curve:?}");
+            assert_eq!(end.velocity, 0.0, "{curve:?}");
+            assert!(timeline.is_finished_at(started_at + duration));
         }
     }
 

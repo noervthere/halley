@@ -24,14 +24,15 @@ struct WindowOpenTimeline {
 
 impl WindowOpenTimeline {
     fn visual_at(self, now: Duration, bounds: Rectangle<i32, Physical>) -> WindowOpenVisual {
-        let raw_progress = self.motion.value_at(now);
+        let sample = self.motion.sample_at(now);
+        let raw_progress = sample.value;
         let progress = raw_progress.clamp(0.0, 1.0);
         let (scale, alpha) = match self.animation_type {
             WindowOpenAnimationType::CenterOut => {
                 (raw_progress.clamp(0.0, MAX_OVERSHOOT_SCALE), 1.0)
             }
             WindowOpenAnimationType::Fade => (1.0, progress.clamp(0.0, 1.0) as f32),
-            WindowOpenAnimationType::Launch => (1.0, launch::alpha(progress)),
+            WindowOpenAnimationType::Launch => (1.0, launch::alpha(sample.linear_progress)),
         };
         let destination = self
             .geometry
@@ -39,7 +40,7 @@ impl WindowOpenTimeline {
             .or_else(|| {
                 (self.animation_type == WindowOpenAnimationType::Launch
                     && !self.motion.is_finished_at(now))
-                .then(|| launch::rect(bounds, self.launch_origin, progress).round())
+                .then(|| launch::rect(bounds, self.launch_origin, sample).round())
             });
         WindowOpenVisual {
             scale,
@@ -64,16 +65,11 @@ impl WindowOpenTimeline {
         let (current, velocity) = match self.geometry {
             Some(geometry) => (geometry.rect_at(now), geometry.velocity_at(now)),
             None if self.animation_type == WindowOpenAnimationType::Launch => {
-                let raw_progress = self.motion.value_at(now);
-                let progress = raw_progress.clamp(0.0, 1.0);
-                let progress_velocity = if (0.0..1.0).contains(&raw_progress) {
-                    self.motion.velocity_at(now)
-                } else {
-                    0.0
-                };
-                let (rect, derivative) =
-                    launch::rect_and_derivative(current_bounds, self.launch_origin, progress);
-                (rect, derivative * progress_velocity)
+                launch::rect_and_velocity(
+                    current_bounds,
+                    self.launch_origin,
+                    self.motion.sample_at(now),
+                )
             }
             None => {
                 let scale = self.scale_at(now);
@@ -158,19 +154,6 @@ impl VisualRect {
             (left, top).into(),
             ((right - left).max(0), (bottom - top).max(0)).into(),
         )
-    }
-}
-
-impl std::ops::Mul<f64> for VisualRect {
-    type Output = Self;
-
-    fn mul(self, rhs: f64) -> Self::Output {
-        Self {
-            x: self.x * rhs,
-            y: self.y * rhs,
-            width: self.width * rhs,
-            height: self.height * rhs,
-        }
     }
 }
 
@@ -563,6 +546,62 @@ mod tests {
         assert!(center.x > 200.0);
         assert!(center.x < 500.0);
         assert!(center.y < 350.0);
+    }
+
+    #[test]
+    fn launch_applies_the_configured_travel_curve_once() {
+        let bounds = Rectangle::new((100, 50).into(), (800, 600).into());
+        let origin = Point::from((200.0, 350.0));
+        let now = Duration::from_millis(1150);
+        let linear = launch_timeline(origin);
+        let mut quad = timeline(WindowOpenAnimationType::Launch, AnimationCurve::EaseOutQuad);
+        quad.launch_origin = Some(origin);
+
+        let linear_center =
+            launch::rect_center(linear.visual_at(now, bounds).transform_rect(bounds, bounds));
+        let quad_center =
+            launch::rect_center(quad.visual_at(now, bounds).transform_rect(bounds, bounds));
+
+        assert_eq!(linear_center.x, 350.0);
+        assert_eq!(quad_center.x, 425.0);
+    }
+
+    #[test]
+    fn launch_scale_and_alpha_follow_elapsed_duration() {
+        let bounds = Rectangle::new((100, 50).into(), (800, 600).into());
+        let origin = launch::rect_center(bounds);
+        let now = Duration::from_millis(1150);
+        let mut linear = timeline(WindowOpenAnimationType::Launch, AnimationCurve::Linear);
+        let mut expo = timeline(WindowOpenAnimationType::Launch, AnimationCurve::EaseOutExpo);
+        linear.launch_origin = Some(origin);
+        expo.launch_origin = Some(origin);
+
+        let linear = linear.visual_at(now, bounds);
+        let expo = expo.visual_at(now, bounds);
+
+        assert_eq!(
+            linear.transform_rect(bounds, bounds).size,
+            expo.transform_rect(bounds, bounds).size
+        );
+        assert_eq!(linear.alpha(), expo.alpha());
+    }
+
+    #[test]
+    fn elastic_launch_overshoots_then_settles_at_the_deadline() {
+        let bounds = Rectangle::new((100, 50).into(), (800, 600).into());
+        let origin = Point::from((200.0, 350.0));
+        let mut animation = timeline(WindowOpenAnimationType::Launch, AnimationCurve::Elastic);
+        animation.launch_origin = Some(origin);
+
+        let middle = animation.visual_at(Duration::from_millis(1150), bounds);
+        let middle_center = launch::rect_center(middle.transform_rect(bounds, bounds));
+
+        assert!(middle_center.x > launch::rect_center(bounds).x);
+        assert!(!animation.is_finished_at(Duration::from_millis(1299)));
+        assert_eq!(
+            animation.visual_at(Duration::from_millis(1300), bounds),
+            WindowOpenVisual::default()
+        );
     }
 
     #[test]
