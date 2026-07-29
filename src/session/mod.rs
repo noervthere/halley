@@ -5,7 +5,6 @@ use halley_config::Action;
 use halley_core::camera::Camera;
 use smithay::wayland::seat::WaylandFocus;
 
-use crate::spawn;
 use crate::wayland::{self, WaylandState};
 
 pub(crate) mod closing;
@@ -14,6 +13,7 @@ mod lifecycle;
 pub(crate) mod opening;
 mod pointer;
 mod protocol;
+mod spawn;
 mod state;
 mod tty_frame;
 

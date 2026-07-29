@@ -11,7 +11,6 @@ mod ipc;
 mod logging;
 mod screencast;
 mod session;
-mod spawn;
 mod wayland;
 mod window;
 mod xwayland;

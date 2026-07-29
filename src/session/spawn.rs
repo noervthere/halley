@@ -1,3 +1,5 @@
+//! Detached process launching for session actions.
+
 use std::ffi::OsStr;
 use std::io;
 use std::os::unix::process::CommandExt;
@@ -9,7 +11,11 @@ use std::process::{Command, Stdio};
 /// The shell is intentional: loose keybinds may contain arguments, quoting,
 /// pipelines, or substitutions. The config is user-authored and has the
 /// same authority as starting a command from their own shell.
-pub fn spawn_detached(command_line: &str, wayland_display: &OsStr, x11_display: Option<&OsStr>) {
+pub(super) fn spawn_detached(
+    command_line: &str,
+    wayland_display: &OsStr,
+    x11_display: Option<&OsStr>,
+) {
     let mut process = detached_process(command_line, wayland_display, x11_display);
 
     match process.spawn() {
