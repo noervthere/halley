@@ -65,3 +65,23 @@ end
 Every type can use any easing curve through `duration-ms` and `curve`, or
 select `motion "spring"` and use the same spring fields. Changing the type
 never selects a different curve or duration implicitly.
+
+Window closing freezes the last visible frame, removes the real window from
+input immediately, then animates the inert snapshot:
+
+```rune
+animations:
+  window-close:
+    enabled true
+    type "shrink"
+    duration-ms 270
+  end
+end
+```
+
+`type "shrink"` collapses the snapshot into its center without fading.
+`type "fade"` keeps the final geometry and fades to transparent. Both retain
+the original ease-in-out cubic timing. Closing snapshots preserve the
+window's current opening opacity and track camera motion while they finish.
+Layer-shell surfaces and X11 override-redirect popups are not window-close
+animation targets.

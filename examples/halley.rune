@@ -95,10 +95,10 @@ zoom:
   smooth-rate 12.5
 end
 
-# Animation settings are reloaded for future motion. Existing window-open
-# animations keep the parameters with which they started.
+# Animation settings are reloaded for future motion. Existing window-open and
+# window-close animations keep the parameters with which they started.
 animations:
-  # Master switch for window-open and fullscreen animations.
+  # Master switch for window-open, window-close, and fullscreen animations.
   enabled true
 
   window-open:
@@ -129,6 +129,18 @@ animations:
     # Window-open motion also accepts `motion "spring"`. With spring motion,
     # use damping-ratio and stiffness as documented below instead of
     # duration-ms and curve.
+  end
+
+  window-close:
+    # Independent switch for ordinary Wayland and XWayland toplevels.
+    enabled true
+
+    # "shrink" collapses the frozen final frame into its center without
+    # fading. "fade" keeps its final geometry and changes only opacity.
+    type "shrink"
+
+    # Close animations use the original ease-in-out cubic timing internally.
+    duration-ms 270
   end
 
   fullscreen:

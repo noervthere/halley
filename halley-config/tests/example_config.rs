@@ -141,6 +141,19 @@ fn example_config_window_open_animation_parses() {
 }
 
 #[test]
+fn example_config_window_close_animation_parses() {
+    let config = RuneConfig::from_file(EXAMPLE_PATH).expect("example config parses");
+    let close = halley_config::parse_animations(&config).window_close;
+
+    assert!(close.enabled);
+    assert_eq!(
+        close.animation_type,
+        halley_config::WindowCloseAnimationType::Shrink
+    );
+    assert_eq!(close.duration_ms, 270);
+}
+
+#[test]
 fn example_config_fullscreen_animation_parses() {
     let config = RuneConfig::from_file(EXAMPLE_PATH).expect("example config parses");
     let fullscreen = halley_config::parse_animations(&config).fullscreen;
