@@ -963,10 +963,11 @@ fn apply_dynamics_positions<D: crate::session::SessionDriver>(
             (position.x - size.w as f32 * 0.5).round() as i32,
             (position.y - size.h as f32 * 0.5).round() as i32,
         ));
-        session
-            .wayland
-            .space
-            .map_element(window.clone(), location, false);
+        // `Space::map_element` always moves an existing element to the top of
+        // its z-index, even with `activate = false`. Physics must only change
+        // position: otherwise a node pushing a window makes that window jump
+        // layers on every solver frame.
+        session.wayland.space.relocate_element(&window, location);
         if let Some(record) = session.nodes.record_mut(id) {
             record.geometry = Rectangle::new(location, size);
         }
@@ -1757,10 +1758,7 @@ fn move_node<D: crate::session::SessionDriver>(
                 scale,
             )
             .loc;
-        session
-            .wayland
-            .space
-            .map_element(record.window.clone(), next, false);
+        session.wayland.space.relocate_element(&record.window, next);
         if record.window.x11_surface().is_some() {
             crate::xwayland::configure_window(
                 &record.window,
