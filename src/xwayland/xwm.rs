@@ -130,14 +130,15 @@ fn admit_window<D: SessionDriver>(session: &mut Session<D>, xid: u32) {
     else {
         return;
     };
-    let output = session.driver.primary_output().clone();
     let opening_size = OpeningPlacement::preferred_size(initial_size, window.geometry().size);
-    let location = crate::wayland::xdg_shell::centered_location_for_size(
+    let placement = crate::session::routing::initial_window_placement(
         &session.wayland,
         &session.cameras,
-        &output,
+        session.driver.primary_output(),
         opening_size,
     );
+    let output = placement.output;
+    let location = placement.location;
     let opening_geometry = Rectangle::new(location, opening_size);
     if let Err(err) = surface.configure(opening_geometry) {
         eventline::warn!("xwayland: failed to prepare centered opening geometry: {err}");

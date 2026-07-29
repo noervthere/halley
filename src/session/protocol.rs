@@ -124,7 +124,13 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
         let root = wayland::compositor::root_surface(surface);
         let unmap = wayland::xdg_shell::will_unmap(&self.wayland, &root)
             .then(|| super::prepare_window_unmap(self, &root));
-        match wayland::compositor::commit(&mut self.wayland, &self.cameras, surface) {
+        let primary_output = self.driver.primary_output().clone();
+        match wayland::compositor::commit(
+            &mut self.wayland,
+            &self.cameras,
+            &primary_output,
+            surface,
+        ) {
             wayland::xdg_shell::ToplevelCommit::Mapped(mapped) => {
                 super::closing::mapped(self, &mapped);
                 if self.fullscreen.is_fullscreen_or_pending(&mapped) {

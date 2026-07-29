@@ -568,7 +568,12 @@ impl FullscreenManager {
                 Some(restore) if restore.output.as_deref() == Some(target_output.as_str()) => {
                     restore.location
                 }
-                _ => super::xdg_shell::centered_location(wayland, cameras, &output, &window),
+                _ => crate::session::routing::centered_location_for_size(
+                    wayland,
+                    cameras,
+                    &output,
+                    window.geometry().size,
+                ),
             };
             super::set_window_output(&window, &output);
             wayland.space.map_element(window.clone(), location, true);

@@ -2,7 +2,6 @@ use smithay::backend::renderer::utils::with_renderer_surface_state;
 use smithay::desktop::Window;
 use smithay::output::Output;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::utils::{Logical, Physical, Point, Size};
 use smithay::wayland::shell::xdg::ToplevelSurface;
 
 use crate::camera::OutputCameras;
@@ -89,6 +88,7 @@ pub fn toplevel_destroyed(wayland: &mut WaylandState, surface: &ToplevelSurface)
 pub fn handle_commit(
     wayland: &mut WaylandState,
     cameras: &OutputCameras,
+    primary_output: &Output,
     surface: &WlSurface,
 ) -> ToplevelCommit {
     let has_buffer =
@@ -136,19 +136,17 @@ pub fn handle_commit(
 
     if mapping_transition(false, has_buffer) == MappingTransition::Map {
         let window = wayland.unmapped.remove(surface).expect("checked above");
-        let output = super::focus::selected_output(wayland).cloned();
+        let placement = crate::session::routing::initial_window_placement(
+            wayland,
+            cameras,
+            primary_output,
+            window.geometry().size,
+        );
         let location = wayland
             .unmapped_locations
             .remove(surface)
-            .or_else(|| {
-                output
-                    .as_ref()
-                    .map(|output| centered_location(wayland, cameras, output, &window))
-            })
-            .unwrap_or_else(|| Point::from((0, 0)));
-        if let Some(output) = output.as_ref() {
-            super::set_window_output(&window, output);
-        }
+            .unwrap_or(placement.location);
+        super::set_window_output(&window, &placement.output);
         wayland.space.map_element(window.clone(), location, false);
         // New windows steal focus - matches most WMs' default behavior.
         // Also raises+activates via `focus_and_raise`, same as clicking a
@@ -160,68 +158,9 @@ pub fn handle_commit(
     ToplevelCommit::None
 }
 
-/// Centers a newly-mapped window on the selected output's live camera.
-/// Existing freeform windows stay where they are when the camera later moves.
-pub(crate) fn centered_location(
-    wayland: &WaylandState,
-    cameras: &OutputCameras,
-    output: &Output,
-    window: &Window,
-) -> Point<i32, Logical> {
-    centered_location_for_size(wayland, cameras, output, window.geometry().size)
-}
-
-pub(crate) fn centered_location_for_size(
-    wayland: &WaylandState,
-    cameras: &OutputCameras,
-    output: &Output,
-    window_size: Size<i32, Logical>,
-) -> Point<i32, Logical> {
-    let Some(output_geo) = wayland.space.output_geometry(output) else {
-        return (0, 0).into();
-    };
-    let local_camera_center = cameras
-        .view(&output.name())
-        .map(|view| view.center)
-        .unwrap_or_else(|| {
-            Point::<f32, Physical>::from((
-                output_geo.size.w as f32 / 2.0,
-                output_geo.size.h as f32 / 2.0,
-            ))
-        });
-    let center = crate::camera::global_center(local_camera_center, output_geo);
-    center_window(center, window_size)
-}
-
-fn center_window(
-    center: Point<f32, Physical>,
-    window_size: Size<i32, Logical>,
-) -> Point<i32, Logical> {
-    Point::from((
-        (center.x - window_size.w as f32 / 2.0).round() as i32,
-        (center.y - window_size.h as f32 / 2.0).round() as i32,
-    ))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn window_location_is_centered_on_global_camera_position() {
-        assert_eq!(
-            center_window(Point::from((3620.0, 550.0)), Size::from((1000, 700)),),
-            Point::from((3120, 200))
-        );
-    }
-
-    #[test]
-    fn client_opening_size_is_centered_independently_of_its_buffer() {
-        assert_eq!(
-            center_window(Point::from((1280.0, 720.0)), Size::from((640, 480))),
-            Point::from((960, 480))
-        );
-    }
 
     #[test]
     fn mapped_null_buffer_unmaps_and_a_later_buffer_remaps() {
