@@ -144,6 +144,19 @@ pub fn parse_input(config: &RuneConfig) -> Result<Input, InputParseError> {
         return Ok(Input::default());
     };
     let input_fields = object(input_value, "input")?;
+    validate_fields(
+        input_fields,
+        &[
+            "repeat-rate",
+            "repeat-delay",
+            "focus-mode",
+            "raise-on-click",
+            "keyboard",
+            "mouse",
+            "devices",
+        ],
+        "input",
+    )?;
     let defaults = Input::default();
 
     let repeat_rate =
@@ -197,6 +210,11 @@ pub fn parse_input(config: &RuneConfig) -> Result<Input, InputParseError> {
 }
 
 fn parse_keyboard(fields: &[ObjectItem]) -> Result<KeyboardConfig, InputParseError> {
+    validate_fields(
+        fields,
+        &["layout", "variant", "options", "model"],
+        "input.keyboard",
+    )?;
     let defaults = KeyboardConfig::default();
     Ok(KeyboardConfig {
         layout: optional_string(fields, "layout", "input.keyboard")?.unwrap_or(defaults.layout),
@@ -213,7 +231,7 @@ fn parse_devices(fields: &[ObjectItem]) -> Result<Vec<DeviceOverride>, InputPars
         let ObjectItem::Assign(name, value) = item else {
             continue;
         };
-        let normalized = name.trim().to_lowercase();
+        let normalized = name.trim().to_ascii_lowercase();
         if normalized.is_empty() {
             return Err(InputParseError(
                 "input.devices names must not be empty".to_string(),
@@ -237,6 +255,20 @@ fn parse_mouse_settings(
     fields: &[ObjectItem],
     path: &str,
 ) -> Result<MouseSettings, InputParseError> {
+    validate_fields(
+        fields,
+        &[
+            "enabled",
+            "natural-scroll",
+            "accel-speed",
+            "accel-profile",
+            "scroll-method",
+            "scroll-button",
+            "left-handed",
+            "middle-emulation",
+        ],
+        path,
+    )?;
     let accel_speed = optional_number(fields, "accel-speed", path)?;
     if accel_speed.is_some_and(|speed| !(-1.0..=1.0).contains(&speed)) {
         return Err(InputParseError(format!(
@@ -285,6 +317,28 @@ fn field<'a>(fields: &'a [ObjectItem], key: &str) -> Option<&'a Value> {
         ObjectItem::Assign(candidate, value) if candidate == key => Some(value),
         _ => None,
     })
+}
+
+fn validate_fields(
+    fields: &[ObjectItem],
+    allowed: &[&str],
+    path: &str,
+) -> Result<(), InputParseError> {
+    let mut seen = HashSet::new();
+    for item in fields {
+        let ObjectItem::Assign(key, _) = item else {
+            continue;
+        };
+        if !allowed.contains(&key.as_str()) {
+            return Err(InputParseError(format!(
+                "{path}: unsupported field {key:?}"
+            )));
+        }
+        if !seen.insert(key) {
+            return Err(InputParseError(format!("{path}: duplicate field {key:?}")));
+        }
+    }
+    Ok(())
 }
 
 fn object<'a>(value: &'a Value, path: &str) -> Result<&'a [ObjectItem], InputParseError> {
@@ -487,6 +541,35 @@ end
                     .to_string()
                     .contains(expected),
                 "{source:?} did not mention {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_typos_and_out_of_scope_device_sections() {
+        for (source, expected) in [
+            (
+                "input:\n  repeat_rate 30\nend\n",
+                "unsupported field \"repeat_rate\"",
+            ),
+            (
+                "input:\n  touchpad:\n  end\nend\n",
+                "unsupported field \"touchpad\"",
+            ),
+            (
+                "input:\n  mouse:\n    middle-emulaton true\n  end\nend\n",
+                "unsupported field \"middle-emulaton\"",
+            ),
+            (
+                "input:\n  keyboard:\n    layout \"us\"\n    layout \"ca\"\n  end\nend\n",
+                "duplicate field \"layout\"",
+            ),
+        ] {
+            assert!(
+                parse(source)
+                    .expect_err("unsupported input should fail")
+                    .to_string()
+                    .contains(expected)
             );
         }
     }
