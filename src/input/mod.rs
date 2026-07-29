@@ -303,6 +303,26 @@ mod tests {
     }
 
     #[test]
+    fn compositor_bindings_do_not_capture_ctrl_space_without_an_exact_bind() {
+        let binds = [bind(
+            ResolvedTrigger::Keysym(Keysym::space),
+            Modifiers {
+                super_key: true,
+                ..Modifiers::default()
+            },
+        )];
+        let ctrl = ModifiersState {
+            ctrl: true,
+            ..ModifiersState::default()
+        };
+
+        assert_eq!(
+            match_keyboard_bind(&binds, &ctrl, Some(Keysym::space), Keycode::new(65)),
+            None
+        );
+    }
+
+    #[test]
     fn modifier_keys_can_be_bare_triggers() {
         let binds = [
             bind(

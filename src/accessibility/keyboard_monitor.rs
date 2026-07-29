@@ -196,6 +196,13 @@ impl KeyboardMonitor {
         .await
     }
 
+    fn sender(header: Header<'_>) -> fdo::Result<OwnedUniqueName> {
+        header
+            .sender()
+            .map(|sender| OwnedUniqueName::from(sender.to_owned()))
+            .ok_or_else(|| fdo::Error::AccessDenied("missing D-Bus sender".to_owned()))
+    }
+
     fn process_key(&self, event: KeyboardEvent) -> KeyboardDisposition {
         let route = self
             .data
@@ -296,7 +303,10 @@ impl KeyboardMonitor {
         modifiers: Vec<u32>,
         keystrokes: Vec<(u32, u32)>,
     ) -> fdo::Result<()> {
-        let sender = self.authorized_sender(header).await?;
+        // Scoped keystroke grabs are available to ordinary session clients,
+        // as in the established AT-SPI implementations. The unrestricted
+        // WatchKeyboard and GrabKeyboard methods remain authorized above.
+        let sender = Self::sender(header)?;
         let mut data = self
             .data
             .lock()
@@ -464,6 +474,26 @@ mod tests {
         assert_eq!(first.recipients, [name]);
         assert!(repeat.recipients.is_empty());
         assert_eq!(repeat.disposition, KeyboardDisposition::Intercept);
+    }
+
+    #[test]
+    fn exact_keystroke_does_not_capture_other_chords() {
+        let (name, mut data) = client();
+        data.clients
+            .get_mut(&name)
+            .unwrap()
+            .keystrokes
+            .push((Keysym::space, 4));
+
+        for unrelated in [
+            event(1, 65, false, 5, Keysym::space, ' ' as u32),
+            event(2, 38, false, 4, Keysym::a, 'a' as u32),
+            event(3, 65, false, 0, Keysym::space, ' ' as u32),
+        ] {
+            let route = data.route(unrelated, REPEAT_DELAY);
+            assert!(route.recipients.is_empty());
+            assert_eq!(route.disposition, KeyboardDisposition::Pass);
+        }
     }
 
     #[test]
