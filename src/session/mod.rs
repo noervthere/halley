@@ -10,6 +10,7 @@ use crate::wayland::{self, WaylandState};
 pub(crate) mod closing;
 mod cursor;
 mod focus;
+mod gesture;
 mod input;
 mod lifecycle;
 pub(crate) mod opening;
@@ -17,6 +18,7 @@ mod pointer;
 mod protocol;
 mod spawn;
 mod state;
+mod touch;
 mod tty_frame;
 
 pub mod environment;

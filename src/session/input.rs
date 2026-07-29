@@ -142,6 +142,9 @@ where
     D: SessionDriver,
     B: InputBackend,
 {
+    if super::touch::handle(session, event) || super::gesture::handle(session, event) {
+        return;
+    }
     let position_before = session.pointer.position();
     if matches!(
         event,

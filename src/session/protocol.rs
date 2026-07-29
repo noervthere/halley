@@ -54,7 +54,8 @@ use smithay::{
     delegate_fractional_scale,
     delegate_keyboard_shortcuts_inhibit, delegate_layer_shell, delegate_output,
     delegate_pointer_constraints, delegate_primary_selection, delegate_relative_pointer,
-    delegate_seat, delegate_shm, delegate_viewporter, delegate_virtual_keyboard_manager,
+    delegate_pointer_gestures, delegate_seat, delegate_shm, delegate_viewporter,
+    delegate_virtual_keyboard_manager,
     delegate_xdg_activation, delegate_xdg_decoration, delegate_xdg_shell,
 };
 
@@ -172,6 +173,8 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
     }
 
     fn destroyed(&mut self, surface: &WlSurface) {
+        super::touch::cancel_surface(self, surface);
+        super::gesture::cancel_surface(self, surface);
         let root = wayland::compositor::root_surface(surface);
         super::closing::capture_surface(self, &root);
         if self.cursor.surface_destroyed(surface) {
@@ -418,6 +421,8 @@ impl<D: SessionDriver> WlrLayerShellHandler for Session<D> {
     }
 
     fn layer_destroyed(&mut self, surface: WlrLayerSurface) {
+        super::touch::cancel_surface(self, surface.wl_surface());
+        super::gesture::cancel_surface(self, surface.wl_surface());
         wayland::layer_shell::destroyed(&mut self.wayland, &surface);
         self.request_redraw();
     }
@@ -576,6 +581,7 @@ delegate_viewporter!(@<D: SessionDriver> Session<D>);
 delegate_fractional_scale!(@<D: SessionDriver> Session<D>);
 delegate_relative_pointer!(@<D: SessionDriver> Session<D>);
 delegate_pointer_constraints!(@<D: SessionDriver> Session<D>);
+delegate_pointer_gestures!(@<D: SessionDriver> Session<D>);
 delegate_virtual_keyboard_manager!(@<D: SessionDriver> Session<D>);
 delegate_keyboard_shortcuts_inhibit!(@<D: SessionDriver> Session<D>);
 delegate_data_device!(@<D: SessionDriver> Session<D>);

@@ -184,6 +184,8 @@ pub fn run(session_mode: bool) {
         suppressed_buttons: SuppressedButtons::default(),
         suppressed_keys: SuppressedKeys::default(),
         wheel_accumulator: WheelAccumulator::default(),
+        touch: super::touch::TouchState::default(),
+        gestures: super::gesture::GestureState::default(),
         pointer_constraints: super::pointer::PointerConstraintLifecycle::default(),
         keyboard_monitor,
         opening_origins: super::opening::OpeningOrigins::default(),
@@ -243,11 +245,18 @@ pub fn run(session_mode: bool) {
         .insert_source(libinput_backend, move |event, _, app| {
             match &event {
                 smithay::backend::input::InputEvent::DeviceAdded { device } => {
-                    app.driver.physical_input.added(device.clone(), &app.input);
+                    let first_touch = app.driver.physical_input.added(device.clone(), &app.input);
+                    if first_touch && app.seat.get_touch().is_none() {
+                        app.seat.add_touch();
+                    }
                 }
-                smithay::backend::input::InputEvent::DeviceRemoved { device } => {
-                    app.driver.physical_input.removed(device);
+                smithay::backend::input::InputEvent::DeviceRemoved { device }
+                    if app.driver.physical_input.removed(device) =>
+                {
+                    super::touch::cancel_all(app);
+                    app.seat.remove_touch();
                 }
+                smithay::backend::input::InputEvent::DeviceRemoved { .. } => {}
                 _ => {}
             }
             super::input::handle(app, &event, &socket_name);

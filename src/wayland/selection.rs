@@ -80,11 +80,6 @@ pub fn start_dnd_grab<D, S>(
             }
         }
         GrabType::Touch => {
-            // Neither driver calls `Seat::add_touch` yet, so `get_touch()` is
-            // always `None` here and this reduces to cancelling. Kept whole
-            // anyway: it's the same handful of lines as the pointer arm, and
-            // leaving it out would turn adding touch later into a silent
-            // drag-and-drop regression rather than a no-op.
             let start = seat.get_touch().and_then(|touch| {
                 touch
                     .grab_start_data()

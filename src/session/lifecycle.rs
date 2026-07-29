@@ -82,6 +82,8 @@ pub(crate) fn prepare_window_unmap<D: SessionDriver>(
     session: &mut Session<D>,
     surface: &WlSurface,
 ) -> WindowUnmapPreparation {
+    super::touch::cancel_surface(session, surface);
+    super::gesture::cancel_surface(session, surface);
     super::pointer::prepare_unmap(session, surface);
     let focus = (session.wayland.focused_window.as_ref() == Some(surface)).then(|| {
         let output = mapped_managed_window(&session.wayland, surface)

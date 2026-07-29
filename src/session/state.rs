@@ -11,6 +11,7 @@ use smithay::wayland::fractional_scale::FractionalScaleManagerState;
 use smithay::wayland::keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitState;
 use smithay::wayland::output::OutputManagerState;
 use smithay::wayland::pointer_constraints::PointerConstraintsState;
+use smithay::wayland::pointer_gestures::PointerGesturesState;
 use smithay::wayland::relative_pointer::RelativePointerManagerState;
 use smithay::wayland::seat::WaylandFocus;
 use smithay::wayland::selection::data_device::DataDeviceState;
@@ -76,6 +77,8 @@ pub struct Session<D: SessionDriver> {
     pub suppressed_buttons: SuppressedButtons,
     pub suppressed_keys: SuppressedKeys,
     pub wheel_accumulator: WheelAccumulator,
+    pub(super) touch: super::touch::TouchState,
+    pub(super) gestures: super::gesture::GestureState,
     pub pointer_constraints: super::pointer::PointerConstraintLifecycle,
     pub keyboard_monitor: Option<crate::accessibility::KeyboardMonitorService>,
     pub opening_origins: super::opening::OpeningOrigins,
@@ -109,6 +112,7 @@ impl<D: SessionDriver> Session<D> {
             FractionalScaleManagerState::new::<Self>(&display_handle),
             RelativePointerManagerState::new::<Self>(&display_handle),
             PointerConstraintsState::new::<Self>(&display_handle),
+            PointerGesturesState::new::<Self>(&display_handle),
             CursorShapeManagerState::new::<Self>(&display_handle),
             VirtualKeyboardManagerState::new::<Self, _>(&display_handle, |client| {
                 client.get_data::<ClientState>().is_some()
@@ -132,6 +136,16 @@ impl<D: SessionDriver> Session<D> {
     /// Applies every backend-independent setting from one validated config
     /// snapshot. Output hardware policy remains with the concrete driver.
     pub fn apply_common_config(&mut self, config: &halley_config::RuntimeConfig) {
+        let cancel_touch =
+            self.input.gestures.touch_passthrough && !config.input.gestures.touch_passthrough;
+        let cancel_gestures = self.input.gestures.enabled
+            && (!config.input.gestures.enabled || !config.input.gestures.client_passthrough);
+        if cancel_touch {
+            super::touch::cancel_all(self);
+        }
+        if cancel_gestures {
+            super::gesture::cancel_all(self);
+        }
         self.keyboard.reload(&config.keybinds, D::BACKEND_KIND);
         crate::input::config::reload(self, &config.input);
         let cursor_changed = self.cursor.reload(&config.cursor);

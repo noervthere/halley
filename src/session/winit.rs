@@ -143,6 +143,8 @@ pub fn run() {
         suppressed_buttons: SuppressedButtons::default(),
         suppressed_keys: SuppressedKeys::default(),
         wheel_accumulator: WheelAccumulator::default(),
+        touch: super::touch::TouchState::default(),
+        gestures: super::gesture::GestureState::default(),
         pointer_constraints: super::pointer::PointerConstraintLifecycle::default(),
         keyboard_monitor: None,
         opening_origins: super::opening::OpeningOrigins::default(),

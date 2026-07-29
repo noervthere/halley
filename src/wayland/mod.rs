@@ -24,6 +24,7 @@ use smithay::wayland::fractional_scale::FractionalScaleManagerState;
 use smithay::wayland::keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitState;
 use smithay::wayland::output::OutputManagerState;
 use smithay::wayland::pointer_constraints::PointerConstraintsState;
+use smithay::wayland::pointer_gestures::PointerGesturesState;
 use smithay::wayland::relative_pointer::RelativePointerManagerState;
 use smithay::wayland::selection::data_device::DataDeviceState;
 use smithay::wayland::selection::primary_selection::PrimarySelectionState;
@@ -91,6 +92,7 @@ pub struct WaylandState {
     _fractional_scale_manager_state: FractionalScaleManagerState,
     _relative_pointer_manager_state: RelativePointerManagerState,
     _pointer_constraints_state: PointerConstraintsState,
+    _pointer_gestures_state: PointerGesturesState,
     _cursor_shape_manager_state: CursorShapeManagerState,
     _virtual_keyboard_manager_state: VirtualKeyboardManagerState,
     pub keyboard_shortcuts_inhibit_state: KeyboardShortcutsInhibitState,
@@ -160,6 +162,7 @@ impl WaylandState {
         fractional_scale_manager_state: FractionalScaleManagerState,
         relative_pointer_manager_state: RelativePointerManagerState,
         pointer_constraints_state: PointerConstraintsState,
+        pointer_gestures_state: PointerGesturesState,
         cursor_shape_manager_state: CursorShapeManagerState,
         virtual_keyboard_manager_state: VirtualKeyboardManagerState,
         keyboard_shortcuts_inhibit_state: KeyboardShortcutsInhibitState,
@@ -181,6 +184,7 @@ impl WaylandState {
             _fractional_scale_manager_state: fractional_scale_manager_state,
             _relative_pointer_manager_state: relative_pointer_manager_state,
             _pointer_constraints_state: pointer_constraints_state,
+            _pointer_gestures_state: pointer_gestures_state,
             _cursor_shape_manager_state: cursor_shape_manager_state,
             _virtual_keyboard_manager_state: virtual_keyboard_manager_state,
             keyboard_shortcuts_inhibit_state,
