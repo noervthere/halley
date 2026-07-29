@@ -64,11 +64,18 @@ struct MonitorRoute {
 }
 
 impl Client {
-    fn route(&mut self, event: KeyboardEvent, repeat_delay: Duration) -> ClientRoute {
-        if self.modifiers.contains(&event.keysym) {
-            return self.route_modifier(event, repeat_delay);
-        }
+    /// Replaces declarative grabs without dropping press ownership. Clients
+    /// may update grabs from inside a press signal, so transient state must
+    /// live until the matching physical release.
+    fn replace_grabs(&mut self, modifiers: Vec<u32>, keystrokes: Vec<(u32, u32)>) {
+        self.modifiers = modifiers.into_iter().map(Keysym::new).collect();
+        self.keystrokes = keystrokes
+            .into_iter()
+            .map(|(keysym, modifiers)| (Keysym::new(keysym), modifiers))
+            .collect();
+    }
 
+    fn route(&mut self, event: KeyboardEvent, repeat_delay: Duration) -> ClientRoute {
         if self.intercepted_keys.contains(&event.keycode) {
             if event.released {
                 self.intercepted_keys.remove(&event.keycode);
@@ -81,6 +88,13 @@ impl Client {
                 emit: false,
                 disposition: KeyboardDisposition::Intercept,
             };
+        }
+
+        if self.modifiers.contains(&event.keysym)
+            || self.pressed_modifiers.contains(&event.keysym)
+            || self.forwarded_modifiers.contains(&event.keysym)
+        {
+            return self.route_modifier(event, repeat_delay);
         }
 
         let grabbed = self.grabbed
@@ -311,15 +325,10 @@ impl KeyboardMonitor {
             .data
             .lock()
             .map_err(|_| fdo::Error::Failed("keyboard monitor state lock poisoned".to_owned()))?;
-        let client = data.clients.entry(sender).or_default();
-        client.modifiers = modifiers.into_iter().map(Keysym::new).collect();
-        client.keystrokes = keystrokes
-            .into_iter()
-            .map(|(keysym, modifiers)| (Keysym::new(keysym), modifiers))
-            .collect();
-        client.pressed_modifiers.clear();
-        client.forwarded_modifiers.clear();
-        client.intercepted_keys.clear();
+        data.clients
+            .entry(sender)
+            .or_default()
+            .replace_grabs(modifiers, keystrokes);
         Ok(())
     }
 
@@ -445,20 +454,52 @@ mod tests {
         data.clients
             .get_mut(&name)
             .unwrap()
-            .keystrokes
-            .push((Keysym::space, 4));
+            .replace_grabs(Vec::new(), vec![(Keysym::space.raw(), 4)]);
         let press = data.route(
             event(1, 65, false, 4, Keysym::space, ' ' as u32),
             REPEAT_DELAY,
         );
-        let release = data.route(
-            event(2, 65, true, 0, Keysym::space, ' ' as u32),
+        data.clients
+            .get_mut(&name)
+            .unwrap()
+            .replace_grabs(Vec::new(), Vec::new());
+        let repeat = data.route(
+            event(2, 65, false, 4, Keysym::space, ' ' as u32),
             REPEAT_DELAY,
         );
+        let release = data.route(
+            event(3, 65, true, 0, Keysym::space, ' ' as u32),
+            REPEAT_DELAY,
+        );
+        assert_eq!(press.recipients.as_slice(), std::slice::from_ref(&name));
+        assert!(repeat.recipients.is_empty());
+        assert_eq!(release.recipients.as_slice(), std::slice::from_ref(&name));
+        assert_eq!(press.disposition, KeyboardDisposition::Intercept);
+        assert_eq!(repeat.disposition, KeyboardDisposition::Intercept);
+        assert_eq!(release.disposition, KeyboardDisposition::Intercept);
+    }
+
+    #[test]
+    fn modifier_release_survives_grab_replacement() {
+        let (name, mut data) = client();
+        data.clients
+            .get_mut(&name)
+            .unwrap()
+            .replace_grabs(vec![Keysym::Insert.raw()], Vec::new());
+
+        let press = data.route(event(1, 118, false, 0, Keysym::Insert, 0), REPEAT_DELAY);
+        data.clients
+            .get_mut(&name)
+            .unwrap()
+            .replace_grabs(Vec::new(), Vec::new());
+        let release = data.route(event(2, 118, true, 0, Keysym::Insert, 0), REPEAT_DELAY);
+        let unrelated = data.route(event(3, 38, false, 0, Keysym::a, 'a' as u32), REPEAT_DELAY);
+
         assert_eq!(press.recipients.as_slice(), std::slice::from_ref(&name));
         assert_eq!(release.recipients.as_slice(), std::slice::from_ref(&name));
         assert_eq!(press.disposition, KeyboardDisposition::Intercept);
         assert_eq!(release.disposition, KeyboardDisposition::Intercept);
+        assert_eq!(unrelated.disposition, KeyboardDisposition::Pass);
     }
 
     #[test]
