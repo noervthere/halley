@@ -5,6 +5,7 @@ mod camera;
 mod capture;
 mod config;
 mod cursor;
+mod dbus;
 mod frame_clock;
 mod global_shortcuts;
 mod input;

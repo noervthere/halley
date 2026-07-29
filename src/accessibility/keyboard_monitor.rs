@@ -9,7 +9,7 @@ use zbus::blocking::Connection;
 use zbus::fdo::{self, RequestNameFlags};
 use zbus::interface;
 use zbus::message::Header;
-use zbus::names::{BusName, OwnedUniqueName, UniqueName, WellKnownName};
+use zbus::names::{BusName, OwnedUniqueName, UniqueName};
 use zbus::zvariant::NoneValue;
 
 const BUS_NAME: &str = "org.freedesktop.a11y.Manager";
@@ -183,33 +183,17 @@ impl KeyboardMonitor {
     }
 
     async fn authorized_sender(&self, header: Header<'_>) -> fdo::Result<OwnedUniqueName> {
-        let sender = header
-            .sender()
-            .ok_or_else(|| fdo::Error::AccessDenied("missing D-Bus sender".to_owned()))?;
         let connection = self
             .connection
             .get()
             .ok_or_else(|| fdo::Error::Failed("keyboard monitor is not started".to_owned()))?;
-        let proxy = fdo::DBusProxy::new(connection.inner())
-            .await
-            .map_err(|err| fdo::Error::Failed(err.to_string()))?;
-        let monitor_name = WellKnownName::try_from(AUTHORIZED_MONITOR)
-            .map_err(|err| fdo::Error::Failed(err.to_string()))?;
-        let owner = proxy
-            .get_name_owner(BusName::WellKnown(monitor_name))
-            .await
-            .map_err(|_| {
-                fdo::Error::AccessDenied(
-                    "only the active assistive-technology keyboard monitor is authorized"
-                        .to_owned(),
-                )
-            })?;
-        if !authorized(sender, &owner.as_ref()) {
-            return Err(fdo::Error::AccessDenied(
-                "only the active assistive-technology keyboard monitor is authorized".to_owned(),
-            ));
-        }
-        Ok(owner)
+        crate::dbus::require_name_owner(
+            connection.inner(),
+            header,
+            AUTHORIZED_MONITOR,
+            "only the active assistive-technology keyboard monitor is authorized",
+        )
+        .await
     }
 
     fn process_key(&self, event: KeyboardEvent) -> KeyboardDisposition {
@@ -250,10 +234,6 @@ impl KeyboardMonitor {
         }
         route.disposition
     }
-}
-
-fn authorized(sender: &UniqueName<'_>, owner: &UniqueName<'_>) -> bool {
-    sender == owner
 }
 
 #[interface(name = "org.freedesktop.a11y.KeyboardMonitor")]
@@ -447,14 +427,6 @@ mod tests {
         let mut data = MonitorData::default();
         data.clients.insert(name.clone(), Client::default());
         (name, data)
-    }
-
-    #[test]
-    fn authorization_requires_the_current_named_owner() {
-        let owner = UniqueName::try_from(":1.42").unwrap();
-        let other = UniqueName::try_from(":1.43").unwrap();
-        assert!(authorized(&owner, &owner));
-        assert!(!authorized(&other, &owner));
     }
 
     #[test]

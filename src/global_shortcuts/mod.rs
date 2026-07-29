@@ -9,7 +9,7 @@ use zbus::blocking::Connection;
 use zbus::fdo::{self, RequestNameFlags};
 use zbus::interface;
 use zbus::message::Header;
-use zbus::names::{BusName, OwnedUniqueName, UniqueName, WellKnownName};
+use zbus::names::{BusName, OwnedUniqueName, UniqueName};
 
 const BUS_NAME: &str = "org.halley.Compositor";
 const OBJECT_PATH: &str = "/org/halley/GlobalShortcuts";
@@ -216,31 +216,16 @@ impl ShortcutBroker {
     }
 
     async fn authorized_sender(&self, header: Header<'_>) -> fdo::Result<OwnedUniqueName> {
-        let sender = header
-            .sender()
-            .ok_or_else(|| fdo::Error::AccessDenied("missing D-Bus sender".to_owned()))?;
         let connection = self.connection.get().ok_or_else(|| {
             fdo::Error::Failed("global shortcuts broker is not started".to_owned())
         })?;
-        let proxy = fdo::DBusProxy::new(connection.inner())
-            .await
-            .map_err(|err| fdo::Error::Failed(err.to_string()))?;
-        let portal_name = WellKnownName::try_from(PORTAL_BUS_NAME)
-            .map_err(|err| fdo::Error::Failed(err.to_string()))?;
-        let owner = proxy
-            .get_name_owner(BusName::WellKnown(portal_name))
-            .await
-            .map_err(|_| {
-                fdo::Error::AccessDenied(
-                    "only the active Halley portal backend may register shortcuts".to_owned(),
-                )
-            })?;
-        if sender != &owner.as_ref() {
-            return Err(fdo::Error::AccessDenied(
-                "only the active Halley portal backend may register shortcuts".to_owned(),
-            ));
-        }
-        Ok(owner)
+        crate::dbus::require_name_owner(
+            connection.inner(),
+            header,
+            PORTAL_BUS_NAME,
+            "only the active Halley portal backend may register shortcuts",
+        )
+        .await
     }
 
     fn process_key(
