@@ -100,7 +100,7 @@ pub fn run() {
     // Advertises capabilities and creates the wl_keyboard/wl_pointer
     // protocol objects clients expect a seat to offer - not real input
     // forwarding, which stays deferred (see `seat`'s doc comment above).
-    seat.add_keyboard(Default::default(), 200, 25)
+    crate::input::config::add_keyboard(&mut seat, &runtime_config.input)
         .expect("failed to advertise keyboard capability on the wl_seat");
     seat.add_pointer();
 
@@ -129,6 +129,7 @@ pub fn run() {
         seat_state,
         seat,
         start_time: Instant::now(),
+        input: runtime_config.input.clone(),
         decorations: runtime_config.decorations,
         cameras,
         zoom: runtime_config.zoom,

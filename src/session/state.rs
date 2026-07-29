@@ -64,6 +64,7 @@ pub struct Session<D: SessionDriver> {
     pub seat_state: SeatState<Self>,
     pub seat: Seat<Self>,
     pub start_time: std::time::Instant,
+    pub input: halley_config::Input,
     pub decorations: halley_config::Decorations,
     pub cameras: OutputCameras,
     pub zoom: halley_config::Zoom,
@@ -132,6 +133,7 @@ impl<D: SessionDriver> Session<D> {
     /// snapshot. Output hardware policy remains with the concrete driver.
     pub fn apply_common_config(&mut self, config: &halley_config::RuntimeConfig) {
         self.keyboard.reload(&config.keybinds, D::BACKEND_KIND);
+        crate::input::config::reload(self, &config.input);
         let cursor_changed = self.cursor.reload(&config.cursor);
         let cursor_visibility_changed = self.cursor_policy.reload(&config.cursor);
         if cursor_changed && self.publish_session_environment {

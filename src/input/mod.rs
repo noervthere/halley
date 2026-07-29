@@ -1,3 +1,4 @@
+pub mod config;
 pub mod grab;
 pub mod keybinds;
 pub mod pointer;
