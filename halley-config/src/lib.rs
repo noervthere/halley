@@ -5,6 +5,7 @@ pub mod cursor;
 pub mod decorations;
 pub mod input;
 pub mod keybinds;
+pub mod launch;
 pub mod output;
 pub mod parse;
 pub mod runtime;
@@ -29,6 +30,7 @@ pub use input::{
     MouseSettings, ScrollMethod, ScrollPanMode, TapButtonMap, parse_input,
 };
 pub use keybinds::{Action, DefaultTerminal, Keybind, Keybinds, ModifierKey, Modifiers};
+pub use launch::{Autostart, LaunchConfigError, parse_autostart, parse_env};
 pub use output::{
     OutputConfig, OutputParseError, Vrr, load_outputs, parse_outputs, parse_outputs_checked,
 };

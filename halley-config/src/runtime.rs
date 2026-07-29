@@ -1,12 +1,14 @@
+use std::collections::BTreeMap;
 use std::fmt;
 use std::path::Path;
 
 use rune_cfg::RuneConfig;
 
 use crate::{
-    Animations, Cursor, Decorations, Input, InputParseError, Keybinds, OutputConfig,
-    OutputParseError, Screenshot, Zoom, parse_animations, parse_cursor, parse_decorations,
-    parse_input, parse_keybinds, parse_outputs_checked, parse_screenshot, parse_zoom,
+    Animations, Autostart, Cursor, Decorations, Input, InputParseError, Keybinds,
+    LaunchConfigError, OutputConfig, OutputParseError, Screenshot, Zoom, parse_animations,
+    parse_autostart, parse_cursor, parse_decorations, parse_env, parse_input, parse_keybinds,
+    parse_outputs_checked, parse_screenshot, parse_zoom,
 };
 
 /// One validated snapshot of every setting the running compositor currently
@@ -14,6 +16,8 @@ use crate::{
 /// bytes for each subsystem and gives live reload a single atomic unit.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RuntimeConfig {
+    pub env: BTreeMap<String, String>,
+    pub autostart: Autostart,
     pub keybinds: Keybinds,
     pub decorations: Decorations,
     pub zoom: Zoom,
@@ -28,6 +32,7 @@ pub struct RuntimeConfig {
 pub enum RuntimeConfigError {
     Rune(rune_cfg::RuneError),
     Keybind(crate::ParseError),
+    Launch(LaunchConfigError),
     Input(InputParseError),
     Output(OutputParseError),
 }
@@ -37,6 +42,7 @@ impl fmt::Display for RuntimeConfigError {
         match self {
             Self::Rune(err) => write!(f, "{err}"),
             Self::Keybind(err) => write!(f, "{err}"),
+            Self::Launch(err) => write!(f, "{err}"),
             Self::Input(err) => write!(f, "{err}"),
             Self::Output(err) => write!(f, "{err}"),
         }
@@ -57,6 +63,12 @@ impl From<crate::ParseError> for RuntimeConfigError {
     }
 }
 
+impl From<LaunchConfigError> for RuntimeConfigError {
+    fn from(value: LaunchConfigError) -> Self {
+        Self::Launch(value)
+    }
+}
+
 impl From<OutputParseError> for RuntimeConfigError {
     fn from(value: OutputParseError) -> Self {
         Self::Output(value)
@@ -71,6 +83,8 @@ impl From<InputParseError> for RuntimeConfigError {
 
 pub fn parse_runtime_config(config: &RuneConfig) -> Result<RuntimeConfig, RuntimeConfigError> {
     Ok(RuntimeConfig {
+        env: parse_env(config)?,
+        autostart: parse_autostart(config)?,
         keybinds: parse_keybinds(config)?,
         decorations: parse_decorations(config),
         zoom: parse_zoom(config),
@@ -121,6 +135,16 @@ input:
   focus-mode "hover"
 end
 
+env:
+  QT_QPA_PLATFORM "wayland"
+end
+
+autostart:
+  once "waybar"
+  once "mako"
+  on-reload "notify-send reloaded"
+end
+
 decorations:
   border:
     size 7
@@ -140,6 +164,12 @@ end
         .expect("valid Rune config");
 
         let runtime = parse_runtime_config(&config).unwrap();
+        assert_eq!(
+            runtime.env,
+            BTreeMap::from([("QT_QPA_PLATFORM".to_string(), "wayland".to_string())])
+        );
+        assert_eq!(runtime.autostart.once, ["waybar", "mako"]);
+        assert_eq!(runtime.autostart.on_reload, ["notify-send reloaded"]);
         assert_eq!(runtime.outputs.len(), 1);
         assert!(!runtime.zoom.enabled);
         assert_eq!(runtime.screenshot.directory, "/tmp/screenshots");
