@@ -45,9 +45,10 @@ impl<D: SessionDriver> Policy<D> {
         redraw
     }
 
-    pub fn reload(&mut self, config: &halley_config::Cursor) {
-        let directive = self.visibility.reload(config);
+    pub fn reload(&mut self, config: &halley_config::Cursor) -> bool {
+        let (redraw, directive) = self.visibility.reload(config);
         self.apply_timer(directive);
+        redraw
     }
 
     fn apply_timer(&mut self, directive: TimerDirective) {

@@ -7,13 +7,20 @@ pub enum TimerDirective {
     Arm { generation: u64, delay: Duration },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum State {
+    Visible,
+    HiddenByTyping,
+    HiddenByInactivity,
+}
+
 /// Presentation-only cursor visibility.
 ///
 /// This state has no access to pointer coordinates, focus, grabs, or
 /// constraints, making it impossible for an auto-hide transition to mutate
 /// input routing.
 pub struct Visibility {
-    visible: bool,
+    state: State,
     hide_when_typing: bool,
     hide_after: Option<Duration>,
     timer_generation: u64,
@@ -22,7 +29,7 @@ pub struct Visibility {
 impl Visibility {
     pub fn new(config: &halley_config::Cursor) -> Self {
         Self {
-            visible: true,
+            state: State::Visible,
             hide_when_typing: config.hide_when_typing,
             hide_after: timeout(config),
             timer_generation: 0,
@@ -30,7 +37,7 @@ impl Visibility {
     }
 
     pub fn visible(&self) -> bool {
-        self.visible
+        self.state == State::Visible
     }
 
     pub fn initial_timer(&mut self) -> TimerDirective {
@@ -38,40 +45,48 @@ impl Visibility {
     }
 
     pub fn pointer_activity(&mut self) -> (bool, TimerDirective) {
-        let redraw = !self.visible;
-        self.visible = true;
+        let redraw = !self.visible();
+        self.state = State::Visible;
         (redraw, self.next_timer())
     }
 
     pub fn keyboard_press(&mut self) -> (bool, TimerDirective) {
-        if !self.hide_when_typing || !self.visible {
+        if !self.hide_when_typing || !self.visible() {
             return (false, TimerDirective::Keep);
         }
-        self.visible = false;
+        self.state = State::HiddenByTyping;
         self.timer_generation = self.timer_generation.wrapping_add(1);
         (true, TimerDirective::Cancel)
     }
 
-    pub fn reload(&mut self, config: &halley_config::Cursor) -> TimerDirective {
+    pub fn reload(&mut self, config: &halley_config::Cursor) -> (bool, TimerDirective) {
+        let previous_timeout = self.hide_after;
         self.hide_when_typing = config.hide_when_typing;
-        let hide_after = timeout(config);
-        if self.hide_after == hide_after {
-            return TimerDirective::Keep;
+        self.hide_after = timeout(config);
+
+        let stale_hidden_state = matches!(self.state, State::HiddenByTyping)
+            && !self.hide_when_typing
+            || matches!(self.state, State::HiddenByInactivity) && self.hide_after.is_none();
+        if stale_hidden_state {
+            self.state = State::Visible;
+            return (true, self.next_timer());
         }
-        self.hide_after = hide_after;
-        if self.visible {
-            self.next_timer()
+        if previous_timeout == self.hide_after {
+            return (false, TimerDirective::Keep);
+        }
+        if self.visible() {
+            (false, self.next_timer())
         } else {
             self.timer_generation = self.timer_generation.wrapping_add(1);
-            TimerDirective::Cancel
+            (false, TimerDirective::Cancel)
         }
     }
 
     pub fn timer_expired(&mut self, generation: u64) -> bool {
-        if generation != self.timer_generation || !self.visible || self.hide_after.is_none() {
+        if generation != self.timer_generation || !self.visible() || self.hide_after.is_none() {
             return false;
         }
-        self.visible = false;
+        self.state = State::HiddenByInactivity;
         true
     }
 
@@ -163,9 +178,36 @@ mod tests {
         };
 
         assert_eq!(
-            visibility.reload(&config(false, None)),
-            TimerDirective::Cancel
+            visibility.reload(&config(false, None)).1,
+            TimerDirective::Cancel,
         );
         assert!(!visibility.timer_expired(stale));
+    }
+
+    #[test]
+    fn disabling_typing_policy_reveals_a_cursor_hidden_by_typing() {
+        let mut visibility = Visibility::new(&config(true, None));
+        assert!(visibility.keyboard_press().0);
+
+        let (redraw, directive) = visibility.reload(&config(false, None));
+
+        assert!(redraw);
+        assert_eq!(directive, TimerDirective::Cancel);
+        assert!(visibility.visible());
+    }
+
+    #[test]
+    fn disabling_inactivity_policy_reveals_a_cursor_hidden_by_timeout() {
+        let mut visibility = Visibility::new(&config(false, Some(2_000)));
+        let TimerDirective::Arm { generation, .. } = visibility.initial_timer() else {
+            panic!("timeout should be armed");
+        };
+        assert!(visibility.timer_expired(generation));
+
+        let (redraw, directive) = visibility.reload(&config(false, None));
+
+        assert!(redraw);
+        assert_eq!(directive, TimerDirective::Cancel);
+        assert!(visibility.visible());
     }
 }

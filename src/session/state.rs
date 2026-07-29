@@ -133,12 +133,14 @@ impl<D: SessionDriver> Session<D> {
     pub fn apply_common_config(&mut self, config: &halley_config::RuntimeConfig) {
         self.keyboard.reload(&config.keybinds, D::BACKEND_KIND);
         let cursor_changed = self.cursor.reload(&config.cursor);
-        self.cursor_policy.reload(&config.cursor);
+        let cursor_visibility_changed = self.cursor_policy.reload(&config.cursor);
         if cursor_changed && self.publish_session_environment {
             super::environment::publish_cursor(&config.cursor);
         }
-        let redraw =
-            self.decorations != config.decorations || self.zoom != config.zoom || cursor_changed;
+        let redraw = self.decorations != config.decorations
+            || self.zoom != config.zoom
+            || cursor_changed
+            || cursor_visibility_changed;
         self.decorations = config.decorations;
         self.zoom = config.zoom;
         self.screenshot = config.screenshot.clone();
