@@ -41,7 +41,27 @@ Window opening separates visual style from motion:
 
 - `type "center-out"` scales the window outward from its final center.
 - `type "fade"` keeps the final geometry and animates opacity.
+- `type "launch"` moves from a meaningful origin to the final geometry along
+  a restrained arc. It starts at 80% scale and low opacity, briefly reaches
+  102%, then settles at full size.
 
-Either type can use any easing curve through `duration-ms` and `curve`, or
+The launch origin is the activating launcher's visual center when the client
+uses `xdg-activation`. Otherwise Halley uses the cursor on the target output,
+the focused window center, then the output center. Travel is capped so a new
+window cannot fly across an entire display. A 220 ms `ease-out-cubic` motion is
+the recommended starting point:
+
+```rune
+animations:
+  window-open:
+    enabled true
+    type "launch"
+    duration-ms 220
+    curve "ease-out-cubic"
+  end
+end
+```
+
+Every type can use any easing curve through `duration-ms` and `curve`, or
 select `motion "spring"` and use the same spring fields. Changing the type
 never selects a different curve or duration implicitly.

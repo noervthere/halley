@@ -109,6 +109,9 @@ animations:
     #   "center-out" - scale the window outward from its final center.
     #   "fade"       - keep the final geometry and fade from transparent to
     #                  opaque.
+    #   "launch"     - travel along a short arc from the launcher, cursor,
+    #                  focused window, or output center. The travel distance
+    #                  is capped and the window settles after a tiny overshoot.
     type "center-out"
 
     # Easing duration in milliseconds and curve name. Supported curves:
@@ -118,6 +121,11 @@ animations:
     duration-ms 300
     curve "linear"
 
+    # Recommended launch motion:
+    # type "launch"
+    # duration-ms 220
+    # curve "ease-out-cubic"
+    #
     # Window-open motion also accepts `motion "spring"`. With spring motion,
     # use damping-ratio and stiffness as documented below instead of
     # duration-ms and curve.
