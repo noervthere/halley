@@ -6,6 +6,7 @@ mod capture;
 mod config;
 mod cursor;
 mod frame_clock;
+mod global_shortcuts;
 mod input;
 mod ipc;
 mod logging;

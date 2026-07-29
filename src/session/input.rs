@@ -105,6 +105,7 @@ fn dispatch_action<D: SessionDriver>(
 enum KeyboardOutcome {
     Action(halley_config::Action),
     AccessibilityIntercept,
+    GlobalShortcutIntercept,
     CaptureAccept,
     CaptureCancel,
     CapturePrevious,
@@ -577,6 +578,19 @@ where
                 if accessibility == crate::accessibility::KeyboardDisposition::Intercept {
                     return FilterResult::Intercept(KeyboardOutcome::AccessibilityIntercept);
                 }
+                let global_shortcut_intercepted =
+                    data.global_shortcuts.as_ref().is_some_and(|shortcuts| {
+                        shortcuts.process_key(
+                            std::time::Duration::from_millis(u64::from(time)),
+                            keycode,
+                            state,
+                            modifiers,
+                            handle.raw_latin_sym_or_raw_current_sym(),
+                        )
+                    });
+                if global_shortcut_intercepted {
+                    return FilterResult::Intercept(KeyboardOutcome::GlobalShortcutIntercept);
+                }
                 match capture_key_routing(data.capture.is_active(), state, release_is_suppressed) {
                     CaptureKeyRouting::SuppressRelease => {
                         return FilterResult::Intercept(KeyboardOutcome::CaptureIntercept);
@@ -637,6 +651,7 @@ where
                 dispatch_action(session, action, socket_name, pointer_output.as_deref());
             }
             Some(KeyboardOutcome::AccessibilityIntercept) => {}
+            Some(KeyboardOutcome::GlobalShortcutIntercept) => {}
             Some(KeyboardOutcome::CaptureAccept) => {
                 if session.capture.kind() == Some(crate::capture::CaptureKind::Menu) {
                     if session

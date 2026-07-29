@@ -140,6 +140,7 @@ pub fn run() {
         wheel_accumulator: WheelAccumulator::default(),
         pointer_constraints: super::pointer::PointerConstraintLifecycle::default(),
         keyboard_monitor: None,
+        global_shortcuts: None,
         opening_origins: super::opening::OpeningOrigins::default(),
         window_open_animations: crate::animation::WindowOpenAnimations::new(
             runtime_config.animations,
