@@ -92,7 +92,7 @@ type TtyApp = super::Session<TtyDriver>;
 /// free VT. Returns (rather than panicking) if `TtyBackend::new()` fails,
 /// since that's expected when nested under a host compositor that already
 /// holds exclusive session control.
-pub fn run(session_mode: bool) {
+pub fn run() {
     let (config_path, runtime_config) = crate::config::load_initial();
     let (backend, session_notifier, drm_notifier) = match TtyBackend::new(&runtime_config.outputs) {
         Ok(parts) => parts,
@@ -175,7 +175,7 @@ pub fn run(session_mode: bool) {
         pointer: Pointer::new((100.0, 100.0)),
         cursor: CursorManager::new(&runtime_config.cursor),
         cursor_policy: super::cursor::Policy::new(&runtime_config.cursor, loop_handle.clone()),
-        publish_session_environment: session_mode,
+        publish_session_environment: true,
         wayland,
         seat_state,
         seat,
@@ -230,10 +230,8 @@ pub fn run(session_mode: bool) {
     let socket_name = super::protocol::init_wayland_listener(display, &mut event_loop);
     eventline::info!("wayland socket ready, WAYLAND_DISPLAY={socket_name:?}");
     app.arm_autostart_once(&socket_name, runtime_config.autostart.once.clone());
-    if session_mode {
-        super::environment::activate_session(&socket_name, &runtime_config.cursor);
-    }
-    if let Err(err) = crate::xwayland::start(&event_loop.handle(), &mut app, session_mode) {
+    super::environment::activate_session(&socket_name, &runtime_config.cursor);
+    if let Err(err) = crate::xwayland::start(&event_loop.handle(), &mut app, true) {
         eventline::warn!("xwayland: unavailable: {err}");
         app.run_autostart_once();
     }

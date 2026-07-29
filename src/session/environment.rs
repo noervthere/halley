@@ -95,6 +95,18 @@ pub fn activate_session(wayland_display: &OsStr, cursor: &halley_config::Cursor)
             .args(SESSION_VARIABLES);
         run("systemd user environment", &mut import);
 
+        // A portal backend may have exhausted its start limit while the
+        // compositor socket was unavailable. Clear that stale failure after
+        // publishing the complete environment so the frontend can activate
+        // it immediately.
+        let mut reset_failed = Command::new("systemctl");
+        reset_failed
+            .arg("--user")
+            .arg("reset-failed")
+            .arg("xdg-desktop-portal-gtk.service")
+            .arg("xdg-desktop-portal-halley.service");
+        run("portal failure reset", &mut reset_failed);
+
         let mut restart = Command::new("systemctl");
         restart
             .arg("--user")
