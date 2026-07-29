@@ -204,6 +204,9 @@ pub(super) fn constrain_motion<D: SessionDriver>(
 }
 
 pub(super) fn cursor_visible<D: SessionDriver>(session: &Session<D>) -> bool {
+    if session.apogee.is_active() {
+        return true;
+    }
     cursor_presentation_visible(
         session.cursor_policy.visible(),
         constraints::cursor_visible(session),

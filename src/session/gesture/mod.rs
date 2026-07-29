@@ -315,6 +315,12 @@ where
                         &session.nodes,
                         session.apogee_config,
                     );
+                    if gesture.interactive_started {
+                        session
+                            .cursor
+                            .set_override(Some(smithay::input::pointer::CursorIcon::Default));
+                        super::note_pointer_activity(session);
+                    }
                 }
                 if gesture.interactive_started {
                     session

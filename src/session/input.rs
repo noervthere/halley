@@ -341,7 +341,7 @@ where
             _ => {}
         }
     }
-    if session.apogee.is_active() {
+    if session.apogee.accepts_input() {
         match event {
             InputEvent::PointerMotion { .. } | InputEvent::PointerMotionAbsolute { .. } => {
                 crate::apogee::pointer_motion(session, proposed_position);
@@ -1014,7 +1014,7 @@ where
                 if state == KeyState::Released && data.bearings.is_show_key_held(keycode.raw()) {
                     return FilterResult::Intercept(KeyboardOutcome::BearingsRelease);
                 }
-                if data.apogee.is_active() {
+                if data.apogee.accepts_input() {
                     let sym = handle.raw_latin_sym_or_raw_current_sym();
                     if state == KeyState::Released {
                         return FilterResult::Intercept(KeyboardOutcome::ApogeeIntercept);

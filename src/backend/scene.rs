@@ -47,6 +47,44 @@ pub fn build(
         .view(&output.name())
         .ok_or_else(|| format!("output {:?} has no camera", output.name()))?;
 
+    // Apogee is a replacement scene, not a translucent layer over the live
+    // desktop. Keep only its tiles and the wallpaper layer behind them; normal
+    // windows, nodes, panels, and desktop overlays must not bleed through.
+    if request.apogee.is_active() {
+        let mut elements = apogee_elements(
+            renderer,
+            output,
+            output_geometry,
+            request.apogee,
+            request.apogee_config,
+            request.space,
+            request.cameras,
+            request.nodes,
+            request.node_renderer,
+            request.ui_text,
+            request.window_open_animations,
+            request.fullscreen,
+            request.target_presentation_time,
+        )?;
+        elements.extend(
+            super::layer_surface_elements(renderer, output, Layer::Background)
+                .into_iter()
+                .map(SceneElement::Layer),
+        );
+        if request.show_cursor {
+            let cursor = crate::cursor::render::elements(
+                renderer,
+                request.cursor,
+                output,
+                output_geometry,
+                request.cursor_position,
+                request.target_presentation_time,
+            )?;
+            elements.splice(0..0, cursor.into_iter().map(SceneElement::Cursor));
+        }
+        return Ok(elements);
+    }
+
     let mut elements = capture_overlay_elements(
         renderer,
         output,
@@ -70,21 +108,6 @@ pub fn build(
             .into_iter()
             .map(SceneElement::Layer),
     );
-    elements.extend(apogee_elements(
-        renderer,
-        output,
-        output_geometry,
-        request.apogee,
-        request.apogee_config,
-        request.space,
-        request.cameras,
-        request.nodes,
-        request.node_renderer,
-        request.ui_text,
-        request.window_open_animations,
-        request.fullscreen,
-        request.target_presentation_time,
-    )?);
     elements.extend(focus_cycle_elements(
         renderer,
         output_geometry,

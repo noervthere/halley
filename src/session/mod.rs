@@ -173,6 +173,10 @@ pub(crate) fn cursor_visible<D: SessionDriver>(session: &Session<D>) -> bool {
     pointer::cursor_visible(session)
 }
 
+pub(crate) fn note_pointer_activity<D: SessionDriver>(session: &mut Session<D>) {
+    session.cursor_policy.pointer_activity();
+}
+
 fn toggle_focused_fullscreen<D: SessionDriver>(session: &mut Session<D>, output: Option<&str>) {
     let id = match output {
         Some(output) => session.nodes.focused_on_output(output),

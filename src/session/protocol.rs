@@ -202,6 +202,7 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
         crate::nodes::reconcile_landmarks(self, None);
         super::pointer::reconcile_state(self);
         let apogee_preview_commit = self.apogee_config.live_previews
+            && self.apogee.accepts_live_previews()
             && self
                 .nodes
                 .id_for_surface(&root)

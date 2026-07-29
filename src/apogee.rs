@@ -99,6 +99,18 @@ impl ApogeeState {
         self.session.is_some()
     }
 
+    /// The overlay remains visible while it flies closed, but it must stop
+    /// behaving like a modal input target as soon as that close begins.
+    pub fn accepts_input(&self) -> bool {
+        self.session
+            .as_ref()
+            .is_some_and(|session| !session.is_closing())
+    }
+
+    pub fn accepts_live_previews(&self) -> bool {
+        self.accepts_input()
+    }
+
     pub fn is_interactive(&self) -> bool {
         self.session
             .as_ref()
@@ -109,6 +121,10 @@ impl ApogeeState {
         self.session
             .as_ref()
             .is_some_and(|session| session.tiles.iter().any(|tile| tile.id == id))
+    }
+
+    pub fn hovered(&self) -> Option<NodeId> {
+        self.session.as_ref().and_then(|session| session.hovered)
     }
 
     pub fn mark_preview_dirty(&mut self) {
@@ -157,11 +173,10 @@ impl ApogeeState {
         if tiles.is_empty() {
             return false;
         }
-        let first = tiles.first().map(|tile| tile.id);
         self.session = Some(Session {
             tiles,
             hovered: None,
-            selected: first,
+            selected: None,
             settle: Some(Settle {
                 from: 0.0,
                 to: 1.0,
@@ -188,11 +203,10 @@ impl ApogeeState {
             if tiles.is_empty() {
                 return false;
             }
-            let first = tiles.first().map(|tile| tile.id);
             self.session = Some(Session {
                 tiles,
                 hovered: None,
-                selected: first,
+                selected: None,
                 settle: None,
                 manual_progress: Some(0.0),
                 pending_activation: None,
@@ -289,14 +303,20 @@ impl ApogeeState {
         let Some(session) = self.session.as_mut() else {
             return false;
         };
-        let Some(current) = session
-            .selected
-            .and_then(|id| session.tile(id))
-            .or_else(|| session.tiles.first())
-            .cloned()
-        else {
-            return false;
+        let Some(current) = session.selected.and_then(|id| session.tile(id)).cloned() else {
+            let next = session
+                .tiles
+                .iter()
+                .min_by_key(|tile| (tile.target.loc.y, tile.target.loc.x, tile.id.as_u64()))
+                .map(|tile| tile.id);
+            let changed = session.selected != next;
+            session.selected = next;
+            session.hovered = None;
+            return changed;
         };
+        if session.tiles.is_empty() {
+            return false;
+        }
         let center = rect_center(current.target);
         let next = session
             .tiles
@@ -319,7 +339,7 @@ impl ApogeeState {
                     Direction::Left | Direction::Right => (dx.abs(), dy.abs()),
                     Direction::Up | Direction::Down => (dy.abs(), dx.abs()),
                 };
-                Some((primary + secondary * 0.35, tile.id))
+                Some((primary + secondary * 2.0, tile.id))
             })
             .min_by(|a, b| a.0.total_cmp(&b.0))
             .map(|(_, id)| id);
@@ -477,7 +497,10 @@ pub fn toggle<D: crate::session::SessionDriver>(session: &mut crate::session::Se
     let now = crate::frame_clock::monotonic_now();
     let changed = if session.apogee.is_active() {
         session.apogee.close(None, session.apogee_config, now)
-    } else if session.capture.is_active() || session.focus_cycle.is_open() {
+    } else if session.capture.is_active()
+        || session.focus_cycle.is_open()
+        || !matches!(session.grab, crate::input::grab::Grab::None)
+    {
         false
     } else {
         session.nodes.sync_from_space(&session.wayland.space);
@@ -489,6 +512,10 @@ pub fn toggle<D: crate::session::SessionDriver>(session: &mut crate::session::Se
         )
     };
     if changed {
+        session
+            .cursor
+            .set_override(Some(smithay::input::pointer::CursorIcon::Default));
+        crate::session::note_pointer_activity(session);
         session.request_redraw();
     }
     changed
@@ -501,6 +528,9 @@ pub fn cancel<D: crate::session::SessionDriver>(session: &mut crate::session::Se
         crate::frame_clock::monotonic_now(),
     );
     if changed {
+        session
+            .cursor
+            .set_override(Some(smithay::input::pointer::CursorIcon::Default));
         session.request_redraw();
     }
     changed
@@ -514,6 +544,9 @@ pub fn select<D: crate::session::SessionDriver>(session: &mut crate::session::Se
         crate::frame_clock::monotonic_now(),
     );
     if changed {
+        session
+            .cursor
+            .set_override(Some(smithay::input::pointer::CursorIcon::Default));
         session.request_redraw();
     }
     changed
@@ -524,10 +557,16 @@ pub fn pointer_motion<D: crate::session::SessionDriver>(
     position: (f64, f64),
 ) -> bool {
     let changed = session.apogee.hover(Point::from(position));
-    if changed {
+    let icon = if session.apogee.hovered().is_some() {
+        smithay::input::pointer::CursorIcon::Pointer
+    } else {
+        smithay::input::pointer::CursorIcon::Default
+    };
+    let cursor_changed = session.cursor.set_override(Some(icon));
+    if changed || cursor_changed {
         session.request_redraw();
     }
-    changed
+    changed || cursor_changed
 }
 
 pub fn pointer_press<D: crate::session::SessionDriver>(
@@ -574,6 +613,9 @@ pub fn tick<D: crate::session::SessionDriver>(
                     crate::session::focus_window(session, &record.window, serial);
                 }
             }
+            session.cursor.set_override(None);
+            crate::session::note_pointer_activity(session);
+            crate::session::reconcile_pointer_constraints(session);
             session.request_redraw();
             false
         }
@@ -653,6 +695,32 @@ mod tests {
             session.progress(Duration::from_secs(2) + Duration::from_millis(128)),
             0.0
         );
+    }
+
+    #[test]
+    fn closing_overlay_remains_visible_but_releases_input_and_live_commits() {
+        let state = ApogeeState {
+            session: Some(Session {
+                tiles: Vec::new(),
+                hovered: None,
+                selected: None,
+                settle: Some(Settle {
+                    from: 1.0,
+                    to: 0.0,
+                    started_at: Duration::ZERO,
+                    duration: Duration::from_millis(320),
+                }),
+                manual_progress: None,
+                pending_activation: None,
+            }),
+            preview_dirty: false,
+            last_live_redraw: Duration::ZERO,
+            last_callback: Default::default(),
+        };
+
+        assert!(state.is_active());
+        assert!(!state.accepts_input());
+        assert!(!state.accepts_live_previews());
     }
 
     #[test]
