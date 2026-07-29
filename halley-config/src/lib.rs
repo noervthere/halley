@@ -1,5 +1,6 @@
 pub mod animations;
 pub mod apogee;
+pub mod bearings;
 pub mod bootstrap;
 pub mod chord;
 pub mod cursor;
@@ -23,6 +24,7 @@ pub use animations::{
     WindowOpenAnimationType, load_animations, parse_animations,
 };
 pub use apogee::{Apogee, parse_apogee};
+pub use bearings::{Bearings, parse_bearings};
 pub use bootstrap::{
     DEFAULT_CONFIG, bootstrap_default_config, bootstrap_default_config_at, config_path,
 };

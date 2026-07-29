@@ -26,6 +26,7 @@ render_elements! {
     NodeLabel=super::node::LabelRenderElement,
     NodeTexture=super::node::NodeTextureElement,
     UiText=super::text::UiTextElement,
+    BearingBlur=super::bearing_blur::BearingBlurElement,
     Closing=smithay::backend::renderer::element::texture::TextureRenderElement<
         smithay::backend::renderer::gles::GlesTexture
     >,
@@ -53,6 +54,17 @@ pub fn build(
         request.capture_overlay,
         request.decorations,
     )?;
+    elements.extend(super::bearings::elements(
+        renderer,
+        output,
+        output_geometry,
+        request.bearings,
+        request.nodes,
+        request.cameras,
+        request.bearings_renderer,
+        request.node_renderer,
+        request.ui_text,
+    )?);
     elements.extend(
         super::layer_surface_elements(renderer, output, Layer::Overlay)
             .into_iter()

@@ -70,6 +70,7 @@ pub struct Session<D: SessionDriver> {
     pub seat: Seat<Self>,
     pub start_time: std::time::Instant,
     pub nodes: crate::nodes::NodesState,
+    pub bearings: crate::bearings::BearingsState,
     pub focus_cycle: crate::focus_cycle::FocusCycleState,
     pub apogee: crate::apogee::ApogeeState,
     pub apogee_config: halley_config::Apogee,
@@ -95,6 +96,7 @@ pub struct Session<D: SessionDriver> {
     pub fullscreen: crate::wayland::fullscreen::FullscreenManager,
     pub fullscreen_textures: crate::backend::fullscreen_texture::FullscreenTextureTransitions,
     pub node_renderer: crate::backend::node::NodeRenderer,
+    pub bearings_renderer: crate::backend::bearing_blur::BearingsRenderer,
     pub ui_text: crate::backend::text::UiTextRenderer,
     pub xwayland: crate::xwayland::State,
 }
@@ -206,6 +208,7 @@ impl<D: SessionDriver> Session<D> {
         let nodes_redraw = self
             .nodes
             .reload(config, crate::frame_clock::monotonic_now());
+        let bearings_redraw = self.bearings.reload(config.bearings);
         let font_redraw = self.ui_text.reload_font(&config.font);
         self.apogee_config = config.apogee;
         self.decorations = config.decorations;
@@ -219,7 +222,7 @@ impl<D: SessionDriver> Session<D> {
         if nodes_redraw {
             crate::nodes::reconcile_landmarks(self, None);
         }
-        if redraw || nodes_redraw || font_redraw {
+        if redraw || nodes_redraw || bearings_redraw || font_redraw {
             self.request_redraw();
         }
     }

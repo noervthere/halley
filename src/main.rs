@@ -2,6 +2,7 @@ mod accessibility;
 mod animation;
 mod apogee;
 mod backend;
+mod bearings;
 mod camera;
 mod capture;
 mod config;

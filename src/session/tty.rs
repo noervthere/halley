@@ -181,6 +181,7 @@ pub fn run() {
         seat,
         start_time: Instant::now(),
         nodes: crate::nodes::NodesState::new(&runtime_config),
+        bearings: crate::bearings::BearingsState::new(runtime_config.bearings),
         focus_cycle: crate::focus_cycle::FocusCycleState::default(),
         apogee: crate::apogee::ApogeeState::default(),
         apogee_config: runtime_config.apogee,
@@ -211,6 +212,7 @@ pub fn run() {
         fullscreen_textures:
             crate::backend::fullscreen_texture::FullscreenTextureTransitions::default(),
         node_renderer: crate::backend::node::NodeRenderer::default(),
+        bearings_renderer: crate::backend::bearing_blur::BearingsRenderer::default(),
         ui_text: crate::backend::text::UiTextRenderer::new(&runtime_config.font),
         xwayland,
     };
@@ -545,6 +547,7 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
     let node_animating = app
         .nodes
         .is_animating_on_output(&output.name(), target_presentation_time);
+    let bearings_animating = app.bearings.tick(&output.name(), target_presentation_time);
     let focus_cycle_animating = app.focus_cycle.tick(target_presentation_time);
     let apogee_animating = crate::apogee::tick(app, target_presentation_time);
     let show_cursor = super::pointer::cursor_visible(app);
@@ -561,6 +564,7 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
         || window_animating
         || closing_animating
         || node_animating
+        || bearings_animating
         || focus_cycle_animating
         || apogee_animating
         || fullscreen_animating
@@ -593,6 +597,8 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
             fullscreen: &app.fullscreen,
             fullscreen_textures: &mut app.fullscreen_textures,
             nodes: &app.nodes,
+            bearings: &app.bearings,
+            bearings_renderer: &mut app.bearings_renderer,
             focus_cycle: &app.focus_cycle,
             apogee: &app.apogee,
             apogee_config: app.apogee_config,

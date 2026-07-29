@@ -42,6 +42,8 @@ enum SessionControl {
     ToggleState,
     Apogee,
     FocusCycle(halley_config::FocusCycleDirection),
+    BearingsShow,
+    BearingsToggle,
 }
 
 #[derive(Clone, Copy)]
@@ -70,6 +72,8 @@ fn dispatch_action(
         Action::ToggleState => return SessionControl::ToggleState,
         Action::Apogee => return SessionControl::Apogee,
         Action::FocusCycle(direction) => return SessionControl::FocusCycle(direction),
+        Action::BearingsShow => return SessionControl::BearingsShow,
+        Action::BearingsToggle => return SessionControl::BearingsToggle,
         Action::OpenTerminal => match terminal_command {
             Some(command) => spawn::spawn_detached(
                 command,

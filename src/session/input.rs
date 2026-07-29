@@ -90,11 +90,25 @@ fn node_at_pointer<D: SessionDriver>(
     Some((id, output))
 }
 
+fn bearing_at_pointer<D: SessionDriver>(
+    session: &Session<D>,
+) -> Option<(halley_core::field::NodeId, Output)> {
+    let position = session.pointer.position();
+    let (output, geometry) = output_at_pointer(&session.wayland.space, position)?;
+    let local = Point::<f64, Logical>::from((
+        position.0 - f64::from(geometry.loc.x),
+        position.1 - f64::from(geometry.loc.y),
+    ));
+    let id = session.bearings.hit_test(&output.name(), local)?;
+    Some((id, output))
+}
+
 fn dispatch_action<D: SessionDriver>(
     session: &mut Session<D>,
     action: halley_config::Action,
     socket_name: &OsStr,
     output_name: Option<&str>,
+    held_keycode: Option<u32>,
 ) {
     let zoom_action = matches!(
         &action,
@@ -129,6 +143,19 @@ fn dispatch_action<D: SessionDriver>(
         }
         super::SessionControl::FocusCycle(direction) => {
             crate::focus_cycle::start_or_step(session, direction);
+        }
+        super::SessionControl::BearingsShow => {
+            let changed = match held_keycode {
+                Some(keycode) => session.bearings.show_while_held(keycode),
+                None => session.bearings.set_visible(true),
+            };
+            if changed {
+                session.request_redraw();
+            }
+        }
+        super::SessionControl::BearingsToggle => {
+            session.bearings.toggle();
+            session.request_redraw();
         }
         super::SessionControl::Screenshot => {
             let window_available = session.wayland.space.elements().any(|window| {
@@ -179,6 +206,7 @@ enum KeyboardOutcome {
     CapturePrevious,
     CaptureNext,
     CaptureIntercept,
+    BearingsRelease,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -651,6 +679,17 @@ where
             wayland::focus::select_output(&mut session.wayland, &route.output);
         }
         let mut intercepted = false;
+        if button == BTN_LEFT
+            && state == ButtonState::Pressed
+            && !session.focus_cycle.is_open()
+            && let Some((id, output)) = bearing_at_pointer(session)
+        {
+            wayland::focus::select_output(&mut session.wayland, &output);
+            if crate::nodes::focus_or_restore_from_bearing(session, id, serial) {
+                session.suppressed_buttons.suppress(button);
+                intercepted = true;
+            }
+        }
         let modifiers = session
             .seat
             .get_keyboard()
@@ -663,22 +702,24 @@ where
                 crate::input::pointer::PointerTarget::Background
             )
         });
-        match process_pointer_binding(
-            &session.keyboard.binds,
-            &modifiers,
-            button,
-            state,
-            on_background,
-            bindings_enabled,
-            &mut session.suppressed_buttons,
-        ) {
-            PointerBindingResult::Action(action) => {
-                let output_name = route.as_ref().map(|route| route.output.name().to_string());
-                dispatch_action(session, action, socket_name, output_name.as_deref());
-                intercepted = true;
+        if !intercepted {
+            match process_pointer_binding(
+                &session.keyboard.binds,
+                &modifiers,
+                button,
+                state,
+                on_background,
+                bindings_enabled,
+                &mut session.suppressed_buttons,
+            ) {
+                PointerBindingResult::Action(action) => {
+                    let output_name = route.as_ref().map(|route| route.output.name().to_string());
+                    dispatch_action(session, action, socket_name, output_name.as_deref(), None);
+                    intercepted = true;
+                }
+                PointerBindingResult::SuppressedRelease => intercepted = true,
+                PointerBindingResult::Unhandled => {}
             }
-            PointerBindingResult::SuppressedRelease => intercepted = true,
-            PointerBindingResult::Unhandled => {}
         }
 
         if !intercepted
@@ -903,7 +944,7 @@ where
         );
         for (direction, action) in result.actions {
             eventline::debug!("keybinds: wheel {direction:?} + {modifiers:?} -> {action:?}");
-            dispatch_action(session, action, socket_name, output_name.as_deref());
+            dispatch_action(session, action, socket_name, output_name.as_deref(), None);
         }
 
         if result.forward_horizontal || result.forward_vertical {
@@ -945,6 +986,9 @@ where
             SERIAL_COUNTER.next_serial(),
             time,
             |data, modifiers, handle| {
+                if state == KeyState::Released && data.bearings.is_show_key_held(keycode.raw()) {
+                    return FilterResult::Intercept(KeyboardOutcome::BearingsRelease);
+                }
                 if data.apogee.is_active() {
                     let sym = handle.raw_latin_sym_or_raw_current_sym();
                     if state == KeyState::Released {
@@ -1059,7 +1103,18 @@ where
         match action {
             Some(KeyboardOutcome::Action(action)) => {
                 session.suppressed_keys.suppress(keycode);
-                dispatch_action(session, action, socket_name, pointer_output.as_deref());
+                dispatch_action(
+                    session,
+                    action,
+                    socket_name,
+                    pointer_output.as_deref(),
+                    Some(keycode.raw()),
+                );
+            }
+            Some(KeyboardOutcome::BearingsRelease) => {
+                if session.bearings.release_show_key(keycode.raw()) {
+                    session.request_redraw();
+                }
             }
             Some(KeyboardOutcome::AccessibilityIntercept) => {}
             Some(KeyboardOutcome::ApogeeCancel) => {

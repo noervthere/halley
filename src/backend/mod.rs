@@ -1,4 +1,6 @@
 mod app_icon;
+pub mod bearing_blur;
+mod bearings;
 mod capture_overlay;
 pub mod close;
 pub mod dmabuf;
@@ -196,6 +198,8 @@ pub struct RenderRequest<'a> {
     pub fullscreen_textures:
         &'a mut crate::backend::fullscreen_texture::FullscreenTextureTransitions,
     pub nodes: &'a crate::nodes::NodesState,
+    pub bearings: &'a crate::bearings::BearingsState,
+    pub bearings_renderer: &'a mut crate::backend::bearing_blur::BearingsRenderer,
     pub focus_cycle: &'a crate::focus_cycle::FocusCycleState,
     pub apogee: &'a crate::apogee::ApogeeState,
     pub apogee_config: halley_config::Apogee,

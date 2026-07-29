@@ -54,6 +54,8 @@ fn parse_action(s: &str) -> Action {
         "toggle-fullscreen" | "toggle_fullscreen" | "fullscreen" => Action::ToggleFullscreen,
         "toggle-state" | "toggle_state" => Action::ToggleState,
         "apogee" | "overview" => Action::Apogee,
+        "bearings-show" | "bearings_show" => Action::BearingsShow,
+        "bearings-toggle" | "bearings_toggle" => Action::BearingsToggle,
         "cycle-focus" | "cycle_focus" => Action::FocusCycle(crate::FocusCycleDirection::Forward),
         "cycle-focus-backward" | "cycle_focus_backward" => {
             Action::FocusCycle(crate::FocusCycleDirection::Backward)

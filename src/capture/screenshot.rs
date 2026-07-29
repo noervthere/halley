@@ -57,6 +57,8 @@ pub fn save_region<D: SessionDriver>(
     let fullscreen = &session.fullscreen;
     let fullscreen_textures = &mut session.fullscreen_textures;
     let nodes = &session.nodes;
+    let bearings = &session.bearings;
+    let bearings_renderer = &mut session.bearings_renderer;
     let node_renderer = &mut session.node_renderer;
     let ui_text = &mut session.ui_text;
     let images = driver.with_renderer(|renderer| -> Result<Vec<OutputImage>, Box<dyn Error>> {
@@ -84,6 +86,8 @@ pub fn save_region<D: SessionDriver>(
                         fullscreen,
                         fullscreen_textures: &mut *fullscreen_textures,
                         nodes,
+                        bearings,
+                        bearings_renderer: &mut *bearings_renderer,
                         focus_cycle: &session.focus_cycle,
                         apogee: &session.apogee,
                         apogee_config: session.apogee_config,
@@ -269,6 +273,8 @@ where
     let fullscreen = &session.fullscreen;
     let fullscreen_textures = &mut session.fullscreen_textures;
     let nodes = &session.nodes;
+    let bearings = &session.bearings;
+    let bearings_renderer = &mut session.bearings_renderer;
     let node_renderer = &mut session.node_renderer;
     let ui_text = &mut session.ui_text;
     driver.with_renderer(|renderer| {
@@ -293,6 +299,8 @@ where
                 fullscreen,
                 fullscreen_textures,
                 nodes,
+                bearings,
+                bearings_renderer,
                 focus_cycle: &session.focus_cycle,
                 apogee: &session.apogee,
                 apogee_config: session.apogee_config,

@@ -46,6 +46,8 @@ pub enum Action {
     ToggleFullscreen,
     ToggleState,
     Apogee,
+    BearingsShow,
+    BearingsToggle,
     FocusCycle(FocusCycleDirection),
     OpenTerminal,
     ZoomIn,

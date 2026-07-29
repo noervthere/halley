@@ -1254,6 +1254,112 @@ pub fn restore<D: crate::session::SessionDriver>(
     true
 }
 
+/// Activate a Bearings target in one operation. Collapsed nodes follow the
+/// configured restore-centering policy; live windows are focused immediately
+/// and the camera only moves far enough to reveal their current bounds.
+pub fn focus_or_restore_from_bearing<D: crate::session::SessionDriver>(
+    session: &mut crate::session::Session<D>,
+    id: NodeId,
+    serial: smithay::utils::Serial,
+) -> bool {
+    let Some(record) = session.nodes.record(id).cloned() else {
+        return false;
+    };
+    if record.collapsed {
+        return restore(session, id, serial);
+    }
+    if !record.attached {
+        return false;
+    }
+
+    crate::session::focus_window(session, &record.window, serial);
+    let Some(output) = session
+        .wayland
+        .space
+        .outputs()
+        .find(|output| output.name() == record.output)
+        .cloned()
+    else {
+        session.request_redraw();
+        return true;
+    };
+    let Some(output_geometry) = session.wayland.space.output_geometry(&output) else {
+        session.request_redraw();
+        return true;
+    };
+    let Some(view) = session.cameras.view(&record.output) else {
+        session.request_redraw();
+        return true;
+    };
+    let geometry = session
+        .wayland
+        .space
+        .element_geometry(&record.window)
+        .unwrap_or(record.geometry);
+    let delta = minimal_reveal_delta(
+        crate::camera::world_viewport(view, output_geometry),
+        geometry,
+        24,
+    );
+    if (delta.x != 0.0 || delta.y != 0.0)
+        && let Some(camera) = session.cameras.get_mut(&record.output)
+    {
+        camera.pan_vel = Vec2 { x: 0.0, y: 0.0 };
+        camera.target_center = Vec2 {
+            x: camera.center.x + delta.x,
+            y: camera.center.y + delta.y,
+        };
+    }
+    session.request_redraw();
+    true
+}
+
+fn minimal_reveal_delta(
+    viewport: Rectangle<i32, Logical>,
+    target: Rectangle<i32, Logical>,
+    margin: i32,
+) -> Vec2 {
+    fn axis_delta(
+        view_start: i32,
+        view_extent: i32,
+        target_start: i32,
+        target_extent: i32,
+        margin: i32,
+    ) -> f32 {
+        let available = (view_extent - margin.saturating_mul(2)).max(1);
+        if target_extent > available {
+            return (target_start as f32 + target_extent as f32 * 0.5)
+                - (view_start as f32 + view_extent as f32 * 0.5);
+        }
+        let minimum = view_start + margin;
+        let maximum = view_start + view_extent - margin;
+        if target_start < minimum {
+            (target_start - minimum) as f32
+        } else if target_start + target_extent > maximum {
+            (target_start + target_extent - maximum) as f32
+        } else {
+            0.0
+        }
+    }
+
+    Vec2 {
+        x: axis_delta(
+            viewport.loc.x,
+            viewport.size.w,
+            target.loc.x,
+            target.size.w,
+            margin,
+        ),
+        y: axis_delta(
+            viewport.loc.y,
+            viewport.size.h,
+            target.loc.y,
+            target.size.h,
+            margin,
+        ),
+    }
+}
+
 pub fn tick_decay<D: crate::session::SessionDriver>(
     session: &mut crate::session::Session<D>,
 ) -> bool {
@@ -1714,8 +1820,9 @@ fn relation_metadata<D: crate::session::SessionDriver>(
 #[cfg(test)]
 mod tests {
     use super::{
-        logical_focus_after_collapse, nearest_free_landmark, nearest_free_window_rect,
-        physics_frame_delta, release_lock_deadline, release_lock_is_active,
+        logical_focus_after_collapse, minimal_reveal_delta, nearest_free_landmark,
+        nearest_free_window_rect, physics_frame_delta, release_lock_deadline,
+        release_lock_is_active,
     };
     use halley_core::field::{NodeId, Vec2};
     use smithay::utils::{Logical, Rectangle};
@@ -1770,6 +1877,27 @@ mod tests {
             Some(focused)
         );
         assert_eq!(logical_focus_after_collapse(None, collapsed, false), None);
+    }
+
+    #[test]
+    fn bearings_only_pan_enough_to_reveal_a_live_window() {
+        let viewport = Rectangle::<i32, Logical>::new((0, 0).into(), (1_000, 700).into());
+        assert_eq!(
+            minimal_reveal_delta(
+                viewport,
+                Rectangle::new((1_050, 200).into(), (300, 200).into()),
+                24,
+            ),
+            Vec2 { x: 374.0, y: 0.0 }
+        );
+        assert_eq!(
+            minimal_reveal_delta(
+                viewport,
+                Rectangle::new((100, 100).into(), (300, 200).into()),
+                24,
+            ),
+            Vec2 { x: 0.0, y: 0.0 }
+        );
     }
 
     #[test]
