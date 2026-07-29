@@ -145,4 +145,33 @@ end
             Err(RuntimeConfigError::Output(_))
         ));
     }
+
+    #[test]
+    fn valid_keybind_section_is_authoritative_without_embedded_defaults() {
+        let config = RuneConfig::from_str(
+            r#"
+keybinds:
+  mod "super"
+  "$var.mod+x" "open-terminal"
+end
+"#,
+        )
+        .expect("valid Rune config");
+
+        let runtime = parse_runtime_config(&config).unwrap();
+        assert_eq!(runtime.keybinds.binds.len(), 1);
+        assert_eq!(runtime.keybinds.binds[0].key, "x");
+        assert_eq!(
+            runtime.keybinds.binds[0].action,
+            crate::Action::OpenTerminal
+        );
+    }
+
+    #[test]
+    fn empty_config_is_invalid_while_runtime_default_is_complete() {
+        let empty = RuneConfig::from_str("").expect("empty Rune source is syntactically valid");
+
+        assert!(parse_runtime_config(&empty).is_err());
+        assert!(!RuntimeConfig::default().keybinds.binds.is_empty());
+    }
 }

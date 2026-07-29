@@ -95,14 +95,26 @@ pub fn watch<App: 'static>(
             }
         })?;
 
-    loop_handle.insert_source(receiver, move |event, _, app| match event {
-        Event::Msg(Ok(config)) => apply(app, config),
-        Event::Msg(Err(err)) => {
-            eventline::warn!("config: reload rejected, keeping last valid config: {err}")
+    loop_handle.insert_source(receiver, move |event, _, app| {
+        if let Event::Msg(loaded) = event
+            && let Some(config) = accept_reload(loaded)
+        {
+            apply(app, config);
         }
-        Event::Closed => {}
     })?;
     Ok(())
+}
+
+fn accept_reload(
+    loaded: Result<halley_config::RuntimeConfig, String>,
+) -> Option<halley_config::RuntimeConfig> {
+    match loaded {
+        Ok(config) => Some(config),
+        Err(err) => {
+            eventline::warn!("config: reload rejected, keeping last valid config: {err}");
+            None
+        }
+    }
 }
 
 #[cfg(test)]
@@ -160,5 +172,11 @@ mod tests {
             .unwrap();
         fs::rename(&replacement, &scratch.path).unwrap();
         assert!(state.changed());
+    }
+
+    #[test]
+    fn rejected_live_reload_keeps_the_last_valid_snapshot() {
+        assert!(accept_reload(Err("invalid keybind".to_owned())).is_none());
+        assert!(accept_reload(Ok(halley_config::RuntimeConfig::default())).is_some());
     }
 }
