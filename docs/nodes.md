@@ -11,6 +11,12 @@ atomic action: Halley does not first center the camera, leave the marker
 collapsed, and require a second click. `$var.mod+n` runs the same state toggle
 for the focused window.
 
+Collapsing the focused window preserves that node as Halley's logical focus,
+so node-aware commands such as `close-focused` still target it. The hidden
+client's Wayland keyboard focus is cleared before unmapping, so it cannot keep
+receiving typed input while collapsed. In hover-focus mode, hovering a marker
+makes that node the command target; the default Mod+Q then closes that node.
+
 A plain left press is resolved as a click or grab when the pointer is released
 or moves. Releasing before moving 8 screen pixels performs the single-click
 restore. Moving at least 8 pixels keeps the window collapsed and grabs its
@@ -211,8 +217,12 @@ set the selected node state and are idempotent; `toggle` inverts it. `close`
 sends the appropriate XDG or X11 close request without restoring first.
 `--json` is available for `list` and `info`.
 
-This interface uses IPC protocol version 6. Keep `halleyctl` and the compositor
+This interface uses IPC protocol version 7. Keep `halleyctl` and the compositor
 from the same build because postcard enum variants are positional on the wire.
+
+Offscreen active windows and collapsed nodes are also available through
+[Bearings](bearings.md), including the old
+`halleyctl bearings show|hide|toggle|status` controls.
 
 ## Lifecycle boundaries
 

@@ -194,12 +194,18 @@ resolving `keycode-N`.
 ## Actions
 
 The built-in action strings are `quit`, `close-focused`, `toggle-fullscreen`,
-`toggle-state`, `apogee`, `cycle-focus`, `cycle-focus-backward`, `open-terminal`,
-`zoom-in`, `zoom-out`, `zoom-reset`, and `screenshot`. `Alt+Tab` and
-`Alt+Shift+Tab` open and navigate the focus carousel; releasing Alt commits and
-Escape cancels. `Mod+O` opens or closes the multi-monitor Apogee overview.
+`toggle-state`, `apogee`, `bearings-show`, `bearings-toggle`, `cycle-focus`,
+`cycle-focus-backward`, `open-terminal`, `zoom-in`, `zoom-out`, `zoom-reset`,
+and `screenshot`. `Alt+Tab` and `Alt+Shift+Tab` open and navigate the focus
+carousel; releasing Alt commits and Escape cancels. `Mod+O` opens or closes
+the multi-monitor Apogee overview.
 See [Apogee and Alt+Tab](apogee.md) for navigation, gestures, and preview
 performance.
+Holding the default `Mod+Z` `bearings-show` binding exposes offscreen nodes and
+hides them on the initiating key's release, even if Mod was released first.
+`Mod+Shift+Z` toggles the same UI persistently. See
+[Bearings](bearings.md) for layout, click behavior, configuration, and
+`halleyctl` controls.
 `toggle-state` collapses the focused window to a node or restores
 it in one action; its default binding is `$var.mod+n`. Optional
 `node.click-collapsed-pan` camera movement begins in that same action and never

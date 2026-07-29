@@ -105,7 +105,7 @@ mod tests {
         let kb = Keybinds::default();
         assert_eq!(kb.modifier, ModifierKey::Super);
         assert_eq!(kb.default_terminal, DefaultTerminal::Auto);
-        assert_eq!(kb.binds.len(), 15);
+        assert_eq!(kb.binds.len(), 17);
 
         let quit = kb.binds.iter().find(|b| b.action == Action::Quit).unwrap();
         assert!(quit.modifiers.super_key);
@@ -119,7 +119,7 @@ mod tests {
             .unwrap();
         assert!(close.modifiers.super_key);
         assert!(!close.modifiers.shift);
-        assert_eq!(close.key, "c");
+        assert_eq!(close.key, "q");
 
         let fullscreen = kb
             .binds
@@ -144,6 +144,24 @@ mod tests {
             .unwrap();
         assert!(apogee.modifiers.super_key);
         assert_eq!(apogee.key, "o");
+
+        let bearings_show = kb
+            .binds
+            .iter()
+            .find(|b| b.action == Action::BearingsShow)
+            .unwrap();
+        assert!(bearings_show.modifiers.super_key);
+        assert!(!bearings_show.modifiers.shift);
+        assert_eq!(bearings_show.key, "z");
+
+        let bearings_toggle = kb
+            .binds
+            .iter()
+            .find(|b| b.action == Action::BearingsToggle)
+            .unwrap();
+        assert!(bearings_toggle.modifiers.super_key);
+        assert!(bearings_toggle.modifiers.shift);
+        assert_eq!(bearings_toggle.key, "z");
 
         let forward = kb
             .binds

@@ -280,6 +280,20 @@ font:
   size 11
 end
 
+# Offscreen node navigation. Bearings are laid out independently per monitor
+# around that monitor's current camera view. Hold Mod+Z for a temporary view;
+# Mod+Shift+Z toggles a persistent view.
+bearings:
+  show-distance true
+  show-icons true
+  show-pinned true
+  fade-distance 1200.0
+
+  # One shared backdrop capture and blur chain is reused by every chip on an
+  # output; disabling this removes the frosted backdrop entirely.
+  blur true
+end
+
 # Focus rings are standalone and keyed by connector. They are intentionally
 # separate from output mode/position configuration so each monitor can tune
 # decay geometry without mixing presentation policy into hardware policy.
@@ -450,10 +464,12 @@ keybinds:
   # Built-in compositor actions.
   # `quit` exits immediately without a confirmation dialog.
   "$var.mod+shift+e" "quit"
-  "$var.mod+c" "close-focused"
+  "$var.mod+q" "close-focused"
   "$var.mod+f" "toggle-fullscreen"
   "$var.mod+n" "toggle-state"
   "$var.mod+o" "apogee"
+  "$var.mod+z" "bearings-show"
+  "$var.mod+shift+z" "bearings-toggle"
   "alt+tab" "cycle-focus"
   "alt+shift+tab" "cycle-focus-backward"
 

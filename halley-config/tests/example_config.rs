@@ -13,7 +13,7 @@ fn example_config_parses_end_to_end() {
 
     assert_eq!(keybinds.modifier, ModifierKey::Super);
     assert_eq!(keybinds.default_terminal, DefaultTerminal::Auto);
-    assert_eq!(keybinds.binds.len(), 15);
+    assert_eq!(keybinds.binds.len(), 17);
 
     let quit = keybinds
         .binds
@@ -29,7 +29,7 @@ fn example_config_parses_end_to_end() {
         .iter()
         .find(|b| b.action == Action::CloseFocusedWindow)
         .expect("close-focused bind present");
-    assert_eq!(close.key, "c");
+    assert_eq!(close.key, "q");
     assert!(close.modifiers.super_key);
     assert!(!close.modifiers.shift);
 
@@ -49,6 +49,24 @@ fn example_config_parses_end_to_end() {
         .expect("toggle-state bind present");
     assert_eq!(toggle_state.key, "n");
     assert!(toggle_state.modifiers.super_key);
+
+    let bearings_show = keybinds
+        .binds
+        .iter()
+        .find(|b| b.action == Action::BearingsShow)
+        .expect("bearings-show bind present");
+    assert_eq!(bearings_show.key, "z");
+    assert!(bearings_show.modifiers.super_key);
+    assert!(!bearings_show.modifiers.shift);
+
+    let bearings_toggle = keybinds
+        .binds
+        .iter()
+        .find(|b| b.action == Action::BearingsToggle)
+        .expect("bearings-toggle bind present");
+    assert_eq!(bearings_toggle.key, "z");
+    assert!(bearings_toggle.modifiers.super_key);
+    assert!(bearings_toggle.modifiers.shift);
 
     let terminal = keybinds
         .binds
@@ -153,6 +171,7 @@ fn example_config_has_per_output_rings_font_and_landmarks() {
 
     assert_eq!(runtime.font.family, "monospace");
     assert_eq!(runtime.font.size, 11);
+    assert_eq!(runtime.bearings, halley_config::Bearings::default());
     assert_eq!(runtime.focus_rings.for_output("DP-1").radius_x, 820.0);
     assert_eq!(runtime.focus_rings.for_output("DP-2").radius_y, 420.0);
     assert_eq!(runtime.landmarks.gap_px, 20.0);

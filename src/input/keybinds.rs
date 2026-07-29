@@ -237,7 +237,7 @@ mod tests {
         let keybinds = Keybinds::default();
         let resolved = resolve_binds(&keybinds, BackendKind::Winit);
 
-        assert_eq!(resolved.len(), 15);
+        assert_eq!(resolved.len(), 17);
         let quit = resolved
             .iter()
             .find(|bind| bind.action == Action::Quit)
@@ -256,7 +256,7 @@ mod tests {
         let keybinds = Keybinds::default();
         let resolved = resolve_binds(&keybinds, BackendKind::Tty);
 
-        assert_eq!(resolved.len(), 15);
+        assert_eq!(resolved.len(), 17);
         let quit = resolved
             .iter()
             .find(|bind| bind.action == Action::Quit)
