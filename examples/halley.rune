@@ -417,9 +417,13 @@ animations:
     # Independent switch for ordinary Wayland and XWayland toplevels.
     enabled true
 
-    # "shrink" collapses an ordinary close into its center. "fade" keeps its
-    # final geometry and changes only opacity. Window-to-node transitions
-    # always fly and shrink into the node at the window's original stack depth.
+    # Close counterparts:
+    #   "shrink"  - reverse "center-out" into the window's center.
+    #   "fade"    - reverse "fade" without changing geometry.
+    #   "retract" - reverse "launch" along the same restrained arc toward its
+    #               remembered launch origin (or the current fallback origin).
+    # Window-to-node transitions always fly and shrink into the node at the
+    # window's original stack depth.
     type "shrink"
 
     # Close animations use the original ease-in-out cubic timing internally.

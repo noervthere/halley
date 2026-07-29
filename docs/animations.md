@@ -87,11 +87,19 @@ end
 ```
 
 `type "shrink"` collapses the snapshot into its center without fading.
-`type "fade"` keeps the final geometry and fades to transparent. Both retain
-the original ease-in-out cubic timing. Closing snapshots preserve the
-window's current opening opacity and track camera motion while they finish.
-Layer-shell surfaces and X11 override-redirect popups are not window-close
-animation targets.
+`type "fade"` keeps the final geometry and fades to transparent.
+`type "retract"` is the close counterpart to `launch`: it follows the launch
+arc backward, returns from 100% through the same 102%/80% scale choreography,
+and reduces opacity toward the launch state. Halley remembers the window's
+actual launch origin for its lifetime; if none was recorded, retract uses the
+same cursor, focused-window, then output-center fallback chain as launch.
+Travel remains capped at 320 pixels.
+
+The intended open/close pairs are `center-out`/`shrink`, `fade`/`fade`, and
+`launch`/`retract`. All close styles retain the original ease-in-out cubic
+timing. Closing snapshots preserve the window's current opening opacity and
+track camera motion while they finish. Layer-shell surfaces and X11
+override-redirect popups are not window-close animation targets.
 
 Node collapse uses a short ease-out scale transition. Restoration and optional
 camera centering start together; it never centers first and waits for a second

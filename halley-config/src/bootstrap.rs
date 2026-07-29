@@ -130,6 +130,7 @@ mod tests {
             "\"alt+tab\" \"cycle-focus\"",
             "live-previews true",
             "max-rows 3",
+            "\"retract\" - reverse \"launch\"",
         ] {
             assert!(
                 DEFAULT_CONFIG.contains(expected),
