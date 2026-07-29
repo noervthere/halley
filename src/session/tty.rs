@@ -27,7 +27,7 @@ use super::tty_frame::{EstimatedVblankTimer, OutputFrameState};
 
 struct TtyDriver {
     backend: TtyBackend,
-    physical_input: crate::input::libinput::PhysicalMouseDevices,
+    physical_input: crate::input::devices::PhysicalInputDevices,
     loop_signal: LoopSignal,
     output_frames: HashMap<Output, OutputFrameState>,
     paused: bool,
@@ -144,7 +144,7 @@ pub fn run(session_mode: bool) {
 
     let mut driver = TtyDriver {
         backend,
-        physical_input: crate::input::libinput::PhysicalMouseDevices::default(),
+        physical_input: crate::input::devices::PhysicalInputDevices::default(),
         loop_signal,
         output_frames,
         paused: false,
@@ -243,10 +243,10 @@ pub fn run(session_mode: bool) {
         .insert_source(libinput_backend, move |event, _, app| {
             match &event {
                 smithay::backend::input::InputEvent::DeviceAdded { device } => {
-                    app.driver.physical_input.added(device.clone(), &app.input)
+                    app.driver.physical_input.added(device.clone(), &app.input);
                 }
                 smithay::backend::input::InputEvent::DeviceRemoved { device } => {
-                    app.driver.physical_input.removed(device)
+                    app.driver.physical_input.removed(device);
                 }
                 _ => {}
             }
