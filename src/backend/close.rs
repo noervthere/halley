@@ -40,6 +40,7 @@ pub struct CloseSnapshotMetadata {
     pub anchor: CloseAnchor,
     pub stack_index: usize,
     pub start_alpha: f32,
+    pub retract_origin: Option<smithay::utils::Point<f64, Physical>>,
     pub border: Option<CloseBorder>,
     pub collapse_target: Option<Vec2>,
 }
@@ -185,17 +186,13 @@ impl WindowCloseAnimations {
                         - output_geometry.loc;
                     collapse_destination(start, target, visual.progress)
                 } else {
-                    crate::animation::scale_rect_from_center(start, start, visual.scale)
+                    visual.destination(start, metadata.retract_origin)
                 };
                 if destination.size.w <= 0 || destination.size.h <= 0 || visual.alpha <= 0.0 {
                     return None;
                 }
                 let border = metadata.border.map(|mut border| {
-                    let scale = if metadata.collapse_target.is_some() {
-                        1.0 - visual.progress
-                    } else {
-                        visual.scale
-                    };
+                    let scale = f64::from(destination.size.w) / f64::from(start.size.w.max(1));
                     border.width = (f64::from(border.width) * scale).round().max(1.0) as i32;
                     border.color = border.color * visual.alpha;
                     border

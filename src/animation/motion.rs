@@ -16,7 +16,7 @@ pub struct MotionTimeline {
     initial_velocity: f64,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MotionSample {
     pub linear_progress: f64,
     pub linear_velocity: f64,

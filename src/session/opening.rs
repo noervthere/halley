@@ -17,6 +17,7 @@ pub(super) struct OriginOnlyActivation;
 #[derive(Default)]
 pub struct OpeningOrigins {
     pending: HashMap<WlSurface, Point<f64, Logical>>,
+    active: HashMap<WlSurface, Point<f64, Logical>>,
 }
 
 impl OpeningOrigins {
@@ -30,10 +31,23 @@ impl OpeningOrigins {
 
     pub(crate) fn forget(&mut self, surface: &WlSurface) {
         self.pending.remove(surface);
+        self.active.remove(surface);
     }
 
-    fn take(&mut self, surface: &WlSurface) -> Option<Point<f64, Logical>> {
-        self.pending.remove(surface)
+    fn activate(
+        &mut self,
+        surface: &WlSurface,
+        fallback: Option<Point<f64, Logical>>,
+    ) -> Option<Point<f64, Logical>> {
+        let origin = self.pending.remove(surface).or(fallback);
+        if let Some(origin) = origin {
+            self.active.insert(surface.clone(), origin);
+        }
+        origin
+    }
+
+    pub(crate) fn active(&self, surface: &WlSurface) -> Option<Point<f64, Logical>> {
+        self.active.get(surface).copied()
     }
 }
 
@@ -57,10 +71,8 @@ pub(crate) fn start<D: SessionDriver>(
         session.opening_origins.forget(&surface);
         return session.window_open_animations.start(surface, now);
     };
-    let global = session
-        .opening_origins
-        .take(&surface)
-        .or_else(|| fallback_origin(session, output));
+    let fallback = fallback_origin(session, output);
+    let global = session.opening_origins.activate(&surface, fallback);
     let local = global.map(|origin| {
         Point::<f64, Physical>::from((
             origin.x - f64::from(output_geometry.loc.x),
@@ -122,7 +134,7 @@ pub(super) fn surface_visual_center<D: SessionDriver>(
     })
 }
 
-fn fallback_origin<D: SessionDriver>(
+pub(super) fn fallback_origin<D: SessionDriver>(
     session: &Session<D>,
     output: &Output,
 ) -> Option<Point<f64, Logical>> {

@@ -154,6 +154,7 @@ pub enum WindowCloseAnimationType {
     #[default]
     Shrink,
     Fade,
+    Retract,
 }
 
 impl WindowCloseAnimationType {
@@ -161,6 +162,7 @@ impl WindowCloseAnimationType {
         match value {
             "shrink" => Some(Self::Shrink),
             "fade" => Some(Self::Fade),
+            "retract" => Some(Self::Retract),
             _ => None,
         }
     }
@@ -384,6 +386,25 @@ end
                 animation_type: WindowCloseAnimationType::Fade,
                 duration_ms: 410,
             }
+        );
+    }
+
+    #[test]
+    fn parses_launch_counterpart_for_window_close() {
+        let config = RuneConfig::from_str(
+            r#"
+animations:
+  window-close:
+    type "retract"
+  end
+end
+"#,
+        )
+        .expect("valid rune-cfg source");
+
+        assert_eq!(
+            parse_animations(&config).window_close.animation_type,
+            WindowCloseAnimationType::Retract
         );
     }
 

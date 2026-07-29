@@ -1,12 +1,28 @@
 use std::time::Duration;
 
 use halley_config::{WindowCloseAnimation, WindowCloseAnimationType};
+use smithay::utils::{Physical, Point, Rectangle};
+
+use super::motion::MotionSample;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct CloseVisual {
     pub(crate) scale: f64,
     pub(crate) alpha: f32,
     pub(crate) progress: f64,
+    retract_sample: Option<MotionSample>,
+}
+
+impl CloseVisual {
+    pub(crate) fn destination(
+        self,
+        bounds: Rectangle<i32, Physical>,
+        origin: Option<Point<f64, Physical>>,
+    ) -> Rectangle<i32, Physical> {
+        self.retract_sample
+            .map(|sample| super::launch::rect(bounds, origin, sample).round())
+            .unwrap_or_else(|| super::scale_rect_from_center(bounds, bounds, self.scale))
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -32,24 +48,40 @@ impl CloseTimeline {
     }
 
     pub(crate) fn visual_at(self, now: Duration) -> CloseVisual {
-        let progress = if self.duration.is_zero() {
+        let linear_progress = if self.duration.is_zero() {
             1.0
         } else {
             now.saturating_sub(self.started_at).as_secs_f64() / self.duration.as_secs_f64()
         }
         .clamp(0.0, 1.0);
-        let progress = ease_in_out_cubic(progress);
+        let progress = ease_in_out_cubic(linear_progress);
         match self.animation_type {
             WindowCloseAnimationType::Shrink => CloseVisual {
                 scale: 1.0 - progress,
                 alpha: self.start_alpha,
                 progress,
+                retract_sample: None,
             },
             WindowCloseAnimationType::Fade => CloseVisual {
                 scale: 1.0,
                 alpha: self.start_alpha * (1.0 - progress) as f32,
                 progress,
+                retract_sample: None,
             },
+            WindowCloseAnimationType::Retract => {
+                let reverse_linear = 1.0 - linear_progress;
+                CloseVisual {
+                    scale: 1.0,
+                    alpha: self.start_alpha * super::launch::alpha(reverse_linear),
+                    progress,
+                    retract_sample: Some(MotionSample {
+                        linear_progress: reverse_linear,
+                        linear_velocity: 0.0,
+                        value: 1.0 - progress,
+                        velocity: 0.0,
+                    }),
+                }
+            }
         }
     }
 
@@ -93,6 +125,7 @@ mod tests {
                 scale: 1.0,
                 alpha: 0.7,
                 progress: 0.0,
+                retract_sample: None,
             }
         );
         assert_eq!(
@@ -101,6 +134,7 @@ mod tests {
                 scale: 0.5,
                 alpha: 0.7,
                 progress: 0.5,
+                retract_sample: None,
             }
         );
         assert_eq!(
@@ -109,6 +143,7 @@ mod tests {
                 scale: 0.0,
                 alpha: 0.7,
                 progress: 1.0,
+                retract_sample: None,
             }
         );
     }
@@ -127,6 +162,7 @@ mod tests {
                 scale: 1.0,
                 alpha: 0.3,
                 progress: 0.5,
+                retract_sample: None,
             }
         );
         assert_eq!(
@@ -135,8 +171,36 @@ mod tests {
                 scale: 1.0,
                 alpha: 0.0,
                 progress: 1.0,
+                retract_sample: None,
             }
         );
+    }
+
+    #[test]
+    fn retract_reverses_launch_geometry_and_opacity_toward_its_origin() {
+        let timeline = CloseTimeline::new(
+            config(WindowCloseAnimationType::Retract),
+            Duration::from_secs(1),
+            1.0,
+        );
+        let bounds = Rectangle::new((500, 300).into(), (800, 600).into());
+        let origin = Point::from((100.0, 100.0));
+
+        let start = timeline.visual_at(Duration::from_secs(1));
+        assert_eq!(start.destination(bounds, Some(origin)), bounds);
+        assert_eq!(start.alpha, 1.0);
+
+        let end = timeline.visual_at(Duration::from_millis(1200));
+        let destination = end.destination(bounds, Some(origin));
+        assert_eq!(destination.size, (640, 480).into());
+        assert_eq!(
+            (
+                destination.loc.x + destination.size.w / 2,
+                destination.loc.y + destination.size.h / 2,
+            ),
+            (629, 430)
+        );
+        assert_eq!(end.alpha, super::super::launch::START_ALPHA);
     }
 
     #[test]

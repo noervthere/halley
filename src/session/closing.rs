@@ -83,12 +83,26 @@ pub(crate) fn capture_window<D: SessionDriver>(session: &mut Session<D>, window:
             captured_camera_rect: visual.camera_rect,
         }
     };
+    let retract_origin = session
+        .opening_origins
+        .active(&surface)
+        .or_else(|| super::opening::fallback_origin(session, &output))
+        .and_then(|origin| {
+            let output_geometry = session.wayland.space.output_geometry(&output)?;
+            Some(
+                smithay::utils::Point::<f64, smithay::utils::Physical>::from((
+                    origin.x - f64::from(output_geometry.loc.x),
+                    origin.y - f64::from(output_geometry.loc.y),
+                )),
+            )
+        });
     let metadata = crate::backend::close::CloseSnapshotMetadata {
         output_name: output.name(),
         initial_destination: visual.animated_rect,
         anchor,
         stack_index,
         start_alpha: visual.opening_alpha,
+        retract_origin,
         border,
         collapse_target: None,
     };
