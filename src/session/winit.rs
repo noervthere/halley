@@ -11,7 +11,7 @@ use smithay::wayland::seat::WaylandFocus;
 
 use crate::backend::winit::WinitBackend;
 use crate::backend::{self, RenderRequest, Renderable};
-use crate::cursor::CursorImage;
+use crate::cursor::CursorManager;
 use crate::input::keybinds::BackendKind;
 use crate::input::pointer::{Pointer, WheelAccumulator};
 use crate::input::{Keyboard, SuppressedButtons, SuppressedKeys};
@@ -122,7 +122,7 @@ pub fn run() {
         driver,
         keyboard: Keyboard::from_config(&runtime_config.keybinds, BackendKind::Winit),
         pointer: Pointer::new((100.0, 100.0)),
-        cursor: CursorImage::load(),
+        cursor: CursorManager::new(&runtime_config.cursor),
         wayland,
         seat_state,
         seat,
@@ -222,6 +222,10 @@ pub fn run() {
                 }
                 let position = app.pointer.position();
                 let show_cursor = super::pointer::cursor_visible(app);
+                let cursor_animating = show_cursor
+                    && app
+                        .cursor
+                        .default_is_animated(output.current_scale().integer_scale());
                 if let Err(err) = app.driver.backend.render(
                     &output,
                     RenderRequest {
@@ -268,7 +272,12 @@ pub fn run() {
                     );
                 }
 
-                if animating || window_animating || closing_animating || fullscreen_animating {
+                if animating
+                    || window_animating
+                    || closing_animating
+                    || fullscreen_animating
+                    || cursor_animating
+                {
                     app.request_redraw();
                 }
             }

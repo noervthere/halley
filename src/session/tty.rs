@@ -16,7 +16,7 @@ use smithay::wayland::seat::WaylandFocus;
 
 use crate::backend::tty::TtyBackend;
 use crate::backend::{CLEAR_COLOR, RenderOutcome, RenderRequest, RenderStatus, Renderable};
-use crate::cursor::CursorImage;
+use crate::cursor::CursorManager;
 use crate::input::keybinds::BackendKind;
 use crate::input::pointer::{Pointer, WheelAccumulator};
 use crate::input::{Keyboard, SuppressedButtons, SuppressedKeys};
@@ -161,7 +161,7 @@ pub fn run(session_mode: bool) {
         driver,
         keyboard: Keyboard::from_config(&runtime_config.keybinds, BackendKind::Tty),
         pointer: Pointer::new((100.0, 100.0)),
-        cursor: CursorImage::load(),
+        cursor: CursorManager::new(&runtime_config.cursor),
         wayland,
         seat_state,
         seat,
@@ -470,8 +470,16 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
     let closing_animating = app
         .window_close_animations
         .is_animating_on_output(output, target_presentation_time);
-    let animating =
-        camera_animating || window_animating || closing_animating || fullscreen_animating;
+    let show_cursor = super::pointer::cursor_visible(app);
+    let cursor_animating = show_cursor
+        && app
+            .cursor
+            .default_is_animated(output.current_scale().integer_scale());
+    let animating = camera_animating
+        || window_animating
+        || closing_animating
+        || fullscreen_animating
+        || cursor_animating;
     if fullscreen_animating && pointer_is_on_output {
         super::pointer::update_client_state(app, app.start_time.elapsed().as_millis() as u32);
     }
@@ -482,7 +490,6 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
         super::pointer::update_client_state(app, app.start_time.elapsed().as_millis() as u32);
     }
 
-    let show_cursor = super::pointer::cursor_visible(app);
     let outcome = match app.driver.backend.render(
         output,
         RenderRequest {

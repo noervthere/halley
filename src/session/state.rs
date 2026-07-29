@@ -23,7 +23,7 @@ use smithay::wayland::virtual_keyboard::VirtualKeyboardManagerState;
 use smithay::wayland::xdg_activation::XdgActivationState;
 
 use crate::camera::OutputCameras;
-use crate::cursor::CursorImage;
+use crate::cursor::CursorManager;
 use crate::input::grab::{Grab, ResizeAnchor};
 use crate::input::pointer::{Pointer, WheelAccumulator};
 use crate::input::{Keyboard, SuppressedButtons, SuppressedKeys};
@@ -56,7 +56,7 @@ pub struct Session<D: SessionDriver> {
     pub driver: D,
     pub keyboard: Keyboard,
     pub pointer: Pointer,
-    pub cursor: CursorImage,
+    pub cursor: CursorManager,
     pub wayland: WaylandState,
     pub seat_state: SeatState<Self>,
     pub seat: Seat<Self>,
@@ -128,7 +128,9 @@ impl<D: SessionDriver> Session<D> {
     /// snapshot. Output hardware policy remains with the concrete driver.
     pub fn apply_common_config(&mut self, config: &halley_config::RuntimeConfig) {
         self.keyboard.reload(&config.keybinds, D::BACKEND_KIND);
-        let redraw = self.decorations != config.decorations || self.zoom != config.zoom;
+        let cursor_changed = self.cursor.reload(&config.cursor);
+        let redraw =
+            self.decorations != config.decorations || self.zoom != config.zoom || cursor_changed;
         self.decorations = config.decorations;
         self.zoom = config.zoom;
         self.screenshot = config.screenshot.clone();

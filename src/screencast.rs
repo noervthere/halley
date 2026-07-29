@@ -185,14 +185,17 @@ fn cursor_metadata<D: SessionDriver>(
     source: &halley_ipc::CaptureSource,
 ) -> Option<halley_ipc::CursorMetadata> {
     let (x, y) = cursor_position(session, source)?;
+    let frame = session
+        .cursor
+        .default_frame(1, crate::frame_clock::monotonic_now());
     Some(halley_ipc::CursorMetadata {
         x,
         y,
-        hotspot_x: session.cursor.hotspot_x,
-        hotspot_y: session.cursor.hotspot_y,
-        width: session.cursor.width,
-        height: session.cursor.height,
-        bgra: session.cursor.metadata_bgra.clone(),
+        hotspot_x: frame.hotspot_x,
+        hotspot_y: frame.hotspot_y,
+        width: frame.width,
+        height: frame.height,
+        bgra: frame.metadata_bgra.to_vec(),
     })
 }
 

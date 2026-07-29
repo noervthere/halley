@@ -1,6 +1,5 @@
 use std::error::Error;
 
-use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
 use smithay::backend::renderer::element::solid::SolidColorRenderElement;
 use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
 use smithay::backend::renderer::element::utils::CropRenderElement;
@@ -19,7 +18,7 @@ render_elements! {
     /// backends. Keeping one element type and one builder prevents nested and
     /// real-hardware sessions from drifting in z-order or visual policy.
     pub SceneElement<=GlesRenderer>;
-    Cursor=MemoryRenderBufferRenderElement<GlesRenderer>,
+    Cursor=crate::cursor::render::CursorRenderElement,
     Rescaled=super::rescale::RescaledElement,
     Cropped=CropRenderElement<super::rescale::RescaledElement>,
     FullscreenBlend=super::fullscreen_texture::FullscreenBlendElement,
@@ -132,20 +131,21 @@ pub fn build(
             .map(SceneElement::Layer),
     );
 
-    if request.show_cursor
-        && let Some(position) = cursor_position_for_output(output_geometry, request.cursor_position)
-    {
-        let cursor = MemoryRenderBufferRenderElement::from_buffer(
+    if request.show_cursor {
+        let frame = request.cursor.default_frame(
+            output.current_scale().integer_scale(),
+            request.target_presentation_time,
+        );
+        if let Some(cursor) = crate::cursor::render::named_element(
             renderer,
-            position,
-            &request.cursor.buffer,
-            None,
-            None,
-            None,
-            Kind::Cursor,
-        )?;
-        // Element lists are front-to-back, so the cursor belongs at index 0.
-        elements.insert(0, SceneElement::Cursor(cursor));
+            output,
+            output_geometry,
+            request.cursor_position,
+            &frame,
+        )? {
+            // Element lists are front-to-back, so the cursor belongs at index 0.
+            elements.insert(0, SceneElement::Cursor(cursor));
+        }
     }
 
     Ok(elements)
@@ -598,41 +598,10 @@ fn map_rect(
     )
 }
 
-pub fn cursor_position_for_output(
-    output_geometry: Rectangle<i32, Logical>,
-    cursor_position: (f64, f64),
-) -> Option<Point<f64, Physical>> {
-    let cursor_position = Point::<f64, Logical>::from(cursor_position);
-    output_geometry
-        .to_f64()
-        .contains(cursor_position)
-        .then(|| (cursor_position - output_geometry.loc.to_f64()).to_physical(1.0))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use smithay::utils::{Physical, Rectangle};
-
-    #[test]
-    fn cursor_is_localized_to_the_containing_output() {
-        let output = Rectangle::new((2560, 0).into(), (1920, 1200).into());
-
-        assert_eq!(
-            cursor_position_for_output(output, (3000.0, 500.0)),
-            Some(Point::from((440.0, 500.0)))
-        );
-        assert_eq!(cursor_position_for_output(output, (2559.0, 500.0)), None);
-    }
-
-    #[test]
-    fn output_edges_are_half_open() {
-        let output = Rectangle::new((0, 0).into(), (1920, 1080).into());
-
-        assert!(cursor_position_for_output(output, (0.0, 0.0)).is_some());
-        assert!(cursor_position_for_output(output, (1919.0, 1079.0)).is_some());
-        assert!(cursor_position_for_output(output, (1920.0, 500.0)).is_none());
-    }
 
     #[test]
     fn resize_handles_are_reserved_for_region_selection() {

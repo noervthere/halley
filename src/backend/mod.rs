@@ -27,7 +27,7 @@ use smithay::utils::{Logical, Physical, Point, Rectangle, Scale, Size};
 use smithay::wayland::seat::WaylandFocus;
 use smithay::wayland::shell::wlr_layer::Layer;
 
-use crate::cursor::CursorImage;
+use crate::cursor::CursorManager;
 
 /// Cool, slightly-blue-leaning light gray - visible without being stark.
 /// Shared by both backends' drivers (session::tty, session::winit) so there's one
@@ -179,7 +179,7 @@ pub struct FrameSubmission {
 pub struct RenderRequest<'a> {
     pub target_presentation_time: std::time::Duration,
     pub clear: Color32F,
-    pub cursor: &'a CursorImage,
+    pub cursor: &'a CursorManager,
     pub cursor_position: (f64, f64),
     pub show_cursor: bool,
     pub capture_overlay: crate::capture::CaptureOverlay<'a>,
