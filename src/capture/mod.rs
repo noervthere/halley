@@ -10,7 +10,7 @@ use smithay::utils::{Logical, Point, Rectangle};
 
 use menu::{ScreenshotMenu, ScreenshotMode};
 use picker::RegionPicker;
-pub(crate) use screenshot::{capture_source_pixels, render_source_dmabuf};
+pub(crate) use screenshot::{capture_source_pixels, capture_surface_tree, render_source_dmabuf};
 pub use screenshot::{save_region, save_window};
 
 use crate::session::{Session, SessionDriver};

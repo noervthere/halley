@@ -355,7 +355,7 @@ fn save_pixels(
     Ok(path)
 }
 
-fn capture_surface_tree(
+pub(crate) fn capture_surface_tree(
     renderer: &mut GlesRenderer,
     surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
     geometry: Rectangle<i32, Logical>,

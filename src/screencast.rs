@@ -7,8 +7,10 @@ use smithay::backend::allocator::{
     dmabuf::{Dmabuf, DmabufFlags},
 };
 use smithay::reexports::wayland_server::Resource;
+use smithay::utils::{Logical, Point, Rectangle};
 use smithay::wayland::seat::WaylandFocus;
 
+use crate::cursor::RenderCursor;
 use crate::session::{Session, SessionDriver};
 
 #[derive(Default)]
@@ -61,7 +63,8 @@ pub fn capture_frame<D: SessionDriver>(
     request: halley_ipc::CaptureFrameRequest,
     fds: Vec<OwnedFd>,
 ) -> Result<halley_ipc::CaptureFrameResponse, String> {
-    let embedded = request.cursor_mode == halley_ipc::CursorMode::Embedded;
+    let embedded = request.cursor_mode == halley_ipc::CursorMode::Embedded
+        && crate::session::cursor_visible(session);
     let width = request.source.width();
     let height = request.source.height();
     let expected = frame_len(width, height)?;
@@ -181,22 +184,64 @@ fn write_all_at(fd: &OwnedFd, offset: u64, bytes: &[u8]) -> io::Result<()> {
 }
 
 fn cursor_metadata<D: SessionDriver>(
-    session: &Session<D>,
+    session: &mut Session<D>,
     source: &halley_ipc::CaptureSource,
 ) -> Option<halley_ipc::CursorMetadata> {
+    if !crate::session::cursor_visible(session) {
+        return None;
+    }
     let (x, y) = cursor_position(session, source)?;
-    let frame = session
+    match session
         .cursor
-        .default_frame(1, crate::frame_clock::monotonic_now());
-    Some(halley_ipc::CursorMetadata {
-        x,
-        y,
-        hotspot_x: frame.hotspot_x,
-        hotspot_y: frame.hotspot_y,
-        width: frame.width,
-        height: frame.height,
-        bgra: frame.metadata_bgra.to_vec(),
-    })
+        .render_cursor(1, crate::frame_clock::monotonic_now())
+    {
+        RenderCursor::Hidden => None,
+        RenderCursor::Named(frame) => Some(halley_ipc::CursorMetadata {
+            x,
+            y,
+            hotspot_x: frame.hotspot_x,
+            hotspot_y: frame.hotspot_y,
+            width: frame.width,
+            height: frame.height,
+            bgra: frame.metadata_bgra.to_vec(),
+        }),
+        RenderCursor::Surface(surface) => {
+            let bounds = smithay::desktop::utils::bbox_from_surface_tree(
+                &surface,
+                Point::<i32, Logical>::from((0, 0)),
+            );
+            let (hotspot_x, hotspot_y, width, height) =
+                cursor_surface_layout(crate::cursor::surface::hotspot(&surface), bounds)?;
+            let mut pixels = session
+                .driver
+                .with_renderer(|renderer| {
+                    crate::capture::capture_surface_tree(renderer, &surface, bounds)
+                })
+                .ok()?;
+            rgba_to_bgra(&mut pixels);
+            Some(halley_ipc::CursorMetadata {
+                x,
+                y,
+                hotspot_x,
+                hotspot_y,
+                width,
+                height,
+                bgra: pixels,
+            })
+        }
+    }
+}
+
+fn cursor_surface_layout(
+    hotspot: Point<i32, Logical>,
+    bounds: Rectangle<i32, Logical>,
+) -> Option<(i32, i32, u32, u32)> {
+    Some((
+        hotspot.x - bounds.loc.x,
+        hotspot.y - bounds.loc.y,
+        bounds.size.w.try_into().ok()?,
+        bounds.size.h.try_into().ok()?,
+    ))
 }
 
 fn cursor_position<D: SessionDriver>(
@@ -284,6 +329,12 @@ fn blend_cursor_rgba(
     }
 }
 
+fn rgba_to_bgra(pixels: &mut [u8]) {
+    for pixel in pixels.chunks_exact_mut(4) {
+        pixel.swap(0, 2);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -293,6 +344,22 @@ mod tests {
         let mut pixels = vec![10, 20, 30, 40, 50, 60, 70, 80];
         rgba_to_bgrx(&mut pixels);
         assert_eq!(pixels, vec![30, 20, 10, 255, 70, 60, 50, 255]);
+    }
+
+    #[test]
+    fn cursor_pixels_are_converted_to_bgra_without_losing_alpha() {
+        let mut pixels = vec![10, 20, 30, 40, 50, 60, 70, 80];
+        rgba_to_bgra(&mut pixels);
+        assert_eq!(pixels, vec![30, 20, 10, 40, 70, 60, 50, 80]);
+    }
+
+    #[test]
+    fn cursor_surface_hotspot_is_relative_to_the_complete_surface_tree() {
+        let bounds = Rectangle::new((-3, -4).into(), (20, 24).into());
+        assert_eq!(
+            cursor_surface_layout((2, 3).into(), bounds),
+            Some((5, 7, 20, 24))
+        );
     }
 
     #[test]

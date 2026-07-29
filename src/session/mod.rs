@@ -112,6 +112,10 @@ pub(crate) fn has_active_pointer_confinement<D: SessionDriver>(session: &Session
     pointer::has_active_confinement(session)
 }
 
+pub(crate) fn cursor_visible<D: SessionDriver>(session: &Session<D>) -> bool {
+    pointer::cursor_visible(session)
+}
+
 fn toggle_focused_fullscreen<D: SessionDriver>(session: &mut Session<D>) {
     let Some(focused) = session.wayland.focused_window.clone() else {
         return;
