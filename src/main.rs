@@ -9,6 +9,7 @@ mod frame_clock;
 mod input;
 mod ipc;
 mod logging;
+mod nodes;
 mod screencast;
 mod session;
 mod wayland;

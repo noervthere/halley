@@ -135,19 +135,49 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
             surface,
         ) {
             wayland::xdg_shell::ToplevelCommit::Mapped(mapped) => {
-                super::closing::mapped(self, &mapped);
-                if self.fullscreen.is_fullscreen_or_pending(&mapped) {
-                    self.opening_origins.forget(&mapped);
-                } else if let Some(output) = super::opening::output_for_surface(self, &mapped) {
-                    super::opening::start(
-                        self,
-                        mapped,
-                        &output,
-                        crate::frame_clock::monotonic_now(),
-                    );
+                self.nodes.register_mapped(
+                    &self.wayland.space,
+                    &mapped,
+                    self.start_time.elapsed().as_millis() as u64,
+                );
+                let remains_collapsed = self
+                    .nodes
+                    .id_for_surface(&mapped)
+                    .and_then(|id| self.nodes.record(id))
+                    .is_some_and(|record| record.collapsed);
+                let remapped_window = remains_collapsed
+                    .then(|| {
+                        self.wayland
+                            .space
+                            .elements()
+                            .find(|window| {
+                                window
+                                    .wl_surface()
+                                    .is_some_and(|surface| surface.as_ref() == &mapped)
+                            })
+                            .cloned()
+                    })
+                    .flatten();
+                if let Some(window) = remapped_window {
+                    self.wayland.space.unmap_elem(&window);
+                    self.wayland.collapsed.insert(mapped.clone(), window);
+                    self.wayland.focused_window = None;
+                    super::sync_keyboard_focus(self, SERIAL_COUNTER.next_serial());
                 } else {
-                    self.window_open_animations
-                        .start(mapped, crate::frame_clock::monotonic_now());
+                    super::closing::mapped(self, &mapped);
+                    if self.fullscreen.is_fullscreen_or_pending(&mapped) {
+                        self.opening_origins.forget(&mapped);
+                    } else if let Some(output) = super::opening::output_for_surface(self, &mapped) {
+                        super::opening::start(
+                            self,
+                            mapped,
+                            &output,
+                            crate::frame_clock::monotonic_now(),
+                        );
+                    } else {
+                        self.window_open_animations
+                            .start(mapped, crate::frame_clock::monotonic_now());
+                    }
                 }
             }
             wayland::xdg_shell::ToplevelCommit::Unmapped(unmapped) => {
@@ -155,6 +185,7 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
                     unmap.expect("mapped toplevel unmap must have been prepared before commit");
                 debug_assert_eq!(preparation.surface(), &unmapped);
                 super::finish_window_unmap(self, preparation);
+                self.nodes.mark_detached(&unmapped);
                 super::sync_keyboard_focus(self, SERIAL_COUNTER.next_serial());
             }
             wayland::xdg_shell::ToplevelCommit::None => {}
@@ -168,6 +199,7 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
             crate::frame_clock::monotonic_now(),
         );
         crate::input::grab::finish_resize_commit(&mut self.resize_anchor, &mut self.wayland.space);
+        crate::nodes::reconcile_landmarks(self, None);
         super::pointer::reconcile_state(self);
         self.request_redraw();
     }
@@ -279,6 +311,7 @@ impl<D: SessionDriver> XdgShellHandler for Session<D> {
         let preparation = super::prepare_window_unmap(self, surface.wl_surface());
         wayland::xdg_shell::toplevel_destroyed(&mut self.wayland, &surface);
         super::finish_window_unmap(self, preparation);
+        self.nodes.remove_surface(surface.wl_surface());
         super::sync_keyboard_focus(self, SERIAL_COUNTER.next_serial());
         self.request_redraw();
     }
@@ -288,6 +321,11 @@ impl<D: SessionDriver> XdgShellHandler for Session<D> {
         surface: ToplevelSurface,
         output: Option<smithay::reexports::wayland_server::protocol::wl_output::WlOutput>,
     ) {
+        if let Some(id) = self.nodes.id_for_surface(surface.wl_surface())
+            && self.nodes.record(id).is_some_and(|record| record.collapsed)
+        {
+            crate::nodes::restore(self, id, SERIAL_COUNTER.next_serial());
+        }
         super::cancel_grab_for_surface(self, surface.wl_surface());
         self.fullscreen.request(&mut self.wayland, &surface, output);
         super::pointer::reconcile_state(self);
@@ -368,6 +406,11 @@ impl<D: SessionDriver> XdgActivationHandler for Session<D> {
     ) {
         if activation_token_is_fresh(token_data.timestamp, Instant::now()) {
             let root = wayland::compositor::root_surface(&surface);
+            if let Some(id) = self.nodes.id_for_surface(&root)
+                && self.nodes.record(id).is_some_and(|record| record.collapsed)
+            {
+                crate::nodes::restore(self, id, SERIAL_COUNTER.next_serial());
+            }
             let mapped = self
                 .wayland
                 .space

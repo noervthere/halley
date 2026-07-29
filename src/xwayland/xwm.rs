@@ -64,6 +64,18 @@ fn window_for_surface<D: SessionDriver>(
                 .is_some_and(|candidate| candidate == surface)
         })
         .cloned()
+        .or_else(|| {
+            session
+                .nodes
+                .records()
+                .find(|record| {
+                    record
+                        .window
+                        .x11_surface()
+                        .is_some_and(|candidate| candidate == surface)
+                })
+                .map(|record| record.window.clone())
+        })
 }
 
 pub(super) fn surface_associated<D: SessionDriver>(
@@ -152,6 +164,12 @@ fn admit_window<D: SessionDriver>(session: &mut Session<D>, xid: u32) {
         .space
         .map_element(window.clone(), location, true);
     if let Some(wl_surface) = window.wl_surface() {
+        session.nodes.register_mapped(
+            &session.wayland.space,
+            wl_surface.as_ref(),
+            session.start_time.elapsed().as_millis() as u64,
+        );
+        crate::nodes::reconcile_landmarks(session, Some(&output.name()));
         crate::session::closing::mapped(session, wl_surface.as_ref());
     }
     session
@@ -662,6 +680,7 @@ fn forget_window<D: SessionDriver>(session: &mut Session<D>, surface: &X11Surfac
         let preparation = crate::session::prepare_window_unmap(session, &wl_surface);
         session.wayland.space.unmap_elem(&window);
         crate::session::finish_window_unmap(session, preparation);
+        session.nodes.remove_surface(&wl_surface);
     } else {
         session.wayland.space.unmap_elem(&window);
     }

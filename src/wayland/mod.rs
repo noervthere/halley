@@ -124,6 +124,11 @@ pub struct WaylandState {
     /// buffer to show, without mixing placement policy into surface
     /// lifecycle tracking.
     pub unmapped: HashMap<WlSurface, Window>,
+    /// Buffer-backed toplevels intentionally removed from `space` because
+    /// Halley is representing them as nodes. Keeping the protocol object
+    /// here lets commits, null-buffer unmaps, and destruction continue to
+    /// follow the normal Wayland lifecycle while the client is collapsed.
+    pub collapsed: HashMap<WlSurface, Window>,
     /// Last mapped position retained across a null-buffer unmap. Initial maps
     /// have no entry and use normal placement policy.
     pub unmapped_locations: HashMap<WlSurface, Point<i32, Logical>>,
@@ -196,6 +201,7 @@ impl WaylandState {
             space: Space::default(),
             managed_windows: crate::window::ManagedWindowStack::default(),
             unmapped: HashMap::new(),
+            collapsed: HashMap::new(),
             unmapped_locations: HashMap::new(),
             unmapped_layers: HashSet::new(),
             focused_layer: None,

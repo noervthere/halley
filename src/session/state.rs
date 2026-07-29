@@ -69,6 +69,7 @@ pub struct Session<D: SessionDriver> {
     pub seat_state: SeatState<Self>,
     pub seat: Seat<Self>,
     pub start_time: std::time::Instant,
+    pub nodes: crate::nodes::NodesState,
     pub input: halley_config::Input,
     pub decorations: halley_config::Decorations,
     pub cameras: OutputCameras,
@@ -90,6 +91,8 @@ pub struct Session<D: SessionDriver> {
     pub window_close_animations: crate::backend::close::WindowCloseAnimations,
     pub fullscreen: crate::wayland::fullscreen::FullscreenManager,
     pub fullscreen_textures: crate::backend::fullscreen_texture::FullscreenTextureTransitions,
+    pub node_renderer: crate::backend::node::NodeRenderer,
+    pub ui_text: crate::backend::text::UiTextRenderer,
     pub xwayland: crate::xwayland::State,
 }
 
@@ -196,6 +199,10 @@ impl<D: SessionDriver> Session<D> {
             || self.zoom != config.zoom
             || cursor_changed
             || cursor_visibility_changed;
+        let nodes_redraw = self
+            .nodes
+            .reload(config, crate::frame_clock::monotonic_now());
+        let font_redraw = self.ui_text.reload_font(&config.font);
         self.decorations = config.decorations;
         self.zoom = config.zoom;
         self.screenshot = config.screenshot.clone();
@@ -204,7 +211,10 @@ impl<D: SessionDriver> Session<D> {
         if self.fullscreen.reload(config.animations) {
             self.fullscreen_textures.clear();
         }
-        if redraw {
+        if nodes_redraw {
+            crate::nodes::reconcile_landmarks(self, None);
+        }
+        if redraw || nodes_redraw || font_redraw {
             self.request_redraw();
         }
     }

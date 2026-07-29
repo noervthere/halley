@@ -56,6 +56,9 @@ pub fn save_region<D: SessionDriver>(
     let window_close_animations = &mut session.window_close_animations;
     let fullscreen = &session.fullscreen;
     let fullscreen_textures = &mut session.fullscreen_textures;
+    let nodes = &session.nodes;
+    let node_renderer = &mut session.node_renderer;
+    let ui_text = &mut session.ui_text;
     let images = driver.with_renderer(|renderer| -> Result<Vec<OutputImage>, Box<dyn Error>> {
         outputs
             .iter()
@@ -80,6 +83,9 @@ pub fn save_region<D: SessionDriver>(
                         window_close_animations: &mut *window_close_animations,
                         fullscreen,
                         fullscreen_textures: &mut *fullscreen_textures,
+                        nodes,
+                        node_renderer: &mut *node_renderer,
+                        ui_text: &mut *ui_text,
                     },
                 )?;
                 Ok(OutputImage {
@@ -259,6 +265,9 @@ where
     let window_close_animations = &mut session.window_close_animations;
     let fullscreen = &session.fullscreen;
     let fullscreen_textures = &mut session.fullscreen_textures;
+    let nodes = &session.nodes;
+    let node_renderer = &mut session.node_renderer;
+    let ui_text = &mut session.ui_text;
     driver.with_renderer(|renderer| {
         let elements = backend::scene::build(
             renderer,
@@ -280,6 +289,9 @@ where
                 window_close_animations,
                 fullscreen,
                 fullscreen_textures,
+                nodes,
+                node_renderer,
+                ui_text,
             },
         )?;
         consume(renderer, &elements, geometry.size.to_physical(1))

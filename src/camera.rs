@@ -54,6 +54,10 @@ pub fn scale(camera: &Camera) -> f32 {
     (camera.base_size.x / camera.view_size.x.max(1.0)).min(1.0)
 }
 
+pub fn target_scale(camera: &Camera) -> f32 {
+    (camera.base_size.x / camera.target_view_size.x.max(1.0)).min(1.0)
+}
+
 /// Rebases an output-local camera center into Halley's global world space.
 ///
 /// Cameras stay local so panning one output cannot move another. Windows,

@@ -237,7 +237,7 @@ mod tests {
         let keybinds = Keybinds::default();
         let resolved = resolve_binds(&keybinds, BackendKind::Winit);
 
-        assert_eq!(resolved.len(), 11);
+        assert_eq!(resolved.len(), 12);
         let quit = resolved
             .iter()
             .find(|bind| bind.action == Action::Quit)
@@ -256,7 +256,7 @@ mod tests {
         let keybinds = Keybinds::default();
         let resolved = resolve_binds(&keybinds, BackendKind::Tty);
 
-        assert_eq!(resolved.len(), 11);
+        assert_eq!(resolved.len(), 12);
         let quit = resolved
             .iter()
             .find(|bind| bind.action == Action::Quit)
@@ -280,6 +280,20 @@ mod tests {
         assert_eq!(
             open_terminal.trigger,
             ResolvedTrigger::Keysym(xkb::keysym_from_name("t", xkb::KEYSYM_NO_FLAGS))
+        );
+    }
+
+    #[test]
+    fn default_config_toggle_state_resolves_to_mod_n() {
+        let resolved = resolve_binds(&Keybinds::default(), BackendKind::Tty);
+        let toggle = resolved
+            .iter()
+            .find(|bind| bind.action == Action::ToggleState)
+            .expect("default toggle-state bind");
+        assert!(toggle.modifiers.super_key);
+        assert_eq!(
+            toggle.trigger,
+            ResolvedTrigger::Keysym(xkb::keysym_from_name("n", xkb::KEYSYM_NO_FLAGS))
         );
     }
 

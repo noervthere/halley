@@ -307,6 +307,18 @@ mod tests {
                     stride: 1920 * 4,
                 },
             }),
+            Request::Node(crate::NodeRequest::Collapse {
+                selector: Some(crate::NodeSelector::Id(42)),
+                output: Some("DP-1".to_string()),
+            }),
+            Request::Node(crate::NodeRequest::Restore {
+                selector: Some(crate::NodeSelector::Latest),
+                output: None,
+            }),
+            Request::Node(crate::NodeRequest::Toggle {
+                selector: Some(crate::NodeSelector::App("firefox".to_string())),
+                output: None,
+            }),
         ] {
             let bytes = encode_request(&req).unwrap();
             let decoded = decode_request(&bytes).unwrap();

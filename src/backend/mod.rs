@@ -1,9 +1,12 @@
+mod app_icon;
 mod capture_overlay;
 pub mod close;
 pub mod dmabuf;
 pub mod fullscreen_texture;
+pub mod node;
 pub mod rescale;
 pub mod scene;
+pub mod text;
 pub mod tty;
 mod tty_dmabuf;
 mod tty_output;
@@ -192,6 +195,9 @@ pub struct RenderRequest<'a> {
     pub fullscreen: &'a crate::wayland::fullscreen::FullscreenManager,
     pub fullscreen_textures:
         &'a mut crate::backend::fullscreen_texture::FullscreenTextureTransitions,
+    pub nodes: &'a crate::nodes::NodesState,
+    pub node_renderer: &'a mut crate::backend::node::NodeRenderer,
+    pub ui_text: &'a mut crate::backend::text::UiTextRenderer,
 }
 
 /// A presentation backend for one already-described scene.

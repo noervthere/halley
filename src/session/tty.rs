@@ -180,6 +180,7 @@ pub fn run(session_mode: bool) {
         seat_state,
         seat,
         start_time: Instant::now(),
+        nodes: crate::nodes::NodesState::new(&runtime_config),
         input: applied_input,
         decorations: runtime_config.decorations,
         cameras: crate::camera::OutputCameras::default(),
@@ -206,6 +207,8 @@ pub fn run(session_mode: bool) {
         fullscreen: crate::wayland::fullscreen::FullscreenManager::new(runtime_config.animations),
         fullscreen_textures:
             crate::backend::fullscreen_texture::FullscreenTextureTransitions::default(),
+        node_renderer: crate::backend::node::NodeRenderer::default(),
+        ui_text: crate::backend::text::UiTextRenderer::new(&runtime_config.font),
         xwayland,
     };
     for output in outputs {
@@ -243,6 +246,9 @@ pub fn run(session_mode: bool) {
         && let Err(err) = crate::config::watch(&event_loop.handle(), path, apply_runtime_config)
     {
         eventline::warn!("config: failed to start watcher: {err}");
+    }
+    if let Err(err) = super::install_node_decay_timer(&event_loop.handle()) {
+        eventline::warn!("nodes: failed to start decay timer: {err}");
     }
 
     // Queue every output's first frame through the same state machine used
@@ -465,6 +471,7 @@ fn apply_tty_output_config(app: &mut TtyApp, outputs_config: &[halley_config::Ou
 }
 
 fn redraw_queued_outputs(app: &mut TtyApp, loop_handle: &LoopHandle<'_, TtyApp>) {
+    let _ = crate::nodes::tick_physics(app, crate::frame_clock::monotonic_now());
     let outputs: Vec<_> = app
         .driver
         .output_frames
@@ -521,6 +528,9 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
     let closing_animating = app
         .window_close_animations
         .is_animating_on_output(output, target_presentation_time);
+    let node_animating = app
+        .nodes
+        .is_animating_on_output(&output.name(), target_presentation_time);
     let show_cursor = super::pointer::cursor_visible(app);
     crate::cursor::surface::refresh_outputs(
         &app.cursor,
@@ -531,9 +541,10 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
         && app
             .cursor
             .current_is_animated(output.current_scale().integer_scale());
-    let animating = camera_animating
+    let mut animating = camera_animating
         || window_animating
         || closing_animating
+        || node_animating
         || fullscreen_animating
         || cursor_animating;
     if fullscreen_animating && pointer_is_on_output {
@@ -563,6 +574,9 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
             window_close_animations: &mut app.window_close_animations,
             fullscreen: &app.fullscreen,
             fullscreen_textures: &mut app.fullscreen_textures,
+            nodes: &app.nodes,
+            node_renderer: &mut app.node_renderer,
+            ui_text: &mut app.ui_text,
         },
     ) {
         Ok(outcome) => outcome,
@@ -571,6 +585,7 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
             RenderOutcome::new(RenderStatus::Skipped, None)
         }
     };
+    animating |= app.node_renderer.has_pending_icons();
     app.window_open_animations.cleanup(target_presentation_time);
     app.window_close_animations
         .cleanup(target_presentation_time);

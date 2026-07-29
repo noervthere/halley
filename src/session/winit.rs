@@ -139,6 +139,7 @@ pub fn run() {
         seat_state,
         seat,
         start_time: Instant::now(),
+        nodes: crate::nodes::NodesState::new(&runtime_config),
         input: applied_input,
         decorations: runtime_config.decorations,
         cameras,
@@ -165,6 +166,8 @@ pub fn run() {
         fullscreen: crate::wayland::fullscreen::FullscreenManager::new(runtime_config.animations),
         fullscreen_textures:
             crate::backend::fullscreen_texture::FullscreenTextureTransitions::default(),
+        node_renderer: crate::backend::node::NodeRenderer::default(),
+        ui_text: crate::backend::text::UiTextRenderer::new(&runtime_config.font),
         xwayland,
     };
     app.wayland
@@ -189,6 +192,9 @@ pub fn run() {
     {
         eventline::warn!("config: failed to start watcher: {err}");
     }
+    if let Err(err) = super::install_node_decay_timer(&event_loop.handle()) {
+        eventline::warn!("nodes: failed to start decay timer: {err}");
+    }
 
     event_loop
         .handle()
@@ -199,6 +205,7 @@ pub fn run() {
             WinitEvent::Redraw => {
                 let now = Instant::now();
                 let target_presentation_time = crate::frame_clock::monotonic_now();
+                let physics_animating = crate::nodes::tick_physics(app, target_presentation_time);
                 let dt = now
                     .duration_since(app.driver.last_camera_tick)
                     .as_secs_f32();
@@ -235,6 +242,9 @@ pub fn run() {
                 let closing_animating = app
                     .window_close_animations
                     .is_animating_on_output(&output, target_presentation_time);
+                let node_animating = app
+                    .nodes
+                    .is_animating_on_output(&output.name(), target_presentation_time);
                 if fullscreen_animating {
                     super::pointer::update_client_state(
                         app,
@@ -265,6 +275,9 @@ pub fn run() {
                         window_close_animations: &mut app.window_close_animations,
                         fullscreen: &app.fullscreen,
                         fullscreen_textures: &mut app.fullscreen_textures,
+                        nodes: &app.nodes,
+                        node_renderer: &mut app.node_renderer,
+                        ui_text: &mut app.ui_text,
                     },
                 ) {
                     eventline::error!("render failed: {err}");
@@ -302,9 +315,12 @@ pub fn run() {
                 }
 
                 if animating
+                    || physics_animating
                     || window_animating
                     || closing_animating
                     || fullscreen_animating
+                    || node_animating
+                    || app.node_renderer.has_pending_icons()
                     || cursor_animating
                 {
                     app.request_redraw();

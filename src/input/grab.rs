@@ -6,6 +6,7 @@ use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::Physical;
 use smithay::utils::{Logical, Point, Rectangle, Serial, Size};
 use smithay::wayland::seat::WaylandFocus;
+use std::time::Duration;
 
 /// What's currently being dragged with the left mouse button held, if
 /// anything - `None` the rest of the time. Lives on `App`/`TtyApp` next to
@@ -17,8 +18,28 @@ pub enum Grab {
     /// space preserves the exact grip point when crossing between outputs
     /// with different zoom scales.
     MoveWindow {
+        id: Option<halley_core::field::NodeId>,
         window: Window,
         screen_offset: Vec2,
+        last_world: Vec2,
+        last_update: Duration,
+        velocity: Vec2,
+    },
+    /// A node press that is still eligible to become a single-click restore.
+    PendingNode {
+        id: halley_core::field::NodeId,
+        surface: WlSurface,
+        press_screen: Point<f64, Logical>,
+        screen_offset: Vec2,
+    },
+    /// A collapsed marker being carried without restoring its client window.
+    MoveNode {
+        id: halley_core::field::NodeId,
+        surface: WlSurface,
+        screen_offset: Vec2,
+        last_world: Vec2,
+        last_update: Duration,
+        velocity: Vec2,
     },
     /// Left-click-drag on empty desktop. The output is captured at press
     /// time so crossing a boundary mid-drag never pans both monitors.
@@ -33,13 +54,22 @@ pub fn belongs_to_surface(grab: &Grab, surface: &WlSurface) -> bool {
     let window = match grab {
         Grab::MoveWindow { window, .. } => Some(window),
         Grab::ResizeWindow(resize) => Some(&resize.window),
-        Grab::None | Grab::Pan { .. } => None,
+        Grab::None | Grab::Pan { .. } | Grab::PendingNode { .. } | Grab::MoveNode { .. } => None,
     };
     window.is_some_and(|window| {
         window
             .wl_surface()
             .is_some_and(|candidate| candidate.as_ref() == surface)
-    })
+    }) || matches!(
+        grab,
+        Grab::PendingNode {
+            surface: candidate,
+            ..
+        } | Grab::MoveNode {
+            surface: candidate,
+            ..
+        } if candidate == surface
+    )
 }
 
 /// Which edges a resize drag moves. The opposite edges stay anchored, so

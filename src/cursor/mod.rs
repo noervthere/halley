@@ -33,6 +33,7 @@ pub struct CursorManager {
     default_theme: CursorTheme,
     size: u8,
     image: CursorImageStatus,
+    override_icon: Option<CursorIcon>,
     cache: RefCell<HashMap<(CursorIcon, i32), Rc<PreparedCursor>>>,
 }
 
@@ -44,6 +45,7 @@ impl CursorManager {
             default_theme: CursorTheme::load("default"),
             size: config.size,
             image: CursorImageStatus::default_named(),
+            override_icon: None,
             cache: RefCell::new(HashMap::new()),
         }
     }
@@ -89,6 +91,9 @@ impl CursorManager {
     }
 
     pub fn current_surface(&self) -> Option<&WlSurface> {
+        if self.override_icon.is_some() {
+            return None;
+        }
         match &self.image {
             CursorImageStatus::Surface(surface) if surface.alive() => Some(surface),
             _ => None,
@@ -104,6 +109,9 @@ impl CursorManager {
     }
 
     pub(crate) fn render_cursor(&self, output_scale: i32, time: Duration) -> RenderCursor {
+        if let Some(icon) = self.override_icon {
+            return RenderCursor::Named(self.frame(icon, output_scale, time));
+        }
         match &self.image {
             CursorImageStatus::Hidden => RenderCursor::Hidden,
             CursorImageStatus::Named(icon) => {
@@ -119,6 +127,9 @@ impl CursorManager {
     }
 
     pub fn current_is_animated(&self, output_scale: i32) -> bool {
+        if let Some(icon) = self.override_icon {
+            return self.is_animated(icon, output_scale);
+        }
         match &self.image {
             CursorImageStatus::Named(icon) => self.is_animated(*icon, output_scale),
             CursorImageStatus::Surface(_) | CursorImageStatus::Hidden => false,
@@ -131,6 +142,14 @@ impl CursorManager {
 
     pub fn size(&self) -> u8 {
         self.size
+    }
+
+    pub fn set_override(&mut self, icon: Option<CursorIcon>) -> bool {
+        if self.override_icon == icon {
+            return false;
+        }
+        self.override_icon = icon;
+        true
     }
 
     fn prepared(&self, icon: CursorIcon, output_scale: i32) -> Rc<PreparedCursor> {

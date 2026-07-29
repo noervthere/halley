@@ -33,11 +33,13 @@ fn mapping_transition(currently_mapped: bool, has_buffer: bool) -> MappingTransi
 }
 
 pub fn will_unmap(wayland: &WaylandState, surface: &WlSurface) -> bool {
-    wayland.space.elements().any(|window| {
+    let managed = wayland.space.elements().any(|window| {
         window
             .toplevel()
             .is_some_and(|toplevel| toplevel.wl_surface() == surface)
-    }) && !with_renderer_surface_state(surface, |state| state.buffer().is_some()).unwrap_or(false)
+    }) || wayland.collapsed.contains_key(surface);
+    managed
+        && !with_renderer_surface_state(surface, |state| state.buffer().is_some()).unwrap_or(false)
 }
 
 /// A new toplevel role was created - stash it as unmapped, nothing shown
@@ -60,6 +62,7 @@ pub fn new_toplevel(wayland: &mut WaylandState, surface: ToplevelSurface) {
 /// frame. Focus clears to `None`; there is no fallback-refocus policy yet.
 pub fn toplevel_destroyed(wayland: &mut WaylandState, surface: &ToplevelSurface) {
     wayland.unmapped.remove(surface.wl_surface());
+    wayland.collapsed.remove(surface.wl_surface());
     wayland.unmapped_locations.remove(surface.wl_surface());
     let mapped = wayland
         .space
@@ -114,6 +117,20 @@ pub fn handle_commit(
             wayland.unmapped_locations.insert(surface.clone(), location);
         }
         wayland.space.unmap_elem(&window);
+        wayland.unmapped.insert(surface.clone(), window);
+        if wayland.focused_window.as_ref() == Some(surface) {
+            wayland.focused_window = None;
+        }
+        return ToplevelCommit::Unmapped(surface.clone());
+    }
+
+    if let Some(window) = wayland.collapsed.get(surface).cloned() {
+        match mapping_transition(true, has_buffer) {
+            MappingTransition::StayMapped => return ToplevelCommit::None,
+            MappingTransition::Unmap => {}
+            MappingTransition::Map | MappingTransition::StayUnmapped => unreachable!(),
+        }
+        wayland.collapsed.remove(surface);
         wayland.unmapped.insert(surface.clone(), window);
         if wayland.focused_window.as_ref() == Some(surface) {
             wayland.focused_window = None;

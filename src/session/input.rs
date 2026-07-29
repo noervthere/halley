@@ -22,6 +22,25 @@ use crate::wayland;
 
 const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
+const NODE_DRAG_THRESHOLD_PX: f64 = 8.0;
+
+fn sampled_drag_velocity(
+    previous: halley_core::field::Vec2,
+    current: halley_core::field::Vec2,
+    previous_velocity: halley_core::field::Vec2,
+    last_update: std::time::Duration,
+    now: std::time::Duration,
+) -> halley_core::field::Vec2 {
+    let dt = now.saturating_sub(last_update).as_secs_f32();
+    if dt <= f32::EPSILON {
+        return previous_velocity;
+    }
+    let clamp = |value: f32| value.clamp(-800.0, 800.0);
+    halley_core::field::Vec2 {
+        x: previous_velocity.x * 0.35 + clamp((current.x - previous.x) / dt) * 0.65,
+        y: previous_velocity.y * 0.35 + clamp((current.y - previous.y) / dt) * 0.65,
+    }
+}
 
 fn shortcut_policy_allows_bindings(focus_bypasses_shortcuts: bool, inhibitor_active: bool) -> bool {
     !focus_bypasses_shortcuts && !inhibitor_active
@@ -56,12 +75,33 @@ fn output_at_pointer(
     Some((output, geometry))
 }
 
+fn node_at_pointer<D: SessionDriver>(
+    session: &Session<D>,
+) -> Option<(halley_core::field::NodeId, Output)> {
+    let position = session.pointer.position();
+    let (output, geometry) = output_at_pointer(&session.wayland.space, position)?;
+    let camera = session.cameras.get(&output.name())?;
+    let id = session.nodes.hit_test(
+        &output,
+        geometry,
+        camera,
+        Point::<f64, Logical>::from(position),
+    )?;
+    Some((id, output))
+}
+
 fn dispatch_action<D: SessionDriver>(
     session: &mut Session<D>,
     action: halley_config::Action,
     socket_name: &OsStr,
     output_name: Option<&str>,
 ) {
+    let zoom_action = matches!(
+        &action,
+        halley_config::Action::ZoomIn
+            | halley_config::Action::ZoomOut
+            | halley_config::Action::ZoomReset
+    );
     let x11_display = session.xwayland.display_name();
     let camera = output_name.and_then(|name| session.cameras.get_mut(name));
     match super::dispatch_action(
@@ -81,6 +121,9 @@ fn dispatch_action<D: SessionDriver>(
         super::SessionControl::Continue => {}
         super::SessionControl::Quit => session.driver.stop(),
         super::SessionControl::ToggleFullscreen => super::toggle_focused_fullscreen(session),
+        super::SessionControl::ToggleState => {
+            crate::nodes::toggle_focused(session, SERIAL_COUNTER.next_serial())
+        }
         super::SessionControl::Screenshot => {
             let window_available = session.wayland.space.elements().any(|window| {
                 window.wl_surface().is_some()
@@ -103,6 +146,15 @@ fn dispatch_action<D: SessionDriver>(
                 keyboard.set_focus(session, None, SERIAL_COUNTER.next_serial());
                 session.request_redraw();
             }
+        }
+    }
+    if zoom_action && let Some(output_name) = output_name {
+        let scale = session
+            .cameras
+            .get(output_name)
+            .map(crate::camera::target_scale);
+        if let Some(scale) = scale {
+            crate::nodes::reconcile_landmarks_at_scale(session, output_name, scale);
         }
     }
 }
@@ -250,11 +302,67 @@ where
     let position_after = session.pointer.position();
     session.request_redraw();
 
+    if motion.is_some()
+        && let crate::input::grab::Grab::PendingNode {
+            id,
+            surface,
+            press_screen,
+            screen_offset,
+            ..
+        } = &session.grab
+    {
+        let dx = position_after.0 - press_screen.x;
+        let dy = position_after.1 - press_screen.y;
+        if dx.hypot(dy) >= NODE_DRAG_THRESHOLD_PX {
+            let id = *id;
+            let surface = surface.clone();
+            let screen_offset = *screen_offset;
+            if let Some((output, output_geometry)) =
+                output_at_pointer(&session.wayland.space, position_after)
+                && let Some(camera) = session.cameras.get(&output.name())
+            {
+                let pointer_world = crate::input::grab::screen_to_world_on_output(
+                    position_after,
+                    camera,
+                    output_geometry,
+                );
+                let offset = crate::input::grab::screen_offset_to_world(screen_offset, camera);
+                let desired = halley_core::field::Vec2 {
+                    x: pointer_world.x + offset.x,
+                    y: pointer_world.y + offset.y,
+                };
+                crate::nodes::set_collapsed_output(session, id, &output);
+                session.nodes.clear_direct_motion(id);
+                session.grab = crate::input::grab::Grab::MoveNode {
+                    id,
+                    surface,
+                    screen_offset,
+                    last_world: desired,
+                    last_update: crate::frame_clock::monotonic_now(),
+                    velocity: halley_core::field::Vec2 { x: 0.0, y: 0.0 },
+                };
+                session
+                    .cursor
+                    .set_override(Some(smithay::input::pointer::CursorIcon::Grabbing));
+            }
+        }
+    }
+
     match &session.grab {
         crate::input::grab::Grab::MoveWindow {
+            id,
             window,
             screen_offset,
+            last_world,
+            last_update,
+            velocity,
         } => {
+            let id = *id;
+            let window = window.clone();
+            let screen_offset = *screen_offset;
+            let previous = *last_world;
+            let last_update = *last_update;
+            let previous_velocity = *velocity;
             if let Some((output, output_geometry)) =
                 output_at_pointer(&session.wayland.space, position_after)
             {
@@ -267,31 +375,113 @@ where
                     output_geometry,
                 );
                 let world_offset =
-                    crate::input::grab::screen_offset_to_world(*screen_offset, camera);
-                let new_location = Point::<i32, Logical>::from((
+                    crate::input::grab::screen_offset_to_world(screen_offset, camera);
+                let desired_location = Point::<i32, Logical>::from((
                     (world.x + world_offset.x).round() as i32,
                     (world.y + world_offset.y).round() as i32,
                 ));
                 let output_name = output.name();
                 let output_changed =
-                    wayland::window_output_name(window).as_deref() != Some(output_name.as_str());
-                wayland::set_window_output(window, &output);
-                session
+                    wayland::window_output_name(&window).as_deref() != Some(output_name.as_str());
+                wayland::set_window_output(&window, &output);
+                let size = session
                     .wayland
                     .space
-                    .map_element(window.clone(), new_location, false);
-                if let Some(geometry) = session.wayland.space.element_geometry(window) {
-                    crate::xwayland::configure_window(
-                        window,
-                        Rectangle::new(new_location, geometry.size),
-                    );
+                    .element_geometry(&window)
+                    .map(|geometry| geometry.size)
+                    .unwrap_or((1, 1).into());
+                let desired_center = halley_core::field::Vec2 {
+                    x: desired_location.x as f32 + size.w as f32 * 0.5,
+                    y: desired_location.y as f32 + size.h as f32 * 0.5,
+                };
+                let now = crate::frame_clock::monotonic_now();
+                let sampled = sampled_drag_velocity(
+                    previous,
+                    desired_center,
+                    previous_velocity,
+                    last_update,
+                    now,
+                );
+                if let Some(id) = id {
+                    if !session.nodes.physics.enabled {
+                        let _ = crate::nodes::move_grabbed_body_rigid(session, id, desired_center);
+                    }
+                } else {
+                    session
+                        .wayland
+                        .space
+                        .map_element(window.clone(), desired_location, false);
+                }
+                if let crate::input::grab::Grab::MoveWindow {
+                    last_world,
+                    last_update,
+                    velocity,
+                    ..
+                } = &mut session.grab
+                {
+                    *last_world = desired_center;
+                    *last_update = now;
+                    *velocity = sampled;
+                }
+                if id.is_some() && session.nodes.physics.enabled {
+                    session.request_redraw();
                 }
                 if output_changed {
                     wayland::popup::update_reactive_for_window(
                         &session.wayland,
                         &session.cameras,
-                        window,
+                        &window,
                     );
+                }
+            }
+        }
+        crate::input::grab::Grab::MoveNode {
+            id,
+            screen_offset,
+            last_world,
+            last_update,
+            velocity,
+            ..
+        } => {
+            let id = *id;
+            let screen_offset = *screen_offset;
+            let previous = *last_world;
+            let last_update = *last_update;
+            let previous_velocity = *velocity;
+            if let Some((output, output_geometry)) =
+                output_at_pointer(&session.wayland.space, position_after)
+                && let Some(camera) = session.cameras.get(&output.name())
+            {
+                let pointer_world = crate::input::grab::screen_to_world_on_output(
+                    position_after,
+                    camera,
+                    output_geometry,
+                );
+                let offset = crate::input::grab::screen_offset_to_world(screen_offset, camera);
+                let desired = halley_core::field::Vec2 {
+                    x: pointer_world.x + offset.x,
+                    y: pointer_world.y + offset.y,
+                };
+                let now = crate::frame_clock::monotonic_now();
+                let sampled =
+                    sampled_drag_velocity(previous, desired, previous_velocity, last_update, now);
+                crate::nodes::set_collapsed_output(session, id, &output);
+                if !session.nodes.physics.enabled {
+                    let _ = crate::nodes::move_grabbed_body_rigid(session, id, desired);
+                }
+                if let crate::input::grab::Grab::MoveNode {
+                    last_world,
+                    last_update,
+                    velocity,
+                    ..
+                } = &mut session.grab
+                {
+                    *last_world = desired;
+                    *last_update = now;
+                    *velocity = sampled;
+                }
+                if session.nodes.physics.enabled {
+                    session.request_redraw();
                 }
             }
         }
@@ -346,7 +536,7 @@ where
                 crate::xwayland::configure_window(&state.window, Rectangle::new(location, size));
             }
         }
-        crate::input::grab::Grab::None => {}
+        crate::input::grab::Grab::None | crate::input::grab::Grab::PendingNode { .. } => {}
     }
 
     if let Some((delta, delta_unaccel, time, time_msec)) = motion {
@@ -364,6 +554,11 @@ where
         if let Some(route) = route.as_ref() {
             super::focus::update_hover(session, route, SERIAL_COUNTER.next_serial());
         }
+        let hovered = node_at_pointer(session).map(|(id, _)| id);
+        if session.nodes.hovered != hovered {
+            session.nodes.hovered = hovered;
+            session.request_redraw();
+        }
     }
 
     if let InputEvent::PointerButton {
@@ -374,6 +569,34 @@ where
         let state = button_event.state();
         let time = button_event.time_msec();
         let serial = SERIAL_COUNTER.next_serial();
+        if button == BTN_LEFT && state == ButtonState::Released {
+            match &session.grab {
+                crate::input::grab::Grab::PendingNode { id, .. } => {
+                    let id = *id;
+                    session.grab = crate::input::grab::Grab::None;
+                    session.cursor.set_override(None);
+                    let _ = crate::nodes::restore(session, id, serial);
+                    super::pointer::finish_frame(session, &pointer_handle);
+                    return;
+                }
+                crate::input::grab::Grab::MoveNode { id, .. } => {
+                    let id = *id;
+                    if session.nodes.physics.enabled {
+                        let _ = crate::nodes::tick_physics(
+                            session,
+                            crate::frame_clock::monotonic_now(),
+                        );
+                    }
+                    session.grab = crate::input::grab::Grab::None;
+                    session.cursor.set_override(None);
+                    session.nodes.clear_direct_motion(id);
+                    session.request_redraw();
+                    super::pointer::finish_frame(session, &pointer_handle);
+                    return;
+                }
+                _ => {}
+            }
+        }
         let route = super::pointer::route_for_discrete_input(session, time);
         if button == BTN_LEFT
             && state == ButtonState::Pressed
@@ -410,6 +633,46 @@ where
             }
             PointerBindingResult::SuppressedRelease => intercepted = true,
             PointerBindingResult::Unhandled => {}
+        }
+
+        if !intercepted
+            && button == BTN_LEFT
+            && state == ButtonState::Pressed
+            && let Some((id, output)) = node_at_pointer(session)
+            && let Some(record) = session.nodes.record(id).cloned()
+            && let Some(node_position) = session.nodes.field.node(id).map(|node| node.pos)
+            && let Some(output_geometry) = session.wayland.space.output_geometry(&output)
+            && let Some(camera) = session.cameras.get(&output.name())
+        {
+            wayland::focus::select_output(&mut session.wayland, &output);
+            let center = crate::nodes::screen_from_world(node_position, camera, output_geometry);
+            let screen_offset = halley_core::field::Vec2 {
+                x: center.x as f32 - position_after.0 as f32,
+                y: center.y as f32 - position_after.1 as f32,
+            };
+            let mod_held = crate::input::mod_key_held(&modifiers, session.keyboard.effective_mod);
+            if mod_held {
+                session.nodes.clear_direct_motion(id);
+                session.grab = crate::input::grab::Grab::MoveNode {
+                    id,
+                    surface: record.surface,
+                    screen_offset,
+                    last_world: node_position,
+                    last_update: crate::frame_clock::monotonic_now(),
+                    velocity: halley_core::field::Vec2 { x: 0.0, y: 0.0 },
+                };
+                session
+                    .cursor
+                    .set_override(Some(smithay::input::pointer::CursorIcon::Grabbing));
+            } else {
+                session.grab = crate::input::grab::Grab::PendingNode {
+                    id,
+                    surface: record.surface,
+                    press_screen: Point::<f64, Logical>::from(position_after),
+                    screen_offset,
+                };
+            }
+            intercepted = true;
         }
 
         if !intercepted && button == BTN_RIGHT {
@@ -475,10 +738,32 @@ where
                                 y: (window_location.y as f32 - world.y) * scale,
                             };
                             super::focus::focus_window_from_pointer(session, window, serial);
+                            let id = window
+                                .wl_surface()
+                                .and_then(|surface| session.nodes.id_for_surface(surface.as_ref()));
+                            if let Some(id) = id {
+                                session.nodes.clear_direct_motion(id);
+                            }
+                            let center = session
+                                .wayland
+                                .space
+                                .element_geometry(window)
+                                .map(|geometry| halley_core::field::Vec2 {
+                                    x: geometry.loc.x as f32 + geometry.size.w as f32 * 0.5,
+                                    y: geometry.loc.y as f32 + geometry.size.h as f32 * 0.5,
+                                })
+                                .unwrap_or(world);
                             session.grab = crate::input::grab::Grab::MoveWindow {
+                                id,
                                 window: window.clone(),
                                 screen_offset,
+                                last_world: center,
+                                last_update: crate::frame_clock::monotonic_now(),
+                                velocity: halley_core::field::Vec2 { x: 0.0, y: 0.0 },
                             };
+                            session
+                                .cursor
+                                .set_override(Some(smithay::input::pointer::CursorIcon::Grabbing));
                             intercepted = true;
                         }
                         Some(crate::input::pointer::PointerTarget::Window(window)) => {
@@ -498,12 +783,27 @@ where
                     }
                 }
                 ButtonState::Released => {
-                    if matches!(
-                        session.grab,
-                        crate::input::grab::Grab::MoveWindow { .. }
-                            | crate::input::grab::Grab::Pan { .. }
-                    ) {
+                    let released_window = match &session.grab {
+                        crate::input::grab::Grab::MoveWindow { id, .. } => Some(*id),
+                        _ => None,
+                    };
+                    if let Some(id) = released_window {
+                        let now = crate::frame_clock::monotonic_now();
+                        if session.nodes.physics.enabled {
+                            let _ = crate::nodes::tick_physics(session, now);
+                        }
                         session.grab = crate::input::grab::Grab::None;
+                        session.cursor.set_override(None);
+                        if session.nodes.physics.enabled
+                            && let Some(id) = id
+                        {
+                            session.nodes.lock_released_window(id, now);
+                            session.request_redraw();
+                        }
+                        intercepted = true;
+                    } else if matches!(session.grab, crate::input::grab::Grab::Pan { .. }) {
+                        session.grab = crate::input::grab::Grab::None;
+                        session.cursor.set_override(None);
                         intercepted = true;
                     }
                 }
@@ -765,9 +1065,55 @@ fn update_capture_pointer<D: SessionDriver>(session: &mut Session<D>, position: 
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
+    use halley_core::field::Vec2;
     use smithay::backend::input::KeyState;
 
-    use super::{CaptureKeyRouting, capture_key_routing, shortcut_policy_allows_bindings};
+    use super::{
+        CaptureKeyRouting, capture_key_routing, sampled_drag_velocity,
+        shortcut_policy_allows_bindings,
+    };
+
+    fn sample_constant_motion(report_hz: u32) -> Vec2 {
+        let step = Duration::from_secs_f64(1.0 / f64::from(report_hz));
+        let mut previous = Vec2 { x: 0.0, y: 0.0 };
+        let mut velocity = Vec2 { x: 0.0, y: 0.0 };
+        let mut last = Duration::ZERO;
+        for index in 1..=report_hz {
+            let now = step * index;
+            let current = Vec2 {
+                x: 400.0 * now.as_secs_f32(),
+                y: -180.0 * now.as_secs_f32(),
+            };
+            velocity = sampled_drag_velocity(previous, current, velocity, last, now);
+            previous = current;
+            last = now;
+        }
+        velocity
+    }
+
+    #[test]
+    fn drag_velocity_is_stable_across_common_mouse_report_rates() {
+        for report_hz in [125, 500, 1_000] {
+            let sampled = sample_constant_motion(report_hz);
+            assert!((sampled.x - 400.0).abs() < 0.1, "{report_hz} Hz");
+            assert!((sampled.y + 180.0).abs() < 0.1, "{report_hz} Hz");
+        }
+    }
+
+    #[test]
+    fn drag_velocity_ignores_duplicate_timestamps() {
+        let previous_velocity = Vec2 { x: 25.0, y: -15.0 };
+        let sampled = sampled_drag_velocity(
+            Vec2 { x: 10.0, y: 20.0 },
+            Vec2 { x: 50.0, y: 80.0 },
+            previous_velocity,
+            Duration::from_millis(5),
+            Duration::from_millis(5),
+        );
+        assert_eq!(sampled, previous_velocity);
+    }
 
     #[test]
     fn shortcut_policy_respects_shell_and_client_inhibition() {

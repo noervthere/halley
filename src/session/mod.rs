@@ -1,6 +1,9 @@
 use std::borrow::Cow;
 use std::ffi::OsStr;
+use std::time::Duration;
 
+use calloop::LoopHandle;
+use calloop::timer::{TimeoutAction, Timer};
 use halley_config::Action;
 use halley_core::camera::Camera;
 use smithay::wayland::seat::WaylandFocus;
@@ -35,6 +38,7 @@ enum SessionControl {
     Quit,
     Screenshot,
     ToggleFullscreen,
+    ToggleState,
 }
 
 #[derive(Clone, Copy)]
@@ -61,6 +65,7 @@ fn dispatch_action(
         Action::Quit => return SessionControl::Quit,
         Action::CloseFocusedWindow => crate::window::close_focused(wayland),
         Action::ToggleFullscreen => return SessionControl::ToggleFullscreen,
+        Action::ToggleState => return SessionControl::ToggleState,
         Action::OpenTerminal => match terminal_command {
             Some(command) => spawn::spawn_detached(
                 command,
@@ -100,17 +105,33 @@ fn dispatch_action(
     SessionControl::Continue
 }
 
-fn cancel_grab_for_surface<D: SessionDriver>(
+pub(crate) fn cancel_grab_for_surface<D: SessionDriver>(
     session: &mut Session<D>,
     surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
 ) {
     if crate::input::grab::belongs_to_surface(&session.grab, surface) {
         session.grab = crate::input::grab::Grab::None;
+        session.cursor.set_override(None);
         crate::input::grab::forget_resize_anchor(&mut session.resize_anchor, surface);
     }
 }
 
 pub(crate) use lifecycle::{finish_window_unmap, prepare_window_unmap};
+
+fn install_node_decay_timer<D: SessionDriver>(
+    handle: &LoopHandle<'_, Session<D>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    handle
+        .insert_source(
+            Timer::from_duration(Duration::from_secs(1)),
+            |_, _, session| {
+                crate::nodes::tick_decay(session);
+                TimeoutAction::ToDuration(Duration::from_secs(1))
+            },
+        )
+        .map(|_| ())
+        .map_err(Into::into)
+}
 
 pub(crate) fn reconcile_pointer_constraints<D: SessionDriver>(session: &mut Session<D>) {
     pointer::reconcile_state(session);

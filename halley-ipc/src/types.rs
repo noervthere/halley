@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 /// the end of `Request`/`Response` silently breaks wire-compatibility with
 /// a differently-versioned build - worth remembering as this grows, not
 /// solved here (this first pass has nothing to negotiate against yet).
-pub const HALLEY_IPC_VERSION: u32 = 4;
+pub const HALLEY_IPC_VERSION: u32 = 6;
 
 /// A request from `halleyctl`, the portal backend, or another local client.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -27,6 +27,7 @@ pub enum Request {
         buffer_id: u64,
     },
     CaptureFrame(CaptureFrameRequest),
+    Node(NodeRequest),
 }
 
 /// The compositor's reply to a `Request`.
@@ -39,6 +40,135 @@ pub enum Response {
     Frame(CaptureFrameResponse),
     Ack,
     Error(String),
+    NodeList(NodeListResponse),
+    NodeInfo(NodeInfo),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NodeMoveDirection {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NodeSelector {
+    Focused,
+    Latest,
+    Id(u64),
+    Title(String),
+    App(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NodeRequest {
+    List {
+        output: Option<String>,
+    },
+    Info {
+        selector: Option<NodeSelector>,
+        output: Option<String>,
+    },
+    Focus {
+        selector: Option<NodeSelector>,
+        output: Option<String>,
+    },
+    Move {
+        direction: NodeMoveDirection,
+        selector: Option<NodeSelector>,
+        output: Option<String>,
+    },
+    Close {
+        selector: Option<NodeSelector>,
+        output: Option<String>,
+    },
+    Collapse {
+        selector: Option<NodeSelector>,
+        output: Option<String>,
+    },
+    Restore {
+        selector: Option<NodeSelector>,
+        output: Option<String>,
+    },
+    Toggle {
+        selector: Option<NodeSelector>,
+        output: Option<String>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NodeKind {
+    Surface,
+    Core,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NodeState {
+    Active,
+    Drifting,
+    Node,
+    Core,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NodeRole {
+    NormalToplevel,
+    Dialog,
+    Popup,
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NodeProtocolFamily {
+    XdgToplevel,
+    XdgPopup,
+    Xwayland,
+    Unknown,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeRelationInfo {
+    pub node_id: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct NodeInfo {
+    pub id: u64,
+    pub title: String,
+    pub app_id: Option<String>,
+    pub output: Option<String>,
+    pub kind: NodeKind,
+    pub state: NodeState,
+    pub visible: bool,
+    pub focused: bool,
+    pub latest: bool,
+    pub pinned: bool,
+    pub role: NodeRole,
+    pub protocol_family: NodeProtocolFamily,
+    pub modal: bool,
+    pub parent: Option<NodeRelationInfo>,
+    pub transient_for: Option<NodeRelationInfo>,
+    pub child_popup_count: usize,
+    pub pos_x: f32,
+    pub pos_y: f32,
+    pub width: f32,
+    pub height: f32,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct NodeOutputGroup {
+    pub output: String,
+    pub nodes: Vec<NodeInfo>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct NodeListResponse {
+    pub outputs: Vec<NodeOutputGroup>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

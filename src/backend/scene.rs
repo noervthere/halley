@@ -22,6 +22,10 @@ render_elements! {
     Rescaled=super::rescale::RescaledElement,
     Cropped=CropRenderElement<super::rescale::RescaledElement>,
     FullscreenBlend=super::fullscreen_texture::FullscreenBlendElement,
+    Node=super::node::NodeRenderElement,
+    NodeLabel=super::node::LabelRenderElement,
+    NodeTexture=super::node::NodeTextureElement,
+    UiText=super::text::UiTextElement,
     Closing=smithay::backend::renderer::element::texture::TextureRenderElement<
         smithay::backend::renderer::gles::GlesTexture
     >,
@@ -64,6 +68,20 @@ pub fn build(
                 .map(SceneElement::Layer),
         );
     }
+
+    elements.extend(node_elements(
+        renderer,
+        request.node_renderer,
+        request.ui_text,
+        NodeElementContext {
+            output,
+            output_geometry,
+            nodes: request.nodes,
+            cameras: request.cameras,
+            decorations: request.decorations,
+            now: request.target_presentation_time,
+        },
+    )?);
 
     let mut stack = request
         .window_close_animations
@@ -146,6 +164,362 @@ pub fn build(
     }
 
     Ok(elements)
+}
+
+struct NodeElementContext<'a> {
+    output: &'a Output,
+    output_geometry: Rectangle<i32, Logical>,
+    nodes: &'a crate::nodes::NodesState,
+    cameras: &'a crate::camera::OutputCameras,
+    decorations: &'a halley_config::Decorations,
+    now: std::time::Duration,
+}
+
+fn node_elements(
+    renderer: &mut GlesRenderer,
+    node_renderer: &mut super::node::NodeRenderer,
+    ui_text: &mut super::text::UiTextRenderer,
+    context: NodeElementContext<'_>,
+) -> Result<Vec<SceneElement>, Box<dyn Error>> {
+    let NodeElementContext {
+        output,
+        output_geometry,
+        nodes,
+        cameras,
+        decorations,
+        now,
+    } = context;
+    let Some(camera) = cameras.get(&output.name()) else {
+        return Ok(Vec::new());
+    };
+    let focused = decorations.border_color_focused;
+    let make_solid = |rect, color| {
+        SolidColorRenderElement::new(
+            Id::new(),
+            rect,
+            CommitCounter::default(),
+            color,
+            Kind::Unspecified,
+        )
+    };
+    let mut elements = Vec::new();
+
+    if nodes.debug.show_focus_ring || nodes.ring_is_previewed(&output.name(), now) {
+        let focus_ring = nodes.focus_ring_for_output(&output.name());
+        let scale = crate::camera::scale(camera);
+        let center = (
+            output_geometry.size.w as f32 / 2.0 + focus_ring.offset_x * scale,
+            output_geometry.size.h as f32 / 2.0 + focus_ring.offset_y * scale,
+        );
+        let rx = focus_ring.radius_x * scale;
+        let ry = focus_ring.radius_y * scale;
+        const SEGMENTS: usize = 160;
+        for index in 0..SEGMENTS {
+            let angle = index as f32 / SEGMENTS as f32 * std::f32::consts::TAU;
+            let x = center.0 + angle.cos() * rx;
+            let y = center.1 + angle.sin() * ry;
+            let rect = Rectangle::<i32, Physical>::new(
+                (x.round() as i32 - 1, y.round() as i32 - 1).into(),
+                (3, 3).into(),
+            );
+            elements.push(SceneElement::Border(make_solid(
+                rect,
+                smithay::backend::renderer::Color32F::new(focused.r, focused.g, focused.b, 0.82),
+            )));
+        }
+    }
+
+    let mut records = nodes
+        .collapsed_on_output(&output.name())
+        .collect::<Vec<_>>();
+    records.sort_by_key(|record| std::cmp::Reverse(record.id.as_u64()));
+    let mut label_text = Vec::new();
+    let mut label_backgrounds = Vec::new();
+    let mut icons = Vec::new();
+    let mut markers = Vec::new();
+
+    for record in records {
+        let Some(node) = nodes.field.node(record.id) else {
+            continue;
+        };
+        let landmark_position = nodes.landmark_position(record.id, node.pos, now);
+        let center = crate::nodes::screen_from_world(landmark_position, camera, output_geometry);
+        let local = center - output_geometry.loc;
+        let progress = if nodes.animations_enabled
+            && nodes.animation.enabled
+            && nodes.animation.duration_ms > 0
+        {
+            (now.saturating_sub(record.collapsed_at).as_secs_f32()
+                / (nodes.animation.duration_ms as f32 / 1_000.0))
+                .clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        let eased = 1.0 - (1.0 - progress).powi(3);
+        let side = (crate::nodes::NODE_DIAMETER_PX * (0.24 + 0.76 * eased))
+            .round()
+            .max(1.0) as i32;
+        let destination = Rectangle::<i32, Physical>::new(
+            (local.x - side / 2, local.y - side / 2).into(),
+            (side, side).into(),
+        );
+        let hovered = nodes.hovered == Some(record.id);
+        let ring = node_ring_color(nodes.config, decorations, hovered);
+        let fill = node_fill_color(nodes.config, ring);
+        markers.push(SceneElement::Node(node_renderer.element(
+            renderer,
+            destination,
+            nodes.config.shape,
+            super::node::NodeStyle {
+                border_rgb: ring,
+                fill_rgb: fill,
+                opacity: nodes.config.opacity,
+                flat_fill: !matches!(
+                    nodes.config.background_color,
+                    halley_config::NodeBackgroundColor::Auto
+                ),
+            },
+        )?));
+
+        let elapsed_ms = now.saturating_sub(record.collapsed_at).as_millis() as f32;
+        let icon_alpha = (((elapsed_ms - 1_000.0) / 220.0).clamp(0.0, 1.0) * nodes.config.opacity)
+            .clamp(0.0, 1.0);
+        if icon_alpha > 0.001 {
+            let icon_side = ((crate::nodes::NODE_DIAMETER_PX * nodes.config.icon_size).round()
+                as i32)
+                .clamp(16, 42);
+            let allow_real = nodes.config.show_app_icons
+                == halley_config::NodeDisplayPolicy::Always
+                || (nodes.config.show_app_icons == halley_config::NodeDisplayPolicy::Hover
+                    && hovered);
+            let real_icon = allow_real
+                .then_some(record.app_id.as_deref())
+                .flatten()
+                .and_then(|app_id| {
+                    node_renderer.app_icon_element(
+                        renderer,
+                        app_id,
+                        Rectangle::new(
+                            (local.x - icon_side / 2, local.y - icon_side / 2).into(),
+                            (icon_side, icon_side).into(),
+                        ),
+                        icon_alpha,
+                    )
+                });
+            if let Some(icon) = real_icon {
+                icons.push(SceneElement::NodeTexture(icon));
+            } else {
+                let glyph = record
+                    .app_id
+                    .as_deref()
+                    .unwrap_or(&record.title)
+                    .chars()
+                    .find(|ch| ch.is_ascii_alphanumeric())
+                    .unwrap_or('?')
+                    .to_ascii_uppercase()
+                    .to_string();
+                let text_scale = if side / 2 >= 24 { 3 } else { 2 };
+                if let Some(size) = ui_text.measure(renderer, &glyph, text_scale, [46, 54, 66])? {
+                    let origin = (local.x - size.w / 2, local.y - size.h / 2).into();
+                    if let Some(centered) = ui_text.element(
+                        renderer,
+                        origin,
+                        &glyph,
+                        text_scale,
+                        [46, 54, 66],
+                        icon_alpha,
+                    )? {
+                        icons.push(SceneElement::UiText(centered.element));
+                    }
+                }
+            }
+        }
+
+        let hover_mix = match nodes.config.show_labels {
+            halley_config::NodeDisplayPolicy::Off => 0.0,
+            halley_config::NodeDisplayPolicy::Hover => nodes.label_hover_mix(record.id, hovered),
+            halley_config::NodeDisplayPolicy::Always => 1.0,
+        };
+        let reveal = ease_in_out_cubic(hover_mix * hover_mix * hover_mix);
+        let fade = ((reveal - 0.30) / 0.55).clamp(0.0, 1.0);
+        if fade > 0.01 {
+            let slide = ((reveal - 0.15) / 0.65).clamp(0.0, 1.0);
+            let grow = ((reveal - 0.40) / 0.55).clamp(0.0, 1.0);
+            let base_width =
+                ((node.label.chars().count() as f32 * 9.5).round() as i32).clamp(72, 420);
+            let width =
+                even(((base_width as f32 * (1.0 + 0.80 * grow)).round() as i32).clamp(72, 240));
+            let height = even((26.0 * (1.0 + 0.55 * grow)).round() as i32);
+            let gap = (14.0 * (1.0 + 0.45 * grow)).round() as i32;
+            let target_width = even(((base_width as f32 * 1.80).round() as i32).clamp(72, 240));
+            let margin = 12;
+            let side_gap = side / 2 + gap.max(10);
+            let prefer_left = local.x + side_gap + target_width + margin > output_geometry.size.w;
+            let target_x = if prefer_left {
+                local.x - side_gap - width
+            } else {
+                local.x + side_gap
+            };
+            let start_x = if prefer_left {
+                target_x + 44
+            } else {
+                target_x - 44
+            };
+            let label_x = (start_x as f32 + (target_x - start_x) as f32 * slide).round() as i32;
+            let label_y =
+                (local.y as f32 - height as f32 / 2.0 + (1.0 - slide) * 10.0).round() as i32;
+            let label = Rectangle::<i32, Physical>::new(
+                (
+                    label_x.clamp(
+                        margin,
+                        (output_geometry.size.w - width - margin).max(margin),
+                    ),
+                    label_y.clamp(
+                        margin,
+                        (output_geometry.size.h - height - margin).max(margin),
+                    ),
+                )
+                    .into(),
+                (width, height).into(),
+            );
+            let label_fill = label_fill_color(fill, ring);
+            label_backgrounds.push(SceneElement::NodeLabel(node_renderer.label_element(
+                renderer,
+                label,
+                nodes.config.label_shape,
+                label_fill,
+                1.0,
+            )?));
+
+            let text_rgb = contrast_text_rgb(label_fill);
+            let (text, text_size) =
+                fit_node_label(renderer, ui_text, &node.label, text_rgb, width - 20)?;
+            if !text.is_empty()
+                && let Some(prepared) = ui_text.element(
+                    renderer,
+                    (
+                        label.loc.x + (width - text_size.w).max(0) / 2,
+                        label.loc.y + (height - text_size.h).max(0) / 2,
+                    )
+                        .into(),
+                    &text,
+                    2,
+                    text_rgb,
+                    0.94 * eased * fade,
+                )?
+            {
+                label_text.push(SceneElement::UiText(prepared.element));
+            }
+        }
+    }
+    elements.extend(label_text);
+    elements.extend(label_backgrounds);
+    elements.extend(icons);
+    elements.extend(markers);
+    Ok(elements)
+}
+
+fn fit_node_label(
+    renderer: &mut GlesRenderer,
+    ui_text: &mut super::text::UiTextRenderer,
+    source: &str,
+    rgb: [u8; 3],
+    available: i32,
+) -> Result<(String, smithay::utils::Size<i32, smithay::utils::Buffer>), Box<dyn Error>> {
+    let text = source.trim();
+    let Some(size) = ui_text.measure(renderer, text, 2, rgb)? else {
+        return Ok((String::new(), (0, 0).into()));
+    };
+    if size.w <= available {
+        return Ok((text.to_string(), size));
+    }
+
+    let characters = text.chars().collect::<Vec<_>>();
+    for keep in (0..characters.len()).rev() {
+        let candidate = characters[..keep]
+            .iter()
+            .copied()
+            .chain(std::iter::once('…'))
+            .collect::<String>();
+        let Some(size) = ui_text.measure(renderer, &candidate, 2, rgb)? else {
+            continue;
+        };
+        if size.w <= available {
+            return Ok((candidate, size));
+        }
+    }
+    Ok((String::new(), (0, 0).into()))
+}
+
+fn node_ring_color(
+    config: halley_config::Nodes,
+    decorations: &halley_config::Decorations,
+    hovered: bool,
+) -> (f32, f32, f32) {
+    let policy = if hovered {
+        config.border_color_hover
+    } else {
+        config.border_color_inactive
+    };
+    let color = match policy {
+        halley_config::NodeBorderColor::UseWindowActive
+        | halley_config::NodeBorderColor::UseWindowSecondaryActive => {
+            decorations.border_color_focused
+        }
+        halley_config::NodeBorderColor::UseWindowInactive
+        | halley_config::NodeBorderColor::UseWindowSecondaryInactive => {
+            decorations.border_color_unfocused
+        }
+    };
+    (color.r, color.g, color.b)
+}
+
+fn node_fill_color(config: halley_config::Nodes, ring: (f32, f32, f32)) -> (f32, f32, f32) {
+    match config.background_color {
+        halley_config::NodeBackgroundColor::Auto => (
+            0.94 * 0.86 + ring.0 * 0.14,
+            0.96 * 0.86 + ring.1 * 0.14,
+            0.985 * 0.86 + ring.2 * 0.14,
+        ),
+        halley_config::NodeBackgroundColor::Light => (0.92, 0.95, 0.98),
+        halley_config::NodeBackgroundColor::Dark => (0.15, 0.18, 0.22),
+        halley_config::NodeBackgroundColor::Fixed(r, g, b) => (r, g, b),
+    }
+}
+
+fn label_fill_color(fill: (f32, f32, f32), ring: (f32, f32, f32)) -> (f32, f32, f32) {
+    (
+        fill.0 * 0.90 + ring.0 * 0.10,
+        fill.1 * 0.90 + ring.1 * 0.10,
+        fill.2 * 0.90 + ring.2 * 0.10,
+    )
+}
+
+fn contrast_text_rgb(fill: (f32, f32, f32)) -> [u8; 3] {
+    let luminance = fill.0 * 0.2126 + fill.1 * 0.7152 + fill.2 * 0.0722;
+    let rgb = if luminance >= 0.45 {
+        (0.08, 0.10, 0.12)
+    } else {
+        (0.96, 0.98, 1.0)
+    };
+    [
+        (rgb.0 * 255.0) as u8,
+        (rgb.1 * 255.0) as u8,
+        (rgb.2 * 255.0) as u8,
+    ]
+}
+
+fn ease_in_out_cubic(value: f32) -> f32 {
+    let value = value.clamp(0.0, 1.0);
+    if value < 0.5 {
+        4.0 * value * value * value
+    } else {
+        1.0 - (-2.0 * value + 2.0).powi(3) / 2.0
+    }
+}
+
+fn even(value: i32) -> i32 {
+    (value + 1) & !1
 }
 
 struct StackGroup {

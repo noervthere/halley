@@ -58,10 +58,10 @@ impl ReplySender {
         self,
         response: halley_ipc::Response,
         fds: Vec<OwnedFd>,
-    ) -> Result<(), halley_ipc::Response> {
+    ) -> Result<(), Box<halley_ipc::Response>> {
         self.0
             .send(ReplyFrame { response, fds })
-            .map_err(|err| err.0.response)
+            .map_err(|err| Box::new(err.0.response))
     }
 }
 
@@ -269,6 +269,7 @@ pub fn handle_request<D: crate::session::SessionDriver>(
                 Err(message) => halley_ipc::Response::Error(message),
             }
         }
+        halley_ipc::Request::Node(request) => crate::nodes::handle_request(app, request),
     };
     let _ = reply.send(response, Vec::new());
 }

@@ -32,7 +32,7 @@ fn should_emit_absolute_motion(
 pub(super) fn route_client<D: SessionDriver>(
     session: &Session<D>,
 ) -> Option<crate::input::pointer::PointerRoute> {
-    crate::input::pointer::route_to_client(
+    let mut route = crate::input::pointer::route_to_client(
         &session.wayland.space,
         &session.cameras,
         session.driver.primary_output(),
@@ -40,7 +40,30 @@ pub(super) fn route_client<D: SessionDriver>(
         session.wayland.focused_window.as_ref(),
         crate::frame_clock::monotonic_now(),
         session.pointer.position(),
-    )
+    )?;
+    let output_geometry = session.wayland.space.output_geometry(&route.output)?;
+    let camera = session.cameras.get(&route.output.name())?;
+    if session
+        .nodes
+        .hit_test(
+            &route.output,
+            output_geometry,
+            camera,
+            Point::from(session.pointer.position()),
+        )
+        .is_some()
+    {
+        let world = crate::input::grab::screen_to_world_on_output(
+            session.pointer.position(),
+            camera,
+            output_geometry,
+        );
+        route.location = Point::from((world.x as f64, world.y as f64));
+        route.focus = None;
+        route.target = crate::input::pointer::PointerTarget::Background;
+        route.visual_geometry = None;
+    }
+    Some(route)
 }
 
 pub(super) fn has_active_confinement<D: SessionDriver>(session: &Session<D>) -> bool {
