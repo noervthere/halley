@@ -97,6 +97,11 @@ Node collapse uses a short ease-out scale transition. Restoration and optional
 camera centering start together; it never centers first and waits for a second
 action to restore the window.
 
+When a live window becomes a node, its inert GPU snapshot travels and shrinks
+into the legal landmark position while retaining the window's stack depth.
+This drop always shrinks into the node even when ordinary window closes are
+configured as `fade`; ordinary closes continue to use the selected close type.
+
 ```rune
 animations:
   node:

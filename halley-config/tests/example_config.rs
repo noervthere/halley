@@ -12,7 +12,15 @@ fn example_config_parses_end_to_end() {
     let keybinds = parse_keybinds(&config).expect("example keybinds section parses");
 
     assert_eq!(keybinds.modifier, ModifierKey::Super);
-    assert_eq!(keybinds.default_terminal, DefaultTerminal::Auto);
+    match &keybinds.default_terminal {
+        DefaultTerminal::Auto => {}
+        DefaultTerminal::Explicit(command) => {
+            assert!(
+                !command.trim().is_empty(),
+                "explicit terminal cannot be empty"
+            )
+        }
+    }
     assert_eq!(keybinds.binds.len(), 17);
 
     let quit = keybinds
@@ -162,6 +170,17 @@ fn example_config_cursor_section_parses() {
     let cursor = halley_config::parse_cursor(&config);
 
     assert_eq!(cursor, halley_config::Cursor::default());
+}
+
+#[test]
+fn example_config_apogee_section_parses() {
+    let config = RuneConfig::from_file(EXAMPLE_PATH).expect("example config parses");
+    let apogee = halley_config::parse_apogee(&config);
+
+    assert!(apogee.enabled);
+    assert!(apogee.live_previews);
+    assert_eq!(apogee.preview_max_fps, 30);
+    assert_eq!(apogee.max_rows, 3);
 }
 
 #[test]

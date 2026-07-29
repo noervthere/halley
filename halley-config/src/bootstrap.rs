@@ -121,4 +121,20 @@ mod tests {
         assert!(wrote);
         assert!(config_file.exists());
     }
+
+    #[test]
+    fn template_contains_overview_and_old_halley_controls() {
+        for expected in [
+            "\"$var.mod+n\" \"toggle-state\"",
+            "\"$var.mod+o\" \"apogee\"",
+            "\"alt+tab\" \"cycle-focus\"",
+            "live-previews true",
+            "max-rows 3",
+        ] {
+            assert!(
+                DEFAULT_CONFIG.contains(expected),
+                "bootstrap template is missing {expected:?}"
+            );
+        }
+    }
 }

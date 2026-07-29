@@ -8,6 +8,7 @@ Current compositor-owned navigation includes:
 - nodes, decay, focus rings, landmarks, and old-Halley contact physics;
 - [Bearings](docs/bearings.md) for offscreen node navigation;
 - [Apogee and Alt+Tab](docs/apogee.md) with live compositor previews;
+- output-local fullscreen, including decoration maximize buttons;
 - native screenshots, screencasting, and an XDG desktop portal backend.
 
 The canonical configuration is [examples/halley.rune](examples/halley.rune).

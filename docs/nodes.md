@@ -6,6 +6,12 @@ collapsed node remains protocol-alive but is removed from the window/input
 space and represented by a compositor-rendered marker at the same field
 position.
 
+Collapse preserves visual stack depth. The captured window flies and shrinks
+into its final node position at the same layer it occupied: a back window
+drops behind every window that was above it, a middle window stays between its
+neighbors, and a front window drops in front. The emerging marker shares that
+depth instead of jumping to a global node overlay.
+
 Click a collapsed marker once to restore and focus its window. This is one
 atomic action: Halley does not first center the camera, leave the marker
 collapsed, and require a second click. `$var.mod+n` runs the same state toggle

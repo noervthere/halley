@@ -198,7 +198,8 @@ The built-in action strings are `quit`, `close-focused`, `toggle-fullscreen`,
 `cycle-focus-backward`, `open-terminal`, `zoom-in`, `zoom-out`, `zoom-reset`,
 and `screenshot`. `Alt+Tab` and `Alt+Shift+Tab` open and navigate the focus
 carousel; releasing Alt commits and Escape cancels. `Mod+O` opens or closes
-the multi-monitor Apogee overview.
+the multi-monitor Apogee overview. Apogee stops trapping keys as soon as its
+close transition begins.
 See [Apogee and Alt+Tab](apogee.md) for navigation, gestures, and preview
 performance.
 Holding the default `Mod+Z` `bearings-show` binding exposes offscreen nodes and
@@ -211,3 +212,10 @@ it in one action; its default binding is `$var.mod+n`. Optional
 `node.click-collapsed-pan` camera movement begins in that same action and never
 creates a center-first second-click interaction. Any other action string is
 launched as a command line.
+
+`toggle-fullscreen` and a client decoration's maximize button both enter the
+same Halley fullscreen presentation. Unmaximize exits only a fullscreen
+created by maximize; it does not cancel a fullscreen entered with `Mod+F`, a
+client fullscreen request, or an initial fullscreen hint. Top layer-shell
+surfaces are suppressed per fullscreen output, independent of pointer or
+keyboard focus on another monitor.

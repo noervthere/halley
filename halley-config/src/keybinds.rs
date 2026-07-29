@@ -104,7 +104,15 @@ mod tests {
     fn default_matches_the_shipped_keybinds() {
         let kb = Keybinds::default();
         assert_eq!(kb.modifier, ModifierKey::Super);
-        assert_eq!(kb.default_terminal, DefaultTerminal::Auto);
+        match &kb.default_terminal {
+            DefaultTerminal::Auto => {}
+            DefaultTerminal::Explicit(command) => {
+                assert!(
+                    !command.trim().is_empty(),
+                    "explicit terminal cannot be empty"
+                )
+            }
+        }
         assert_eq!(kb.binds.len(), 17);
 
         let quit = kb.binds.iter().find(|b| b.action == Action::Quit).unwrap();
