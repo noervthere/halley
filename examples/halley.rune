@@ -55,9 +55,9 @@
 # Output reloads are diffed per connector. Changing one output does not force
 # an unchanged output through a redundant mode set.
 
-# Keyboard, pointer-focus, and physical mouse settings. Keyboard and focus
-# policy apply in both real-hardware and nested sessions. Physical mouse
-# settings apply only when Halley owns libinput devices on a tty.
+# Keyboard, pointer-focus, physical-device, touch, and gesture settings.
+# Keyboard/focus policy and client gesture protocols are backend-independent.
+# Physical device settings apply when Halley owns libinput devices on a tty.
 input:
   # Key-repeat frequency in presses per second and the delay before repeating.
   # A rate of 0 disables repeat. Both values update without restarting.
@@ -80,6 +80,60 @@ input:
     model ""
   end
 
+  gestures:
+    # Master switch for Halley's camera gestures. Native client gestures are
+    # still passed through when this is false if client-passthrough is true.
+    enabled true
+
+    # Send swipe, pinch, and hold sequences to the client under the pointer.
+    # Raw touchscreen contacts are controlled separately by touch-passthrough.
+    client-passthrough true
+    touch-passthrough true
+
+    # The default hybrid routing lets applications own gestures over their
+    # windows and lets Halley own gestures on empty field. Holding `modifier`
+    # forces eligible gestures to Halley. An active pointer constraint or
+    # client grab always remains client-owned.
+    pinch-to-zoom true
+    pinch-scope "empty-field"      # "empty-field" or "global"
+    compositor-scope "empty-field" # three-finger pan scope
+    modifier "mod"                 # keybind Mod; also "off" or an exact modifier
+
+    # Two-finger touchpad scrolling pans only when it begins on empty field.
+    # Use "off" to always pass finger scrolling through to clients.
+    scroll-pan "empty-field"
+
+    # Swipe finger count and optional momentum after a swipe/pinch pan.
+    # Set pan-fingers to 0 to disable compositor swipe-panning.
+    pan-fingers 3
+    pan-momentum true
+    pan-decay-rate 6.0
+    flick-min-px-per-s 200.0
+  end
+
+  touchpad:
+    # All fields are optional. Omission restores the device's own libinput
+    # default. Unsupported capabilities are ignored by libinput.
+    #
+    # enabled true
+    # natural-scroll false
+    # accel-speed 0.0             # -1.0 through 1.0
+    # accel-profile "adaptive"    # "adaptive" or "flat"
+    # scroll-method "two-finger"  # "none", "two-finger", "edge", or
+    #                             # "on-button-down"
+    # scroll-button 274
+    # scroll-button-lock false
+    # left-handed false
+    # middle-emulation false
+    # tap true
+    # tap-button-map "left-right-middle" # or "left-middle-right"
+    # dwt true                    # disable while typing
+    # click-method "clickfinger"  # or "button-areas"
+    # drag true
+    # drag-lock false
+    # disabled-on-external-mouse false
+  end
+
   mouse:
     # Every setting is optional. Omitted values preserve each device's own
     # libinput default, including after a live reload removes an old setting.
@@ -91,13 +145,36 @@ input:
     # scroll-method "none"     # "none", "two-finger", "edge", or
     #                          # "on-button-down"
     # scroll-button 274        # Linux input button code
+    # scroll-button-lock false
     # left-handed false
     # middle-emulation false
   end
 
-  # Optional settings for one ordinary mouse. Names match libinput's device
-  # name exactly, ignoring ASCII letter case; partial names do not match.
-  # Values here override only the specified fields from `mouse:` above.
+  trackpoint:
+    # Uses the same pointer fields as mouse. On-button scrolling is common:
+    # scroll-method "on-button-down"
+    # scroll-button 274
+    # scroll-button-lock false
+  end
+
+  trackball:
+    # Uses the same pointer fields as mouse.
+    # accel-profile "flat"
+    # middle-emulation true
+  end
+
+  touchscreen:
+    # Raw contacts are exposed through wl_touch when a touchscreen is present.
+    # map-to-output accepts an exact connector name. The calibration matrix is
+    # libinput's row-major 2x3 affine transform.
+    # enabled true
+    # map-to-output "eDP-1"
+    # calibration-matrix [1, 0, 0, 0, 1, 0]
+  end
+
+  # Optional exact-name overrides for individual devices. Names match
+  # libinput's full device name, ignoring ASCII letter case; partial names do
+  # not match. Values layer over the device's class block above.
   #
   # devices:
   #   "Logitech MX Master 3":

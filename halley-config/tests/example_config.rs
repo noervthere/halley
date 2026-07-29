@@ -138,7 +138,12 @@ fn example_config_input_section_parses() {
     assert_eq!(input.focus_mode, halley_config::FocusMode::Click);
     assert!(input.raise_on_click);
     assert_eq!(input.keyboard.layout, "us");
+    assert_eq!(input.gestures, halley_config::GestureSettings::default());
+    assert_eq!(input.touchpad, halley_config::DeviceSettings::default());
     assert_eq!(input.mouse, halley_config::MouseSettings::default());
+    assert_eq!(input.trackpoint, halley_config::DeviceSettings::default());
+    assert_eq!(input.trackball, halley_config::DeviceSettings::default());
+    assert_eq!(input.touchscreen, halley_config::DeviceSettings::default());
     assert!(input.devices.is_empty());
 }
 
