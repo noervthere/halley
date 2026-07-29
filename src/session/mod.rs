@@ -8,7 +8,7 @@ use halley_config::Action;
 use halley_core::camera::Camera;
 use smithay::wayland::seat::WaylandFocus;
 
-use crate::wayland::{self, WaylandState};
+use crate::wayland;
 
 mod autostart;
 pub(crate) mod closing;
@@ -36,6 +36,7 @@ pub use state::{Session, SessionDriver};
 enum SessionControl {
     Continue,
     Quit,
+    CloseFocusedWindow,
     Screenshot,
     ToggleFullscreen,
     ToggleState,
@@ -55,7 +56,6 @@ struct SpawnContext<'a> {
 /// translate the returned quit request into their loop's native mechanism.
 fn dispatch_action(
     action: Action,
-    wayland: &WaylandState,
     terminal_command: Option<&str>,
     spawn_context: SpawnContext<'_>,
     camera: Option<&mut Camera>,
@@ -63,7 +63,7 @@ fn dispatch_action(
 ) -> SessionControl {
     match action {
         Action::Quit => return SessionControl::Quit,
-        Action::CloseFocusedWindow => crate::window::close_focused(wayland),
+        Action::CloseFocusedWindow => return SessionControl::CloseFocusedWindow,
         Action::ToggleFullscreen => return SessionControl::ToggleFullscreen,
         Action::ToggleState => return SessionControl::ToggleState,
         Action::OpenTerminal => match terminal_command {
@@ -185,6 +185,18 @@ pub(crate) fn sync_keyboard_focus<D: SessionDriver>(
     serial: smithay::utils::Serial,
 ) {
     wayland::focus::refresh_selected_layer(&mut session.wayland);
+    if let Some(surface) = session.wayland.focused_window.clone() {
+        session
+            .nodes
+            .focus_surface(&surface, session.start_time.elapsed().as_millis() as u64);
+    } else if session
+        .nodes
+        .focused()
+        .and_then(|id| session.nodes.record(id))
+        .is_some_and(|record| !record.collapsed)
+    {
+        session.nodes.focus(None, 0);
+    }
     let focused = wayland::focus::current(
         &session.wayland,
         &session.fullscreen,

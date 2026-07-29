@@ -61,6 +61,19 @@ pub fn focus_and_raise(wayland: &mut WaylandState, window: &Window) {
     focus(wayland, window, true);
 }
 
+pub fn clear_focus(wayland: &mut WaylandState) {
+    wayland.focused_layer = None;
+    for mapped in wayland.space.elements() {
+        if mapped.set_activated(false)
+            && let Some(toplevel) = mapped.toplevel()
+            && toplevel.is_initial_configure_sent()
+        {
+            toplevel.send_pending_configure();
+        }
+    }
+    wayland.focused_window = None;
+}
+
 pub fn close_focused(wayland: &WaylandState) {
     let Some(focused) = wayland.focused_window.as_ref() else {
         return;

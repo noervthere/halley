@@ -66,10 +66,41 @@ fn focus_window_with_raise<D: SessionDriver>(
     raise: bool,
 ) {
     crate::window::focus(&mut session.wayland, window, raise);
+    if let Some(surface) = window.wl_surface() {
+        session.nodes.focus_surface(
+            surface.as_ref(),
+            session.start_time.elapsed().as_millis() as u64,
+        );
+    }
     if raise {
         session.xwayland.raise_window(window);
     }
     super::sync_keyboard_focus(session, serial);
+}
+
+pub(super) fn focus_node_from_hover<D: SessionDriver>(
+    session: &mut Session<D>,
+    id: halley_core::field::NodeId,
+    output: &smithay::output::Output,
+    serial: Serial,
+) {
+    if session.input.focus_mode != halley_config::FocusMode::Hover
+        || hover_is_blocked(session)
+        || session.nodes.focused() == Some(id)
+        || !session
+            .nodes
+            .record(id)
+            .is_some_and(|record| record.attached && record.collapsed)
+    {
+        return;
+    }
+    crate::wayland::focus::select_output(&mut session.wayland, output);
+    crate::window::clear_focus(&mut session.wayland);
+    session
+        .nodes
+        .focus(Some(id), session.start_time.elapsed().as_millis() as u64);
+    super::sync_keyboard_focus(session, serial);
+    session.request_redraw();
 }
 
 pub(super) fn update_hover<D: SessionDriver>(

@@ -178,6 +178,10 @@ impl NodeRenderer {
             .map(|base| NodeTextureElement { base })
     }
 
+    pub fn request_app_icon(&mut self, renderer: &mut GlesRenderer, app_id: &str) {
+        self.icons.request(renderer, app_id);
+    }
+
     fn ensure_resources(&mut self, renderer: &mut GlesRenderer) -> Result<(), Box<dyn Error>> {
         let context = renderer.context_id();
         if self

@@ -65,6 +65,8 @@ pub struct NodesState {
     pub animation: halley_config::NodeAnimation,
     pub animations_enabled: bool,
     pub hovered: Option<NodeId>,
+    focused: Option<NodeId>,
+    last_focus_ms: HashMap<NodeId, u64>,
     label_hover: RefCell<HashMap<NodeId, f32>>,
     landmark_slides: RefCell<HashMap<NodeId, LandmarkSlide>>,
     physics_velocity: HashMap<NodeId, Vec2>,
@@ -89,6 +91,8 @@ impl NodesState {
             animation: config.animations.node,
             animations_enabled: config.animations.enabled,
             hovered: None,
+            focused: None,
+            last_focus_ms: HashMap::new(),
             label_hover: RefCell::new(HashMap::new()),
             landmark_slides: RefCell::new(HashMap::new()),
             physics_velocity: HashMap::new(),
@@ -269,6 +273,9 @@ impl NodesState {
         let _ = self.field.set_detached(id, true);
         self.release_locks.remove(&id);
         self.decay.remove(id);
+        if self.focused == Some(id) {
+            self.focused = None;
+        }
     }
 
     pub fn remove_surface(&mut self, surface: &WlSurface) -> Option<NodeRecord> {
@@ -278,12 +285,41 @@ impl NodesState {
         self.physics_velocity.remove(&id);
         self.release_locks.remove(&id);
         self.decay.remove(id);
+        self.last_focus_ms.remove(&id);
+        if self.focused == Some(id) {
+            self.focused = None;
+        }
         self.field.remove(id);
         self.records.remove(&id)
     }
 
     pub fn id_for_surface(&self, surface: &WlSurface) -> Option<NodeId> {
         self.by_surface.get(surface).copied()
+    }
+
+    pub fn focused(&self) -> Option<NodeId> {
+        self.focused
+            .filter(|id| self.records.get(id).is_some_and(|record| record.attached))
+    }
+
+    pub fn last_focus_ms(&self) -> &HashMap<NodeId, u64> {
+        &self.last_focus_ms
+    }
+
+    pub fn focus(&mut self, id: Option<NodeId>, now_ms: u64) -> bool {
+        let next = id.filter(|id| self.records.get(id).is_some_and(|record| record.attached));
+        if self.focused == next {
+            return false;
+        }
+        self.focused = next;
+        if let Some(id) = next {
+            self.last_focus_ms.insert(id, now_ms);
+        }
+        true
+    }
+
+    pub fn focus_surface(&mut self, surface: &WlSurface, now_ms: u64) -> bool {
+        self.focus(self.id_for_surface(surface), now_ms)
     }
 
     pub fn record(&self, id: NodeId) -> Option<&NodeRecord> {
@@ -1032,10 +1068,7 @@ pub fn toggle_focused<D: crate::session::SessionDriver>(
     session: &mut crate::session::Session<D>,
     serial: smithay::utils::Serial,
 ) {
-    let Some(surface) = session.wayland.focused_window.clone() else {
-        return;
-    };
-    let Some(id) = session.nodes.id_for_surface(&surface) else {
+    let Some(id) = session.nodes.focused() else {
         return;
     };
     if session
@@ -1046,6 +1079,22 @@ pub fn toggle_focused<D: crate::session::SessionDriver>(
         let _ = restore(session, id, serial);
     } else {
         let _ = collapse(session, id, serial);
+    }
+}
+
+pub fn close_focused<D: crate::session::SessionDriver>(session: &mut crate::session::Session<D>) {
+    let Some(id) = session.nodes.focused() else {
+        crate::window::close_focused(&session.wayland);
+        return;
+    };
+    let Some(record) = session.nodes.record(id) else {
+        crate::window::close_focused(&session.wayland);
+        return;
+    };
+    if let Some(toplevel) = record.window.toplevel() {
+        toplevel.send_close();
+    } else {
+        crate::xwayland::close_window(&record.window);
     }
 }
 
@@ -1442,17 +1491,12 @@ fn resolve<D: crate::session::SessionDriver>(
         .filter(on_output)
         .collect::<Vec<_>>();
     let direct = match selector {
-        None | Some(halley_ipc::NodeSelector::Focused) => session
-            .wayland
-            .focused_window
-            .as_ref()
-            .and_then(|surface| session.nodes.id_for_surface(surface))
-            .filter(|id| {
-                session
-                    .nodes
-                    .record(*id)
-                    .is_some_and(|record| output.is_none_or(|name| record.output == name))
-            }),
+        None | Some(halley_ipc::NodeSelector::Focused) => session.nodes.focused().filter(|id| {
+            session
+                .nodes
+                .record(*id)
+                .is_some_and(|record| output.is_none_or(|name| record.output == name))
+        }),
         Some(halley_ipc::NodeSelector::Latest) => records
             .iter()
             .map(|record| record.id)
@@ -1608,7 +1652,7 @@ fn node_info<D: crate::session::SessionDriver>(
             halley_ipc::NodeState::Active
         },
         visible: record.attached,
-        focused: session.wayland.focused_window.as_ref() == Some(&record.surface),
+        focused: session.nodes.focused() == Some(id),
         latest,
         pinned: false,
         role,

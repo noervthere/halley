@@ -106,7 +106,6 @@ fn dispatch_action<D: SessionDriver>(
     let camera = output_name.and_then(|name| session.cameras.get_mut(name));
     match super::dispatch_action(
         action,
-        &session.wayland,
         session.keyboard.terminal_command(),
         super::SpawnContext {
             socket_name,
@@ -120,6 +119,7 @@ fn dispatch_action<D: SessionDriver>(
     ) {
         super::SessionControl::Continue => {}
         super::SessionControl::Quit => session.driver.stop(),
+        super::SessionControl::CloseFocusedWindow => crate::nodes::close_focused(session),
         super::SessionControl::ToggleFullscreen => super::toggle_focused_fullscreen(session),
         super::SessionControl::ToggleState => {
             crate::nodes::toggle_focused(session, SERIAL_COUNTER.next_serial())
@@ -554,7 +554,11 @@ where
         if let Some(route) = route.as_ref() {
             super::focus::update_hover(session, route, SERIAL_COUNTER.next_serial());
         }
-        let hovered = node_at_pointer(session).map(|(id, _)| id);
+        let hovered_node = node_at_pointer(session);
+        if let Some((id, output)) = hovered_node.as_ref() {
+            super::focus::focus_node_from_hover(session, *id, output, SERIAL_COUNTER.next_serial());
+        }
+        let hovered = hovered_node.map(|(id, _)| id);
         if session.nodes.hovered != hovered {
             session.nodes.hovered = hovered;
             session.request_redraw();

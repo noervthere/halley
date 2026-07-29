@@ -125,8 +125,8 @@ rendering remains reserved for future cluster/core work.
 
 Display policies accept `off`, `hover`, or `always`. Real application icons
 are resolved from desktop entries and icon themes in a background worker.
-Halley shows the app-ID/title initial while an icon is unavailable, loading,
-or intentionally hidden by policy.
+The marker stays blank while an icon is loading or unavailable, so a cold
+first collapse never flashes a temporary letter before the real icon appears.
 
 ## Landmark non-overlap
 

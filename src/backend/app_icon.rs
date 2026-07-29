@@ -78,13 +78,7 @@ impl AppIconCache {
             .any(|entry| matches!(entry, Entry::Pending))
     }
 
-    pub(super) fn element(
-        &mut self,
-        renderer: &mut GlesRenderer,
-        app_id: &str,
-        destination: Rectangle<i32, Physical>,
-        alpha: f32,
-    ) -> Option<TextureRenderElement<GlesTexture>> {
+    pub(super) fn request(&mut self, renderer: &mut GlesRenderer, app_id: &str) {
         self.refresh_context(renderer);
         self.drain(renderer);
         if !self.entries.contains_key(app_id) {
@@ -92,6 +86,16 @@ impl AppIconCache {
             let loader = self.loader.get_or_insert_with(Loader::spawn);
             let _ = loader.jobs.send(app_id.to_string());
         }
+    }
+
+    pub(super) fn element(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        app_id: &str,
+        destination: Rectangle<i32, Physical>,
+        alpha: f32,
+    ) -> Option<TextureRenderElement<GlesTexture>> {
+        self.request(renderer, app_id);
         match self.entries.get(app_id) {
             Some(Entry::Ready(icon)) => Some(icon.render_element(Id::new(), destination, alpha)),
             Some(Entry::Pending | Entry::Missing) | None => None,

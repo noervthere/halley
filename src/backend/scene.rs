@@ -264,7 +264,8 @@ fn node_elements(
             (side, side).into(),
         );
         let hovered = nodes.hovered == Some(record.id);
-        let ring = node_ring_color(nodes.config, decorations, hovered);
+        let highlighted = hovered || nodes.focused() == Some(record.id);
+        let ring = node_ring_color(nodes.config, decorations, highlighted);
         let fill = node_fill_color(nodes.config, ring);
         markers.push(SceneElement::Node(node_renderer.element(
             renderer,
@@ -284,14 +285,16 @@ fn node_elements(
         let elapsed_ms = now.saturating_sub(record.collapsed_at).as_millis() as f32;
         let icon_alpha = (((elapsed_ms - 1_000.0) / 220.0).clamp(0.0, 1.0) * nodes.config.opacity)
             .clamp(0.0, 1.0);
+        let allow_real = nodes.config.show_app_icons == halley_config::NodeDisplayPolicy::Always
+            || (nodes.config.show_app_icons == halley_config::NodeDisplayPolicy::Hover
+                && highlighted);
+        if allow_real && let Some(app_id) = record.app_id.as_deref() {
+            node_renderer.request_app_icon(renderer, app_id);
+        }
         if icon_alpha > 0.001 {
             let icon_side = ((crate::nodes::NODE_DIAMETER_PX * nodes.config.icon_size).round()
                 as i32)
                 .clamp(16, 42);
-            let allow_real = nodes.config.show_app_icons
-                == halley_config::NodeDisplayPolicy::Always
-                || (nodes.config.show_app_icons == halley_config::NodeDisplayPolicy::Hover
-                    && hovered);
             let real_icon = allow_real
                 .then_some(record.app_id.as_deref())
                 .flatten()
@@ -308,36 +311,14 @@ fn node_elements(
                 });
             if let Some(icon) = real_icon {
                 icons.push(SceneElement::NodeTexture(icon));
-            } else {
-                let glyph = record
-                    .app_id
-                    .as_deref()
-                    .unwrap_or(&record.title)
-                    .chars()
-                    .find(|ch| ch.is_ascii_alphanumeric())
-                    .unwrap_or('?')
-                    .to_ascii_uppercase()
-                    .to_string();
-                let text_scale = if side / 2 >= 24 { 3 } else { 2 };
-                if let Some(size) = ui_text.measure(renderer, &glyph, text_scale, [46, 54, 66])? {
-                    let origin = (local.x - size.w / 2, local.y - size.h / 2).into();
-                    if let Some(centered) = ui_text.element(
-                        renderer,
-                        origin,
-                        &glyph,
-                        text_scale,
-                        [46, 54, 66],
-                        icon_alpha,
-                    )? {
-                        icons.push(SceneElement::UiText(centered.element));
-                    }
-                }
             }
         }
 
         let hover_mix = match nodes.config.show_labels {
             halley_config::NodeDisplayPolicy::Off => 0.0,
-            halley_config::NodeDisplayPolicy::Hover => nodes.label_hover_mix(record.id, hovered),
+            halley_config::NodeDisplayPolicy::Hover => {
+                nodes.label_hover_mix(record.id, highlighted)
+            }
             halley_config::NodeDisplayPolicy::Always => 1.0,
         };
         let reveal = ease_in_out_cubic(hover_mix * hover_mix * hover_mix);
