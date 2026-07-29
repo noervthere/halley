@@ -171,6 +171,7 @@ pub fn run(session_mode: bool) {
             launch_path.as_deref(),
         ),
         launch_environment,
+        autostart: super::autostart::Autostart::enabled(),
         pointer: Pointer::new((100.0, 100.0)),
         cursor: CursorManager::new(&runtime_config.cursor),
         cursor_policy: super::cursor::Policy::new(&runtime_config.cursor, loop_handle.clone()),
@@ -222,11 +223,13 @@ pub fn run(session_mode: bool) {
 
     let socket_name = super::protocol::init_wayland_listener(display, &mut event_loop);
     eventline::info!("wayland socket ready, WAYLAND_DISPLAY={socket_name:?}");
+    app.arm_autostart_once(&socket_name, runtime_config.autostart.once.clone());
     if session_mode {
         super::environment::activate_session(&socket_name, &runtime_config.cursor);
     }
     if let Err(err) = crate::xwayland::start(&event_loop.handle(), &mut app, session_mode) {
         eventline::warn!("xwayland: unavailable: {err}");
+        app.run_autostart_once();
     }
 
     if let Err(err) =
@@ -314,6 +317,7 @@ pub fn run(session_mode: bool) {
     );
     event_loop
         .run(None, &mut app, |app| {
+            app.reap_autostart();
             if !app.driver.paused {
                 redraw_queued_outputs(app, &loop_handle);
             }
@@ -398,6 +402,7 @@ fn queue_output_redraw(app: &mut TtyApp, output: &Output) {
 }
 
 fn apply_runtime_config(app: &mut TtyApp, config: halley_config::RuntimeConfig) {
+    let reload_commands = config.autostart.on_reload.clone();
     app.apply_common_config(&config);
     app.driver.physical_input.reload(&app.input);
 
@@ -406,6 +411,7 @@ fn apply_runtime_config(app: &mut TtyApp, config: halley_config::RuntimeConfig) 
     } else {
         apply_tty_output_config(app, &config.outputs);
     }
+    app.run_autostart_reload(&reload_commands);
 }
 
 fn apply_tty_output_config(app: &mut TtyApp, outputs_config: &[halley_config::OutputConfig]) {

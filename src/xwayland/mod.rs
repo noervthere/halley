@@ -134,17 +134,20 @@ where
                         crate::session::environment::activate_xwayland(OsStr::new(&display));
                     }
                     eventline::info!("xwayland: ready, DISPLAY={display}");
+                    session.run_autostart_once();
                     session.request_redraw();
                 }
                 Err(err) => {
                     eventline::error!("xwayland: failed to attach window manager: {err}");
                     session.xwayland.clear();
+                    session.run_autostart_once();
                 }
             }
         }
         XWaylandEvent::Error => {
             eventline::error!("xwayland: server exited during startup");
             session.xwayland.clear();
+            session.run_autostart_once();
         }
     })?;
     Ok(())

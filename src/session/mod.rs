@@ -7,6 +7,7 @@ use smithay::wayland::seat::WaylandFocus;
 
 use crate::wayland::{self, WaylandState};
 
+mod autostart;
 pub(crate) mod closing;
 mod cursor;
 mod focus;

@@ -60,6 +60,7 @@ pub struct Session<D: SessionDriver> {
     pub driver: D,
     pub keyboard: Keyboard,
     pub(super) launch_environment: super::environment::LaunchEnvironment,
+    pub(super) autostart: super::autostart::Autostart,
     pub pointer: Pointer,
     pub cursor: CursorManager,
     pub(super) cursor_policy: super::cursor::Policy<D>,
@@ -95,6 +96,35 @@ pub struct Session<D: SessionDriver> {
 impl<D: SessionDriver> Session<D> {
     pub(crate) fn launch_environment(&self) -> impl Iterator<Item = (&OsStr, &OsStr)> {
         self.launch_environment.iter()
+    }
+
+    pub(crate) fn arm_autostart_once(&mut self, wayland_display: &OsStr, commands: Vec<String>) {
+        self.autostart.arm_once(wayland_display, commands);
+    }
+
+    pub(crate) fn run_autostart_once(&mut self) {
+        let x11_display = self.xwayland.display_name();
+        self.autostart.run_once(
+            x11_display.as_deref(),
+            self.cursor.theme_name(),
+            self.cursor.size(),
+            &self.launch_environment,
+        );
+    }
+
+    pub(crate) fn run_autostart_reload(&mut self, commands: &[String]) {
+        let x11_display = self.xwayland.display_name();
+        self.autostart.run_reload(
+            commands,
+            x11_display.as_deref(),
+            self.cursor.theme_name(),
+            self.cursor.size(),
+            &self.launch_environment,
+        );
+    }
+
+    pub(crate) fn reap_autostart(&mut self) {
+        self.autostart.reap_finished();
     }
 
     pub fn create_wayland_state(display_handle: DisplayHandle, driver: &mut D) -> WaylandState {

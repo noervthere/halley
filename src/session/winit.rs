@@ -130,6 +130,7 @@ pub fn run() {
             launch_path.as_deref(),
         ),
         launch_environment,
+        autostart: super::autostart::Autostart::disabled(),
         pointer: Pointer::new((100.0, 100.0)),
         cursor: CursorManager::new(&runtime_config.cursor),
         cursor_policy: super::cursor::Policy::new(&runtime_config.cursor, event_loop.handle()),

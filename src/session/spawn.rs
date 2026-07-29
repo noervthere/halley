@@ -55,6 +55,67 @@ fn detached_process(
     cursor_size: u8,
     environment: &LaunchEnvironment,
 ) -> Command {
+    let mut process = configured_process(
+        command_line,
+        wayland_display,
+        x11_display,
+        cursor_theme,
+        cursor_size,
+        environment,
+    );
+
+    // Safety: only async-signal-safe calls between fork and exec - a raw
+    // fork() plus an immediate _exit() (never std::process::exit, which
+    // isn't safe to run again after a raw fork - it may re-run Rust's
+    // normal shutdown machinery a second time).
+    unsafe {
+        process.pre_exec(|| match libc::fork() {
+            -1 => Err(io::Error::last_os_error()),
+            0 => Ok(()),
+            _ => libc::_exit(0),
+        });
+    }
+
+    process
+}
+
+pub(super) fn managed_process(
+    command_line: &str,
+    wayland_display: &OsStr,
+    x11_display: Option<&OsStr>,
+    cursor_theme: &str,
+    cursor_size: u8,
+    environment: &LaunchEnvironment,
+) -> Command {
+    let mut process = configured_process(
+        command_line,
+        wayland_display,
+        x11_display,
+        cursor_theme,
+        cursor_size,
+        environment,
+    );
+    // Safety: setpgid is async-signal-safe and runs before the child execs.
+    unsafe {
+        process.pre_exec(|| {
+            if libc::setpgid(0, 0) == -1 {
+                Err(io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        });
+    }
+    process
+}
+
+fn configured_process(
+    command_line: &str,
+    wayland_display: &OsStr,
+    x11_display: Option<&OsStr>,
+    cursor_theme: &str,
+    cursor_size: u8,
+    environment: &LaunchEnvironment,
+) -> Command {
     let mut process = Command::new("sh");
     environment.apply_to(&mut process);
     process
@@ -70,19 +131,6 @@ fn detached_process(
     if let Some(display) = x11_display {
         process.env("DISPLAY", display);
     }
-
-    // Safety: only async-signal-safe calls between fork and exec - a raw
-    // fork() plus an immediate _exit() (never std::process::exit, which
-    // isn't safe to run again after a raw fork - it may re-run Rust's
-    // normal shutdown machinery a second time).
-    unsafe {
-        process.pre_exec(|| match libc::fork() {
-            -1 => Err(io::Error::last_os_error()),
-            0 => Ok(()),
-            _ => libc::_exit(0),
-        });
-    }
-
     process
 }
 
