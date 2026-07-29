@@ -310,27 +310,51 @@ fn apogee_elements(
         let selected = session.selected == Some(tile.id);
         let hovered = session.hovered == Some(tile.id);
         let chrome_alpha = ((progress - 0.18) / 0.62).clamp(0.0, 1.0);
-        let card = Rectangle::<i32, Physical>::new(
-            (body.loc.x - 10, body.loc.y - 10).into(),
-            (body.size.w + 20, body.size.h + 58).into(),
-        );
-
-        let title = truncate_chars(&record.title, 42);
-        if let Some(size) = ui_text.measure(renderer, &title, 2, [238, 243, 250])?
-            && let Some(text) = ui_text.element(
+        // Old Halley kept the caption inside the preview. Growing the card by
+        // a fixed footer made its backing look like an enlarged second window,
+        // especially for short and wide Apogee tiles.
+        let card = outset_physical(body, 4);
+        let caption = apogee_caption_rect(body);
+        if let Some(caption) = caption {
+            let (title, size) = fit_ui_text(
                 renderer,
-                (
-                    card.loc.x + (card.size.w - size.w) / 2,
-                    body.loc.y + body.size.h + 12,
-                )
-                    .into(),
-                &title,
-                2,
+                ui_text,
+                &record.title,
+                1,
                 [238, 243, 250],
-                chrome_alpha,
-            )?
-        {
-            elements.push(SceneElement::UiText(text.element));
+                caption.size.w - 16,
+            )?;
+            if !title.is_empty()
+                && let Some(text) = ui_text.element(
+                    renderer,
+                    (
+                        caption.loc.x + (caption.size.w - size.w).max(0) / 2,
+                        caption.loc.y + (caption.size.h - size.h).max(0) / 2,
+                    )
+                        .into(),
+                    &title,
+                    1,
+                    [238, 243, 250],
+                    chrome_alpha,
+                )?
+            {
+                elements.push(SceneElement::UiText(text.element));
+            }
+            elements.push(SceneElement::NodeLabel(node_renderer.label_element(
+                renderer,
+                caption,
+                halley_config::NodeShape::Squircle,
+                if selected || hovered {
+                    (0.10, 0.20, 0.31)
+                } else {
+                    (0.02, 0.025, 0.035)
+                },
+                if selected || hovered {
+                    0.62 * chrome_alpha
+                } else {
+                    0.50 * chrome_alpha
+                },
+            )?));
         }
         if record.collapsed {
             let badge = "NODE";
@@ -416,6 +440,24 @@ fn lerp_rect(
         )
             .into(),
     )
+}
+
+fn outset_physical(rect: Rectangle<i32, Physical>, pad: i32) -> Rectangle<i32, Physical> {
+    Rectangle::new(
+        (rect.loc.x - pad, rect.loc.y - pad).into(),
+        (rect.size.w + pad * 2, rect.size.h + pad * 2).into(),
+    )
+}
+
+fn apogee_caption_rect(body: Rectangle<i32, Physical>) -> Option<Rectangle<i32, Physical>> {
+    if body.size.w < 96 || body.size.h < 72 {
+        return None;
+    }
+    let height = ((body.size.h as f32 * 0.13).round() as i32).clamp(22, 34);
+    Some(Rectangle::new(
+        (body.loc.x + 8, body.loc.y + body.size.h - height - 8).into(),
+        ((body.size.w - 16).max(1), height).into(),
+    ))
 }
 
 fn focus_cycle_elements(
@@ -947,8 +989,19 @@ fn fit_node_label(
     rgb: [u8; 3],
     available: i32,
 ) -> Result<(String, smithay::utils::Size<i32, smithay::utils::Buffer>), Box<dyn Error>> {
+    fit_ui_text(renderer, ui_text, source, 2, rgb, available)
+}
+
+fn fit_ui_text(
+    renderer: &mut GlesRenderer,
+    ui_text: &mut super::text::UiTextRenderer,
+    source: &str,
+    scale: i32,
+    rgb: [u8; 3],
+    available: i32,
+) -> Result<(String, smithay::utils::Size<i32, smithay::utils::Buffer>), Box<dyn Error>> {
     let text = source.trim();
-    let Some(size) = ui_text.measure(renderer, text, 2, rgb)? else {
+    let Some(size) = ui_text.measure(renderer, text, scale, rgb)? else {
         return Ok((String::new(), (0, 0).into()));
     };
     if size.w <= available {
@@ -962,7 +1015,7 @@ fn fit_node_label(
             .copied()
             .chain(std::iter::once('…'))
             .collect::<String>();
-        let Some(size) = ui_text.measure(renderer, &candidate, 2, rgb)? else {
+        let Some(size) = ui_text.measure(renderer, &candidate, scale, rgb)? else {
             continue;
         };
         if size.w <= available {
@@ -1598,6 +1651,22 @@ mod tests {
             ),
             Rectangle::new((40, 40).into(), (400, 200).into())
         );
+    }
+
+    #[test]
+    fn apogee_caption_overlays_the_preview_instead_of_growing_a_footer() {
+        let body = Rectangle::<i32, Physical>::new((100, 80).into(), (480, 240).into());
+        let caption = apogee_caption_rect(body).expect("large preview has a caption");
+
+        assert_eq!(caption, Rectangle::new((108, 281).into(), (464, 31).into()));
+        assert!(body.contains_rect(caption));
+        assert_eq!(outset_physical(body, 4).size, (488, 248).into());
+    }
+
+    #[test]
+    fn apogee_caption_waits_until_node_transition_is_large_enough() {
+        let node_sized = Rectangle::<i32, Physical>::new((100, 80).into(), (64, 64).into());
+        assert_eq!(apogee_caption_rect(node_sized), None);
     }
 
     #[test]
