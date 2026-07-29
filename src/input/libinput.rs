@@ -30,7 +30,7 @@ impl PhysicalMouseDevices {
 }
 
 fn apply(device: &mut Device, input: &halley_config::Input) {
-    let configured = input.settings_for_device(&device.name());
+    let configured = input.settings_for_device(halley_config::DeviceKind::Mouse, &device.name());
     let resolved = ResolvedSettings::from_device(device, &configured);
     let name = device.name().into_owned();
 

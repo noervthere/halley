@@ -24,8 +24,9 @@ pub use chord::parse_chord;
 pub use cursor::{Cursor, parse_cursor};
 pub use decorations::{BorderColor, Decorations, load_decorations, parse_decorations};
 pub use input::{
-    AccelProfile, DeviceOverride, FocusMode, Input, InputParseError, KeyboardConfig, MouseSettings,
-    ScrollMethod, parse_input,
+    AccelProfile, ClickMethod, DeviceKind, DeviceOverride, DeviceSettings, FocusMode,
+    GestureModifier, GestureScope, GestureSettings, Input, InputParseError, KeyboardConfig,
+    MouseSettings, ScrollMethod, ScrollPanMode, TapButtonMap, parse_input,
 };
 pub use keybinds::{Action, DefaultTerminal, Keybind, Keybinds, ModifierKey, Modifiers};
 pub use output::{
