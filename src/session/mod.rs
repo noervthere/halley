@@ -10,6 +10,7 @@ use crate::wayland::{self, WaylandState};
 
 pub(crate) mod closing;
 mod input;
+mod lifecycle;
 pub(crate) mod opening;
 mod pointer;
 mod protocol;
@@ -81,25 +82,7 @@ fn cancel_grab_for_surface<D: SessionDriver>(
     }
 }
 
-pub(crate) fn prepare_window_unmap<D: SessionDriver>(
-    session: &mut Session<D>,
-    surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
-) {
-    pointer::prepare_unmap(session, surface);
-}
-
-pub(crate) fn finish_window_unmap<D: SessionDriver>(
-    session: &mut Session<D>,
-    surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
-) {
-    session.opening_origins.forget(surface);
-    session.window_open_animations.remove(surface);
-    session.fullscreen.remove(surface);
-    session.fullscreen_textures.remove(surface);
-    cancel_grab_for_surface(session, surface);
-    crate::input::grab::forget_resize_anchor(&mut session.resize_anchor, surface);
-    closing::start(session, surface);
-}
+pub(crate) use lifecycle::{finish_window_unmap, prepare_window_unmap};
 
 pub(crate) fn reconcile_pointer_constraints<D: SessionDriver>(session: &mut Session<D>) {
     pointer::reconcile_state(session);

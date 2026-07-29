@@ -122,9 +122,8 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
     fn commit(&mut self, surface: &WlSurface) {
         wayland::compositor::prepare_commit::<Self>(surface);
         let root = wayland::compositor::root_surface(surface);
-        if wayland::xdg_shell::will_unmap(&self.wayland, &root) {
-            super::prepare_window_unmap(self, &root);
-        }
+        let unmap = wayland::xdg_shell::will_unmap(&self.wayland, &root)
+            .then(|| super::prepare_window_unmap(self, &root));
         match wayland::compositor::commit(&mut self.wayland, &self.cameras, surface) {
             wayland::xdg_shell::ToplevelCommit::Mapped(mapped) => {
                 super::closing::mapped(self, &mapped);
@@ -143,7 +142,10 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
                 }
             }
             wayland::xdg_shell::ToplevelCommit::Unmapped(unmapped) => {
-                super::finish_window_unmap(self, &unmapped);
+                let preparation =
+                    unmap.expect("mapped toplevel unmap must have been prepared before commit");
+                debug_assert_eq!(preparation.surface(), &unmapped);
+                super::finish_window_unmap(self, preparation);
                 super::sync_keyboard_focus(self, SERIAL_COUNTER.next_serial());
             }
             wayland::xdg_shell::ToplevelCommit::None => {}
@@ -259,9 +261,9 @@ impl<D: SessionDriver> XdgShellHandler for Session<D> {
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         super::closing::capture_surface(self, surface.wl_surface());
-        super::prepare_window_unmap(self, surface.wl_surface());
-        super::finish_window_unmap(self, surface.wl_surface());
+        let preparation = super::prepare_window_unmap(self, surface.wl_surface());
         wayland::xdg_shell::toplevel_destroyed(&mut self.wayland, &surface);
+        super::finish_window_unmap(self, preparation);
         super::sync_keyboard_focus(self, SERIAL_COUNTER.next_serial());
         self.request_redraw();
     }

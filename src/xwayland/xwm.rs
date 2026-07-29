@@ -658,13 +658,12 @@ fn forget_window<D: SessionDriver>(session: &mut Session<D>, surface: &X11Surfac
     };
     crate::session::closing::capture_window(session, &window);
     if let Some(wl_surface) = window.wl_surface().map(|surface| surface.into_owned()) {
-        crate::session::prepare_window_unmap(session, &wl_surface);
-        crate::session::finish_window_unmap(session, &wl_surface);
-        if session.wayland.focused_window.as_ref() == Some(&wl_surface) {
-            session.wayland.focused_window = None;
-        }
+        let preparation = crate::session::prepare_window_unmap(session, &wl_surface);
+        session.wayland.space.unmap_elem(&window);
+        crate::session::finish_window_unmap(session, preparation);
+    } else {
+        session.wayland.space.unmap_elem(&window);
     }
-    session.wayland.space.unmap_elem(&window);
 }
 
 impl<D: SessionDriver> XwmHandler for Session<D> {

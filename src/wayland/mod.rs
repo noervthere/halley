@@ -110,6 +110,9 @@ pub struct WaylandState {
     /// actually attached a buffer (see `unmapped`), not merely once its
     /// toplevel role exists.
     pub space: Space<Window>,
+    /// Managed-window stacking independent of render-space implementation
+    /// details. Focus succession and future window policy read this order.
+    pub managed_windows: crate::window::ManagedWindowStack,
     /// Toplevels that exist but haven't mapped a buffer yet, keyed by their
     /// `wl_surface`. This defers entering `space` until there is a real
     /// buffer to show, without mixing placement policy into surface
@@ -179,6 +182,7 @@ impl WaylandState {
             primary_selection_state,
             popup_manager: PopupManager::default(),
             space: Space::default(),
+            managed_windows: crate::window::ManagedWindowStack::default(),
             unmapped: HashMap::new(),
             unmapped_locations: HashMap::new(),
             unmapped_layers: HashSet::new(),
