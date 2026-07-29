@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 /// the end of `Request`/`Response` silently breaks wire-compatibility with
 /// a differently-versioned build - worth remembering as this grows, not
 /// solved here (this first pass has nothing to negotiate against yet).
-pub const HALLEY_IPC_VERSION: u32 = 6;
+pub const HALLEY_IPC_VERSION: u32 = 7;
 
 /// A request from `halleyctl`, the portal backend, or another local client.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -28,6 +28,7 @@ pub enum Request {
     },
     CaptureFrame(CaptureFrameRequest),
     Node(NodeRequest),
+    Bearings(BearingsRequest),
 }
 
 /// The compositor's reply to a `Request`.
@@ -42,6 +43,20 @@ pub enum Response {
     Error(String),
     NodeList(NodeListResponse),
     NodeInfo(NodeInfo),
+    BearingsStatus(BearingsStatusResponse),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BearingsRequest {
+    Show,
+    Hide,
+    Toggle,
+    Status,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BearingsStatusResponse {
+    pub visible: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

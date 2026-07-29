@@ -319,11 +319,20 @@ mod tests {
                 selector: Some(crate::NodeSelector::App("firefox".to_string())),
                 output: None,
             }),
+            Request::Bearings(crate::BearingsRequest::Toggle),
         ] {
             let bytes = encode_request(&req).unwrap();
             let decoded = decode_request(&bytes).unwrap();
             assert_eq!(format!("{decoded:?}"), format!("{req:?}"));
         }
+    }
+
+    #[test]
+    fn bearings_status_round_trips_through_postcard() {
+        let response = Response::BearingsStatus(crate::BearingsStatusResponse { visible: true });
+        let bytes = encode_response(&response).unwrap();
+        let decoded = decode_response(&bytes).unwrap();
+        assert_eq!(format!("{decoded:?}"), format!("{response:?}"));
     }
 
     #[test]

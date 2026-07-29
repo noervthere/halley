@@ -2,7 +2,8 @@ use std::fmt::Write;
 use std::process::ExitCode;
 
 use halley_ipc::{
-    ModeInfo, NodeInfo, NodeMoveDirection, NodeRequest, NodeSelector, OutputInfo, Request, Response,
+    BearingsRequest, ModeInfo, NodeInfo, NodeMoveDirection, NodeRequest, NodeSelector, OutputInfo,
+    Request, Response,
 };
 
 /// Hand-rolled arg parsing, no `clap` - matches old halley's own
@@ -14,6 +15,7 @@ Usage: halleyctl <command>
 Commands:
   outputs        List connected monitors and their current mode/position
   node           List, inspect, focus, move, collapse, restore, toggle, or close nodes
+  bearings       Show, hide, toggle, or inspect Bearings
 
 Options:
   -h, --help     Print this message
@@ -35,6 +37,14 @@ Selectors:
   focused, latest, ID, id:ID, title:TEXT, app:APP_ID
 ";
 
+const BEARINGS_HELP: &str = "\
+Usage:
+  halleyctl bearings show
+  halleyctl bearings hide
+  halleyctl bearings toggle
+  halleyctl bearings status
+";
+
 #[derive(Clone, Debug, PartialEq)]
 enum Action {
     Outputs,
@@ -43,6 +53,8 @@ enum Action {
         output: NodeOutput,
     },
     NodeHelp,
+    Bearings(BearingsRequest),
+    BearingsHelp,
     Version,
     Help,
 }
@@ -63,6 +75,11 @@ fn main() -> ExitCode {
         }),
         Ok(Action::NodeHelp) => {
             print!("{NODE_HELP}");
+            ExitCode::SUCCESS
+        }
+        Ok(Action::Bearings(request)) => query(Request::Bearings(request), print_bearings),
+        Ok(Action::BearingsHelp) => {
+            print!("{BEARINGS_HELP}");
             ExitCode::SUCCESS
         }
         Ok(Action::Version) => query(Request::Version, print_version),
@@ -88,6 +105,7 @@ fn parse_args(args: &[String]) -> Result<Action, String> {
             Action::Outputs
         }
         Some("node") => return parse_node(&args[1..]),
+        Some("bearings") => return parse_bearings(&args[1..]),
         Some(other) => return Err(format!("unknown command {other:?}")),
     };
 
@@ -96,6 +114,26 @@ fn parse_args(args: &[String]) -> Result<Action, String> {
     }
 
     Ok(action)
+}
+
+fn parse_bearings(args: &[String]) -> Result<Action, String> {
+    let Some(command) = args.first().map(String::as_str) else {
+        return Ok(Action::BearingsHelp);
+    };
+    if command == "-h" || command == "--help" {
+        return Ok(Action::BearingsHelp);
+    }
+    if let Some(unexpected) = args.get(1) {
+        return Err(format!("unexpected argument {unexpected:?}"));
+    }
+    let request = match command {
+        "show" => BearingsRequest::Show,
+        "hide" => BearingsRequest::Hide,
+        "toggle" => BearingsRequest::Toggle,
+        "status" => BearingsRequest::Status,
+        other => return Err(format!("unknown bearings command {other:?}")),
+    };
+    Ok(Action::Bearings(request))
 }
 
 fn parse_node(args: &[String]) -> Result<Action, String> {
@@ -279,6 +317,17 @@ fn print_node_info(node: &NodeInfo) {
     println!("  Focused: {}", node.focused);
 }
 
+fn print_bearings(response: Response) -> ExitCode {
+    match response {
+        Response::Ack => ExitCode::SUCCESS,
+        Response::BearingsStatus(status) => {
+            println!("{}", if status.visible { "visible" } else { "hidden" });
+            ExitCode::SUCCESS
+        }
+        response => print_unexpected(response),
+    }
+}
+
 /// Sends `req` to the running compositor and hands the response to
 /// `on_response` - shared by every subcommand so connection-failure
 /// handling isn't duplicated per command.
@@ -419,10 +468,38 @@ mod tests {
             .expect("help has Commands followed by Options");
 
         assert!(commands.contains("outputs"));
+        assert!(commands.contains("bearings"));
         assert!(!commands.contains("--help"));
         assert!(!commands.contains("--version"));
         assert!(HELP.contains("Options:\n  -h, --help"));
         assert!(HELP.contains("  -V, --version"));
+    }
+
+    #[test]
+    fn parser_covers_old_bearings_commands() {
+        assert_eq!(parse_args(&args(&["bearings"])), Ok(Action::BearingsHelp));
+        assert_eq!(
+            parse_args(&args(&["bearings", "--help"])),
+            Ok(Action::BearingsHelp)
+        );
+        assert_eq!(
+            parse_args(&args(&["bearings", "show"])),
+            Ok(Action::Bearings(BearingsRequest::Show))
+        );
+        assert_eq!(
+            parse_args(&args(&["bearings", "hide"])),
+            Ok(Action::Bearings(BearingsRequest::Hide))
+        );
+        assert_eq!(
+            parse_args(&args(&["bearings", "toggle"])),
+            Ok(Action::Bearings(BearingsRequest::Toggle))
+        );
+        assert_eq!(
+            parse_args(&args(&["bearings", "status"])),
+            Ok(Action::Bearings(BearingsRequest::Status))
+        );
+        assert!(parse_args(&args(&["bearings", "status", "extra"])).is_err());
+        assert!(parse_args(&args(&["bearings", "wat"])).is_err());
     }
 
     #[test]
