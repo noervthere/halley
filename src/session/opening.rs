@@ -141,7 +141,7 @@ fn choose_fallback_origin(
     cursor: Point<f64, Logical>,
     focused_window: Option<Point<f64, Logical>>,
 ) -> Point<f64, Logical> {
-    if output.to_f64().contains(cursor) {
+    if cursor.x.is_finite() && cursor.y.is_finite() {
         cursor
     } else if let Some(focused_window) = focused_window {
         focused_window
@@ -174,22 +174,34 @@ mod tests {
     }
 
     #[test]
-    fn focused_window_precedes_output_center_when_cursor_is_elsewhere() {
+    fn cursor_on_another_output_preserves_launch_direction() {
+        let output = Rectangle::new((2560, 0).into(), (1920, 1200).into());
+        let cursor = Point::from((100.0, 100.0));
+        let focused = Point::from((800.0, 600.0));
+
+        assert_eq!(
+            choose_fallback_origin(output, cursor, Some(focused)),
+            cursor
+        );
+    }
+
+    #[test]
+    fn focused_window_is_used_when_the_cursor_is_invalid() {
         let output = Rectangle::new((2560, 0).into(), (1920, 1200).into());
         let focused = Point::from((800.0, 600.0));
 
         assert_eq!(
-            choose_fallback_origin(output, Point::from((100.0, 100.0)), Some(focused)),
+            choose_fallback_origin(output, Point::from((f64::NAN, 100.0)), Some(focused)),
             focused
         );
     }
 
     #[test]
-    fn output_center_is_the_last_fallback() {
+    fn output_center_is_the_last_fallback_for_an_invalid_cursor() {
         let output = Rectangle::new((2560, 0).into(), (1920, 1200).into());
 
         assert_eq!(
-            choose_fallback_origin(output, Point::from((100.0, 100.0)), None),
+            choose_fallback_origin(output, Point::from((f64::INFINITY, 100.0)), None),
             Point::from((3520.0, 600.0))
         );
     }
