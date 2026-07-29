@@ -72,9 +72,22 @@ impl Session {
     }
 }
 
-#[derive(Default)]
 pub struct ApogeeState {
     session: Option<Session>,
+    preview_dirty: bool,
+    last_live_redraw: Duration,
+    last_callback: HashMap<String, Duration>,
+}
+
+impl Default for ApogeeState {
+    fn default() -> Self {
+        Self {
+            session: None,
+            preview_dirty: false,
+            last_live_redraw: Duration::ZERO,
+            last_callback: HashMap::new(),
+        }
+    }
 }
 
 impl ApogeeState {
@@ -90,6 +103,44 @@ impl ApogeeState {
         self.session
             .as_ref()
             .is_some_and(|session| session.manual_progress.is_some())
+    }
+
+    pub fn contains(&self, id: NodeId) -> bool {
+        self.session
+            .as_ref()
+            .is_some_and(|session| session.tiles.iter().any(|tile| tile.id == id))
+    }
+
+    pub fn mark_preview_dirty(&mut self) {
+        if self.session.is_some() {
+            self.preview_dirty = true;
+        }
+    }
+
+    pub fn take_live_redraw_due(&mut self, now: Duration, max_fps: u32) -> bool {
+        if !self.preview_dirty || self.session.is_none() {
+            return false;
+        }
+        let interval = Duration::from_secs_f64(1.0 / max_fps.clamp(1, 240) as f64);
+        if now.saturating_sub(self.last_live_redraw) < interval {
+            return false;
+        }
+        self.preview_dirty = false;
+        self.last_live_redraw = now;
+        true
+    }
+
+    pub fn take_callback_due(&mut self, output: &str, now: Duration, max_fps: u32) -> bool {
+        if self.session.is_none() {
+            return false;
+        }
+        let interval = Duration::from_secs_f64(1.0 / max_fps.clamp(1, 240) as f64);
+        let last = self.last_callback.get(output).copied().unwrap_or_default();
+        if now.saturating_sub(last) < interval {
+            return false;
+        }
+        self.last_callback.insert(output.to_string(), now);
+        true
     }
 
     pub fn open(
@@ -295,6 +346,8 @@ impl ApogeeState {
         if session.is_closing() && !settling && progress <= f32::EPSILON {
             let activation = session.pending_activation;
             self.session = None;
+            self.preview_dirty = false;
+            self.last_callback.clear();
             return Tick::Closed(activation);
         }
         Tick::Active {
@@ -527,9 +580,34 @@ pub fn tick<D: crate::session::SessionDriver>(
     }
 }
 
+pub fn send_preview_frames(
+    state: &ApogeeState,
+    nodes: &crate::nodes::NodesState,
+    output: &smithay::output::Output,
+    elapsed: Duration,
+) {
+    let Some(session) = state.session() else {
+        return;
+    };
+    for tile in session
+        .tiles
+        .iter()
+        .filter(|tile| tile.output == output.name())
+    {
+        let Some(record) = nodes.record(tile.id).filter(|record| record.attached) else {
+            continue;
+        };
+        record
+            .window
+            .send_frame(output, elapsed, Some(Duration::ZERO), |_, _| {
+                Some(output.clone())
+            });
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Session, Settle, Tile};
+    use super::{ApogeeState, Session, Settle, Tile};
     use halley_core::field::NodeId;
     use smithay::utils::Rectangle;
     use std::time::Duration;
@@ -575,5 +653,48 @@ mod tests {
             session.progress(Duration::from_secs(2) + Duration::from_millis(128)),
             0.0
         );
+    }
+
+    #[test]
+    fn live_redraws_are_coalesced_at_the_configured_ceiling() {
+        let mut state = ApogeeState {
+            session: Some(Session {
+                tiles: Vec::new(),
+                hovered: None,
+                selected: None,
+                settle: None,
+                manual_progress: None,
+                pending_activation: None,
+            }),
+            preview_dirty: true,
+            last_live_redraw: Duration::ZERO,
+            last_callback: Default::default(),
+        };
+        assert!(!state.take_live_redraw_due(Duration::from_millis(20), 30));
+        assert!(state.take_live_redraw_due(Duration::from_millis(34), 30));
+        state.mark_preview_dirty();
+        assert!(!state.take_live_redraw_due(Duration::from_millis(50), 30));
+        assert!(state.take_live_redraw_due(Duration::from_millis(68), 30));
+    }
+
+    #[test]
+    fn callback_limits_are_independent_per_output() {
+        let mut state = ApogeeState {
+            session: Some(Session {
+                tiles: Vec::new(),
+                hovered: None,
+                selected: None,
+                settle: None,
+                manual_progress: None,
+                pending_activation: None,
+            }),
+            preview_dirty: false,
+            last_live_redraw: Duration::ZERO,
+            last_callback: Default::default(),
+        };
+        let now = Duration::from_millis(34);
+        assert!(state.take_callback_due("DP-1", now, 30));
+        assert!(state.take_callback_due("DP-2", now, 30));
+        assert!(!state.take_callback_due("DP-1", now, 30));
     }
 }

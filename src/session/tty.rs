@@ -253,6 +253,9 @@ pub fn run(session_mode: bool) {
     if let Err(err) = super::install_node_decay_timer(&event_loop.handle()) {
         eventline::warn!("nodes: failed to start decay timer: {err}");
     }
+    if let Err(err) = super::install_apogee_preview_timer(&event_loop.handle()) {
+        eventline::warn!("apogee: failed to start preview timer: {err}");
+    }
 
     // Queue every output's first frame through the same state machine used
     // for all later redraws.
@@ -377,15 +380,25 @@ fn on_vblank(app: &mut TtyApp, crtc: crtc::Handle, metadata: Option<&DrmEventMet
 
     let elapsed = app.start_time.elapsed();
     let primary = app.driver.backend.primary_output();
-    app.wayland
-        .space
-        .elements()
-        .filter(|window| wayland::window_is_on_output(window, &output, primary))
-        .for_each(|window| {
-            window.send_frame(&output, elapsed, Some(Duration::ZERO), |_, _| {
-                Some(output.clone())
+    if app.apogee.is_active() {
+        if app.apogee.take_callback_due(
+            &output.name(),
+            crate::frame_clock::monotonic_now(),
+            app.apogee_config.preview_max_fps,
+        ) {
+            crate::apogee::send_preview_frames(&app.apogee, &app.nodes, &output, elapsed);
+        }
+    } else {
+        app.wayland
+            .space
+            .elements()
+            .filter(|window| wayland::window_is_on_output(window, &output, primary))
+            .for_each(|window| {
+                window.send_frame(&output, elapsed, Some(Duration::ZERO), |_, _| {
+                    Some(output.clone())
+                });
             });
-        });
+    }
     wayland::layer_shell::send_frames(&output, elapsed);
     crate::cursor::surface::send_frame(
         &app.cursor,

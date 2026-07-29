@@ -237,6 +237,9 @@ fn parse_gestures(fields: &[ObjectItem]) -> Result<GestureSettings, InputParseEr
             "pan-momentum",
             "pan-decay-rate",
             "flick-min-px-per-s",
+            "swipe-threshold-px",
+            "swipe-up-4",
+            "apogee-swipe-down-4",
         ],
         path,
     )?;
@@ -260,6 +263,25 @@ fn parse_gestures(fields: &[ObjectItem]) -> Result<GestureSettings, InputParseEr
         return Err(InputParseError(
             "input.gestures.flick-min-px-per-s must be between 0 and 100000".to_string(),
         ));
+    }
+    let swipe_threshold_px = optional_number(fields, "swipe-threshold-px", path)?
+        .unwrap_or(defaults.swipe_threshold_px.into());
+    if !(8.0..=10_000.0).contains(&swipe_threshold_px) {
+        return Err(InputParseError(
+            "input.gestures.swipe-threshold-px must be between 8 and 10000".to_string(),
+        ));
+    }
+    for (key, expected) in [
+        ("swipe-up-4", "apogee-open"),
+        ("apogee-swipe-down-4", "apogee-close"),
+    ] {
+        if let Some(value) = optional_string(fields, key, path)?
+            && value != expected
+        {
+            return Err(InputParseError(format!(
+                "{path}.{key} must be {expected:?}, got {value:?}"
+            )));
+        }
     }
 
     Ok(GestureSettings {
@@ -288,6 +310,9 @@ fn parse_gestures(fields: &[ObjectItem]) -> Result<GestureSettings, InputParseEr
         pan_momentum: optional_bool(fields, "pan-momentum", path)?.unwrap_or(defaults.pan_momentum),
         pan_decay_rate: pan_decay_rate as f32,
         flick_min_px_per_s: flick_min_px_per_s as f32,
+        swipe_threshold_px: swipe_threshold_px as f32,
+        apogee_open_fingers: defaults.apogee_open_fingers,
+        apogee_close_fingers: defaults.apogee_close_fingers,
     })
 }
 

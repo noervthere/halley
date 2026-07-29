@@ -29,9 +29,29 @@ struct AxisPan {
     vertical_active: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ApogeeSwipeMode {
+    Open,
+    Close,
+}
+
+#[derive(Clone, Debug)]
+struct ApogeeSwipe {
+    mode: ApogeeSwipeMode,
+    net_y: f64,
+    last_delta_y: f64,
+    interactive_started: bool,
+}
+
+#[derive(Clone, Debug)]
+enum SwipeGesture {
+    Pan(PanGesture),
+    Apogee(ApogeeSwipe),
+}
+
 #[derive(Default)]
 pub(super) struct GestureState {
-    swipe: Option<Sequence<PanGesture>>,
+    swipe: Option<Sequence<SwipeGesture>>,
     pinch: Option<Sequence<PinchGesture>>,
     hold: Option<Sequence<()>>,
     axis_pan: Option<AxisPan>,
@@ -179,6 +199,36 @@ where
     B: InputBackend,
 {
     let settings = &session.input.gestures;
+    let apogee_fingers = if session.apogee.is_active() {
+        settings.apogee_close_fingers
+    } else {
+        settings.apogee_open_fingers
+    };
+    let pointer = session
+        .seat
+        .get_pointer()
+        .expect("pointer capability added at seat setup");
+    let apogee_blocked = session.capture.is_active()
+        || !matches!(session.grab, crate::input::grab::Grab::None)
+        || super::pointer::has_active_constraint(session)
+        || pointer.is_grabbed();
+    if settings.enabled
+        && session.apogee_config.enabled
+        && event.fingers() == apogee_fingers
+        && !apogee_blocked
+    {
+        session.gestures.swipe = Some(Sequence::Compositor(SwipeGesture::Apogee(ApogeeSwipe {
+            mode: if session.apogee.is_active() {
+                ApogeeSwipeMode::Close
+            } else {
+                ApogeeSwipeMode::Open
+            },
+            net_y: 0.0,
+            last_delta_y: 0.0,
+            interactive_started: false,
+        })));
+        return;
+    }
     let route = begin_route(
         session,
         event.time_msec(),
@@ -208,7 +258,9 @@ where
             .output
             .and_then(|output| {
                 let camera = session.cameras.get_mut(&output)?;
-                Some(Sequence::Compositor(PanGesture::new(output, camera)))
+                Some(Sequence::Compositor(SwipeGesture::Pan(PanGesture::new(
+                    output, camera,
+                ))))
             })
             .unwrap_or(Sequence::Ignored),
         RouteChoice::Ignored => Sequence::Ignored,
@@ -239,13 +291,37 @@ where
             );
         }
         Sequence::Client(_) => sequence = Sequence::Ignored,
-        Sequence::Compositor(gesture) => {
+        Sequence::Compositor(SwipeGesture::Pan(gesture)) => {
             if let Some(camera) = session.cameras.get_mut(&gesture.output) {
                 let delta = event.delta();
                 gesture.update(camera, event.time_msec(), delta.x, delta.y);
                 session.request_redraw();
             } else {
                 sequence = Sequence::Ignored;
+            }
+        }
+        Sequence::Compositor(SwipeGesture::Apogee(gesture)) => {
+            let delta = event.delta();
+            gesture.net_y += delta.y;
+            gesture.last_delta_y = delta.y;
+            if gesture.mode == ApogeeSwipeMode::Open {
+                const DEADZONE_PX: f64 = 8.0;
+                const OPEN_TRAVEL_PX: f64 = 320.0;
+                let travel = (-gesture.net_y - DEADZONE_PX).max(0.0);
+                if travel > 0.0 && !gesture.interactive_started {
+                    session.nodes.sync_from_space(&session.wayland.space);
+                    gesture.interactive_started = session.apogee.begin_interactive(
+                        &session.wayland.space,
+                        &session.nodes,
+                        session.apogee_config,
+                    );
+                }
+                if gesture.interactive_started {
+                    session
+                        .apogee
+                        .set_interactive_progress((travel / OPEN_TRAVEL_PX) as f32);
+                    session.request_redraw();
+                }
             }
         }
         Sequence::Ignored => {}
@@ -276,7 +352,7 @@ where
                 },
             );
         }
-        Sequence::Compositor(gesture) => {
+        Sequence::Compositor(SwipeGesture::Pan(gesture)) => {
             if let Some(camera) = session.cameras.get_mut(&gesture.output) {
                 gesture.finish(
                     camera,
@@ -287,6 +363,30 @@ where
                 session.request_redraw();
             }
         }
+        Sequence::Compositor(SwipeGesture::Apogee(gesture)) => match gesture.mode {
+            ApogeeSwipeMode::Open if gesture.interactive_started => {
+                const DEADZONE_PX: f64 = 8.0;
+                const OPEN_TRAVEL_PX: f64 = 320.0;
+                let progress =
+                    ((-gesture.net_y - DEADZONE_PX).max(0.0) / OPEN_TRAVEL_PX).clamp(0.0, 1.0);
+                let upward_flick = gesture.last_delta_y < -10.0;
+                let commit = !event.cancelled() && (progress >= 0.4 || upward_flick);
+                session.apogee.finish_interactive(
+                    commit,
+                    session.apogee_config,
+                    crate::frame_clock::monotonic_now(),
+                );
+                session.request_redraw();
+            }
+            ApogeeSwipeMode::Open => {}
+            ApogeeSwipeMode::Close => {
+                if !event.cancelled()
+                    && gesture.net_y >= session.input.gestures.swipe_threshold_px as f64
+                {
+                    crate::apogee::cancel(session);
+                }
+            }
+        },
         Sequence::Client(_) | Sequence::Ignored => {}
     }
 }

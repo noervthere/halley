@@ -201,7 +201,16 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
         crate::input::grab::finish_resize_commit(&mut self.resize_anchor, &mut self.wayland.space);
         crate::nodes::reconcile_landmarks(self, None);
         super::pointer::reconcile_state(self);
-        self.request_redraw();
+        let apogee_preview_commit = self.apogee_config.live_previews
+            && self
+                .nodes
+                .id_for_surface(&root)
+                .is_some_and(|id| self.apogee.contains(id));
+        if apogee_preview_commit {
+            self.apogee.mark_preview_dirty();
+        } else {
+            self.request_redraw();
+        }
     }
 
     fn destroyed(&mut self, surface: &WlSurface) {

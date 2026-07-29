@@ -36,6 +36,9 @@ pub struct GestureSettings {
     pub pan_momentum: bool,
     pub pan_decay_rate: f32,
     pub flick_min_px_per_s: f32,
+    pub swipe_threshold_px: f32,
+    pub apogee_open_fingers: u32,
+    pub apogee_close_fingers: u32,
 }
 
 impl Default for GestureSettings {
@@ -53,6 +56,9 @@ impl Default for GestureSettings {
             pan_momentum: true,
             pan_decay_rate: 6.0,
             flick_min_px_per_s: 200.0,
+            swipe_threshold_px: 120.0,
+            apogee_open_fingers: 4,
+            apogee_close_fingers: 4,
         }
     }
 }

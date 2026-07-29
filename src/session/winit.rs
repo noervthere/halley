@@ -198,6 +198,9 @@ pub fn run() {
     if let Err(err) = super::install_node_decay_timer(&event_loop.handle()) {
         eventline::warn!("nodes: failed to start decay timer: {err}");
     }
+    if let Err(err) = super::install_apogee_preview_timer(&event_loop.handle()) {
+        eventline::warn!("apogee: failed to start preview timer: {err}");
+    }
 
     event_loop
         .handle()
@@ -296,11 +299,26 @@ pub fn run() {
                 // this a client's redraw loop just stalls forever.
                 let output = app.driver.backend.output().clone();
                 let elapsed = app.start_time.elapsed();
-                app.wayland.space.elements().for_each(|window| {
-                    window.send_frame(&output, elapsed, Some(Duration::ZERO), |_, _| {
-                        Some(output.clone())
+                if app.apogee.is_active() {
+                    if app.apogee.take_callback_due(
+                        &output.name(),
+                        target_presentation_time,
+                        app.apogee_config.preview_max_fps,
+                    ) {
+                        crate::apogee::send_preview_frames(
+                            &app.apogee,
+                            &app.nodes,
+                            &output,
+                            elapsed,
+                        );
+                    }
+                } else {
+                    app.wayland.space.elements().for_each(|window| {
+                        window.send_frame(&output, elapsed, Some(Duration::ZERO), |_, _| {
+                            Some(output.clone())
+                        });
                     });
-                });
+                }
                 wayland::layer_shell::send_frames(&output, elapsed);
                 crate::cursor::surface::send_frame(
                     &app.cursor,

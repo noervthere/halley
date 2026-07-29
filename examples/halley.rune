@@ -131,6 +131,12 @@ input:
     pan-momentum true
     pan-decay-rate 6.0
     flick-min-px-per-s 200.0
+
+    # Four-finger Apogee gestures are global unless a pointer constraint or
+    # client grab owns the sequence. Opening is interactive and reversible.
+    swipe-threshold-px 120.0
+    swipe-up-4 "apogee-open"
+    apogee-swipe-down-4 "apogee-close"
   end
 
   touchpad:
