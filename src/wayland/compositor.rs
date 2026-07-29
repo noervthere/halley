@@ -12,13 +12,15 @@ use super::{layer_shell, popup, xdg_shell};
 /// updates the shared popup tree, then delegates role-specific lifecycle to
 /// `layer_shell` or `xdg_shell`. Rendering, focus policy, and backend redraw
 /// scheduling remain outside this protocol callback.
-pub fn commit<D: 'static>(
+pub fn prepare_commit<D: 'static>(surface: &WlSurface) {
+    on_commit_buffer_handler::<D>(surface);
+}
+
+pub fn commit(
     wayland: &mut WaylandState,
     cameras: &crate::camera::OutputCameras,
     surface: &WlSurface,
 ) -> xdg_shell::ToplevelCommit {
-    on_commit_buffer_handler::<D>(surface);
-
     if is_sync_subsurface(surface) {
         return xdg_shell::ToplevelCommit::None;
     }
