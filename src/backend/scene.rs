@@ -130,7 +130,7 @@ pub fn build(
         );
     }
 
-    elements.extend(node_elements(
+    let node_scene = node_elements(
         renderer,
         request.node_renderer,
         request.ui_text,
@@ -142,7 +142,8 @@ pub fn build(
             decorations: request.decorations,
             now: request.target_presentation_time,
         },
-    )?);
+    )?;
+    elements.extend(node_scene.overlay);
 
     let mut stack = request
         .window_close_animations
@@ -171,6 +172,7 @@ pub fn build(
             }
         })
         .collect::<Vec<_>>();
+    stack.extend(node_scene.groups);
     let context = LiveWindowContext {
         space: request.space,
         output,
@@ -196,7 +198,7 @@ pub fn build(
             });
         }
     }
-    stack.sort_by_key(|group| (group.stack_index, group.order));
+    sort_stack_groups(&mut stack);
     elements.extend(stack.into_iter().rev().flat_map(|group| group.elements));
 
     elements.extend(
@@ -703,7 +705,7 @@ fn node_elements(
     node_renderer: &mut super::node::NodeRenderer,
     ui_text: &mut super::text::UiTextRenderer,
     context: NodeElementContext<'_>,
-) -> Result<Vec<SceneElement>, Box<dyn Error>> {
+) -> Result<NodeScene, Box<dyn Error>> {
     let NodeElementContext {
         output,
         output_geometry,
@@ -713,7 +715,7 @@ fn node_elements(
         now,
     } = context;
     let Some(camera) = cameras.get(&output.name()) else {
-        return Ok(Vec::new());
+        return Ok(NodeScene::default());
     };
     let focused = decorations.border_color_focused;
     let make_solid = |rect, color| {
@@ -725,7 +727,7 @@ fn node_elements(
             Kind::Unspecified,
         )
     };
-    let mut elements = Vec::new();
+    let mut overlay = Vec::new();
 
     if nodes.debug.show_focus_ring || nodes.ring_is_previewed(&output.name(), now) {
         let focus_ring = nodes.focus_ring_for_output(&output.name());
@@ -745,7 +747,7 @@ fn node_elements(
                 (x.round() as i32 - 1, y.round() as i32 - 1).into(),
                 (3, 3).into(),
             );
-            elements.push(SceneElement::Border(make_solid(
+            overlay.push(SceneElement::Border(make_solid(
                 rect,
                 smithay::backend::renderer::Color32F::new(focused.r, focused.g, focused.b, 0.82),
             )));
@@ -756,15 +758,16 @@ fn node_elements(
         .collapsed_on_output(&output.name())
         .collect::<Vec<_>>();
     records.sort_by_key(|record| std::cmp::Reverse(record.id.as_u64()));
-    let mut label_text = Vec::new();
-    let mut label_backgrounds = Vec::new();
-    let mut icons = Vec::new();
-    let mut markers = Vec::new();
+    let mut groups = Vec::new();
 
     for record in records {
         let Some(node) = nodes.field.node(record.id) else {
             continue;
         };
+        let mut label_text = Vec::new();
+        let mut label_backgrounds = Vec::new();
+        let mut icons = Vec::new();
+        let mut markers = Vec::new();
         let landmark_position = nodes.landmark_position(record.id, node.pos, now);
         let center = crate::nodes::screen_from_world(landmark_position, camera, output_geometry);
         let local = center - output_geometry.loc;
@@ -915,12 +918,26 @@ fn node_elements(
                 label_text.push(SceneElement::UiText(prepared.element));
             }
         }
+        let mut elements = label_text;
+        elements.extend(label_backgrounds);
+        elements.extend(icons);
+        elements.extend(markers);
+        groups.push(StackGroup {
+            stack_index: record.collapsed_stack_index.unwrap_or(usize::MAX),
+            // Live windows use u64::MAX. At an equal shifted stack index this
+            // lower order keeps the node and its shrinking snapshot behind
+            // the same window that was above it before unmapping.
+            order: 0,
+            elements,
+        });
     }
-    elements.extend(label_text);
-    elements.extend(label_backgrounds);
-    elements.extend(icons);
-    elements.extend(markers);
-    Ok(elements)
+    Ok(NodeScene { overlay, groups })
+}
+
+#[derive(Default)]
+struct NodeScene {
+    overlay: Vec<SceneElement>,
+    groups: Vec<StackGroup>,
 }
 
 fn fit_node_label(
@@ -1030,6 +1047,10 @@ struct StackGroup {
     stack_index: usize,
     order: u64,
     elements: Vec<SceneElement>,
+}
+
+fn sort_stack_groups(groups: &mut [StackGroup]) {
+    groups.sort_by_key(|group| (group.stack_index, group.order));
 }
 
 #[derive(Clone, Copy)]
@@ -1576,6 +1597,54 @@ mod tests {
                 Rectangle::new((0, 0).into(), (1600, 1200).into()),
             ),
             Rectangle::new((40, 40).into(), (400, 200).into())
+        );
+    }
+
+    #[test]
+    fn collapsed_node_keeps_front_middle_and_back_stack_depth() {
+        let presented = |collapsed_index: usize, remaining: &[(usize, u64)]| {
+            let mut groups = remaining
+                .iter()
+                .copied()
+                .map(|(stack_index, order)| StackGroup {
+                    stack_index,
+                    order,
+                    elements: Vec::new(),
+                })
+                .chain([
+                    StackGroup {
+                        stack_index: collapsed_index,
+                        order: 1,
+                        elements: Vec::new(),
+                    },
+                    StackGroup {
+                        stack_index: collapsed_index,
+                        order: 0,
+                        elements: Vec::new(),
+                    },
+                ])
+                .collect::<Vec<_>>();
+            sort_stack_groups(&mut groups);
+            groups
+                .into_iter()
+                .rev()
+                .map(|group| (group.stack_index, group.order))
+                .collect::<Vec<_>>()
+        };
+
+        // u64::MAX identifies a live window. The close snapshot (1) and
+        // resulting node (0) remain on the collapsed window's side of it.
+        assert_eq!(
+            presented(2, &[(0, u64::MAX), (1, u64::MAX)])[..2],
+            [(2, 1), (2, 0)]
+        );
+        assert_eq!(
+            presented(1, &[(0, u64::MAX), (1, u64::MAX)])[..3],
+            [(1, u64::MAX), (1, 1), (1, 0)]
+        );
+        assert_eq!(
+            presented(0, &[(0, u64::MAX), (1, u64::MAX)])[..4],
+            [(1, u64::MAX), (0, u64::MAX), (0, 1), (0, 0)]
         );
     }
 

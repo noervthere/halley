@@ -61,6 +61,7 @@ pub struct NodeRecord {
     pub title: String,
     pub app_id: Option<String>,
     pub collapsed_at: Duration,
+    pub collapsed_stack_index: Option<usize>,
 }
 
 pub struct NodesState {
@@ -238,6 +239,7 @@ impl NodesState {
                 title,
                 app_id,
                 collapsed_at: Duration::ZERO,
+                collapsed_stack_index: None,
             },
         );
     }
@@ -1155,6 +1157,14 @@ pub fn collapse<D: crate::session::SessionDriver>(
     let Some(geometry) = session.wayland.space.element_geometry(&record.window) else {
         return false;
     };
+    let Some(stack_index) = session
+        .wayland
+        .space
+        .elements()
+        .position(|candidate| candidate == &record.window)
+    else {
+        return false;
+    };
     let client_was_focused = session.wayland.focused_window.as_ref() == Some(&record.surface);
     let logical_focus =
         logical_focus_after_collapse(session.nodes.focused(), id, client_was_focused);
@@ -1188,6 +1198,7 @@ pub fn collapse<D: crate::session::SessionDriver>(
     }
     if let Some(record) = session.nodes.record_mut(id) {
         record.geometry = geometry;
+        record.collapsed_stack_index = Some(stack_index);
     }
     let now_ms = session.start_time.elapsed().as_millis() as u64;
     if !session.nodes.set_collapsed(id, true, now_ms) {
@@ -1202,6 +1213,9 @@ pub fn collapse<D: crate::session::SessionDriver>(
         node_position,
         crate::frame_clock::monotonic_now(),
     );
+    session
+        .window_close_animations
+        .retarget_pending_to_node(&record.surface, node_position);
     let _ = crate::session::closing::start(session, &record.surface);
     session.nodes.focus(logical_focus, now_ms);
     crate::session::sync_keyboard_focus(session, serial);
@@ -1237,6 +1251,9 @@ pub fn restore<D: crate::session::SessionDriver>(
     let now = crate::frame_clock::monotonic_now();
     let now_ms = session.start_time.elapsed().as_millis() as u64;
     let _ = session.nodes.set_collapsed(id, false, now_ms);
+    if let Some(record) = session.nodes.record_mut(id) {
+        record.collapsed_stack_index = None;
+    }
     reconcile_landmarks(session, Some(&record.output));
     crate::session::closing::mapped(session, &record.surface);
     crate::window::focus_and_raise(&mut session.wayland, &record.window);

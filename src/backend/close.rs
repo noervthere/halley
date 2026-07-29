@@ -16,6 +16,7 @@ use smithay::wayland::seat::WaylandFocus;
 
 use crate::animation::close::CloseTimeline;
 use crate::camera::OutputCameras;
+use halley_core::field::Vec2;
 
 #[derive(Clone, Copy, Debug)]
 pub struct CloseBorder {
@@ -40,6 +41,7 @@ pub struct CloseSnapshotMetadata {
     pub stack_index: usize,
     pub start_alpha: f32,
     pub border: Option<CloseBorder>,
+    pub collapse_target: Option<Vec2>,
 }
 
 struct CapturedWindow {
@@ -126,6 +128,14 @@ impl WindowCloseAnimations {
         true
     }
 
+    pub fn retarget_pending_to_node(&mut self, surface: &WlSurface, target: Vec2) -> bool {
+        let Some(captured) = self.pending.get_mut(surface) else {
+            return false;
+        };
+        captured.metadata.collapse_target = Some(target);
+        true
+    }
+
     pub fn has_pending(&self, surface: &WlSurface) -> bool {
         self.pending.contains_key(surface)
     }
@@ -169,13 +179,24 @@ impl WindowCloseAnimations {
                 let metadata = &active.captured.metadata;
                 let start = destination_for(metadata, output, output_geometry, cameras)?;
                 let visual = active.timeline.visual_at(now);
-                let destination =
-                    crate::animation::scale_rect_from_center(start, start, visual.scale);
+                let destination = if let Some(target) = metadata.collapse_target {
+                    let camera = cameras.get(&output.name())?;
+                    let target = crate::nodes::screen_from_world(target, camera, output_geometry)
+                        - output_geometry.loc;
+                    collapse_destination(start, target, visual.progress)
+                } else {
+                    crate::animation::scale_rect_from_center(start, start, visual.scale)
+                };
                 if destination.size.w <= 0 || destination.size.h <= 0 || visual.alpha <= 0.0 {
                     return None;
                 }
                 let border = metadata.border.map(|mut border| {
-                    border.width = (f64::from(border.width) * visual.scale).round().max(1.0) as i32;
+                    let scale = if metadata.collapse_target.is_some() {
+                        1.0 - visual.progress
+                    } else {
+                        visual.scale
+                    };
+                    border.width = (f64::from(border.width) * scale).round().max(1.0) as i32;
                     border.color = border.color * visual.alpha;
                     border
                 });
@@ -198,6 +219,35 @@ impl WindowCloseAnimations {
         self.active
             .retain(|_, active| !active.timeline.is_finished_at(now));
     }
+}
+
+fn collapse_destination(
+    start: Rectangle<i32, Physical>,
+    target: smithay::utils::Point<i32, Logical>,
+    progress: f64,
+) -> Rectangle<i32, Physical> {
+    let progress = progress.clamp(0.0, 1.0);
+    let start_center = (
+        start.loc.x as f64 + start.size.w as f64 * 0.5,
+        start.loc.y as f64 + start.size.h as f64 * 0.5,
+    );
+    let center = (
+        start_center.0 + (f64::from(target.x) - start_center.0) * progress,
+        start_center.1 + (f64::from(target.y) - start_center.1) * progress,
+    );
+    let scale = 1.0 - progress;
+    let size = (
+        (f64::from(start.size.w) * scale).round().max(1.0) as i32,
+        (f64::from(start.size.h) * scale).round().max(1.0) as i32,
+    );
+    Rectangle::new(
+        (
+            (center.0 - f64::from(size.0) * 0.5).round() as i32,
+            (center.1 - f64::from(size.1) * 0.5).round() as i32,
+        )
+            .into(),
+        size.into(),
+    )
 }
 
 fn close_enabled(config: Animations) -> bool {
@@ -258,6 +308,26 @@ mod tests {
         animations.window_close.enabled = true;
         animations.window_close.duration_ms = 0;
         assert!(!close_enabled(animations));
+    }
+
+    #[test]
+    fn node_collapse_moves_and_shrinks_into_its_target() {
+        let start = Rectangle::<i32, Physical>::new((100, 200).into(), (800, 600).into());
+        let target = smithay::utils::Point::<i32, Logical>::from((900, 700));
+
+        assert_eq!(collapse_destination(start, target, 0.0), start);
+        let middle = collapse_destination(start, target, 0.5);
+        assert_eq!(middle.size, (400, 300).into());
+        assert_eq!(
+            (
+                middle.loc.x + middle.size.w / 2,
+                middle.loc.y + middle.size.h / 2,
+            ),
+            (700, 600)
+        );
+        let end = collapse_destination(start, target, 1.0);
+        assert_eq!(end.size, (1, 1).into());
+        assert_eq!(end.loc, target.to_physical(1));
     }
 
     #[test]

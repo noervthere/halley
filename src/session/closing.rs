@@ -90,6 +90,7 @@ pub(crate) fn capture_window<D: SessionDriver>(session: &mut Session<D>, window:
         stack_index,
         start_alpha: visual.opening_alpha,
         border,
+        collapse_target: None,
     };
     let animations = &mut session.window_close_animations;
     let capture = session

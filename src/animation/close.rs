@@ -6,6 +6,7 @@ use halley_config::{WindowCloseAnimation, WindowCloseAnimationType};
 pub(crate) struct CloseVisual {
     pub(crate) scale: f64,
     pub(crate) alpha: f32,
+    pub(crate) progress: f64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -42,10 +43,12 @@ impl CloseTimeline {
             WindowCloseAnimationType::Shrink => CloseVisual {
                 scale: 1.0 - progress,
                 alpha: self.start_alpha,
+                progress,
             },
             WindowCloseAnimationType::Fade => CloseVisual {
                 scale: 1.0,
                 alpha: self.start_alpha * (1.0 - progress) as f32,
+                progress,
             },
         }
     }
@@ -89,6 +92,7 @@ mod tests {
             CloseVisual {
                 scale: 1.0,
                 alpha: 0.7,
+                progress: 0.0,
             }
         );
         assert_eq!(
@@ -96,6 +100,7 @@ mod tests {
             CloseVisual {
                 scale: 0.5,
                 alpha: 0.7,
+                progress: 0.5,
             }
         );
         assert_eq!(
@@ -103,6 +108,7 @@ mod tests {
             CloseVisual {
                 scale: 0.0,
                 alpha: 0.7,
+                progress: 1.0,
             }
         );
     }
@@ -120,6 +126,7 @@ mod tests {
             CloseVisual {
                 scale: 1.0,
                 alpha: 0.3,
+                progress: 0.5,
             }
         );
         assert_eq!(
@@ -127,6 +134,7 @@ mod tests {
             CloseVisual {
                 scale: 1.0,
                 alpha: 0.0,
+                progress: 1.0,
             }
         );
     }
