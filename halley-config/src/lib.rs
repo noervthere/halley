@@ -3,6 +3,7 @@ pub mod bootstrap;
 pub mod chord;
 pub mod cursor;
 pub mod decorations;
+pub mod input;
 pub mod keybinds;
 pub mod output;
 pub mod parse;
@@ -22,6 +23,10 @@ pub use bootstrap::{
 pub use chord::parse_chord;
 pub use cursor::{Cursor, parse_cursor};
 pub use decorations::{BorderColor, Decorations, load_decorations, parse_decorations};
+pub use input::{
+    AccelProfile, DeviceOverride, FocusMode, Input, InputParseError, KeyboardConfig, MouseSettings,
+    ScrollMethod, parse_input,
+};
 pub use keybinds::{Action, DefaultTerminal, Keybind, Keybinds, ModifierKey, Modifiers};
 pub use output::{
     OutputConfig, OutputParseError, Vrr, load_outputs, parse_outputs, parse_outputs_checked,

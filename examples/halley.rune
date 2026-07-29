@@ -55,6 +55,58 @@
 # Output reloads are diffed per connector. Changing one output does not force
 # an unchanged output through a redundant mode set.
 
+# Keyboard, pointer-focus, and physical mouse settings. Keyboard and focus
+# policy apply in both real-hardware and nested sessions. Physical mouse
+# settings apply only when Halley owns libinput devices on a tty.
+input:
+  # Key-repeat frequency in presses per second and the delay before repeating.
+  # A rate of 0 disables repeat. Both values update without restarting.
+  repeat-rate 30
+  repeat-delay 500
+
+  # "click" keeps keyboard focus where you click. "hover" follows the pointer
+  # across windows and outputs, but never raises windows merely by hovering.
+  focus-mode "click"
+
+  # Whether clicking a window also brings it to the top. When false, the click
+  # still focuses and activates the window without changing stacking order.
+  raise-on-click true
+
+  keyboard:
+    # Standard XKB names. Empty variant/options/model use XKB defaults.
+    layout "us"
+    variant ""
+    options ""
+    model ""
+  end
+
+  mouse:
+    # Every setting is optional. Omitted values preserve each device's own
+    # libinput default, including after a live reload removes an old setting.
+    #
+    # enabled true
+    # natural-scroll false
+    # accel-speed 0.0
+    # accel-profile "adaptive" # "adaptive" or "flat"
+    # scroll-method "none"     # "none", "two-finger", "edge", or
+    #                          # "on-button-down"
+    # scroll-button 274        # Linux input button code
+    # left-handed false
+    # middle-emulation false
+  end
+
+  # Optional settings for one ordinary mouse. Names match libinput's device
+  # name exactly, ignoring ASCII letter case; partial names do not match.
+  # Values here override only the specified fields from `mouse:` above.
+  #
+  # devices:
+  #   "Logitech MX Master 3":
+  #     accel-speed 0.6
+  #     natural-scroll true
+  #   end
+  # end
+end
+
 # Cursor themes use the standard Xcursor search path and inheritance rules.
 # Changes are applied immediately to Halley's cursor and exported to programs
 # launched after the reload.

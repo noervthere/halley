@@ -4,9 +4,9 @@ use std::path::Path;
 use rune_cfg::RuneConfig;
 
 use crate::{
-    Animations, Cursor, Decorations, Keybinds, OutputConfig, OutputParseError, Screenshot, Zoom,
-    parse_animations, parse_cursor, parse_decorations, parse_keybinds, parse_outputs_checked,
-    parse_screenshot, parse_zoom,
+    Animations, Cursor, Decorations, Input, InputParseError, Keybinds, OutputConfig,
+    OutputParseError, Screenshot, Zoom, parse_animations, parse_cursor, parse_decorations,
+    parse_input, parse_keybinds, parse_outputs_checked, parse_screenshot, parse_zoom,
 };
 
 /// One validated snapshot of every setting the running compositor currently
@@ -19,6 +19,7 @@ pub struct RuntimeConfig {
     pub zoom: Zoom,
     pub screenshot: Screenshot,
     pub cursor: Cursor,
+    pub input: Input,
     pub animations: Animations,
     pub outputs: Vec<OutputConfig>,
 }
@@ -27,6 +28,7 @@ pub struct RuntimeConfig {
 pub enum RuntimeConfigError {
     Rune(rune_cfg::RuneError),
     Keybind(crate::ParseError),
+    Input(InputParseError),
     Output(OutputParseError),
 }
 
@@ -35,6 +37,7 @@ impl fmt::Display for RuntimeConfigError {
         match self {
             Self::Rune(err) => write!(f, "{err}"),
             Self::Keybind(err) => write!(f, "{err}"),
+            Self::Input(err) => write!(f, "{err}"),
             Self::Output(err) => write!(f, "{err}"),
         }
     }
@@ -60,6 +63,12 @@ impl From<OutputParseError> for RuntimeConfigError {
     }
 }
 
+impl From<InputParseError> for RuntimeConfigError {
+    fn from(value: InputParseError) -> Self {
+        Self::Input(value)
+    }
+}
+
 pub fn parse_runtime_config(config: &RuneConfig) -> Result<RuntimeConfig, RuntimeConfigError> {
     Ok(RuntimeConfig {
         keybinds: parse_keybinds(config)?,
@@ -67,6 +76,7 @@ pub fn parse_runtime_config(config: &RuneConfig) -> Result<RuntimeConfig, Runtim
         zoom: parse_zoom(config),
         screenshot: parse_screenshot(config),
         cursor: parse_cursor(config),
+        input: parse_input(config)?,
         animations: parse_animations(config),
         outputs: parse_outputs_checked(config)?,
     })
@@ -106,6 +116,11 @@ cursor:
   hide-after-ms 750
 end
 
+input:
+  repeat-rate 45
+  focus-mode "hover"
+end
+
 decorations:
   border:
     size 7
@@ -132,6 +147,8 @@ end
         assert_eq!(runtime.cursor.size, 32);
         assert!(runtime.cursor.hide_when_typing);
         assert_eq!(runtime.cursor.hide_after_ms, Some(750));
+        assert_eq!(runtime.input.repeat_rate, 45);
+        assert_eq!(runtime.input.focus_mode, crate::FocusMode::Hover);
         assert_eq!(runtime.decorations.border_width_px, 7);
         assert!(!runtime.animations.enabled);
         assert_eq!(runtime.keybinds.binds.len(), 1);
