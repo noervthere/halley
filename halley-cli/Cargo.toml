@@ -9,3 +9,4 @@ path = "src/main.rs"
 
 [dependencies]
 halley-ipc = { path = "../halley-ipc" }
+serde_json = "1"

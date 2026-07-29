@@ -1,7 +1,9 @@
 use std::fmt::Write;
 use std::process::ExitCode;
 
-use halley_ipc::{ModeInfo, OutputInfo, Request, Response};
+use halley_ipc::{
+    ModeInfo, NodeInfo, NodeMoveDirection, NodeRequest, NodeSelector, OutputInfo, Request, Response,
+};
 
 /// Hand-rolled arg parsing, no `clap` - matches old halley's own
 /// `halley-cli` (which had the same "no dependency without a concrete
@@ -11,23 +13,58 @@ Usage: halleyctl <command>
 
 Commands:
   outputs        List connected monitors and their current mode/position
+  node           List, inspect, focus, move, collapse, restore, toggle, or close nodes
 
 Options:
   -h, --help     Print this message
   -V, --version  Print both halleyctl's and the running compositor's version
 ";
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+const NODE_HELP: &str = "\
+Usage:
+  halleyctl node list [-o OUTPUT] [--json]
+  halleyctl node info [SELECTOR] [-o OUTPUT] [--json]
+  halleyctl node focus [SELECTOR] [-o OUTPUT]
+  halleyctl node move left|right|up|down [SELECTOR] [-o OUTPUT]
+  halleyctl node collapse [SELECTOR] [-o OUTPUT]
+  halleyctl node restore [SELECTOR] [-o OUTPUT]
+  halleyctl node toggle [SELECTOR] [-o OUTPUT]
+  halleyctl node close [SELECTOR] [-o OUTPUT]
+
+Selectors:
+  focused, latest, ID, id:ID, title:TEXT, app:APP_ID
+";
+
+#[derive(Clone, Debug, PartialEq)]
 enum Action {
     Outputs,
+    Node {
+        request: NodeRequest,
+        output: NodeOutput,
+    },
+    NodeHelp,
     Version,
     Help,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NodeOutput {
+    List { json: bool },
+    Info { json: bool },
+    Ack,
 }
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match parse_args(&args) {
         Ok(Action::Outputs) => query(Request::Outputs, print_outputs),
+        Ok(Action::Node { request, output }) => query(Request::Node(request), |response| {
+            print_node(response, output)
+        }),
+        Ok(Action::NodeHelp) => {
+            print!("{NODE_HELP}");
+            ExitCode::SUCCESS
+        }
         Ok(Action::Version) => query(Request::Version, print_version),
         Ok(Action::Help) => {
             print!("{HELP}");
@@ -44,7 +81,13 @@ fn parse_args(args: &[String]) -> Result<Action, String> {
     let action = match args.first().map(String::as_str) {
         None | Some("--help") | Some("-h") => Action::Help,
         Some("--version") | Some("-V") => Action::Version,
-        Some("outputs") => Action::Outputs,
+        Some("outputs") => {
+            if let Some(unexpected) = args.get(1) {
+                return Err(format!("unexpected argument {unexpected:?}"));
+            }
+            Action::Outputs
+        }
+        Some("node") => return parse_node(&args[1..]),
         Some(other) => return Err(format!("unknown command {other:?}")),
     };
 
@@ -53,6 +96,187 @@ fn parse_args(args: &[String]) -> Result<Action, String> {
     }
 
     Ok(action)
+}
+
+fn parse_node(args: &[String]) -> Result<Action, String> {
+    let Some(command) = args.first().map(String::as_str) else {
+        return Ok(Action::NodeHelp);
+    };
+    if command == "-h"
+        || command == "--help"
+        || args[1..].iter().any(|arg| arg == "-h" || arg == "--help")
+    {
+        return Ok(Action::NodeHelp);
+    }
+    match command {
+        "list" => {
+            let (selector, output, json) = parse_node_flags(&args[1..], false)?;
+            debug_assert!(selector.is_none());
+            Ok(Action::Node {
+                request: NodeRequest::List { output },
+                output: NodeOutput::List { json },
+            })
+        }
+        "info" | "focus" | "collapse" | "restore" | "toggle" | "close" => {
+            let (selector, output, json) = parse_node_flags(&args[1..], true)?;
+            if json && command != "info" {
+                return Err("--json is supported only by node list and node info".to_string());
+            }
+            let request = match command {
+                "info" => NodeRequest::Info { selector, output },
+                "focus" => NodeRequest::Focus { selector, output },
+                "collapse" => NodeRequest::Collapse { selector, output },
+                "restore" => NodeRequest::Restore { selector, output },
+                "toggle" => NodeRequest::Toggle { selector, output },
+                "close" => NodeRequest::Close { selector, output },
+                _ => unreachable!(),
+            };
+            Ok(Action::Node {
+                request,
+                output: if command == "info" {
+                    NodeOutput::Info { json }
+                } else {
+                    NodeOutput::Ack
+                },
+            })
+        }
+        "move" => {
+            let direction = match args.get(1).map(String::as_str) {
+                Some("left") => NodeMoveDirection::Left,
+                Some("right") => NodeMoveDirection::Right,
+                Some("up") => NodeMoveDirection::Up,
+                Some("down") => NodeMoveDirection::Down,
+                Some(other) => return Err(format!("unknown node move direction {other:?}")),
+                None => return Err("node move requires left, right, up, or down".to_string()),
+            };
+            let (selector, output, json) = parse_node_flags(&args[2..], true)?;
+            if json {
+                return Err("--json is supported only by node list and node info".to_string());
+            }
+            Ok(Action::Node {
+                request: NodeRequest::Move {
+                    direction,
+                    selector,
+                    output,
+                },
+                output: NodeOutput::Ack,
+            })
+        }
+        other => Err(format!("unknown node command {other:?}")),
+    }
+}
+
+fn parse_node_flags(
+    args: &[String],
+    allow_selector: bool,
+) -> Result<(Option<NodeSelector>, Option<String>, bool), String> {
+    let mut selector = None;
+    let mut output = None;
+    let mut json = false;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--json" => json = true,
+            "-o" | "--output" => {
+                index += 1;
+                let value = args
+                    .get(index)
+                    .ok_or_else(|| "node output option requires a connector name".to_string())?;
+                if output.replace(value.clone()).is_some() {
+                    return Err("node output option was specified more than once".to_string());
+                }
+            }
+            value if value.starts_with('-') => {
+                return Err(format!("unknown node option {value:?}"));
+            }
+            value if allow_selector && selector.is_none() => {
+                selector = Some(parse_selector(value)?);
+            }
+            value if !allow_selector => return Err(format!("unexpected argument {value:?}")),
+            value => return Err(format!("unexpected extra selector {value:?}")),
+        }
+        index += 1;
+    }
+    Ok((selector, output, json))
+}
+
+fn parse_selector(value: &str) -> Result<NodeSelector, String> {
+    match value {
+        _ if value.eq_ignore_ascii_case("focused") => Ok(NodeSelector::Focused),
+        _ if value.eq_ignore_ascii_case("latest") => Ok(NodeSelector::Latest),
+        _ if value.parse::<u64>().is_ok() => Ok(NodeSelector::Id(
+            value.parse().expect("checked numeric selector"),
+        )),
+        _ if value.starts_with("id:") => value[3..]
+            .parse::<u64>()
+            .map(NodeSelector::Id)
+            .map_err(|_| format!("invalid node id selector {value:?}")),
+        _ if value.starts_with("title:") => Ok(NodeSelector::Title(value[6..].to_string())),
+        _ if value.starts_with("app:") => Ok(NodeSelector::App(value[4..].to_string())),
+        _ => Err(format!("invalid node selector {value:?}")),
+    }
+}
+
+fn print_node(response: Response, output: NodeOutput) -> ExitCode {
+    match (response, output) {
+        (Response::NodeList(list), NodeOutput::List { json: true }) => {
+            match serde_json::to_string_pretty(&list) {
+                Ok(json) => println!("{json}"),
+                Err(err) => {
+                    eprintln!("halleyctl: failed to encode node list: {err}");
+                    return ExitCode::FAILURE;
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        (Response::NodeList(list), NodeOutput::List { json: false }) => {
+            for group in list.outputs {
+                println!("{}", group.output);
+                for node in group.nodes {
+                    println!(
+                        "  {}  {:<8}  {}{}",
+                        node.id,
+                        format!("{:?}", node.state).to_ascii_lowercase(),
+                        node.title,
+                        node.app_id
+                            .as_deref()
+                            .map(|app| format!(" ({app})"))
+                            .unwrap_or_default()
+                    );
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        (Response::NodeInfo(info), NodeOutput::Info { json: true }) => {
+            match serde_json::to_string_pretty(&info) {
+                Ok(json) => println!("{json}"),
+                Err(err) => {
+                    eprintln!("halleyctl: failed to encode node info: {err}");
+                    return ExitCode::FAILURE;
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        (Response::NodeInfo(info), NodeOutput::Info { json: false }) => {
+            print_node_info(&info);
+            ExitCode::SUCCESS
+        }
+        (Response::Ack, NodeOutput::Ack) => ExitCode::SUCCESS,
+        (response, _) => print_unexpected(response),
+    }
+}
+
+fn print_node_info(node: &NodeInfo) {
+    println!("Node {}", node.id);
+    println!("  Title: {}", node.title);
+    println!("  App ID: {}", node.app_id.as_deref().unwrap_or("(none)"));
+    println!("  Output: {}", node.output.as_deref().unwrap_or("(none)"));
+    println!("  State: {:?}", node.state);
+    println!(
+        "  Geometry: {:.0}, {:.0}  {:.0}x{:.0}",
+        node.pos_x, node.pos_y, node.width, node.height
+    );
+    println!("  Focused: {}", node.focused);
 }
 
 /// Sends `req` to the running compositor and hands the response to
@@ -225,6 +449,84 @@ mod tests {
             parse_args(&args(&["--version", "extra"])),
             Err("unexpected argument \"extra\"".to_string())
         );
+    }
+
+    #[test]
+    fn parser_covers_old_node_commands_and_explicit_state_controls() {
+        assert_eq!(parse_args(&args(&["node"])), Ok(Action::NodeHelp));
+        assert_eq!(
+            parse_args(&args(&["node", "focus", "--help"])),
+            Ok(Action::NodeHelp)
+        );
+        assert_eq!(
+            parse_args(&args(&["node", "list", "-o", "DP-1", "--json"])),
+            Ok(Action::Node {
+                request: NodeRequest::List {
+                    output: Some("DP-1".into())
+                },
+                output: NodeOutput::List { json: true },
+            })
+        );
+        assert_eq!(
+            parse_args(&args(&["node", "focus", "42"])),
+            Ok(Action::Node {
+                request: NodeRequest::Focus {
+                    selector: Some(NodeSelector::Id(42)),
+                    output: None,
+                },
+                output: NodeOutput::Ack,
+            })
+        );
+        assert_eq!(
+            parse_args(&args(&["node", "collapse", "focused"])),
+            Ok(Action::Node {
+                request: NodeRequest::Collapse {
+                    selector: Some(NodeSelector::Focused),
+                    output: None,
+                },
+                output: NodeOutput::Ack,
+            })
+        );
+        assert_eq!(
+            parse_args(&args(&["node", "restore", "latest", "-o", "DP-1"])),
+            Ok(Action::Node {
+                request: NodeRequest::Restore {
+                    selector: Some(NodeSelector::Latest),
+                    output: Some("DP-1".into()),
+                },
+                output: NodeOutput::Ack,
+            })
+        );
+        assert_eq!(
+            parse_args(&args(&["node", "toggle", "id:7"])),
+            Ok(Action::Node {
+                request: NodeRequest::Toggle {
+                    selector: Some(NodeSelector::Id(7)),
+                    output: None,
+                },
+                output: NodeOutput::Ack,
+            })
+        );
+        assert_eq!(
+            parse_args(&args(&[
+                "node",
+                "move",
+                "left",
+                "app:firefox",
+                "--output",
+                "DP-2"
+            ])),
+            Ok(Action::Node {
+                request: NodeRequest::Move {
+                    direction: NodeMoveDirection::Left,
+                    selector: Some(NodeSelector::App("firefox".into())),
+                    output: Some("DP-2".into()),
+                },
+                output: NodeOutput::Ack,
+            })
+        );
+        assert!(parse_args(&args(&["node", "close", "title:term", "--json"])).is_err());
+        assert!(parse_args(&args(&["node", "collapse", "--json"])).is_err());
     }
 
     fn mode(width: i32, height: i32, refresh_millihz: i32, preferred: bool) -> ModeInfo {
