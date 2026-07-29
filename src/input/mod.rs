@@ -1,6 +1,7 @@
 pub mod config;
 pub mod grab;
 pub mod keybinds;
+pub mod libinput;
 pub mod pointer;
 pub mod presentation;
 pub mod zoom;

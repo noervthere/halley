@@ -27,6 +27,7 @@ use super::tty_frame::{EstimatedVblankTimer, OutputFrameState};
 
 struct TtyDriver {
     backend: TtyBackend,
+    physical_input: crate::input::libinput::PhysicalMouseDevices,
     loop_signal: LoopSignal,
     output_frames: HashMap<Output, OutputFrameState>,
     paused: bool,
@@ -143,6 +144,7 @@ pub fn run(session_mode: bool) {
 
     let mut driver = TtyDriver {
         backend,
+        physical_input: crate::input::libinput::PhysicalMouseDevices::default(),
         loop_signal,
         output_frames,
         paused: false,
@@ -237,6 +239,15 @@ pub fn run(session_mode: bool) {
     event_loop
         .handle()
         .insert_source(libinput_backend, move |event, _, app| {
+            match &event {
+                smithay::backend::input::InputEvent::DeviceAdded { device } => {
+                    app.driver.physical_input.added(device.clone(), &app.input)
+                }
+                smithay::backend::input::InputEvent::DeviceRemoved { device } => {
+                    app.driver.physical_input.removed(device)
+                }
+                _ => {}
+            }
             super::input::handle(app, &event, &socket_name);
         })
         .expect("failed to insert libinput source");
@@ -370,6 +381,7 @@ fn queue_output_redraw(app: &mut TtyApp, output: &Output) {
 
 fn apply_runtime_config(app: &mut TtyApp, config: halley_config::RuntimeConfig) {
     app.apply_common_config(&config);
+    app.driver.physical_input.reload(&app.input);
 
     if app.driver.paused {
         app.driver.pending_output_config = Some(config.outputs);
