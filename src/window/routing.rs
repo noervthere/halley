@@ -19,9 +19,7 @@ pub(crate) fn initial_window_placement(
     primary_output: &Output,
     window_size: Size<i32, Logical>,
 ) -> InitialWindowPlacement {
-    let output = crate::wayland::focus::selected_output(wayland)
-        .cloned()
-        .unwrap_or_else(|| primary_output.clone());
+    let output = crate::wayland::focus::output_for_new_surface(wayland, None, primary_output);
     let location = centered_location_for_size(wayland, cameras, &output, window_size);
     InitialWindowPlacement { output, location }
 }

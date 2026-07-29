@@ -401,17 +401,12 @@ impl<D: SessionDriver> WlrLayerShellHandler for Session<D> {
         _layer: Layer,
         namespace: String,
     ) {
-        let output = output
-            .as_ref()
-            .and_then(Output::from_resource)
-            .or_else(|| {
-                self.wayland
-                    .space
-                    .output_under(self.pointer.position())
-                    .next()
-                    .cloned()
-            })
-            .unwrap_or_else(|| self.driver.primary_output().clone());
+        let requested = output.as_ref().and_then(Output::from_resource);
+        let output = wayland::focus::output_for_new_surface(
+            &self.wayland,
+            requested,
+            self.driver.primary_output(),
+        );
         wayland::layer_shell::new_surface(&mut self.wayland, surface, Some(output), namespace);
         self.request_redraw();
     }

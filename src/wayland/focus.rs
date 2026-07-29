@@ -118,6 +118,22 @@ pub fn selected_output(wayland: &WaylandState) -> Option<&Output> {
     selected_output_in(&wayland.space, wayland.focused_output.as_deref())
 }
 
+/// Resolves the output for a newly created surface. A client-selected output
+/// wins while it remains mapped; otherwise every surface type follows the
+/// compositor's click-focused output.
+pub fn output_for_new_surface(
+    wayland: &WaylandState,
+    requested: Option<Output>,
+    fallback: &Output,
+) -> Output {
+    output_for_new_surface_in(
+        &wayland.space,
+        wayland.focused_output.as_deref(),
+        requested,
+        fallback,
+    )
+}
+
 fn selected_output_in<'a>(
     space: &'a Space<Window>,
     focused_output: Option<&str>,
@@ -125,6 +141,18 @@ fn selected_output_in<'a>(
     focused_output
         .and_then(|name| space.outputs().find(|output| output.name() == name))
         .or_else(|| space.outputs().next())
+}
+
+fn output_for_new_surface_in(
+    space: &Space<Window>,
+    focused_output: Option<&str>,
+    requested: Option<Output>,
+    fallback: &Output,
+) -> Output {
+    requested
+        .filter(|candidate| space.outputs().any(|output| output == candidate))
+        .or_else(|| selected_output_in(space, focused_output).cloned())
+        .unwrap_or_else(|| fallback.clone())
 }
 
 pub fn forget_layer(wayland: &mut WaylandState, surface: &WlSurface) {
@@ -224,6 +252,34 @@ mod tests {
         assert_eq!(
             selected_output_in(&space, Some("unplugged")).map(Output::name),
             Some("DP-1".to_string())
+        );
+    }
+
+    #[test]
+    fn new_surfaces_prefer_requested_then_clicked_then_fallback_output() {
+        let left = output("DP-1", Size::from((2560, 1440)));
+        let right = output("DP-2", Size::from((1920, 1200)));
+        let stale = output("disconnected", Size::from((1024, 768)));
+        let fallback = output("fallback", Size::from((800, 600)));
+        let mut space = Space::<Window>::default();
+        space.map_output(&left, (0, 0));
+        space.map_output(&right, (2560, 0));
+
+        assert_eq!(
+            output_for_new_surface_in(&space, Some("DP-2"), Some(left), &fallback).name(),
+            "DP-1"
+        );
+        assert_eq!(
+            output_for_new_surface_in(&space, Some("DP-2"), None, &fallback).name(),
+            "DP-2"
+        );
+        assert_eq!(
+            output_for_new_surface_in(&space, Some("DP-2"), Some(stale), &fallback).name(),
+            "DP-2"
+        );
+        assert_eq!(
+            output_for_new_surface_in(&Space::default(), None, None, &fallback).name(),
+            "fallback"
         );
     }
 
