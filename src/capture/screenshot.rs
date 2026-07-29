@@ -53,6 +53,7 @@ pub fn save_region<D: SessionDriver>(
     let decorations = &session.decorations;
     let cameras = &session.cameras;
     let window_open_animations = &session.window_open_animations;
+    let window_close_animations = &mut session.window_close_animations;
     let fullscreen = &session.fullscreen;
     let fullscreen_textures = &mut session.fullscreen_textures;
     let images = driver.with_renderer(|renderer| -> Result<Vec<OutputImage>, Box<dyn Error>> {
@@ -76,6 +77,7 @@ pub fn save_region<D: SessionDriver>(
                         decorations,
                         cameras,
                         window_open_animations,
+                        window_close_animations: &mut *window_close_animations,
                         fullscreen,
                         fullscreen_textures: &mut *fullscreen_textures,
                     },
@@ -254,6 +256,7 @@ where
     let decorations = &session.decorations;
     let cameras = &session.cameras;
     let window_open_animations = &session.window_open_animations;
+    let window_close_animations = &mut session.window_close_animations;
     let fullscreen = &session.fullscreen;
     let fullscreen_textures = &mut session.fullscreen_textures;
     driver.with_renderer(|renderer| {
@@ -274,6 +277,7 @@ where
                 decorations,
                 cameras,
                 window_open_animations,
+                window_close_animations,
                 fullscreen,
                 fullscreen_textures,
             },

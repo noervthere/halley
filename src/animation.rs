@@ -7,6 +7,7 @@ use smithay::utils::{Physical, Point, Rectangle};
 
 const MAX_OVERSHOOT_SCALE: f64 = 1.08;
 
+pub(crate) mod close;
 mod launch;
 mod motion;
 
@@ -361,7 +362,7 @@ impl WindowOpenAnimations {
     }
 }
 
-fn scale_rect_from_center(
+pub(crate) fn scale_rect_from_center(
     rect: Rectangle<i32, Physical>,
     bounds: Rectangle<i32, Physical>,
     scale: f64,
@@ -388,7 +389,7 @@ fn scale_rect_from_center(
     )
 }
 
-fn map_rect(
+pub(crate) fn map_rect(
     rect: Rectangle<i32, Physical>,
     source: Rectangle<i32, Physical>,
     destination: Rectangle<i32, Physical>,

@@ -74,6 +74,7 @@ pub struct Session<D: SessionDriver> {
     pub pointer_constraints: super::pointer::PointerConstraintLifecycle,
     pub opening_origins: super::opening::OpeningOrigins,
     pub window_open_animations: crate::animation::WindowOpenAnimations,
+    pub window_close_animations: crate::backend::close::WindowCloseAnimations,
     pub fullscreen: crate::wayland::fullscreen::FullscreenManager,
     pub fullscreen_textures: crate::backend::fullscreen_texture::FullscreenTextureTransitions,
     pub xwayland: crate::xwayland::State,
@@ -127,6 +128,7 @@ impl<D: SessionDriver> Session<D> {
         self.zoom = config.zoom;
         self.screenshot = config.screenshot.clone();
         self.window_open_animations.reload(config.animations);
+        self.window_close_animations.reload(config.animations);
         if self.fullscreen.reload(config.animations) {
             self.fullscreen_textures.clear();
         }

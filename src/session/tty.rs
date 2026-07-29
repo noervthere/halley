@@ -175,6 +175,9 @@ pub fn run(session_mode: bool) {
         window_open_animations: crate::animation::WindowOpenAnimations::new(
             runtime_config.animations,
         ),
+        window_close_animations: crate::backend::close::WindowCloseAnimations::new(
+            runtime_config.animations,
+        ),
         fullscreen: crate::wayland::fullscreen::FullscreenManager::new(runtime_config.animations),
         fullscreen_textures:
             crate::backend::fullscreen_texture::FullscreenTextureTransitions::default(),
@@ -456,7 +459,11 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
     let fullscreen_animating = app
         .fullscreen
         .is_animating_on_output(output, target_presentation_time);
-    let animating = camera_animating || window_animating || fullscreen_animating;
+    let closing_animating = app
+        .window_close_animations
+        .is_animating_on_output(output, target_presentation_time);
+    let animating =
+        camera_animating || window_animating || closing_animating || fullscreen_animating;
     if fullscreen_animating && pointer_is_on_output {
         super::pointer::update_client_state(app, app.start_time.elapsed().as_millis() as u32);
     }
@@ -482,6 +489,7 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
             decorations: &app.decorations,
             cameras: &app.cameras,
             window_open_animations: &app.window_open_animations,
+            window_close_animations: &mut app.window_close_animations,
             fullscreen: &app.fullscreen,
             fullscreen_textures: &mut app.fullscreen_textures,
         },
@@ -493,6 +501,8 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
         }
     };
     app.window_open_animations.cleanup(target_presentation_time);
+    app.window_close_animations
+        .cleanup(target_presentation_time);
     if app.cleanup_fullscreen(target_presentation_time) {
         super::sync_keyboard_focus(app, smithay::utils::SERIAL_COUNTER.next_serial());
         super::pointer::update_client_state(app, app.start_time.elapsed().as_millis() as u32);

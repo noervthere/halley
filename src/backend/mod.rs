@@ -1,4 +1,5 @@
 mod capture_overlay;
+pub mod close;
 pub mod dmabuf;
 pub mod fullscreen_texture;
 pub mod rescale;
@@ -187,6 +188,7 @@ pub struct RenderRequest<'a> {
     pub decorations: &'a Decorations,
     pub cameras: &'a crate::camera::OutputCameras,
     pub window_open_animations: &'a crate::animation::WindowOpenAnimations,
+    pub window_close_animations: &'a mut crate::backend::close::WindowCloseAnimations,
     pub fullscreen: &'a crate::wayland::fullscreen::FullscreenManager,
     pub fullscreen_textures:
         &'a mut crate::backend::fullscreen_texture::FullscreenTextureTransitions,

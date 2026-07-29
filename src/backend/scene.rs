@@ -23,6 +23,9 @@ render_elements! {
     Rescaled=super::rescale::RescaledElement,
     Cropped=CropRenderElement<super::rescale::RescaledElement>,
     FullscreenBlend=super::fullscreen_texture::FullscreenBlendElement,
+    Closing=smithay::backend::renderer::element::texture::TextureRenderElement<
+        smithay::backend::renderer::gles::GlesTexture
+    >,
     CaptureOverlay=super::capture_overlay::CaptureOverlayElement,
     Border=SolidColorRenderElement,
     Layer=WaylandSurfaceRenderElement<GlesRenderer>,
@@ -66,153 +69,61 @@ pub fn build(
         );
     }
 
-    // Space iterates bottom-to-top while render element lists are
-    // front-to-back. Reversing here preserves the compositor's window order.
-    for window in request.space.elements().rev() {
+    let mut stack = request
+        .window_close_animations
+        .renders_for_output(
+            renderer,
+            output,
+            output_geometry,
+            request.cameras,
+            request.target_presentation_time,
+        )
+        .into_iter()
+        .map(|closing| {
+            let mut elements = Vec::new();
+            if let Some(border) = closing.border {
+                elements.extend(
+                    super::border_strips(closing.destination, border.width, border.color)
+                        .into_iter()
+                        .map(SceneElement::Border),
+                );
+            }
+            elements.push(SceneElement::Closing(closing.texture));
+            StackGroup {
+                stack_index: closing.stack_index,
+                order: closing.order,
+                elements,
+            }
+        })
+        .collect::<Vec<_>>();
+    let context = LiveWindowContext {
+        space: request.space,
+        output,
+        output_size,
+        camera_center,
+        zoom_scale,
+        target_presentation_time: request.target_presentation_time,
+        focused: request.focused,
+        decorations: request.decorations,
+        window_open_animations: request.window_open_animations,
+        fullscreen: request.fullscreen,
+    };
+    for (stack_index, window) in request.space.elements().enumerate() {
         if !crate::wayland::window_is_on_output(window, output, primary_output) {
             continue;
         }
-        let Some(geometry) = request.space.element_geometry(window) else {
-            continue;
-        };
-        let Some(location) = request.space.element_location(window) else {
-            continue;
-        };
-        let Some(window_surface) = window.wl_surface() else {
-            continue;
-        };
-        let scaled_bbox = super::camera_rect(
-            geometry.to_physical(1),
-            camera_center,
-            output_size,
-            zoom_scale,
-        );
-        let opening_is_animating = request
-            .window_open_animations
-            .is_animating(window_surface.as_ref(), request.target_presentation_time);
-        let opening_visual = request
-            .window_open_animations
-            .visual(
-                window_surface.as_ref(),
-                request.target_presentation_time,
-                scaled_bbox,
-            )
-            .unwrap_or_default();
-        let fullscreen = request.fullscreen.presentation(
-            window_surface.as_ref(),
-            output,
-            request.target_presentation_time,
-        );
-        let presentation_bbox = fullscreen
-            .map(|presentation| {
-                let windowed_bbox = presentation
-                    .windowed_geometry
-                    .map(|geometry| {
-                        super::camera_rect(
-                            geometry.to_physical(1),
-                            camera_center,
-                            output_size,
-                            zoom_scale,
-                        )
-                    })
-                    .unwrap_or_else(|| presentation.fullscreen_rect(output_size));
-                presentation.client_rect(windowed_bbox, output_size)
-            })
-            .unwrap_or(scaled_bbox);
-        let animated_bbox = opening_visual.transform_rect(presentation_bbox, presentation_bbox);
-        if animated_bbox.size.w == 0 || animated_bbox.size.h == 0 {
-            continue;
-        }
-
-        // Space locations refer to window geometry while surface trees begin
-        // at the underlying surface origin. Popups remain uncropped because
-        // they may legitimately extend beyond the toplevel geometry.
-        let surface_location = super::window_surface_location(location, window.geometry());
-        let (popup_elements, surface_elements) = super::window_surface_elements(
-            renderer,
-            window,
-            surface_location,
-            opening_visual.alpha(),
-        );
-        elements.extend(popup_elements.into_iter().map(|surface_element| {
-            let native_geometry = surface_element.geometry(Scale::from(1.0));
-            let destination = if fullscreen.is_some() {
-                let destination =
-                    map_rect(native_geometry, geometry.to_physical(1), presentation_bbox);
-                opening_visual.transform_rect(destination, presentation_bbox)
-            } else {
-                let final_destination =
-                    super::camera_rect(native_geometry, camera_center, output_size, zoom_scale);
-                opening_visual.transform_rect(final_destination, scaled_bbox)
-            };
-            SceneElement::Rescaled(super::rescale::RescaledElement::new(
-                surface_element,
-                destination,
-            ))
-        }));
-        let fullscreen_blend = if let Some(presentation) = fullscreen {
-            match request.fullscreen_textures.blend_element(
-                renderer,
-                window,
-                animated_bbox,
-                presentation.transition_completion,
-                opening_visual.alpha(),
-            ) {
-                Ok(blend) => blend,
-                Err(err) => {
-                    eventline::warn!("fullscreen: failed to blend window textures: {err}");
-                    None
-                }
-            }
-        } else {
-            None
-        };
-        if let Some(blend) = fullscreen_blend {
-            elements.push(SceneElement::FullscreenBlend(blend));
-        } else {
-            elements.extend(surface_elements.into_iter().filter_map(|surface_element| {
-                let native_geometry = surface_element.geometry(Scale::from(1.0));
-                let destination = if fullscreen.is_some() {
-                    let destination =
-                        map_rect(native_geometry, geometry.to_physical(1), presentation_bbox);
-                    opening_visual.transform_rect(destination, presentation_bbox)
-                } else {
-                    let final_destination =
-                        super::camera_rect(native_geometry, camera_center, output_size, zoom_scale);
-                    opening_visual.transform_rect(final_destination, scaled_bbox)
-                };
-                let element = super::rescale::RescaledElement::new(surface_element, destination);
-                CropRenderElement::from_element(element, 1.0, animated_bbox)
-                    .map(SceneElement::Cropped)
-            }));
-        }
-
-        let is_focused = Some(window_surface.as_ref()) == request.focused;
-        let border_color = super::window_border_color(request.decorations, is_focused)
-            * opening_visual.alpha()
-            * fullscreen
-                .map(|presentation| (1.0 - presentation.progress) as f32)
-                .unwrap_or(1.0);
-        let border_width =
-            ((request.decorations.border_width_px as f64 * zoom_scale as f64).round() as i32)
-                .max(1);
-        if !crate::xwayland::is_override_redirect(window) {
-            elements.extend(
-                super::border_strips(animated_bbox, border_width, border_color)
-                    .into_iter()
-                    .map(SceneElement::Border),
-            );
-        }
-        if let Some(backdrop_alpha) = fullscreen_backdrop_alpha(fullscreen, opening_is_animating) {
-            elements.push(SceneElement::Border(SolidColorRenderElement::new(
-                Id::new(),
-                Rectangle::new((0, 0).into(), output_size),
-                CommitCounter::default(),
-                smithay::backend::renderer::Color32F::new(0.0, 0.0, 0.0, backdrop_alpha),
-                Kind::Unspecified,
-            )));
+        let window_elements =
+            live_window_elements(renderer, window, context, request.fullscreen_textures)?;
+        if !window_elements.is_empty() {
+            stack.push(StackGroup {
+                stack_index,
+                order: u64::MAX,
+                elements: window_elements,
+            });
         }
     }
+    stack.sort_by_key(|group| (group.stack_index, group.order));
+    elements.extend(stack.into_iter().rev().flat_map(|group| group.elements));
 
     elements.extend(
         super::layer_surface_elements(renderer, output, Layer::Bottom)
@@ -241,6 +152,175 @@ pub fn build(
         elements.insert(0, SceneElement::Cursor(cursor));
     }
 
+    Ok(elements)
+}
+
+struct StackGroup {
+    stack_index: usize,
+    order: u64,
+    elements: Vec<SceneElement>,
+}
+
+#[derive(Clone, Copy)]
+struct LiveWindowContext<'a> {
+    space: &'a smithay::desktop::Space<smithay::desktop::Window>,
+    output: &'a Output,
+    output_size: smithay::utils::Size<i32, Physical>,
+    camera_center: Point<f32, Physical>,
+    zoom_scale: f32,
+    target_presentation_time: std::time::Duration,
+    focused: Option<&'a smithay::reexports::wayland_server::protocol::wl_surface::WlSurface>,
+    decorations: &'a halley_config::Decorations,
+    window_open_animations: &'a crate::animation::WindowOpenAnimations,
+    fullscreen: &'a crate::wayland::fullscreen::FullscreenManager,
+}
+
+fn live_window_elements(
+    renderer: &mut GlesRenderer,
+    window: &smithay::desktop::Window,
+    context: LiveWindowContext<'_>,
+    fullscreen_textures: &mut super::fullscreen_texture::FullscreenTextureTransitions,
+) -> Result<Vec<SceneElement>, Box<dyn Error>> {
+    let Some(geometry) = context.space.element_geometry(window) else {
+        return Ok(Vec::new());
+    };
+    let Some(location) = context.space.element_location(window) else {
+        return Ok(Vec::new());
+    };
+    let Some(window_surface) = window.wl_surface() else {
+        return Ok(Vec::new());
+    };
+    let scaled_bbox = super::camera_rect(
+        geometry.to_physical(1),
+        context.camera_center,
+        context.output_size,
+        context.zoom_scale,
+    );
+    let opening_is_animating = context
+        .window_open_animations
+        .is_animating(window_surface.as_ref(), context.target_presentation_time);
+    let opening_visual = context
+        .window_open_animations
+        .visual(
+            window_surface.as_ref(),
+            context.target_presentation_time,
+            scaled_bbox,
+        )
+        .unwrap_or_default();
+    let fullscreen = context.fullscreen.presentation(
+        window_surface.as_ref(),
+        context.output,
+        context.target_presentation_time,
+    );
+    let presentation_bbox = fullscreen
+        .map(|presentation| {
+            let windowed_bbox = presentation
+                .windowed_geometry
+                .map(|geometry| {
+                    super::camera_rect(
+                        geometry.to_physical(1),
+                        context.camera_center,
+                        context.output_size,
+                        context.zoom_scale,
+                    )
+                })
+                .unwrap_or_else(|| presentation.fullscreen_rect(context.output_size));
+            presentation.client_rect(windowed_bbox, context.output_size)
+        })
+        .unwrap_or(scaled_bbox);
+    let animated_bbox = opening_visual.transform_rect(presentation_bbox, presentation_bbox);
+    if animated_bbox.size.w == 0 || animated_bbox.size.h == 0 {
+        return Ok(Vec::new());
+    }
+
+    let mut elements = Vec::new();
+    let surface_location = super::window_surface_location(location, window.geometry());
+    let (popup_elements, surface_elements) =
+        super::window_surface_elements(renderer, window, surface_location, opening_visual.alpha());
+    elements.extend(popup_elements.into_iter().map(|surface_element| {
+        let native_geometry = surface_element.geometry(Scale::from(1.0));
+        let destination = if fullscreen.is_some() {
+            let destination = map_rect(native_geometry, geometry.to_physical(1), presentation_bbox);
+            opening_visual.transform_rect(destination, presentation_bbox)
+        } else {
+            let final_destination = super::camera_rect(
+                native_geometry,
+                context.camera_center,
+                context.output_size,
+                context.zoom_scale,
+            );
+            opening_visual.transform_rect(final_destination, scaled_bbox)
+        };
+        SceneElement::Rescaled(super::rescale::RescaledElement::new(
+            surface_element,
+            destination,
+        ))
+    }));
+    let fullscreen_blend = if let Some(presentation) = fullscreen {
+        match fullscreen_textures.blend_element(
+            renderer,
+            window,
+            animated_bbox,
+            presentation.transition_completion,
+            opening_visual.alpha(),
+        ) {
+            Ok(blend) => blend,
+            Err(err) => {
+                eventline::warn!("fullscreen: failed to blend window textures: {err}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    if let Some(blend) = fullscreen_blend {
+        elements.push(SceneElement::FullscreenBlend(blend));
+    } else {
+        elements.extend(surface_elements.into_iter().filter_map(|surface_element| {
+            let native_geometry = surface_element.geometry(Scale::from(1.0));
+            let destination = if fullscreen.is_some() {
+                let destination =
+                    map_rect(native_geometry, geometry.to_physical(1), presentation_bbox);
+                opening_visual.transform_rect(destination, presentation_bbox)
+            } else {
+                let final_destination = super::camera_rect(
+                    native_geometry,
+                    context.camera_center,
+                    context.output_size,
+                    context.zoom_scale,
+                );
+                opening_visual.transform_rect(final_destination, scaled_bbox)
+            };
+            let element = super::rescale::RescaledElement::new(surface_element, destination);
+            CropRenderElement::from_element(element, 1.0, animated_bbox).map(SceneElement::Cropped)
+        }));
+    }
+
+    let is_focused = Some(window_surface.as_ref()) == context.focused;
+    let border_color = super::window_border_color(context.decorations, is_focused)
+        * opening_visual.alpha()
+        * fullscreen
+            .map(|presentation| (1.0 - presentation.progress) as f32)
+            .unwrap_or(1.0);
+    let border_width = ((context.decorations.border_width_px as f64 * context.zoom_scale as f64)
+        .round() as i32)
+        .max(1);
+    if !crate::xwayland::is_override_redirect(window) {
+        elements.extend(
+            super::border_strips(animated_bbox, border_width, border_color)
+                .into_iter()
+                .map(SceneElement::Border),
+        );
+    }
+    if let Some(backdrop_alpha) = fullscreen_backdrop_alpha(fullscreen, opening_is_animating) {
+        elements.push(SceneElement::Border(SolidColorRenderElement::new(
+            Id::new(),
+            Rectangle::new((0, 0).into(), context.output_size),
+            CommitCounter::default(),
+            smithay::backend::renderer::Color32F::new(0.0, 0.0, 0.0, backdrop_alpha),
+            Kind::Unspecified,
+        )));
+    }
     Ok(elements)
 }
 
