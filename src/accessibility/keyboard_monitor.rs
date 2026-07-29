@@ -22,7 +22,6 @@ const REPEAT_DELAY: Duration = Duration::from_millis(200);
 pub enum KeyboardDisposition {
     Pass,
     Intercept,
-    InterceptWithoutState,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -117,7 +116,7 @@ impl Client {
             if self.pressed_modifiers.contains(&event.keysym) {
                 return ClientRoute {
                     emit: false,
-                    disposition: KeyboardDisposition::InterceptWithoutState,
+                    disposition: KeyboardDisposition::Intercept,
                 };
             }
             let repeated_soon = self
@@ -142,7 +141,7 @@ impl Client {
 
         ClientRoute {
             emit: true,
-            disposition: KeyboardDisposition::InterceptWithoutState,
+            disposition: KeyboardDisposition::Intercept,
         }
     }
 }
@@ -474,8 +473,8 @@ mod tests {
             event(2, 65, true, 0, Keysym::space, ' ' as u32),
             REPEAT_DELAY,
         );
-        assert_eq!(press.recipients, [name.clone()]);
-        assert_eq!(release.recipients, [name]);
+        assert_eq!(press.recipients.as_slice(), std::slice::from_ref(&name));
+        assert_eq!(release.recipients.as_slice(), std::slice::from_ref(&name));
         assert_eq!(press.disposition, KeyboardDisposition::Intercept);
         assert_eq!(release.disposition, KeyboardDisposition::Intercept);
     }
@@ -526,22 +525,16 @@ mod tests {
         let second_release = data.route(event(610, 118, true, 0, Keysym::Insert, 0), REPEAT_DELAY);
         let third = data.route(event(750, 118, false, 0, Keysym::Insert, 0), REPEAT_DELAY);
 
+        assert_eq!(first.disposition, KeyboardDisposition::Intercept);
+        assert_eq!(chord.recipients.as_slice(), std::slice::from_ref(&name));
         assert_eq!(
-            first.disposition,
-            KeyboardDisposition::InterceptWithoutState
+            chord_release.recipients.as_slice(),
+            std::slice::from_ref(&name)
         );
-        assert_eq!(chord.recipients, [name.clone()]);
-        assert_eq!(chord_release.recipients, [name.clone()]);
-        assert_eq!(
-            release.disposition,
-            KeyboardDisposition::InterceptWithoutState
-        );
+        assert_eq!(release.disposition, KeyboardDisposition::Intercept);
         assert_eq!(second.disposition, KeyboardDisposition::Pass);
         assert_eq!(second_release.disposition, KeyboardDisposition::Pass);
-        assert_eq!(
-            third.disposition,
-            KeyboardDisposition::InterceptWithoutState
-        );
+        assert_eq!(third.disposition, KeyboardDisposition::Intercept);
     }
 
     #[test]

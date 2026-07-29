@@ -560,9 +560,6 @@ where
             keycode,
             state,
         );
-        if accessibility == crate::accessibility::KeyboardDisposition::InterceptWithoutState {
-            return;
-        }
         let keyboard = session
             .seat
             .get_keyboard()
