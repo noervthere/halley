@@ -115,6 +115,7 @@ pub enum WindowOpenAnimationType {
     #[default]
     CenterOut,
     Fade,
+    Launch,
 }
 
 impl WindowOpenAnimationType {
@@ -122,6 +123,7 @@ impl WindowOpenAnimationType {
         match value {
             "center-out" => Some(Self::CenterOut),
             "fade" => Some(Self::Fade),
+            "launch" => Some(Self::Launch),
             _ => None,
         }
     }
@@ -324,13 +326,16 @@ end
 
         let center_out = parse("center-out");
         let fade = parse("fade");
+        let launch = parse("launch");
 
         assert_eq!(
             center_out.animation_type,
             WindowOpenAnimationType::CenterOut
         );
         assert_eq!(fade.animation_type, WindowOpenAnimationType::Fade);
+        assert_eq!(launch.animation_type, WindowOpenAnimationType::Launch);
         assert_eq!(center_out.motion, fade.motion);
+        assert_eq!(center_out.motion, launch.motion);
     }
 
     #[test]
@@ -340,6 +345,10 @@ end
         assert_eq!(
             WindowOpenAnimationType::parse("fade"),
             Some(WindowOpenAnimationType::Fade)
+        );
+        assert_eq!(
+            WindowOpenAnimationType::parse("launch"),
+            Some(WindowOpenAnimationType::Launch)
         );
         assert_eq!(
             AnimationCurve::parse("elastic"),

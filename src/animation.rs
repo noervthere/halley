@@ -3,10 +3,11 @@ use std::time::Duration;
 
 use halley_config::{AnimationMotion, Animations, WindowOpenAnimationType};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::utils::{Physical, Rectangle};
+use smithay::utils::{Physical, Point, Rectangle};
 
 const MAX_OVERSHOOT_SCALE: f64 = 1.08;
 
+mod launch;
 mod motion;
 
 pub(crate) use motion::MotionTimeline;
@@ -16,20 +17,33 @@ struct WindowOpenTimeline {
     motion: MotionTimeline,
     motion_config: AnimationMotion,
     animation_type: WindowOpenAnimationType,
+    launch_origin: Option<Point<f64, Physical>>,
     geometry: Option<RectTransition>,
 }
 
 impl WindowOpenTimeline {
-    fn visual_at(self, now: Duration, _bounds: Rectangle<i32, Physical>) -> WindowOpenVisual {
-        let progress = self.motion.value_at(now);
+    fn visual_at(self, now: Duration, bounds: Rectangle<i32, Physical>) -> WindowOpenVisual {
+        let raw_progress = self.motion.value_at(now);
+        let progress = raw_progress.clamp(0.0, 1.0);
         let (scale, alpha) = match self.animation_type {
-            WindowOpenAnimationType::CenterOut => (progress.clamp(0.0, MAX_OVERSHOOT_SCALE), 1.0),
+            WindowOpenAnimationType::CenterOut => {
+                (raw_progress.clamp(0.0, MAX_OVERSHOOT_SCALE), 1.0)
+            }
             WindowOpenAnimationType::Fade => (1.0, progress.clamp(0.0, 1.0) as f32),
+            WindowOpenAnimationType::Launch => (1.0, launch::alpha(progress)),
         };
+        let destination = self
+            .geometry
+            .map(|geometry| geometry.rect_at(now).round())
+            .or_else(|| {
+                (self.animation_type == WindowOpenAnimationType::Launch
+                    && !self.motion.is_finished_at(now))
+                .then(|| launch::rect(bounds, self.launch_origin, progress).round())
+            });
         WindowOpenVisual {
             scale,
             alpha,
-            destination: self.geometry.map(|geometry| geometry.rect_at(now).round()),
+            destination,
         }
     }
 
@@ -48,6 +62,18 @@ impl WindowOpenTimeline {
     ) {
         let (current, velocity) = match self.geometry {
             Some(geometry) => (geometry.rect_at(now), geometry.velocity_at(now)),
+            None if self.animation_type == WindowOpenAnimationType::Launch => {
+                let raw_progress = self.motion.value_at(now);
+                let progress = raw_progress.clamp(0.0, 1.0);
+                let progress_velocity = if (0.0..1.0).contains(&raw_progress) {
+                    self.motion.velocity_at(now)
+                } else {
+                    0.0
+                };
+                let (rect, derivative) =
+                    launch::rect_and_derivative(current_bounds, self.launch_origin, progress);
+                (rect, derivative * progress_velocity)
+            }
             None => {
                 let scale = self.scale_at(now);
                 let scale_velocity = self.scale_velocity_at(now);
@@ -71,6 +97,7 @@ impl WindowOpenTimeline {
         match self.animation_type {
             WindowOpenAnimationType::CenterOut => motion,
             WindowOpenAnimationType::Fade => 1.0,
+            WindowOpenAnimationType::Launch => 1.0,
         }
     }
 
@@ -82,7 +109,7 @@ impl WindowOpenTimeline {
         let velocity = self.motion.velocity_at(now);
         match self.animation_type {
             WindowOpenAnimationType::CenterOut => velocity,
-            WindowOpenAnimationType::Fade => 0.0,
+            WindowOpenAnimationType::Fade | WindowOpenAnimationType::Launch => 0.0,
         }
     }
 }
@@ -130,6 +157,19 @@ impl VisualRect {
             (left, top).into(),
             ((right - left).max(0), (bottom - top).max(0)).into(),
         )
+    }
+}
+
+impl std::ops::Mul<f64> for VisualRect {
+    type Output = Self;
+
+    fn mul(self, rhs: f64) -> Self::Output {
+        Self {
+            x: self.x * rhs,
+            y: self.y * rhs,
+            width: self.width * rhs,
+            height: self.height * rhs,
+        }
     }
 }
 
@@ -247,6 +287,15 @@ impl WindowOpenAnimations {
     }
 
     pub fn start(&mut self, surface: WlSurface, now: Duration) -> bool {
+        self.start_with_origin(surface, now, None)
+    }
+
+    pub fn start_with_origin(
+        &mut self,
+        surface: WlSurface,
+        now: Duration,
+        launch_origin: Option<Point<f64, Physical>>,
+    ) -> bool {
         let config = self.config.window_open;
         if !self.config.enabled || !config.enabled {
             return false;
@@ -259,6 +308,7 @@ impl WindowOpenAnimations {
             motion: MotionTimeline::new(config.motion, now),
             motion_config: config.motion,
             animation_type: config.animation_type,
+            launch_origin,
             geometry: None,
         });
         true
@@ -380,8 +430,15 @@ mod tests {
             motion: MotionTimeline::new(motion_config, Duration::from_secs(1)),
             motion_config,
             animation_type,
+            launch_origin: None,
             geometry: None,
         }
+    }
+
+    fn launch_timeline(origin: Point<f64, Physical>) -> WindowOpenTimeline {
+        let mut timeline = timeline(WindowOpenAnimationType::Launch, AnimationCurve::Linear);
+        timeline.launch_origin = Some(origin);
+        timeline
     }
 
     fn rect(width: i32, height: i32) -> Rectangle<i32, Physical> {
@@ -478,6 +535,68 @@ mod tests {
         assert_eq!(middle.alpha(), 0.5);
         assert_eq!(middle.transform_rect(bounds, bounds), bounds);
         assert_eq!(end, WindowOpenVisual::default());
+    }
+
+    #[test]
+    fn launch_starts_small_and_translucent_at_the_capped_origin() {
+        let bounds = Rectangle::new((100, 50).into(), (800, 600).into());
+        let animation = launch_timeline(Point::from((-1_000.0, 350.0)));
+        let start = animation.visual_at(Duration::from_secs(1), bounds);
+        let destination = start.transform_rect(bounds, bounds);
+
+        assert_eq!(start.alpha(), launch::START_ALPHA);
+        assert_eq!(destination.size, (640, 480).into());
+        assert_eq!(
+            launch::rect_center(destination),
+            Point::from((180.0, 350.0))
+        );
+    }
+
+    #[test]
+    fn launch_follows_a_subtle_upward_arc() {
+        let bounds = Rectangle::new((100, 50).into(), (800, 600).into());
+        let animation = launch_timeline(Point::from((200.0, 350.0)));
+        let middle = animation.visual_at(Duration::from_millis(1150), bounds);
+        let center = launch::rect_center(middle.transform_rect(bounds, bounds));
+
+        assert!(center.x > 200.0);
+        assert!(center.x < 500.0);
+        assert!(center.y < 350.0);
+    }
+
+    #[test]
+    fn launch_peaks_at_two_percent_overshoot_and_settles_exactly() {
+        let bounds = Rectangle::new((100, 50).into(), (800, 600).into());
+        let animation = launch_timeline(launch::rect_center(bounds));
+        let overshoot = animation.visual_at(Duration::from_millis(1234), bounds);
+        let destination = overshoot.transform_rect(bounds, bounds);
+
+        assert_eq!(destination.size, (816, 612).into());
+        assert_eq!(overshoot.alpha(), 1.0);
+        assert_eq!(
+            animation.visual_at(Duration::from_millis(1300), bounds),
+            WindowOpenVisual::default()
+        );
+    }
+
+    #[test]
+    fn launch_retarget_starts_from_the_current_visual_rect() {
+        let windowed = Rectangle::new((100, 50).into(), (800, 600).into());
+        let fullscreen = Rectangle::new((0, 0).into(), (1920, 1080).into());
+        let now = Duration::from_millis(1120);
+        let mut animation = launch_timeline(Point::from((50.0, 900.0)));
+        let before = animation
+            .visual_at(now, windowed)
+            .transform_rect(windowed, windowed);
+
+        animation.retarget(now, windowed, fullscreen);
+
+        assert_eq!(
+            animation
+                .visual_at(now, fullscreen)
+                .transform_rect(fullscreen, fullscreen),
+            before
+        );
     }
 
     #[test]
