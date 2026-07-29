@@ -124,6 +124,9 @@ fn dispatch_action<D: SessionDriver>(
         super::SessionControl::ToggleState => {
             crate::nodes::toggle_focused(session, SERIAL_COUNTER.next_serial())
         }
+        super::SessionControl::Apogee => {
+            crate::apogee::toggle(session);
+        }
         super::SessionControl::FocusCycle(direction) => {
             crate::focus_cycle::start_or_step(session, direction);
         }
@@ -165,6 +168,10 @@ fn dispatch_action<D: SessionDriver>(
 enum KeyboardOutcome {
     Action(halley_config::Action),
     AccessibilityIntercept,
+    ApogeeCancel,
+    ApogeeAccept,
+    ApogeeMove(crate::apogee::Direction),
+    ApogeeIntercept,
     FocusCycleCancel,
     FocusCycleIntercept,
     CaptureAccept,
@@ -280,6 +287,36 @@ where
             }
             InputEvent::PointerAxis { .. } => return,
             _ => {}
+        }
+    }
+    if session.apogee.is_active() {
+        match event {
+            InputEvent::PointerMotion { .. } | InputEvent::PointerMotionAbsolute { .. } => {
+                crate::apogee::pointer_motion(session, proposed_position);
+            }
+            InputEvent::PointerButton { event } if event.button_code() == BTN_LEFT => {
+                match event.state() {
+                    ButtonState::Pressed => {
+                        session.suppressed_buttons.suppress(BTN_LEFT);
+                        crate::apogee::pointer_press(session, proposed_position);
+                    }
+                    ButtonState::Released => {
+                        session.suppressed_buttons.release_is_suppressed(BTN_LEFT);
+                    }
+                }
+            }
+            InputEvent::PointerButton { .. } | InputEvent::PointerAxis { .. } => {}
+            _ => {}
+        }
+        if matches!(
+            event,
+            InputEvent::PointerMotion { .. }
+                | InputEvent::PointerMotionAbsolute { .. }
+                | InputEvent::PointerButton { .. }
+                | InputEvent::PointerAxis { .. }
+        ) {
+            session.request_redraw();
+            return;
         }
     }
     let constrained_motion = super::pointer::constrain_motion(session, &pointer_handle);
@@ -908,6 +945,42 @@ where
             SERIAL_COUNTER.next_serial(),
             time,
             |data, modifiers, handle| {
+                if data.apogee.is_active() {
+                    let sym = handle.raw_latin_sym_or_raw_current_sym();
+                    if state == KeyState::Released {
+                        return FilterResult::Intercept(KeyboardOutcome::ApogeeIntercept);
+                    }
+                    let outcome = match sym {
+                        Some(Keysym::Escape) => KeyboardOutcome::ApogeeCancel,
+                        Some(Keysym::Return | Keysym::KP_Enter) => KeyboardOutcome::ApogeeAccept,
+                        Some(Keysym::Left) => {
+                            KeyboardOutcome::ApogeeMove(crate::apogee::Direction::Left)
+                        }
+                        Some(Keysym::Right) => {
+                            KeyboardOutcome::ApogeeMove(crate::apogee::Direction::Right)
+                        }
+                        Some(Keysym::Up) => {
+                            KeyboardOutcome::ApogeeMove(crate::apogee::Direction::Up)
+                        }
+                        Some(Keysym::Down) => {
+                            KeyboardOutcome::ApogeeMove(crate::apogee::Direction::Down)
+                        }
+                        _ => {
+                            if let Some(
+                                action @ (halley_config::Action::Apogee
+                                | halley_config::Action::Quit
+                                | halley_config::Action::OpenTerminal),
+                            ) =
+                                match_keyboard_bind(&data.keyboard.binds, modifiers, sym, keycode)
+                            {
+                                KeyboardOutcome::Action(action)
+                            } else {
+                                KeyboardOutcome::ApogeeIntercept
+                            }
+                        }
+                    };
+                    return FilterResult::Intercept(outcome);
+                }
                 if data.focus_cycle.is_open() {
                     let sym = handle.raw_latin_sym_or_raw_current_sym();
                     if state == KeyState::Released
@@ -989,6 +1062,23 @@ where
                 dispatch_action(session, action, socket_name, pointer_output.as_deref());
             }
             Some(KeyboardOutcome::AccessibilityIntercept) => {}
+            Some(KeyboardOutcome::ApogeeCancel) => {
+                session.suppressed_keys.suppress(keycode);
+                crate::apogee::cancel(session);
+            }
+            Some(KeyboardOutcome::ApogeeAccept) => {
+                session.suppressed_keys.suppress(keycode);
+                crate::apogee::select(session);
+            }
+            Some(KeyboardOutcome::ApogeeMove(direction)) => {
+                session.suppressed_keys.suppress(keycode);
+                crate::apogee::move_selection(session, direction);
+            }
+            Some(KeyboardOutcome::ApogeeIntercept) => {
+                if state == KeyState::Pressed {
+                    session.suppressed_keys.suppress(keycode);
+                }
+            }
             Some(KeyboardOutcome::FocusCycleCancel) => {
                 session.suppressed_keys.suppress(keycode);
                 crate::focus_cycle::cancel(session);

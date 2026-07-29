@@ -45,6 +45,7 @@ pub enum Action {
     CloseFocusedWindow,
     ToggleFullscreen,
     ToggleState,
+    Apogee,
     FocusCycle(FocusCycleDirection),
     OpenTerminal,
     ZoomIn,
@@ -102,7 +103,7 @@ mod tests {
         let kb = Keybinds::default();
         assert_eq!(kb.modifier, ModifierKey::Super);
         assert_eq!(kb.default_terminal, DefaultTerminal::Auto);
-        assert_eq!(kb.binds.len(), 14);
+        assert_eq!(kb.binds.len(), 15);
 
         let quit = kb.binds.iter().find(|b| b.action == Action::Quit).unwrap();
         assert!(quit.modifiers.super_key);
@@ -133,6 +134,14 @@ mod tests {
             .unwrap();
         assert!(toggle_state.modifiers.super_key);
         assert_eq!(toggle_state.key, "n");
+
+        let apogee = kb
+            .binds
+            .iter()
+            .find(|b| b.action == Action::Apogee)
+            .unwrap();
+        assert!(apogee.modifiers.super_key);
+        assert_eq!(apogee.key, "o");
 
         let forward = kb
             .binds

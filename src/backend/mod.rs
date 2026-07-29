@@ -197,6 +197,8 @@ pub struct RenderRequest<'a> {
         &'a mut crate::backend::fullscreen_texture::FullscreenTextureTransitions,
     pub nodes: &'a crate::nodes::NodesState,
     pub focus_cycle: &'a crate::focus_cycle::FocusCycleState,
+    pub apogee: &'a crate::apogee::ApogeeState,
+    pub apogee_config: halley_config::Apogee,
     pub node_renderer: &'a mut crate::backend::node::NodeRenderer,
     pub ui_text: &'a mut crate::backend::text::UiTextRenderer,
 }

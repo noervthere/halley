@@ -194,10 +194,11 @@ resolving `keycode-N`.
 ## Actions
 
 The built-in action strings are `quit`, `close-focused`, `toggle-fullscreen`,
-`toggle-state`, `cycle-focus`, `cycle-focus-backward`, `open-terminal`,
+`toggle-state`, `apogee`, `cycle-focus`, `cycle-focus-backward`, `open-terminal`,
 `zoom-in`, `zoom-out`, `zoom-reset`, and `screenshot`. `Alt+Tab` and
 `Alt+Shift+Tab` open and navigate the focus carousel; releasing Alt commits and
-Escape cancels. `toggle-state` collapses the focused window to a node or restores
+Escape cancels. `Mod+O` opens or closes the multi-monitor Apogee overview.
+`toggle-state` collapses the focused window to a node or restores
 it in one action; its default binding is `$var.mod+n`. Optional
 `node.click-collapsed-pan` camera movement begins in that same action and never
 creates a center-first second-click interaction. Any other action string is

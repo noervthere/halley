@@ -58,6 +58,21 @@ pub fn build(
             .into_iter()
             .map(SceneElement::Layer),
     );
+    elements.extend(apogee_elements(
+        renderer,
+        output,
+        output_geometry,
+        request.apogee,
+        request.apogee_config,
+        request.space,
+        request.cameras,
+        request.nodes,
+        request.node_renderer,
+        request.ui_text,
+        request.window_open_animations,
+        request.fullscreen,
+        request.target_presentation_time,
+    )?);
     elements.extend(focus_cycle_elements(
         renderer,
         output_geometry,
@@ -173,6 +188,196 @@ pub fn build(
     }
 
     Ok(elements)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apogee_elements(
+    renderer: &mut GlesRenderer,
+    output: &Output,
+    output_geometry: Rectangle<i32, Logical>,
+    state: &crate::apogee::ApogeeState,
+    config: halley_config::Apogee,
+    space: &smithay::desktop::Space<smithay::desktop::Window>,
+    cameras: &crate::camera::OutputCameras,
+    nodes: &crate::nodes::NodesState,
+    node_renderer: &mut super::node::NodeRenderer,
+    ui_text: &mut super::text::UiTextRenderer,
+    window_open_animations: &crate::animation::WindowOpenAnimations,
+    fullscreen: &crate::wayland::fullscreen::FullscreenManager,
+    now: std::time::Duration,
+) -> Result<Vec<SceneElement>, Box<dyn Error>> {
+    let Some(session) = state.session() else {
+        return Ok(Vec::new());
+    };
+    let progress = session.progress(now).clamp(0.0, 1.0);
+    if progress <= 0.001 {
+        return Ok(Vec::new());
+    }
+    let output_local = Rectangle::<i32, Physical>::from_size(output_geometry.size.to_physical(1));
+    let mut tiles = session
+        .tiles
+        .iter()
+        .filter(|tile| tile.output == output.name())
+        .collect::<Vec<_>>();
+    tiles.sort_by_key(|tile| usize::from(session.selected == Some(tile.id)));
+    tiles.reverse();
+
+    let mut elements = Vec::new();
+    for tile in tiles {
+        let Some(record) = nodes.record(tile.id) else {
+            continue;
+        };
+        let target = Rectangle::<i32, Physical>::new(
+            (tile.target.loc - output_geometry.loc).to_physical(1),
+            tile.target.size.to_physical(1),
+        );
+        let source = if record.collapsed {
+            let Some(camera) = cameras.get(&output.name()) else {
+                continue;
+            };
+            let Some(node) = nodes.field.node(tile.id) else {
+                continue;
+            };
+            let center = crate::nodes::screen_from_world(node.pos, camera, output_geometry)
+                - output_geometry.loc;
+            Rectangle::new(
+                (
+                    center.x - crate::nodes::NODE_DIAMETER_PX.round() as i32 / 2,
+                    center.y - crate::nodes::NODE_DIAMETER_PX.round() as i32 / 2,
+                )
+                    .into(),
+                (
+                    crate::nodes::NODE_DIAMETER_PX.round() as i32,
+                    crate::nodes::NODE_DIAMETER_PX.round() as i32,
+                )
+                    .into(),
+            )
+        } else {
+            window_visual_state(
+                space,
+                cameras,
+                &record.window,
+                output,
+                window_open_animations,
+                fullscreen,
+                now,
+            )
+            .map(|visual| visual.animated_rect)
+            .unwrap_or_else(|| record.geometry.to_physical(1))
+        };
+        let body = lerp_rect(source, target, progress);
+        let selected = session.selected == Some(tile.id);
+        let hovered = session.hovered == Some(tile.id);
+        let chrome_alpha = ((progress - 0.18) / 0.62).clamp(0.0, 1.0);
+        let card = Rectangle::<i32, Physical>::new(
+            (body.loc.x - 10, body.loc.y - 10).into(),
+            (body.size.w + 20, body.size.h + 58).into(),
+        );
+
+        let title = truncate_chars(&record.title, 42);
+        if let Some(size) = ui_text.measure(renderer, &title, 2, [238, 243, 250])?
+            && let Some(text) = ui_text.element(
+                renderer,
+                (
+                    card.loc.x + (card.size.w - size.w) / 2,
+                    body.loc.y + body.size.h + 12,
+                )
+                    .into(),
+                &title,
+                2,
+                [238, 243, 250],
+                chrome_alpha,
+            )?
+        {
+            elements.push(SceneElement::UiText(text.element));
+        }
+        if record.collapsed {
+            let badge = "NODE";
+            if let Some(size) = ui_text.measure(renderer, badge, 1, [151, 205, 255])?
+                && let Some(text) = ui_text.element(
+                    renderer,
+                    (card.loc.x + card.size.w - size.w - 10, card.loc.y + 8).into(),
+                    badge,
+                    1,
+                    [151, 205, 255],
+                    chrome_alpha,
+                )?
+            {
+                elements.push(SceneElement::UiText(text.element));
+            }
+        }
+
+        let surface_source = record.geometry.to_physical(1);
+        let surface_location =
+            super::window_surface_location(record.geometry.loc, record.window.geometry());
+        let (_, surfaces) =
+            super::window_surface_elements(renderer, &record.window, surface_location, progress);
+        if surfaces.is_empty() {
+            if let Some(app_id) = record.app_id.as_deref()
+                && let Some(icon) = node_renderer.app_icon_element(renderer, app_id, body, progress)
+            {
+                elements.push(SceneElement::NodeTexture(icon));
+            }
+        } else {
+            for surface in surfaces {
+                let native = surface.geometry(Scale::from(1.0));
+                let destination = map_rect(native, surface_source, body);
+                let scaled = super::rescale::RescaledElement::new(surface, destination);
+                if let Some(cropped) = CropRenderElement::from_element(scaled, 1.0, body) {
+                    elements.push(SceneElement::Cropped(cropped));
+                }
+            }
+        }
+        elements.extend(
+            super::border_strips(
+                body,
+                if selected || hovered { 3 } else { 1 },
+                if selected || hovered {
+                    smithay::backend::renderer::Color32F::new(0.45, 0.72, 1.0, progress)
+                } else {
+                    smithay::backend::renderer::Color32F::new(0.25, 0.31, 0.40, progress)
+                },
+            )
+            .into_iter()
+            .map(SceneElement::Border),
+        );
+        elements.push(SceneElement::NodeLabel(node_renderer.label_element(
+            renderer,
+            card,
+            halley_config::NodeShape::Squircle,
+            (0.045, 0.062, 0.088),
+            0.96 * progress,
+        )?));
+    }
+    elements.push(SceneElement::Border(SolidColorRenderElement::new(
+        Id::new(),
+        output_local,
+        CommitCounter::default(),
+        smithay::backend::renderer::Color32F::new(
+            0.01,
+            0.018,
+            0.03,
+            config.background_dim * progress,
+        ),
+        Kind::Unspecified,
+    )));
+    Ok(elements)
+}
+
+fn lerp_rect(
+    from: Rectangle<i32, Physical>,
+    to: Rectangle<i32, Physical>,
+    progress: f32,
+) -> Rectangle<i32, Physical> {
+    let lerp = |a: i32, b: i32| (a as f32 + (b - a) as f32 * progress).round() as i32;
+    Rectangle::new(
+        (lerp(from.loc.x, to.loc.x), lerp(from.loc.y, to.loc.y)).into(),
+        (
+            lerp(from.size.w, to.size.w).max(1),
+            lerp(from.size.h, to.size.h).max(1),
+        )
+            .into(),
+    )
 }
 
 fn focus_cycle_elements(

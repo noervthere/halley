@@ -40,6 +40,7 @@ enum SessionControl {
     Screenshot,
     ToggleFullscreen,
     ToggleState,
+    Apogee,
     FocusCycle(halley_config::FocusCycleDirection),
 }
 
@@ -67,6 +68,7 @@ fn dispatch_action(
         Action::CloseFocusedWindow => return SessionControl::CloseFocusedWindow,
         Action::ToggleFullscreen => return SessionControl::ToggleFullscreen,
         Action::ToggleState => return SessionControl::ToggleState,
+        Action::Apogee => return SessionControl::Apogee,
         Action::FocusCycle(direction) => return SessionControl::FocusCycle(direction),
         Action::OpenTerminal => match terminal_command {
             Some(command) => spawn::spawn_detached(

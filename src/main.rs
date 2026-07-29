@@ -1,5 +1,6 @@
 mod accessibility;
 mod animation;
+mod apogee;
 mod backend;
 mod camera;
 mod capture;

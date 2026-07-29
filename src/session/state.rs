@@ -71,6 +71,8 @@ pub struct Session<D: SessionDriver> {
     pub start_time: std::time::Instant,
     pub nodes: crate::nodes::NodesState,
     pub focus_cycle: crate::focus_cycle::FocusCycleState,
+    pub apogee: crate::apogee::ApogeeState,
+    pub apogee_config: halley_config::Apogee,
     pub input: halley_config::Input,
     pub decorations: halley_config::Decorations,
     pub cameras: OutputCameras,
@@ -204,6 +206,7 @@ impl<D: SessionDriver> Session<D> {
             .nodes
             .reload(config, crate::frame_clock::monotonic_now());
         let font_redraw = self.ui_text.reload_font(&config.font);
+        self.apogee_config = config.apogee;
         self.decorations = config.decorations;
         self.zoom = config.zoom;
         self.screenshot = config.screenshot.clone();

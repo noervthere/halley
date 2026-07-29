@@ -341,6 +341,18 @@ debug:
   show-focus-ring false
 end
 
+# Multi-monitor window overview. Live previews sample the clients' existing
+# compositor textures and coalesce updates at the configured ceiling.
+apogee:
+  enabled true
+  live-previews true
+  preview-max-fps 30
+  transition-ms 320
+  gap 24.0
+  max-rows 3
+  background-dim 0.85
+end
+
 # Animation settings are reloaded for future motion. Existing window-open and
 # window-close animations keep the parameters with which they started.
 animations:
@@ -435,6 +447,7 @@ keybinds:
   "$var.mod+c" "close-focused"
   "$var.mod+f" "toggle-fullscreen"
   "$var.mod+n" "toggle-state"
+  "$var.mod+o" "apogee"
   "alt+tab" "cycle-focus"
   "alt+shift+tab" "cycle-focus-backward"
 

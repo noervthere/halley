@@ -141,6 +141,8 @@ pub fn run() {
         start_time: Instant::now(),
         nodes: crate::nodes::NodesState::new(&runtime_config),
         focus_cycle: crate::focus_cycle::FocusCycleState::default(),
+        apogee: crate::apogee::ApogeeState::default(),
+        apogee_config: runtime_config.apogee,
         input: applied_input,
         decorations: runtime_config.decorations,
         cameras,
@@ -247,6 +249,7 @@ pub fn run() {
                     .nodes
                     .is_animating_on_output(&output.name(), target_presentation_time);
                 let focus_cycle_animating = app.focus_cycle.tick(target_presentation_time);
+                let apogee_animating = crate::apogee::tick(app, target_presentation_time);
                 if fullscreen_animating {
                     super::pointer::update_client_state(
                         app,
@@ -279,6 +282,8 @@ pub fn run() {
                         fullscreen_textures: &mut app.fullscreen_textures,
                         nodes: &app.nodes,
                         focus_cycle: &app.focus_cycle,
+                        apogee: &app.apogee,
+                        apogee_config: app.apogee_config,
                         node_renderer: &mut app.node_renderer,
                         ui_text: &mut app.ui_text,
                     },
@@ -324,6 +329,7 @@ pub fn run() {
                     || fullscreen_animating
                     || node_animating
                     || focus_cycle_animating
+                    || apogee_animating
                     || app.node_renderer.has_pending_icons()
                     || cursor_animating
                 {
