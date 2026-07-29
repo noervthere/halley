@@ -1,3 +1,5 @@
+//! Window animation timelines and presentation state.
+
 use std::collections::HashMap;
 use std::time::Duration;
 
