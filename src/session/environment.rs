@@ -103,8 +103,7 @@ pub fn activate_session(wayland_display: &OsStr, cursor: &halley_config::Cursor)
         reset_failed
             .arg("--user")
             .arg("reset-failed")
-            .arg("xdg-desktop-portal-gtk.service")
-            .arg("xdg-desktop-portal-halley.service");
+            .arg("xdg-desktop-portal-gtk.service");
         run("portal failure reset", &mut reset_failed);
 
         let mut restart = Command::new("systemctl");
