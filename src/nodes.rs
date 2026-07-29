@@ -314,6 +314,27 @@ impl NodesState {
             .filter(|id| self.records.get(id).is_some_and(|record| record.attached))
     }
 
+    pub fn focused_on_output(&self, output: &str) -> Option<NodeId> {
+        self.focused()
+            .filter(|id| {
+                self.records
+                    .get(id)
+                    .is_some_and(|record| record.output == output)
+            })
+            .or_else(|| {
+                self.last_focus_ms
+                    .iter()
+                    .filter_map(|(id, focused_at)| {
+                        self.records
+                            .get(id)
+                            .filter(|record| record.attached && record.output == output)
+                            .map(|_| (*focused_at, id.as_u64(), *id))
+                    })
+                    .max_by_key(|(focused_at, stable_id, _)| (*focused_at, *stable_id))
+                    .map(|(_, _, id)| id)
+            })
+    }
+
     pub fn last_focus_ms(&self) -> &HashMap<NodeId, u64> {
         &self.last_focus_ms
     }
@@ -1076,11 +1097,16 @@ pub(crate) fn set_collapsed_output<D: crate::session::SessionDriver>(
     session.nodes.clear_direct_motion(id);
 }
 
-pub fn toggle_focused<D: crate::session::SessionDriver>(
+pub fn toggle_focused_on_output<D: crate::session::SessionDriver>(
     session: &mut crate::session::Session<D>,
+    output: Option<&str>,
     serial: smithay::utils::Serial,
 ) {
-    let Some(id) = session.nodes.focused() else {
+    let id = match output {
+        Some(output) => session.nodes.focused_on_output(output),
+        None => session.nodes.focused(),
+    };
+    let Some(id) = id else {
         return;
     };
     if session
@@ -1094,13 +1120,15 @@ pub fn toggle_focused<D: crate::session::SessionDriver>(
     }
 }
 
-pub fn close_focused<D: crate::session::SessionDriver>(session: &mut crate::session::Session<D>) {
-    let Some(id) = session.nodes.focused() else {
-        crate::window::close_focused(&session.wayland);
-        return;
+pub fn close_focused_on_output<D: crate::session::SessionDriver>(
+    session: &mut crate::session::Session<D>,
+    output: Option<&str>,
+) {
+    let id = match output {
+        Some(output) => session.nodes.focused_on_output(output),
+        None => session.nodes.focused(),
     };
-    let Some(record) = session.nodes.record(id) else {
-        crate::window::close_focused(&session.wayland);
+    let Some(record) = id.and_then(|id| session.nodes.record(id)) else {
         return;
     };
     if let Some(toplevel) = record.window.toplevel() {

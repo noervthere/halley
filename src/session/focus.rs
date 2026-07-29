@@ -94,6 +94,31 @@ pub(super) fn focus_node_from_hover<D: SessionDriver>(
     {
         return;
     }
+    focus_collapsed_node(session, id, output, serial);
+}
+
+pub(super) fn focus_node_from_pointer<D: SessionDriver>(
+    session: &mut Session<D>,
+    id: halley_core::field::NodeId,
+    output: &smithay::output::Output,
+    serial: Serial,
+) {
+    if !session
+        .nodes
+        .record(id)
+        .is_some_and(|record| record.attached && record.collapsed)
+    {
+        return;
+    }
+    focus_collapsed_node(session, id, output, serial);
+}
+
+fn focus_collapsed_node<D: SessionDriver>(
+    session: &mut Session<D>,
+    id: halley_core::field::NodeId,
+    output: &smithay::output::Output,
+    serial: Serial,
+) {
     crate::wayland::focus::select_output(&mut session.wayland, output);
     crate::window::clear_focus(&mut session.wayland);
     session
@@ -159,6 +184,8 @@ fn hover_is_blocked<D: SessionDriver>(session: &Session<D>) -> bool {
     pointer_grabbed
         || !matches!(session.grab, crate::input::grab::Grab::None)
         || session.capture.is_active()
+        || session.apogee.is_active()
+        || session.focus_cycle.is_open()
         || super::pointer::has_active_constraint(session)
         || exclusive_layer
 }

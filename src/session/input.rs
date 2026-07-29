@@ -103,6 +103,17 @@ fn bearing_at_pointer<D: SessionDriver>(
     Some((id, output))
 }
 
+fn window_action_output(
+    focus_mode: halley_config::FocusMode,
+    pointer_output: Option<&str>,
+    selected_output: Option<&str>,
+) -> Option<String> {
+    match focus_mode {
+        halley_config::FocusMode::Hover => pointer_output.or(selected_output).map(str::to_owned),
+        halley_config::FocusMode::Click => selected_output.map(str::to_owned),
+    }
+}
+
 fn dispatch_action<D: SessionDriver>(
     session: &mut Session<D>,
     action: halley_config::Action,
@@ -115,6 +126,13 @@ fn dispatch_action<D: SessionDriver>(
         halley_config::Action::ZoomIn
             | halley_config::Action::ZoomOut
             | halley_config::Action::ZoomReset
+    );
+    let selected_output =
+        crate::wayland::focus::selected_output(&session.wayland).map(Output::name);
+    let action_output = window_action_output(
+        session.input.focus_mode,
+        output_name,
+        selected_output.as_deref(),
     );
     let x11_display = session.xwayland.display_name();
     let camera = output_name.and_then(|name| session.cameras.get_mut(name));
@@ -133,11 +151,17 @@ fn dispatch_action<D: SessionDriver>(
     ) {
         super::SessionControl::Continue => {}
         super::SessionControl::Quit => session.driver.stop(),
-        super::SessionControl::CloseFocusedWindow => crate::nodes::close_focused(session),
-        super::SessionControl::ToggleFullscreen => super::toggle_focused_fullscreen(session),
-        super::SessionControl::ToggleState => {
-            crate::nodes::toggle_focused(session, SERIAL_COUNTER.next_serial())
+        super::SessionControl::CloseFocusedWindow => {
+            crate::nodes::close_focused_on_output(session, action_output.as_deref())
         }
+        super::SessionControl::ToggleFullscreen => {
+            super::toggle_focused_fullscreen(session, action_output.as_deref())
+        }
+        super::SessionControl::ToggleState => crate::nodes::toggle_focused_on_output(
+            session,
+            action_output.as_deref(),
+            SERIAL_COUNTER.next_serial(),
+        ),
         super::SessionControl::Apogee => {
             crate::apogee::toggle(session);
         }
@@ -737,6 +761,7 @@ where
                 x: center.x as f32 - position_after.0 as f32,
                 y: center.y as f32 - position_after.1 as f32,
             };
+            super::focus::focus_node_from_pointer(session, id, &output, serial);
             let mod_held = crate::input::mod_key_held(&modifiers, session.keyboard.effective_mod);
             if mod_held {
                 session.nodes.clear_direct_motion(id);
@@ -1260,9 +1285,8 @@ mod tests {
 
     use super::{
         CaptureKeyRouting, capture_key_routing, sampled_drag_velocity,
-        shortcut_policy_allows_bindings,
+        shortcut_policy_allows_bindings, window_action_output,
     };
-
     fn sample_constant_motion(report_hz: u32) -> Vec2 {
         let step = Duration::from_secs_f64(1.0 / f64::from(report_hz));
         let mut previous = Vec2 { x: 0.0, y: 0.0 };
@@ -1309,6 +1333,22 @@ mod tests {
         assert!(!shortcut_policy_allows_bindings(true, false));
         assert!(!shortcut_policy_allows_bindings(false, true));
         assert!(!shortcut_policy_allows_bindings(true, true));
+    }
+
+    #[test]
+    fn window_actions_follow_pointer_only_in_hover_mode() {
+        assert_eq!(
+            window_action_output(halley_config::FocusMode::Hover, Some("right"), Some("left"),),
+            Some("right".to_string())
+        );
+        assert_eq!(
+            window_action_output(halley_config::FocusMode::Click, Some("right"), Some("left"),),
+            Some("left".to_string())
+        );
+        assert_eq!(
+            window_action_output(halley_config::FocusMode::Hover, None, Some("left")),
+            Some("left".to_string())
+        );
     }
 
     #[test]

@@ -73,21 +73,3 @@ pub fn clear_focus(wayland: &mut WaylandState) {
     }
     wayland.focused_window = None;
 }
-
-pub fn close_focused(wayland: &WaylandState) {
-    let Some(focused) = wayland.focused_window.as_ref() else {
-        return;
-    };
-    let Some(window) = wayland.space.elements().find(|window| {
-        window
-            .wl_surface()
-            .is_some_and(|surface| surface.as_ref() == focused)
-    }) else {
-        return;
-    };
-    if let Some(toplevel) = window.toplevel() {
-        toplevel.send_close();
-    } else {
-        crate::xwayland::close_window(window);
-    }
-}

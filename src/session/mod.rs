@@ -173,23 +173,20 @@ pub(crate) fn cursor_visible<D: SessionDriver>(session: &Session<D>) -> bool {
     pointer::cursor_visible(session)
 }
 
-fn toggle_focused_fullscreen<D: SessionDriver>(session: &mut Session<D>) {
-    let Some(focused) = session.wayland.focused_window.clone() else {
-        return;
+fn toggle_focused_fullscreen<D: SessionDriver>(session: &mut Session<D>, output: Option<&str>) {
+    let id = match output {
+        Some(output) => session.nodes.focused_on_output(output),
+        None => session.nodes.focused(),
     };
-    let Some(window) = session
-        .wayland
-        .space
-        .elements()
-        .find(|window| {
-            window
-                .wl_surface()
-                .is_some_and(|surface| surface.as_ref() == &focused)
-        })
+    let Some(record) = id
+        .and_then(|id| session.nodes.record(id))
+        .filter(|record| !record.collapsed)
         .cloned()
     else {
         return;
     };
+    let focused = record.surface;
+    let window = record.window;
 
     cancel_grab_for_surface(session, &focused);
     let entering = !session.fullscreen.is_fullscreen_or_pending(&focused);
