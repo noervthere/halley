@@ -13,7 +13,7 @@ fn example_config_parses_end_to_end() {
 
     assert_eq!(keybinds.modifier, ModifierKey::Super);
     assert_eq!(keybinds.default_terminal, DefaultTerminal::Auto);
-    assert_eq!(keybinds.binds.len(), 12);
+    assert_eq!(keybinds.binds.len(), 14);
 
     let quit = keybinds
         .binds

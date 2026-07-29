@@ -33,7 +33,9 @@ pub use input::{
     GestureModifier, GestureScope, GestureSettings, Input, InputParseError, KeyboardConfig,
     MouseSettings, ScrollMethod, ScrollPanMode, TapButtonMap, parse_input,
 };
-pub use keybinds::{Action, DefaultTerminal, Keybind, Keybinds, ModifierKey, Modifiers};
+pub use keybinds::{
+    Action, DefaultTerminal, FocusCycleDirection, Keybind, Keybinds, ModifierKey, Modifiers,
+};
 pub use launch::{Autostart, LaunchConfigError, parse_autostart, parse_env};
 pub use nodes::{
     Debug, Decay, FocusRing, FocusRingParseError, FocusRings, LandmarkPlacement,

@@ -435,6 +435,8 @@ keybinds:
   "$var.mod+c" "close-focused"
   "$var.mod+f" "toggle-fullscreen"
   "$var.mod+n" "toggle-state"
+  "alt+tab" "cycle-focus"
+  "alt+shift+tab" "cycle-focus-backward"
 
   # `open-terminal` uses `default-terminal` near the end of this section.
   "$var.mod+t" "open-terminal"

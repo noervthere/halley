@@ -124,6 +124,9 @@ fn dispatch_action<D: SessionDriver>(
         super::SessionControl::ToggleState => {
             crate::nodes::toggle_focused(session, SERIAL_COUNTER.next_serial())
         }
+        super::SessionControl::FocusCycle(direction) => {
+            crate::focus_cycle::start_or_step(session, direction);
+        }
         super::SessionControl::Screenshot => {
             let window_available = session.wayland.space.elements().any(|window| {
                 window.wl_surface().is_some()
@@ -162,6 +165,8 @@ fn dispatch_action<D: SessionDriver>(
 enum KeyboardOutcome {
     Action(halley_config::Action),
     AccessibilityIntercept,
+    FocusCycleCancel,
+    FocusCycleIntercept,
     CaptureAccept,
     CaptureCancel,
     CapturePrevious,
@@ -903,6 +908,24 @@ where
             SERIAL_COUNTER.next_serial(),
             time,
             |data, modifiers, handle| {
+                if data.focus_cycle.is_open() {
+                    let sym = handle.raw_latin_sym_or_raw_current_sym();
+                    if state == KeyState::Released
+                        && matches!(sym, Some(Keysym::Alt_L | Keysym::Alt_R))
+                    {
+                        return FilterResult::Forward;
+                    }
+                    if state == KeyState::Pressed && sym == Some(Keysym::Escape) {
+                        return FilterResult::Intercept(KeyboardOutcome::FocusCycleCancel);
+                    }
+                    if state == KeyState::Pressed
+                        && let Some(action @ halley_config::Action::FocusCycle(_)) =
+                            match_keyboard_bind(&data.keyboard.binds, modifiers, sym, keycode)
+                    {
+                        return FilterResult::Intercept(KeyboardOutcome::Action(action));
+                    }
+                    return FilterResult::Intercept(KeyboardOutcome::FocusCycleIntercept);
+                }
                 if accessibility == crate::accessibility::KeyboardDisposition::Intercept {
                     return FilterResult::Intercept(KeyboardOutcome::AccessibilityIntercept);
                 }
@@ -966,6 +989,15 @@ where
                 dispatch_action(session, action, socket_name, pointer_output.as_deref());
             }
             Some(KeyboardOutcome::AccessibilityIntercept) => {}
+            Some(KeyboardOutcome::FocusCycleCancel) => {
+                session.suppressed_keys.suppress(keycode);
+                crate::focus_cycle::cancel(session);
+            }
+            Some(KeyboardOutcome::FocusCycleIntercept) => {
+                if state == KeyState::Pressed {
+                    session.suppressed_keys.suppress(keycode);
+                }
+            }
             Some(KeyboardOutcome::CaptureAccept) => {
                 if session.capture.kind() == Some(crate::capture::CaptureKind::Menu) {
                     if session
@@ -1001,6 +1033,13 @@ where
                 }
             }
             Some(KeyboardOutcome::CaptureIntercept) | None => {}
+        }
+
+        if state == KeyState::Released
+            && session.focus_cycle.is_open()
+            && !keyboard.modifier_state().alt
+        {
+            crate::focus_cycle::commit(session, SERIAL_COUNTER.next_serial());
         }
     }
 }

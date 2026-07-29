@@ -70,6 +70,7 @@ pub struct Session<D: SessionDriver> {
     pub seat: Seat<Self>,
     pub start_time: std::time::Instant,
     pub nodes: crate::nodes::NodesState,
+    pub focus_cycle: crate::focus_cycle::FocusCycleState,
     pub input: halley_config::Input,
     pub decorations: halley_config::Decorations,
     pub cameras: OutputCameras,

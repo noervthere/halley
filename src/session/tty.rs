@@ -181,6 +181,7 @@ pub fn run(session_mode: bool) {
         seat,
         start_time: Instant::now(),
         nodes: crate::nodes::NodesState::new(&runtime_config),
+        focus_cycle: crate::focus_cycle::FocusCycleState::default(),
         input: applied_input,
         decorations: runtime_config.decorations,
         cameras: crate::camera::OutputCameras::default(),
@@ -531,6 +532,7 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
     let node_animating = app
         .nodes
         .is_animating_on_output(&output.name(), target_presentation_time);
+    let focus_cycle_animating = app.focus_cycle.tick(target_presentation_time);
     let show_cursor = super::pointer::cursor_visible(app);
     crate::cursor::surface::refresh_outputs(
         &app.cursor,
@@ -545,6 +547,7 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
         || window_animating
         || closing_animating
         || node_animating
+        || focus_cycle_animating
         || fullscreen_animating
         || cursor_animating;
     if fullscreen_animating && pointer_is_on_output {
@@ -575,6 +578,7 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
             fullscreen: &app.fullscreen,
             fullscreen_textures: &mut app.fullscreen_textures,
             nodes: &app.nodes,
+            focus_cycle: &app.focus_cycle,
             node_renderer: &mut app.node_renderer,
             ui_text: &mut app.ui_text,
         },

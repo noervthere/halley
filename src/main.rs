@@ -5,6 +5,7 @@ mod camera;
 mod capture;
 mod config;
 mod cursor;
+mod focus_cycle;
 mod frame_clock;
 mod input;
 mod ipc;

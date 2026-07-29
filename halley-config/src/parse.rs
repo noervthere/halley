@@ -53,6 +53,10 @@ fn parse_action(s: &str) -> Action {
         }
         "toggle-fullscreen" | "toggle_fullscreen" | "fullscreen" => Action::ToggleFullscreen,
         "toggle-state" | "toggle_state" => Action::ToggleState,
+        "cycle-focus" | "cycle_focus" => Action::FocusCycle(crate::FocusCycleDirection::Forward),
+        "cycle-focus-backward" | "cycle_focus_backward" => {
+            Action::FocusCycle(crate::FocusCycleDirection::Backward)
+        }
         "open-terminal" | "open_terminal" => Action::OpenTerminal,
         "zoom-in" | "zoom_in" => Action::ZoomIn,
         "zoom-out" | "zoom_out" => Action::ZoomOut,

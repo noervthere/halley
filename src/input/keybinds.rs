@@ -237,7 +237,7 @@ mod tests {
         let keybinds = Keybinds::default();
         let resolved = resolve_binds(&keybinds, BackendKind::Winit);
 
-        assert_eq!(resolved.len(), 12);
+        assert_eq!(resolved.len(), 14);
         let quit = resolved
             .iter()
             .find(|bind| bind.action == Action::Quit)
@@ -256,7 +256,7 @@ mod tests {
         let keybinds = Keybinds::default();
         let resolved = resolve_binds(&keybinds, BackendKind::Tty);
 
-        assert_eq!(resolved.len(), 12);
+        assert_eq!(resolved.len(), 14);
         let quit = resolved
             .iter()
             .find(|bind| bind.action == Action::Quit)
@@ -312,6 +312,12 @@ mod tests {
                 .iter()
                 .any(|bind| bind.action == Action::ToggleFullscreen)
         );
+        assert!(resolved.iter().any(|bind| {
+            bind.action == Action::FocusCycle(halley_config::FocusCycleDirection::Forward)
+        }));
+        assert!(resolved.iter().any(|bind| {
+            bind.action == Action::FocusCycle(halley_config::FocusCycleDirection::Backward)
+        }));
         assert!(
             resolved
                 .iter()

@@ -58,6 +58,15 @@ pub fn build(
             .into_iter()
             .map(SceneElement::Layer),
     );
+    elements.extend(focus_cycle_elements(
+        renderer,
+        output_geometry,
+        request.focus_cycle,
+        request.nodes,
+        request.node_renderer,
+        request.ui_text,
+        request.target_presentation_time,
+    )?);
     if !request
         .fullscreen
         .covers_top(request.focused, output, request.target_presentation_time)
@@ -164,6 +173,203 @@ pub fn build(
     }
 
     Ok(elements)
+}
+
+fn focus_cycle_elements(
+    renderer: &mut GlesRenderer,
+    output_geometry: Rectangle<i32, Logical>,
+    state: &crate::focus_cycle::FocusCycleState,
+    nodes: &crate::nodes::NodesState,
+    node_renderer: &mut super::node::NodeRenderer,
+    ui_text: &mut super::text::UiTextRenderer,
+    now: std::time::Duration,
+) -> Result<Vec<SceneElement>, Box<dyn Error>> {
+    let Some(session) = state.session() else {
+        return Ok(Vec::new());
+    };
+    let open = session.open_progress(now);
+    let close = session.close_progress(now);
+    let alpha = (open * (1.0 - close)).clamp(0.0, 1.0);
+    if alpha <= 0.001 {
+        return Ok(Vec::new());
+    }
+
+    let screen = output_geometry.size.to_physical(1);
+    let rail_step = (screen.w as f32 * 0.28).clamp(260.0, 440.0) + 9.0;
+    let center_y = screen.h as f32 * 0.5;
+    let mut cards = session
+        .visible_slots(crate::focus_cycle::VISIBLE_RADIUS)
+        .into_iter()
+        .filter_map(|(_, id)| {
+            let record = nodes.record(id)?;
+            let index = session
+                .candidates
+                .iter()
+                .position(|candidate| *candidate == id)?;
+            let offset = session.visual_offset(index, now);
+            let distance = offset.abs().min(2.0);
+            let base_h = (screen.h as f32 * 0.46).clamp(240.0, 480.0);
+            let scale = if distance <= 1.0 {
+                1.0 + (0.82 - 1.0) * distance
+            } else {
+                0.82 + (0.64 - 0.82) * (distance - 1.0)
+            };
+            let preview_h = (base_h * scale).round().max(1.0) as i32;
+            let aspect = (record.geometry.size.w.max(1) as f32
+                / record.geometry.size.h.max(1) as f32)
+                .clamp(0.7, 2.0);
+            let preview_w = (preview_h as f32 * aspect).round().max(1.0) as i32;
+            let footer_h = if distance < 0.45 { 64 } else { 48 };
+            let card_w = preview_w + 18;
+            let card_h = preview_h + footer_h + 18;
+            let cx = screen.w as f32 * 0.5 + offset * rail_step;
+            let cy = center_y + distance * 22.0 + (1.0 - open) * 22.0 + close * 18.0;
+            let pose_scale = 0.88 + 0.12 * open - 0.08 * close;
+            let card_w = (card_w as f32 * pose_scale).round().max(1.0) as i32;
+            let card_h = (card_h as f32 * pose_scale).round().max(1.0) as i32;
+            Some((
+                distance,
+                id,
+                Rectangle::<i32, Physical>::new(
+                    (
+                        (cx - card_w as f32 * 0.5).round() as i32,
+                        (cy - card_h as f32 * 0.5).round() as i32,
+                    )
+                        .into(),
+                    (card_w, card_h).into(),
+                ),
+            ))
+        })
+        .collect::<Vec<_>>();
+    cards.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+
+    let mut elements = Vec::new();
+    for (distance, id, card) in cards {
+        let Some(record) = nodes.record(id) else {
+            continue;
+        };
+        let selected = distance < 0.45;
+        let pad = 9;
+        let footer_h = if selected { 64 } else { 48 };
+        let body = Rectangle::<i32, Physical>::new(
+            (card.loc.x + pad, card.loc.y + pad).into(),
+            (
+                (card.size.w - pad * 2).max(1),
+                (card.size.h - footer_h - pad * 2).max(1),
+            )
+                .into(),
+        );
+
+        let title = truncate_chars(&record.title, if selected { 42 } else { 26 });
+        if let Some(size) = ui_text.measure(
+            renderer,
+            &title,
+            if selected { 2 } else { 1 },
+            [238, 243, 250],
+        )? && let Some(text) = ui_text.element(
+            renderer,
+            (
+                card.loc.x + (card.size.w - size.w) / 2,
+                body.loc.y + body.size.h + 10,
+            )
+                .into(),
+            &title,
+            if selected { 2 } else { 1 },
+            [238, 243, 250],
+            alpha,
+        )? {
+            elements.push(SceneElement::UiText(text.element));
+        }
+        if selected {
+            let meta = if record.collapsed {
+                format!("{}   NODE", record.output)
+            } else {
+                record.output.clone()
+            };
+            if let Some(size) = ui_text.measure(renderer, &meta, 1, [174, 187, 204])?
+                && let Some(text) = ui_text.element(
+                    renderer,
+                    (
+                        card.loc.x + (card.size.w - size.w) / 2,
+                        card.loc.y + card.size.h - size.h - 8,
+                    )
+                        .into(),
+                    &meta,
+                    1,
+                    [174, 187, 204],
+                    alpha,
+                )?
+            {
+                elements.push(SceneElement::UiText(text.element));
+            }
+        }
+
+        let source = record.geometry.to_physical(1);
+        let surface_location =
+            super::window_surface_location(record.geometry.loc, record.window.geometry());
+        let (_, surfaces) =
+            super::window_surface_elements(renderer, &record.window, surface_location, alpha);
+        for surface in surfaces {
+            let native = surface.geometry(Scale::from(1.0));
+            let destination = map_rect(native, source, body);
+            let scaled = super::rescale::RescaledElement::new(surface, destination);
+            if let Some(cropped) = CropRenderElement::from_element(scaled, 1.0, body) {
+                elements.push(SceneElement::Cropped(cropped));
+            }
+        }
+        elements.extend(
+            super::border_strips(
+                body,
+                if selected { 3 } else { 1 },
+                if selected {
+                    smithay::backend::renderer::Color32F::new(0.48, 0.72, 1.0, alpha)
+                } else {
+                    smithay::backend::renderer::Color32F::new(0.28, 0.34, 0.43, alpha)
+                },
+            )
+            .into_iter()
+            .map(SceneElement::Border),
+        );
+        elements.push(SceneElement::NodeLabel(node_renderer.label_element(
+            renderer,
+            card,
+            halley_config::NodeShape::Squircle,
+            (0.055, 0.075, 0.105),
+            0.96 * alpha,
+        )?));
+    }
+
+    let hints = "Tab  next     Shift+Tab  previous     Esc  cancel";
+    if let Some(size) = ui_text.measure(renderer, hints, 1, [206, 216, 230])?
+        && let Some(text) = ui_text.element(
+            renderer,
+            ((screen.w - size.w) / 2, screen.h - size.h - 28).into(),
+            hints,
+            1,
+            [206, 216, 230],
+            alpha,
+        )?
+    {
+        elements.push(SceneElement::UiText(text.element));
+    }
+    elements.push(SceneElement::Border(SolidColorRenderElement::new(
+        Id::new(),
+        Rectangle::from_size(screen),
+        CommitCounter::default(),
+        smithay::backend::renderer::Color32F::new(0.02, 0.03, 0.05, 0.55 * alpha),
+        Kind::Unspecified,
+    )));
+    Ok(elements)
+}
+
+fn truncate_chars(text: &str, max: usize) -> String {
+    let mut chars = text.trim().chars();
+    let prefix = chars.by_ref().take(max).collect::<String>();
+    if chars.next().is_some() {
+        format!("{prefix}…")
+    } else {
+        prefix
+    }
 }
 
 struct NodeElementContext<'a> {

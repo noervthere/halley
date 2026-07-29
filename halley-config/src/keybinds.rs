@@ -26,6 +26,12 @@ pub struct Modifiers {
     pub super_key: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FocusCycleDirection {
+    Forward,
+    Backward,
+}
+
 /// What a keybind does. Grows alongside whatever `halley-wl` actually wires
 /// up next. `ZoomIn` exists to walk back a `ZoomOut` one step at a time, but
 /// it's not a general "magnify past 1.0x" action - the 1.0x ceiling is
@@ -39,6 +45,7 @@ pub enum Action {
     CloseFocusedWindow,
     ToggleFullscreen,
     ToggleState,
+    FocusCycle(FocusCycleDirection),
     OpenTerminal,
     ZoomIn,
     ZoomOut,
@@ -95,7 +102,7 @@ mod tests {
         let kb = Keybinds::default();
         assert_eq!(kb.modifier, ModifierKey::Super);
         assert_eq!(kb.default_terminal, DefaultTerminal::Auto);
-        assert_eq!(kb.binds.len(), 12);
+        assert_eq!(kb.binds.len(), 14);
 
         let quit = kb.binds.iter().find(|b| b.action == Action::Quit).unwrap();
         assert!(quit.modifiers.super_key);
@@ -126,6 +133,24 @@ mod tests {
             .unwrap();
         assert!(toggle_state.modifiers.super_key);
         assert_eq!(toggle_state.key, "n");
+
+        let forward = kb
+            .binds
+            .iter()
+            .find(|b| b.action == Action::FocusCycle(FocusCycleDirection::Forward))
+            .unwrap();
+        assert!(forward.modifiers.alt);
+        assert!(!forward.modifiers.shift);
+        assert_eq!(forward.key, "tab");
+
+        let backward = kb
+            .binds
+            .iter()
+            .find(|b| b.action == Action::FocusCycle(FocusCycleDirection::Backward))
+            .unwrap();
+        assert!(backward.modifiers.alt);
+        assert!(backward.modifiers.shift);
+        assert_eq!(backward.key, "tab");
 
         let term = kb
             .binds
