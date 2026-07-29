@@ -267,10 +267,84 @@ zoom:
   smooth-rate 12.5
 end
 
+# Global font for compositor-owned UI. The size is the base (scale 2) size;
+# smaller text uses size - 2 and larger marker glyphs use size + 4.
+font:
+  family "monospace"
+  size 11
+end
+
+# Focus rings are standalone and keyed by connector. They are intentionally
+# separate from output mode/position configuration so each monitor can tune
+# decay geometry without mixing presentation policy into hardware policy.
+focus-ring:
+  output "DP-1"
+  radius-x 820.0
+  radius-y 420.0
+  offset-x 0.0
+  offset-y 0.0
+end
+
+focus-ring:
+  output "DP-2"
+  radius-x 820.0
+  radius-y 420.0
+  offset-x 0.0
+  offset-y 0.0
+end
+
+decay:
+  enabled true
+  outside-delay-seconds 180
+  inside-delay-seconds 1800
+end
+
+# Active windows may overlap one another. Only collapsed node landmarks reserve
+# readable space against other nodes and active windows.
+field:
+  gap-px 20.0
+end
+
+# Old-Halley contact motion for nodes and node/window displacement. Disable
+# this for rigid movement: once contact begins, each unit pushed transfers
+# directly to the contacted node or movable node chain.
+physics:
+  enabled true
+  damping 0.45
+end
+
+placement:
+  landmarks:
+    strategy "nearest-free"
+    normal-blocker "relocate"
+  end
+end
+
+node:
+  show-labels "hover"
+  show-app-icons "always"
+  shape "squircle"
+  label-shape "squircle"
+  icon-size 0.72
+  opacity 1.0
+  background-colour "auto"
+  border-colour-hover "use-window-active"
+  border-colour-inactive "use-window-inactive"
+
+  # "never", "if-offscreen", or "always". Panning and restoration begin
+  # together; there is no center-first, restore-second interaction.
+  click-collapsed-pan "never"
+end
+
+debug:
+  # The ring is still previewed briefly when its configuration changes.
+  show-focus-ring false
+end
+
 # Animation settings are reloaded for future motion. Existing window-open and
 # window-close animations keep the parameters with which they started.
 animations:
-  # Master switch for window-open, window-close, and fullscreen animations.
+  # Master switch for window-open, window-close, fullscreen, and node animations.
   enabled true
 
   window-open:
@@ -340,6 +414,11 @@ animations:
     # duration-ms 250
     # curve "ease-out-cubic"
   end
+
+  node:
+    enabled true
+    duration-ms 280
+  end
 end
 
 # A keybind entry is `"chord" "action"`. Modifiers are matched exactly:
@@ -355,6 +434,7 @@ keybinds:
   "$var.mod+shift+e" "quit"
   "$var.mod+c" "close-focused"
   "$var.mod+f" "toggle-fullscreen"
+  "$var.mod+n" "toggle-state"
 
   # `open-terminal` uses `default-terminal` near the end of this section.
   "$var.mod+t" "open-terminal"

@@ -172,6 +172,37 @@ impl FocusRing {
             FocusZone::Outside
         }
     }
+
+    /// Fraction of a rectangular footprint that falls outside this ring,
+    /// sampled at the center of a 10x10 grid. The denser grid makes a 90%
+    /// outside threshold stable and deterministic without pretending an
+    /// ellipse/rectangle intersection is rectangular.
+    pub fn outside_fraction(&self, vp_center: Vec2, pos: Vec2, footprint: Vec2) -> f32 {
+        let w = footprint.x.abs();
+        let h = footprint.y.abs();
+        if w < 1.0 || h < 1.0 {
+            return if self.contains(vp_center, pos) {
+                0.0
+            } else {
+                1.0
+            };
+        }
+
+        const SAMPLES: usize = 10;
+        let min_x = pos.x - w * 0.5;
+        let min_y = pos.y - h * 0.5;
+        let mut outside = 0usize;
+        for iy in 0..SAMPLES {
+            for ix in 0..SAMPLES {
+                let p = Vec2 {
+                    x: min_x + (ix as f32 + 0.5) / SAMPLES as f32 * w,
+                    y: min_y + (iy as f32 + 0.5) / SAMPLES as f32 * h,
+                };
+                outside += usize::from(!self.contains(vp_center, p));
+            }
+        }
+        outside as f32 / (SAMPLES * SAMPLES) as f32
+    }
 }
 
 #[cfg(test)]

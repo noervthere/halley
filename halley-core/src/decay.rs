@@ -1,10 +1,166 @@
 use crate::field::{Field, NodeId, NodeState};
 use crate::viewport::{FocusRing, FocusZone, Viewport};
+use std::collections::HashMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DecayLevel {
     Hot,  // Active
     Cold, // Node
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DecayClass {
+    Protected,
+    InsideRing,
+    OutsideRing,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TimedDecayPolicy {
+    pub inside_ms: u64,
+    pub outside_ms: u64,
+}
+
+impl Default for TimedDecayPolicy {
+    fn default() -> Self {
+        Self {
+            inside_ms: 1_800_000,
+            outside_ms: 180_000,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Eligibility {
+    class: DecayClass,
+    since_ms: u64,
+}
+
+/// Pure monotonic eligibility state. A class change always starts a new
+/// clock, which is the key invariant that prevents an old last-focus time
+/// from collapsing a window as soon as focus leaves it.
+#[derive(Default)]
+pub struct DecayTracker {
+    eligibility: HashMap<NodeId, Eligibility>,
+}
+
+impl DecayTracker {
+    pub fn update(
+        &mut self,
+        id: NodeId,
+        class: DecayClass,
+        now_ms: u64,
+        policy: TimedDecayPolicy,
+    ) -> Option<u64> {
+        let entry = self.eligibility.entry(id).or_insert(Eligibility {
+            class,
+            since_ms: now_ms,
+        });
+        if entry.class != class {
+            *entry = Eligibility {
+                class,
+                since_ms: now_ms,
+            };
+        }
+        match class {
+            DecayClass::Protected => None,
+            DecayClass::InsideRing => {
+                let deadline = entry.since_ms.saturating_add(policy.inside_ms);
+                (now_ms >= deadline).then_some(deadline)
+            }
+            DecayClass::OutsideRing => {
+                let deadline = entry.since_ms.saturating_add(policy.outside_ms);
+                (now_ms >= deadline).then_some(deadline)
+            }
+        }
+    }
+
+    pub fn next_deadline(&self, now_ms: u64, policy: TimedDecayPolicy) -> Option<u64> {
+        self.eligibility
+            .values()
+            .filter_map(|entry| match entry.class {
+                DecayClass::Protected => None,
+                DecayClass::InsideRing => Some(entry.since_ms.saturating_add(policy.inside_ms)),
+                DecayClass::OutsideRing => Some(entry.since_ms.saturating_add(policy.outside_ms)),
+            })
+            .filter(|deadline| *deadline > now_ms)
+            .min()
+    }
+
+    pub fn remove(&mut self, id: NodeId) {
+        self.eligibility.remove(&id);
+    }
+
+    pub fn reset(&mut self) {
+        self.eligibility.clear();
+    }
+}
+
+#[cfg(test)]
+mod timed_tests {
+    use super::{DecayClass, DecayTracker, TimedDecayPolicy};
+    use crate::field::NodeId;
+
+    fn id(value: u64) -> NodeId {
+        NodeId::new(value)
+    }
+
+    #[test]
+    fn class_change_restarts_the_timer() {
+        let mut tracker = DecayTracker::default();
+        let policy = TimedDecayPolicy {
+            outside_ms: 100,
+            inside_ms: 1_000,
+        };
+        assert_eq!(
+            tracker.update(id(1), DecayClass::OutsideRing, 10, policy),
+            None
+        );
+        assert_eq!(
+            tracker.update(id(1), DecayClass::InsideRing, 109, policy),
+            None
+        );
+        assert_eq!(
+            tracker.update(id(1), DecayClass::InsideRing, 1_108, policy),
+            None
+        );
+        assert_eq!(
+            tracker.update(id(1), DecayClass::InsideRing, 1_109, policy),
+            Some(1_109)
+        );
+    }
+
+    #[test]
+    fn focus_protection_does_not_reuse_an_old_deadline() {
+        let mut tracker = DecayTracker::default();
+        let policy = TimedDecayPolicy {
+            outside_ms: 100,
+            inside_ms: 1_000,
+        };
+        tracker.update(id(1), DecayClass::OutsideRing, 0, policy);
+        tracker.update(id(1), DecayClass::Protected, 99, policy);
+        assert_eq!(
+            tracker.update(id(1), DecayClass::OutsideRing, 500, policy),
+            None
+        );
+        assert_eq!(
+            tracker.update(id(1), DecayClass::OutsideRing, 600, policy),
+            Some(600)
+        );
+    }
+
+    #[test]
+    fn next_deadline_ignores_protected_nodes() {
+        let mut tracker = DecayTracker::default();
+        let policy = TimedDecayPolicy {
+            outside_ms: 100,
+            inside_ms: 1_000,
+        };
+        tracker.update(id(1), DecayClass::Protected, 0, policy);
+        tracker.update(id(2), DecayClass::InsideRing, 10, policy);
+        tracker.update(id(3), DecayClass::OutsideRing, 20, policy);
+        assert_eq!(tracker.next_deadline(20, policy), Some(120));
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

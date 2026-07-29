@@ -92,3 +92,23 @@ the original ease-in-out cubic timing. Closing snapshots preserve the
 window's current opening opacity and track camera motion while they finish.
 Layer-shell surfaces and X11 override-redirect popups are not window-close
 animation targets.
+
+Node collapse uses a short ease-out scale transition. Restoration and optional
+camera centering start together; it never centers first and waits for a second
+action to restore the window.
+
+```rune
+animations:
+  node:
+    enabled true
+    duration-ms 280
+  end
+end
+```
+
+`animations.enabled` and `animations.node.enabled` both gate this transition.
+Setting either to `false`, or setting `duration-ms` to `0`, makes node markers
+appear immediately. Window restoration still uses the configured window-open
+animation. Landmark collision relocation uses the old 520ms damped slide;
+labels independently use the old back-loaded hover slide/grow/fade and request
+frames until settled.

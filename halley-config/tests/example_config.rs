@@ -13,7 +13,7 @@ fn example_config_parses_end_to_end() {
 
     assert_eq!(keybinds.modifier, ModifierKey::Super);
     assert_eq!(keybinds.default_terminal, DefaultTerminal::Auto);
-    assert_eq!(keybinds.binds.len(), 11);
+    assert_eq!(keybinds.binds.len(), 12);
 
     let quit = keybinds
         .binds
@@ -41,6 +41,14 @@ fn example_config_parses_end_to_end() {
     assert_eq!(fullscreen.key, "f");
     assert!(fullscreen.modifiers.super_key);
     assert!(!fullscreen.modifiers.shift);
+
+    let toggle_state = keybinds
+        .binds
+        .iter()
+        .find(|b| b.action == Action::ToggleState)
+        .expect("toggle-state bind present");
+    assert_eq!(toggle_state.key, "n");
+    assert!(toggle_state.modifiers.super_key);
 
     let terminal = keybinds
         .binds
@@ -136,6 +144,24 @@ fn example_config_cursor_section_parses() {
     let cursor = halley_config::parse_cursor(&config);
 
     assert_eq!(cursor, halley_config::Cursor::default());
+}
+
+#[test]
+fn example_config_has_per_output_rings_font_and_landmarks() {
+    let config = RuneConfig::from_file(EXAMPLE_PATH).expect("example config parses");
+    let runtime = halley_config::parse_runtime_config(&config).expect("runtime config parses");
+
+    assert_eq!(runtime.font.family, "monospace");
+    assert_eq!(runtime.font.size, 11);
+    assert_eq!(runtime.focus_rings.for_output("DP-1").radius_x, 820.0);
+    assert_eq!(runtime.focus_rings.for_output("DP-2").radius_y, 420.0);
+    assert_eq!(runtime.landmarks.gap_px, 20.0);
+    assert!(runtime.physics.enabled);
+    assert_eq!(runtime.physics.damping, 0.45);
+    assert_eq!(
+        runtime.nodes.restore_centering,
+        halley_config::RestoreCentering::Never
+    );
 }
 
 #[test]

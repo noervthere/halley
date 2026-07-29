@@ -189,6 +189,21 @@ pub struct FullscreenAnimation {
     pub motion: AnimationMotion,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NodeAnimation {
+    pub enabled: bool,
+    pub duration_ms: u32,
+}
+
+impl Default for NodeAnimation {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            duration_ms: 280,
+        }
+    }
+}
+
 impl Default for FullscreenAnimation {
     fn default() -> Self {
         Self {
@@ -204,6 +219,7 @@ pub struct Animations {
     pub window_open: WindowOpenAnimation,
     pub window_close: WindowCloseAnimation,
     pub fullscreen: FullscreenAnimation,
+    pub node: NodeAnimation,
 }
 
 impl Default for Animations {
@@ -213,6 +229,7 @@ impl Default for Animations {
             window_open: WindowOpenAnimation::default(),
             window_close: WindowCloseAnimation::default(),
             fullscreen: FullscreenAnimation::default(),
+            node: NodeAnimation::default(),
         }
     }
 }
@@ -279,6 +296,10 @@ pub fn parse_animations(config: &RuneConfig) -> Animations {
                 defaults.fullscreen.motion,
             ),
         },
+        node: NodeAnimation {
+            enabled: config.get_or("animations.node.enabled", defaults.node.enabled),
+            duration_ms: config.get_or("animations.node.duration-ms", defaults.node.duration_ms),
+        },
     }
 }
 
@@ -336,6 +357,7 @@ end
                 },
                 window_close: WindowCloseAnimation::default(),
                 fullscreen: FullscreenAnimation::default(),
+                node: NodeAnimation::default(),
             }
         );
     }

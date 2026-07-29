@@ -52,6 +52,7 @@ fn parse_action(s: &str) -> Action {
             Action::CloseFocusedWindow
         }
         "toggle-fullscreen" | "toggle_fullscreen" | "fullscreen" => Action::ToggleFullscreen,
+        "toggle-state" | "toggle_state" => Action::ToggleState,
         "open-terminal" | "open_terminal" => Action::OpenTerminal,
         "zoom-in" | "zoom_in" => Action::ZoomIn,
         "zoom-out" | "zoom_out" => Action::ZoomOut,

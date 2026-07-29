@@ -168,9 +168,11 @@ triggers yet.
 | Wheel right | `scroll-right` | Physical wheel horizontal positive |
 
 Mouse-button bindings run before Halley's built-in Mod+left move and Mod+right
-resize behavior. Those built-ins remain the fallback when no exact configured
-chord matches. A bare left drag on the desktop background is always reserved
-for panning.
+resize behavior. Mod+left moves active windows and collapsed nodes; collapsed
+nodes can also be grabbed without Mod after crossing the 8 px click/drag
+threshold. Those built-ins remain the fallback when no exact configured chord
+matches. A bare left drag on the desktop background is always reserved for
+panning.
 
 Wheel binds apply only to a physical mouse wheel. High-resolution wheel input
 is accumulated to one action per complete notch. Touchpad/finger scrolling
@@ -192,5 +194,9 @@ resolving `keycode-N`.
 ## Actions
 
 The built-in action strings are `quit`, `close-focused`, `toggle-fullscreen`,
-`open-terminal`, `zoom-in`, `zoom-out`, `zoom-reset`, and `screenshot`. Any
-other action string is launched as a command line.
+`toggle-state`, `open-terminal`, `zoom-in`, `zoom-out`, `zoom-reset`, and
+`screenshot`. `toggle-state` collapses the focused window to a node or restores
+it in one action; its default binding is `$var.mod+n`. Optional
+`node.click-collapsed-pan` camera movement begins in that same action and never
+creates a center-first second-click interaction. Any other action string is
+launched as a command line.

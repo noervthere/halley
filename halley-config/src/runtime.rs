@@ -5,10 +5,12 @@ use std::path::Path;
 use rune_cfg::RuneConfig;
 
 use crate::{
-    Animations, Autostart, Cursor, Decorations, Input, InputParseError, Keybinds,
-    LaunchConfigError, OutputConfig, OutputParseError, Screenshot, Zoom, parse_animations,
-    parse_autostart, parse_cursor, parse_decorations, parse_env, parse_input, parse_keybinds,
-    parse_outputs_checked, parse_screenshot, parse_zoom,
+    Animations, Autostart, Cursor, Debug, Decay, Decorations, FocusRingParseError, FocusRings,
+    Font, Input, InputParseError, Keybinds, LandmarkPlacement, LaunchConfigError, NodeParseError,
+    Nodes, OutputConfig, OutputParseError, Physics, Screenshot, Zoom, parse_animations,
+    parse_autostart, parse_cursor, parse_debug, parse_decay, parse_decorations, parse_env,
+    parse_focus_rings_checked, parse_font, parse_input, parse_keybinds, parse_landmark_placement,
+    parse_nodes_checked, parse_outputs_checked, parse_physics, parse_screenshot, parse_zoom,
 };
 
 /// One validated snapshot of every setting the running compositor currently
@@ -25,6 +27,13 @@ pub struct RuntimeConfig {
     pub cursor: Cursor,
     pub input: Input,
     pub animations: Animations,
+    pub focus_rings: FocusRings,
+    pub font: Font,
+    pub landmarks: LandmarkPlacement,
+    pub physics: Physics,
+    pub decay: Decay,
+    pub nodes: Nodes,
+    pub debug: Debug,
     pub outputs: Vec<OutputConfig>,
 }
 
@@ -35,6 +44,8 @@ pub enum RuntimeConfigError {
     Launch(LaunchConfigError),
     Input(InputParseError),
     Output(OutputParseError),
+    FocusRing(FocusRingParseError),
+    Node(NodeParseError),
 }
 
 impl fmt::Display for RuntimeConfigError {
@@ -45,6 +56,8 @@ impl fmt::Display for RuntimeConfigError {
             Self::Launch(err) => write!(f, "{err}"),
             Self::Input(err) => write!(f, "{err}"),
             Self::Output(err) => write!(f, "{err}"),
+            Self::FocusRing(err) => write!(f, "{err}"),
+            Self::Node(err) => write!(f, "{err}"),
         }
     }
 }
@@ -81,6 +94,18 @@ impl From<InputParseError> for RuntimeConfigError {
     }
 }
 
+impl From<FocusRingParseError> for RuntimeConfigError {
+    fn from(value: FocusRingParseError) -> Self {
+        Self::FocusRing(value)
+    }
+}
+
+impl From<NodeParseError> for RuntimeConfigError {
+    fn from(value: NodeParseError) -> Self {
+        Self::Node(value)
+    }
+}
+
 pub fn parse_runtime_config(config: &RuneConfig) -> Result<RuntimeConfig, RuntimeConfigError> {
     Ok(RuntimeConfig {
         env: parse_env(config)?,
@@ -92,6 +117,13 @@ pub fn parse_runtime_config(config: &RuneConfig) -> Result<RuntimeConfig, Runtim
         cursor: parse_cursor(config),
         input: parse_input(config)?,
         animations: parse_animations(config),
+        focus_rings: parse_focus_rings_checked(config)?,
+        font: parse_font(config),
+        landmarks: parse_landmark_placement(config),
+        physics: parse_physics(config),
+        decay: parse_decay(config),
+        nodes: parse_nodes_checked(config)?,
+        debug: parse_debug(config),
         outputs: parse_outputs_checked(config)?,
     })
 }

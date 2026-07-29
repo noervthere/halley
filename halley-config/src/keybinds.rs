@@ -38,6 +38,7 @@ pub enum Action {
     Quit,
     CloseFocusedWindow,
     ToggleFullscreen,
+    ToggleState,
     OpenTerminal,
     ZoomIn,
     ZoomOut,
@@ -94,7 +95,7 @@ mod tests {
         let kb = Keybinds::default();
         assert_eq!(kb.modifier, ModifierKey::Super);
         assert_eq!(kb.default_terminal, DefaultTerminal::Auto);
-        assert_eq!(kb.binds.len(), 11);
+        assert_eq!(kb.binds.len(), 12);
 
         let quit = kb.binds.iter().find(|b| b.action == Action::Quit).unwrap();
         assert!(quit.modifiers.super_key);
@@ -117,6 +118,14 @@ mod tests {
             .unwrap();
         assert!(fullscreen.modifiers.super_key);
         assert_eq!(fullscreen.key, "f");
+
+        let toggle_state = kb
+            .binds
+            .iter()
+            .find(|b| b.action == Action::ToggleState)
+            .unwrap();
+        assert!(toggle_state.modifiers.super_key);
+        assert_eq!(toggle_state.key, "n");
 
         let term = kb
             .binds
