@@ -127,16 +127,9 @@ pub struct Session<D: SessionDriver> {
     pub keyboard_monitor: Option<crate::accessibility::KeyboardMonitorService>,
     pub opening_origins: super::opening::OpeningOrigins,
     pub window_open_animations: crate::animation::WindowOpenAnimations,
-    pub window_close_animations: crate::render::close::WindowCloseAnimations,
+    pub render: crate::render::resources::RenderState,
     pub fullscreen: crate::wayland::fullscreen::FullscreenManager,
     pub maximize: crate::wayland::maximize::FieldMaximizeManager,
-    pub fullscreen_textures: crate::render::fullscreen_texture::FullscreenTextureTransitions,
-    pub overlay_previews: crate::render::overlays::preview::OverlayPreviewCache,
-    pub node_renderer: crate::render::node::NodeRenderer,
-    pub window_decoration_renderer: crate::render::window_decoration::WindowDecorationRenderer,
-    pub backdrop_blur_renderer: crate::render::effects::backdrop_blur::BackdropBlurRenderer,
-    pub shadow_renderer: crate::render::effects::shadow::ShadowRenderer,
-    pub ui_text: crate::render::text::UiTextRenderer,
     pub xwayland: crate::xwayland::State<D>,
 }
 
@@ -329,7 +322,7 @@ impl<D: SessionDriver> Session<D> {
             .nodes
             .reload(config, crate::frame_clock::monotonic_now());
         let bearings_redraw = self.bearings.reload(config.bearings);
-        let font_redraw = self.ui_text.reload_font(&config.font);
+        let font_redraw = self.render.ui_text.reload_font(&config.font);
         self.apogee_config = config.apogee;
         self.decorations = config.decorations;
         self.effects = config.effects;
@@ -338,16 +331,19 @@ impl<D: SessionDriver> Session<D> {
         self.zoom = config.field.zoom;
         self.screenshot = config.screenshot.clone();
         self.window_open_animations.reload(config.animations);
-        self.window_close_animations.reload(config.animations);
+        self.render
+            .window_close_animations
+            .reload(config.animations);
         let fullscreen_redraw = self.fullscreen.reload(config.animations);
         if fullscreen_redraw {
-            self.fullscreen_textures.remove_owner(
+            self.render.fullscreen_textures.remove_owner(
                 crate::render::fullscreen_texture::TextureTransitionOwner::Fullscreen,
             );
         }
         let maximize_redraw = self.maximize.reload(config.field, config.animations);
         if maximize_redraw {
-            self.fullscreen_textures
+            self.render
+                .fullscreen_textures
                 .remove_owner(crate::render::fullscreen_texture::TextureTransitionOwner::Maximize);
         }
         if nodes_redraw {
@@ -368,10 +364,10 @@ impl<D: SessionDriver> Session<D> {
         let cleanup = self.fullscreen.cleanup(now);
         let maximize_cleanup = self.maximize.cleanup(now);
         for surface in cleanup.finished_surfaces {
-            self.fullscreen_textures.remove(&surface);
+            self.render.fullscreen_textures.remove(&surface);
         }
         for surface in maximize_cleanup.finished_surfaces {
-            self.fullscreen_textures.remove(&surface);
+            self.render.fullscreen_textures.remove(&surface);
         }
         let outputs = self.wayland.space.outputs().cloned().collect::<Vec<_>>();
         for output in outputs {

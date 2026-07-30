@@ -1208,7 +1208,7 @@ fn capture_fullscreen_snapshot<D: SessionDriver>(
     {
         return false;
     }
-    let textures = &mut session.fullscreen_textures;
+    let textures = &mut session.render.fullscreen_textures;
     match session.driver.with_renderer(|renderer| {
         textures.capture_previous(
             renderer,
@@ -1226,7 +1226,7 @@ fn capture_fullscreen_snapshot<D: SessionDriver>(
 
 fn remove_fullscreen_snapshot<D: SessionDriver>(session: &mut Session<D>, window: &Window) {
     if let Some(surface) = window.wl_surface() {
-        session.fullscreen_textures.remove(surface.as_ref());
+        session.render.fullscreen_textures.remove(surface.as_ref());
     }
 }
 
@@ -1436,7 +1436,7 @@ fn forget_window<D: SessionDriver>(session: &mut Session<D>, surface: &X11Surfac
         session.wayland.space.unmap_elem(&window);
         crate::session::finish_window_unmap(session, preparation);
         if let Some(record) = session.nodes.remove_surface(&wl_surface) {
-            session.overlay_previews.remove(record.id);
+            session.render.overlay_previews.remove(record.id);
         }
     } else {
         session.wayland.space.unmap_elem(&window);

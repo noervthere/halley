@@ -162,7 +162,7 @@ pub(crate) fn finish_window_unmap<D: SessionDriver>(
     {
         let _ = session.cameras.apply_field_maximize(output, None);
     }
-    session.fullscreen_textures.remove(&surface);
+    session.render.fullscreen_textures.remove(&surface);
     super::cancel_grab_for_surface(session, &surface);
     crate::input::grab::forget_resize_anchor(&mut session.resize_anchor, &surface);
     super::closing::start(session, &surface);

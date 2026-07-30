@@ -261,7 +261,7 @@ fn toggle_focused_fullscreen<D: SessionDriver>(session: &mut Session<D>, output:
         .as_ref()
         .and_then(|_| session.wayland.space.element_geometry(&window));
     if let Some(restore) = field_restore.as_ref() {
-        session.fullscreen_textures.remove(&restore.surface);
+        session.render.fullscreen_textures.remove(&restore.surface);
         let _ = session.cameras.apply_field_maximize(&record_output, None);
         session
             .wayland
@@ -343,7 +343,7 @@ fn toggle_focused_field_maximize<D: SessionDriver>(session: &mut Session<D>, out
         .unwrap_or_else(|| output_name.clone());
 
     if session.maximize.animations_enabled() {
-        let textures = &mut session.fullscreen_textures;
+        let textures = &mut session.render.fullscreen_textures;
         let capture = session.driver.with_renderer(|renderer| {
             textures.capture_previous(
                 renderer,
@@ -398,7 +398,10 @@ fn toggle_focused_field_maximize<D: SessionDriver>(session: &mut Session<D>, out
             .override_windowed_from_fullscreen(&record.surface, handoff_geometry);
     }
     if let Some(displaced) = change.displaced.as_ref() {
-        session.fullscreen_textures.remove(&displaced.surface);
+        session
+            .render
+            .fullscreen_textures
+            .remove(&displaced.surface);
         configure_field_geometry(session, displaced);
     }
     configure_field_geometry(

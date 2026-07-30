@@ -9,7 +9,7 @@ pub(crate) fn capture_surface<D: SessionDriver>(
     session: &mut Session<D>,
     surface: &WlSurface,
 ) -> bool {
-    if session.window_close_animations.has_pending(surface) {
+    if session.render.window_close_animations.has_pending(surface) {
         return true;
     }
     let Some(window) = session
@@ -35,7 +35,7 @@ pub(crate) fn capture_window<D: SessionDriver>(session: &mut Session<D>, window:
     let Some(surface) = window.wl_surface().map(|surface| surface.into_owned()) else {
         return false;
     };
-    if session.window_close_animations.has_pending(&surface) {
+    if session.render.window_close_animations.has_pending(&surface) {
         return true;
     }
     let Some(output) = output_for_window(session, window) else {
@@ -113,7 +113,7 @@ pub(crate) fn capture_window<D: SessionDriver>(session: &mut Session<D>, window:
         content_radius,
         collapse_target: None,
     };
-    let animations = &mut session.window_close_animations;
+    let animations = &mut session.render.window_close_animations;
     let capture = session
         .driver
         .with_renderer(|renderer| animations.capture(renderer, window, metadata));
@@ -128,12 +128,13 @@ pub(crate) fn capture_window<D: SessionDriver>(session: &mut Session<D>, window:
 
 pub(crate) fn start<D: SessionDriver>(session: &mut Session<D>, surface: &WlSurface) -> bool {
     session
+        .render
         .window_close_animations
         .start(surface, crate::frame_clock::monotonic_now())
 }
 
 pub(crate) fn mapped<D: SessionDriver>(session: &mut Session<D>, surface: &WlSurface) {
-    session.window_close_animations.cancel(surface);
+    session.render.window_close_animations.cancel(surface);
 }
 
 fn output_for_window<D: SessionDriver>(session: &Session<D>, window: &Window) -> Option<Output> {

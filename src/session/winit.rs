@@ -194,24 +194,15 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
         window_open_animations: crate::animation::WindowOpenAnimations::new(
             runtime_config.animations,
         ),
-        window_close_animations: crate::render::close::WindowCloseAnimations::new(
+        render: crate::render::resources::RenderState::new(
             runtime_config.animations,
+            &runtime_config.font,
         ),
         fullscreen: crate::wayland::fullscreen::FullscreenManager::new(runtime_config.animations),
         maximize: crate::wayland::maximize::FieldMaximizeManager::new(
             runtime_config.field,
             runtime_config.animations,
         ),
-        fullscreen_textures:
-            crate::render::fullscreen_texture::FullscreenTextureTransitions::default(),
-        overlay_previews: crate::render::overlays::preview::OverlayPreviewCache::default(),
-        node_renderer: crate::render::node::NodeRenderer::default(),
-        window_decoration_renderer:
-            crate::render::window_decoration::WindowDecorationRenderer::default(),
-        backdrop_blur_renderer:
-            crate::render::effects::backdrop_blur::BackdropBlurRenderer::default(),
-        shadow_renderer: crate::render::effects::shadow::ShadowRenderer::default(),
-        ui_text: crate::render::text::UiTextRenderer::new(&runtime_config.font),
         xwayland,
     };
     app.wayland
@@ -293,6 +284,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                     .is_animating_on_output(&output, target_presentation_time);
                 let maximize_animating = app.maximize.is_animating(target_presentation_time);
                 let closing_animating = app
+                    .render
                     .window_close_animations
                     .is_animating_on_output(&output, target_presentation_time);
                 let node_animating = app
@@ -339,11 +331,11 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                         shadows: app.effects.shadows,
                         cameras: &app.cameras,
                         window_open_animations: &app.window_open_animations,
-                        window_close_animations: &mut app.window_close_animations,
+                        window_close_animations: &mut app.render.window_close_animations,
                         fullscreen: &app.fullscreen,
                         maximize: &app.maximize,
-                        fullscreen_textures: &mut app.fullscreen_textures,
-                        overlay_previews: &mut app.overlay_previews,
+                        fullscreen_textures: &mut app.render.fullscreen_textures,
+                        overlay_previews: &mut app.render.overlay_previews,
                         nodes: &app.nodes,
                         node_grab_active: matches!(
                             &app.grab,
@@ -351,16 +343,16 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                                 | crate::input::grab::Grab::MoveNode { .. }
                         ),
                         bearings: &app.bearings,
-                        backdrop_blur_renderer: &mut app.backdrop_blur_renderer,
-                        shadow_renderer: &mut app.shadow_renderer,
+                        backdrop_blur_renderer: &mut app.render.backdrop_blur_renderer,
+                        shadow_renderer: &mut app.render.shadow_renderer,
                         focus_cycle: &app.focus_cycle,
                         apogee: &app.apogee,
                         apogee_config: app.apogee_config,
                         overlays: &app.overlays,
                         overlay_config: &app.overlay_config,
-                        node_renderer: &mut app.node_renderer,
-                        window_decoration_renderer: &mut app.window_decoration_renderer,
-                        ui_text: &mut app.ui_text,
+                        node_renderer: &mut app.render.node_renderer,
+                        window_decoration_renderer: &mut app.render.window_decoration_renderer,
+                        ui_text: &mut app.render.ui_text,
                     },
                 );
                 let submitted = match outcome {
@@ -427,7 +419,8 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                 app.wayland.space.refresh();
                 wayland::layer_shell::cleanup(&mut app.wayland);
                 app.window_open_animations.cleanup(target_presentation_time);
-                app.window_close_animations
+                app.render
+                    .window_close_animations
                     .cleanup(target_presentation_time);
                 if app.cleanup_fullscreen(target_presentation_time) {
                     // Cleanup retires the transition and drops its crossfade
@@ -454,7 +447,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                     || focus_cycle_animating
                     || apogee_animating
                     || app.overlays.animating(target_presentation_time)
-                    || app.node_renderer.has_pending_icons()
+                    || app.render.node_renderer.has_pending_icons()
                     || cursor_animating
                 {
                     app.request_redraw();

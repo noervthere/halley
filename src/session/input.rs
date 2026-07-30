@@ -871,7 +871,7 @@ where
                             });
                             let was_maximized = restore.is_some();
                             if let Some(restore) = restore.as_ref() {
-                                session.fullscreen_textures.remove(&restore.surface);
+                                session.render.fullscreen_textures.remove(&restore.surface);
                                 super::configure_field_geometry(session, restore);
                                 let _ = session
                                     .cameras

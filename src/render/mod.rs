@@ -5,6 +5,7 @@ pub mod fullscreen_texture;
 pub mod node;
 pub mod overlays;
 pub mod rescale;
+pub mod resources;
 pub mod scene;
 pub mod text;
 pub mod window_decoration;

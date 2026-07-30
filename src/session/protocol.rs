@@ -261,7 +261,7 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
         super::pointer::reconcile_state(self);
         let preview_node = self.nodes.id_for_surface(&root);
         if let Some(id) = preview_node {
-            self.overlay_previews.mark_dirty(id);
+            self.render.overlay_previews.mark_dirty(id);
         }
         let apogee_preview_commit = self.apogee_config.live_previews
             && self.apogee.accepts_live_previews()
@@ -372,7 +372,7 @@ impl<D: SessionDriver> XdgShellHandler for Session<D> {
             let Some(window) = window else {
                 return;
             };
-            let textures = &mut session.fullscreen_textures;
+            let textures = &mut session.render.fullscreen_textures;
             let capture = session.driver.with_renderer(|renderer| {
                 textures.capture_previous(
                     renderer,
@@ -392,7 +392,7 @@ impl<D: SessionDriver> XdgShellHandler for Session<D> {
         wayland::xdg_shell::toplevel_destroyed(&mut self.wayland, &surface);
         super::finish_window_unmap(self, preparation);
         if let Some(record) = self.nodes.remove_surface(surface.wl_surface()) {
-            self.overlay_previews.remove(record.id);
+            self.render.overlay_previews.remove(record.id);
         }
         super::sync_keyboard_focus(self, SERIAL_COUNTER.next_serial());
         self.request_redraw();
