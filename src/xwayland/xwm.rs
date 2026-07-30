@@ -1,6 +1,8 @@
 use std::os::fd::OwnedFd;
 use std::sync::Mutex;
+use std::time::Duration;
 
+use calloop::timer::{TimeoutAction, Timer};
 use smithay::backend::renderer::utils::with_renderer_surface_state;
 use smithay::desktop::Window;
 use smithay::output::Output;
@@ -13,8 +15,8 @@ use smithay::xwayland::{X11Surface, X11Wm, XwmHandler};
 use crate::session::{Session, SessionDriver};
 use crate::wayland::fullscreen::{ExternalConfigureResult, ExternalTransactionRequest};
 
-use super::PendingWindow;
 use super::lifecycle::{MapAdmission, OpeningPlacement, map_admission};
+use super::{OverrideRedirectPlacement, PendingOverrideRedirect, PendingWindow};
 
 #[derive(Default)]
 struct MaximizeFullscreen(Mutex<bool>);
@@ -265,6 +267,26 @@ enum OverrideRedirectStackAction {
     PreserveMissing(u32),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OverrideRedirectMapAdmission {
+    ImmediateFresh,
+    ImmediateConfigured,
+    AwaitConfigure,
+}
+
+fn override_redirect_map_admission(
+    first_map: bool,
+    has_authoritative_placement: bool,
+) -> OverrideRedirectMapAdmission {
+    if has_authoritative_placement {
+        OverrideRedirectMapAdmission::ImmediateConfigured
+    } else if first_map {
+        OverrideRedirectMapAdmission::ImmediateFresh
+    } else {
+        OverrideRedirectMapAdmission::AwaitConfigure
+    }
+}
+
 fn override_redirect_stack_action(
     above_sibling: Option<u32>,
     sibling_is_mapped: bool,
@@ -356,6 +378,83 @@ fn describe_override_redirect_configure(
         surface.window_id(),
         override_redirect_owner(surface),
     );
+}
+
+fn map_override_redirect<D: SessionDriver>(
+    session: &mut Session<D>,
+    surface: X11Surface,
+    geometry: Rectangle<i32, Logical>,
+    above: Option<u32>,
+    mirror_configure_stack: bool,
+) {
+    if window_for_surface(session, &surface).is_some() {
+        return;
+    }
+    let output = override_redirect_output(session, &surface, geometry);
+    let window = Window::new_x11_window(surface.clone());
+    if let Some(output) = output {
+        crate::wayland::set_window_output(&window, &output);
+    }
+    // ICCCM override-redirect windows are client-managed. Mapping one must
+    // not activate it or transfer WM focus away from its managed owner.
+    session
+        .wayland
+        .space
+        .map_element(window.clone(), geometry.loc, false);
+    if mirror_configure_stack {
+        restack_override_redirect(session, &window, above);
+    }
+    let output = override_redirect_output_name(&window);
+    describe_override_redirect_map(&surface, geometry, output.as_deref());
+    session.request_redraw();
+}
+
+fn cancel_pending_override_redirect<D: SessionDriver>(
+    session: &mut Session<D>,
+    xid: u32,
+) -> Option<PendingOverrideRedirect> {
+    let pending = session.xwayland.pending_override_redirects.remove(&xid)?;
+    session.xwayland.loop_handle.remove(pending.timer);
+    Some(pending)
+}
+
+fn defer_override_redirect_remap<D: SessionDriver>(
+    session: &mut Session<D>,
+    surface: X11Surface,
+    geometry: Rectangle<i32, Logical>,
+) {
+    const REMAP_GRACE: Duration = Duration::from_millis(8);
+
+    let xid = surface.window_id();
+    let loop_handle = session.xwayland.loop_handle.clone();
+    let timer = loop_handle.insert_source(Timer::from_duration(REMAP_GRACE), move |_, _, session| {
+        if let Some(pending) = session.xwayland.pending_override_redirects.remove(&xid) {
+            eventline::debug!(
+                "xwayland: override-redirect xid={xid} remapped without a new configure; using retained geometry"
+            );
+            map_override_redirect(session, pending.surface, pending.geometry, None, false);
+        }
+        TimeoutAction::Drop
+    });
+    match timer {
+        Ok(timer) => {
+            session.xwayland.pending_override_redirects.insert(
+                xid,
+                PendingOverrideRedirect {
+                    surface,
+                    geometry,
+                    timer,
+                },
+            );
+            eventline::debug!(
+                "xwayland: deferring reused override-redirect xid={xid} for authoritative placement"
+            );
+        }
+        Err(err) => {
+            eventline::warn!("xwayland: failed to defer override-redirect xid={xid} remap: {err}");
+            map_override_redirect(session, surface, geometry, None, false);
+        }
+    }
 }
 
 fn enter_fullscreen<D: SessionDriver>(
@@ -843,7 +942,12 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
 
     fn new_window(&mut self, _xwm: XwmId, _window: X11Surface) {}
 
-    fn new_override_redirect_window(&mut self, _xwm: XwmId, _window: X11Surface) {}
+    fn new_override_redirect_window(&mut self, _xwm: XwmId, window: X11Surface) {
+        let xid = window.window_id();
+        cancel_pending_override_redirect(self, xid);
+        self.xwayland.known_override_redirects.remove(&xid);
+        self.xwayland.override_redirect_placements.remove(&xid);
+    }
 
     fn map_window_request(&mut self, _xwm: XwmId, surface: X11Surface) {
         if window_for_surface(self, &surface).is_some()
@@ -884,23 +988,37 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
     }
 
     fn mapped_override_redirect_window(&mut self, _xwm: XwmId, surface: X11Surface) {
-        let geometry = surface.geometry();
-        let output = override_redirect_output(self, &surface, geometry);
-        let window = Window::new_x11_window(surface.clone());
-        if let Some(output) = output {
-            crate::wayland::set_window_output(&window, &output);
+        let xid = surface.window_id();
+        if window_for_surface(self, &surface).is_some()
+            || self.xwayland.pending_override_redirects.contains_key(&xid)
+        {
+            eventline::debug!("xwayland: ignored duplicate override-redirect map xid={xid}");
+            return;
         }
-        // ICCCM override-redirect windows are client-managed. Mapping one must
-        // not activate it or transfer WM focus away from its managed owner.
-        self.wayland
-            .space
-            .map_element(window.clone(), geometry.loc, false);
-        let output = override_redirect_output_name(&window);
-        describe_override_redirect_map(&surface, geometry, output.as_deref());
-        self.request_redraw();
+        let first_map = self.xwayland.known_override_redirects.insert(xid);
+        let configured = self.xwayland.override_redirect_placements.remove(&xid);
+        match override_redirect_map_admission(first_map, configured.is_some()) {
+            OverrideRedirectMapAdmission::ImmediateFresh => {
+                map_override_redirect(self, surface.clone(), surface.geometry(), None, false);
+            }
+            OverrideRedirectMapAdmission::ImmediateConfigured => {
+                let geometry = configured
+                    .expect("configured admission requires placement")
+                    .geometry;
+                map_override_redirect(self, surface, geometry, None, false);
+            }
+            OverrideRedirectMapAdmission::AwaitConfigure => {
+                let geometry = surface.geometry();
+                defer_override_redirect_remap(self, surface, geometry);
+            }
+        }
     }
 
     fn unmapped_window(&mut self, _xwm: XwmId, surface: X11Surface) {
+        cancel_pending_override_redirect(self, surface.window_id());
+        self.xwayland
+            .override_redirect_placements
+            .remove(&surface.window_id());
         forget_window(self, &surface);
         if !surface.is_override_redirect()
             && let Err(err) = surface.set_mapped(false)
@@ -912,6 +1030,13 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
     }
 
     fn destroyed_window(&mut self, _xwm: XwmId, surface: X11Surface) {
+        cancel_pending_override_redirect(self, surface.window_id());
+        self.xwayland
+            .known_override_redirects
+            .remove(&surface.window_id());
+        self.xwayland
+            .override_redirect_placements
+            .remove(&surface.window_id());
         forget_window(self, &surface);
         crate::session::sync_keyboard_focus(self, SERIAL_COUNTER.next_serial());
         self.request_redraw();
@@ -959,10 +1084,18 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
             consider_map(self, surface.window_id(), surface.wl_surface().as_ref());
             return;
         }
-        let Some(window) = window_for_surface(self, &surface) else {
-            return;
-        };
         if surface.is_override_redirect() {
+            let xid = surface.window_id();
+            if cancel_pending_override_redirect(self, xid).is_some() {
+                map_override_redirect(self, surface, geometry, above, true);
+                return;
+            }
+            let Some(window) = window_for_surface(self, &surface) else {
+                self.xwayland
+                    .override_redirect_placements
+                    .insert(xid, OverrideRedirectPlacement { geometry });
+                return;
+            };
             let previous_output = crate::wayland::window_output_name(&window);
             if let Some(output) = override_redirect_output(self, &surface, geometry) {
                 crate::wayland::set_window_output(&window, &output);
@@ -988,6 +1121,9 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
             self.request_redraw();
             return;
         }
+        let Some(window) = window_for_surface(self, &surface) else {
+            return;
+        };
         let now = crate::frame_clock::monotonic_now();
         match self
             .fullscreen
@@ -1175,9 +1311,33 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
 mod tests {
     use super::{
         ExternalPresentationPolicy, FullscreenRequestOrigin, MaximizeToggleAction,
-        OverrideRedirectStackAction, external_presentation_policy, maximize_toggle_action,
-        override_redirect_stack_action,
+        OverrideRedirectMapAdmission, OverrideRedirectStackAction, external_presentation_policy,
+        maximize_toggle_action, override_redirect_map_admission, override_redirect_stack_action,
     };
+
+    #[test]
+    fn first_override_redirect_map_is_never_delayed() {
+        assert_eq!(
+            override_redirect_map_admission(true, false),
+            OverrideRedirectMapAdmission::ImmediateFresh
+        );
+    }
+
+    #[test]
+    fn reused_override_redirect_waits_for_new_placement() {
+        assert_eq!(
+            override_redirect_map_admission(false, false),
+            OverrideRedirectMapAdmission::AwaitConfigure
+        );
+    }
+
+    #[test]
+    fn preconfigured_override_redirect_remap_is_immediate() {
+        assert_eq!(
+            override_redirect_map_admission(false, true),
+            OverrideRedirectMapAdmission::ImmediateConfigured
+        );
+    }
 
     #[test]
     fn override_redirect_stacks_immediately_above_a_mapped_sibling() {

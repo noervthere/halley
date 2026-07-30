@@ -128,7 +128,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
         last_camera_tick: Instant::now(),
     };
     let wayland = App::create_wayland_state(dh.clone(), &mut driver);
-    let xwayland = crate::xwayland::State::new::<App>(&dh);
+    let xwayland = crate::xwayland::State::<WinitDriver>::new(&dh, event_loop.handle());
     let mut applied_input = runtime_config.input.clone();
     applied_input.keyboard = applied_keyboard;
     let launch_environment = super::environment::LaunchEnvironment::new(&runtime_config.env);

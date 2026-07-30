@@ -153,7 +153,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
         pending_output_config: None,
     };
     let wayland = TtyApp::create_wayland_state(dh.clone(), &mut driver);
-    let xwayland = crate::xwayland::State::new::<TtyApp>(&dh);
+    let xwayland = crate::xwayland::State::<TtyDriver>::new(&dh, loop_handle.clone());
     let keyboard_monitor = match crate::accessibility::KeyboardMonitorService::start() {
         Ok(service) => Some(service),
         Err(err) => {

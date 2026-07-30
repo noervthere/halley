@@ -42,6 +42,13 @@ pub fn accepts_wm_focus(window: &Window) -> bool {
     focus_policy(crate::xwayland::is_override_redirect(window))
 }
 
+/// Compositor move/resize grabs are window-management operations. X11 menus,
+/// tooltips, and other override-redirect surfaces remain interactive client
+/// surfaces, but are never draggable or resizable as managed windows.
+pub fn accepts_compositor_grab(window: &Window) -> bool {
+    compositor_grab_policy(crate::xwayland::is_override_redirect(window))
+}
+
 pub fn focus(wayland: &mut WaylandState, window: &Window, raise: bool) {
     if !accepts_wm_focus(window) {
         return;
@@ -87,11 +94,21 @@ fn focus_policy(override_redirect: bool) -> bool {
     !override_redirect
 }
 
+fn compositor_grab_policy(override_redirect: bool) -> bool {
+    !override_redirect
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
     fn override_redirect_policy_is_unmanaged() {
         assert!(!super::focus_policy(true));
         assert!(super::focus_policy(false));
+    }
+
+    #[test]
+    fn override_redirect_cannot_start_a_compositor_grab() {
+        assert!(!super::compositor_grab_policy(true));
+        assert!(super::compositor_grab_policy(false));
     }
 }

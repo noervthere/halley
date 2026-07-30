@@ -106,7 +106,7 @@ pub struct Session<D: SessionDriver> {
     pub node_renderer: crate::backend::node::NodeRenderer,
     pub backdrop_blur_renderer: crate::backend::backdrop_blur::BackdropBlurRenderer,
     pub ui_text: crate::backend::text::UiTextRenderer,
-    pub xwayland: crate::xwayland::State,
+    pub xwayland: crate::xwayland::State<D>,
 }
 
 impl<D: SessionDriver> Session<D> {

@@ -3,11 +3,11 @@ mod lifecycle;
 mod selection;
 mod xwm;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::process::Stdio;
 
-use calloop::LoopHandle;
+use calloop::{LoopHandle, RegistrationToken};
 use smithay::desktop::Window;
 use smithay::reexports::wayland_protocols::xwayland::keyboard_grab::zv1::server::{
     zwp_xwayland_keyboard_grab_manager_v1::ZwpXwaylandKeyboardGrabManagerV1,
@@ -17,6 +17,7 @@ use smithay::reexports::wayland_protocols::xwayland::shell::v1::server::{
     xwayland_shell_v1::XwaylandShellV1, xwayland_surface_v1::XwaylandSurfaceV1,
 };
 use smithay::reexports::wayland_server::{Dispatch, DisplayHandle, GlobalDispatch};
+use smithay::utils::{Logical, Rectangle};
 use smithay::wayland::compositor::CompositorClientState;
 use smithay::wayland::seat::WaylandFocus;
 use smithay::wayland::xwayland_keyboard_grab::{
@@ -38,33 +39,52 @@ struct PendingWindow {
     initial_size: smithay::utils::Size<i32, smithay::utils::Logical>,
 }
 
-pub struct State {
+#[derive(Clone, Copy)]
+struct OverrideRedirectPlacement {
+    geometry: Rectangle<i32, Logical>,
+}
+
+struct PendingOverrideRedirect {
+    surface: smithay::xwayland::X11Surface,
+    geometry: Rectangle<i32, Logical>,
+    timer: RegistrationToken,
+}
+
+pub struct State<D: SessionDriver> {
     shell_state: XWaylandShellState,
     _keyboard_grab_state: XWaylandKeyboardGrabState,
     xwm: Option<X11Wm>,
     display: Option<u32>,
     pending_windows: HashMap<u32, PendingWindow>,
     opening_placements: HashMap<u32, lifecycle::OpeningPlacement>,
+    loop_handle: LoopHandle<'static, Session<D>>,
+    known_override_redirects: HashSet<u32>,
+    pending_override_redirects: HashMap<u32, PendingOverrideRedirect>,
+    override_redirect_placements: HashMap<u32, OverrideRedirectPlacement>,
 }
 
-impl State {
-    pub fn new<D>(display: &DisplayHandle) -> Self
+impl<D: SessionDriver> State<D> {
+    pub fn new(display: &DisplayHandle, loop_handle: LoopHandle<'static, Session<D>>) -> Self
     where
-        D: XWaylandShellHandler + XWaylandKeyboardGrabHandler + 'static,
-        D: GlobalDispatch<XwaylandShellV1, ()>,
-        D: Dispatch<XwaylandShellV1, ()>,
-        D: Dispatch<XwaylandSurfaceV1, XWaylandSurfaceUserData>,
-        D: GlobalDispatch<ZwpXwaylandKeyboardGrabManagerV1, ()>,
-        D: Dispatch<ZwpXwaylandKeyboardGrabManagerV1, ()>,
-        D: Dispatch<ZwpXwaylandKeyboardGrabV1, ()>,
+        Session<D>: XWaylandShellHandler + XWaylandKeyboardGrabHandler + 'static,
+        Session<D>: GlobalDispatch<XwaylandShellV1, ()>,
+        Session<D>: Dispatch<XwaylandShellV1, ()>,
+        Session<D>: Dispatch<XwaylandSurfaceV1, XWaylandSurfaceUserData>,
+        Session<D>: GlobalDispatch<ZwpXwaylandKeyboardGrabManagerV1, ()>,
+        Session<D>: Dispatch<ZwpXwaylandKeyboardGrabManagerV1, ()>,
+        Session<D>: Dispatch<ZwpXwaylandKeyboardGrabV1, ()>,
     {
         Self {
-            shell_state: XWaylandShellState::new::<D>(display),
-            _keyboard_grab_state: XWaylandKeyboardGrabState::new::<D>(display),
+            shell_state: XWaylandShellState::new::<Session<D>>(display),
+            _keyboard_grab_state: XWaylandKeyboardGrabState::new::<Session<D>>(display),
             xwm: None,
             display: None,
             pending_windows: HashMap::new(),
             opening_placements: HashMap::new(),
+            loop_handle,
+            known_override_redirects: HashSet::new(),
+            pending_override_redirects: HashMap::new(),
+            override_redirect_placements: HashMap::new(),
         }
     }
 
@@ -86,10 +106,15 @@ impl State {
     }
 
     fn clear(&mut self) {
+        for (_, pending) in self.pending_override_redirects.drain() {
+            self.loop_handle.remove(pending.timer);
+        }
         self.xwm = None;
         self.display = None;
         self.pending_windows.clear();
         self.opening_placements.clear();
+        self.known_override_redirects.clear();
+        self.override_redirect_placements.clear();
     }
 }
 

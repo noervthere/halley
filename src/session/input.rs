@@ -821,6 +821,7 @@ where
                             location,
                             ..
                         }) = route.as_ref()
+                        && crate::window::accepts_compositor_grab(window)
                         && !window.wl_surface().is_some_and(|surface| {
                             session
                                 .fullscreen
@@ -850,6 +851,7 @@ where
                     match route.as_ref().map(|route| &route.target) {
                         Some(crate::input::pointer::PointerTarget::Window(window))
                             if mod_held
+                                && crate::window::accepts_compositor_grab(window)
                                 && !window.wl_surface().is_some_and(|surface| {
                                     session
                                         .fullscreen
