@@ -72,7 +72,17 @@ pub(crate) fn window_visual_state(
                 .unwrap_or_else(|| presentation.fullscreen_rect(output_size));
             presentation.client_rect(windowed, output_size)
         })
-        .or_else(|| maximize.map(|presentation| presentation.client_rect(camera_rect)))
+        .or_else(|| {
+            maximize.map(|presentation| {
+                let windowed = crate::backend::camera_rect(
+                    presentation.windowed_rect.to_physical(1),
+                    camera_center,
+                    output_size,
+                    view.scale,
+                );
+                presentation.client_rect(windowed)
+            })
+        })
         .unwrap_or(camera_rect);
     let animated_rect = opening_visual.transform_rect(presentation_rect, presentation_rect);
 

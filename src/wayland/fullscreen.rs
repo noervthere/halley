@@ -29,6 +29,7 @@ struct FullscreenWindow {
     active: bool,
     target_output: String,
     restore: Option<WindowedPlacement>,
+    presentation_windowed: Option<Rectangle<i32, Logical>>,
     fullscreen_size: Size<i32, Logical>,
     transition: Option<MotionTimeline>,
     external_pending: Option<ExternalPending>,
@@ -212,6 +213,7 @@ impl FullscreenManager {
                         output: super::window_output_name(window),
                     })
                 }),
+                presentation_windowed: None,
                 fullscreen_size: output_geometry.size,
                 transition: None,
                 external_pending: None,
@@ -270,6 +272,9 @@ impl FullscreenManager {
                 )
             })
             .unwrap_or((None, false));
+        if let Some(entry) = self.windows.get_mut(toplevel.wl_surface()) {
+            entry.presentation_windowed = entry.restore.as_ref().map(|restore| restore.geometry);
+        }
         let bounds = self
             .windows
             .get(toplevel.wl_surface())
@@ -326,6 +331,7 @@ impl FullscreenManager {
                         .unwrap_or_else(|| window.geometry()),
                     output: super::window_output_name(&window),
                 }),
+                presentation_windowed: None,
                 fullscreen_size: output_geometry.size,
                 transition: None,
                 external_pending: None,
@@ -427,6 +433,7 @@ impl FullscreenManager {
                 active: false,
                 target_output: target_name.clone(),
                 restore: restore.clone(),
+                presentation_windowed: None,
                 fullscreen_size: output_geometry.size,
                 transition: None,
                 external_pending: None,
@@ -469,6 +476,7 @@ impl FullscreenManager {
         let wl_surface = window.wl_surface().map(|surface| surface.into_owned())?;
         let entry = self.windows.get_mut(&wl_surface)?;
         let geometry = entry.restore.as_ref()?.geometry;
+        entry.presentation_windowed = Some(geometry);
         Some(begin_external_transaction(
             entry,
             false,
@@ -664,6 +672,7 @@ impl FullscreenManager {
                 geometry,
                 output: Some(output.name()),
             });
+            entry.presentation_windowed = Some(geometry);
         }
         if committed {
             entry.fullscreen_size = window.geometry().size;
@@ -694,7 +703,9 @@ impl FullscreenManager {
         (progress > 0.0).then_some(FullscreenPresentation {
             progress,
             transition_completion,
-            windowed_geometry: entry.restore.as_ref().map(|restore| restore.geometry),
+            windowed_geometry: entry
+                .presentation_windowed
+                .or_else(|| entry.restore.as_ref().map(|restore| restore.geometry)),
             fullscreen_size: entry.fullscreen_size,
         })
     }
@@ -775,6 +786,31 @@ impl FullscreenManager {
         self.windows
             .get(surface)
             .is_some_and(|entry| entry.active || entry.desired)
+    }
+
+    pub(crate) fn restore_placement(
+        &self,
+        surface: &WlSurface,
+    ) -> Option<(Rectangle<i32, Logical>, Option<String>)> {
+        let restore = self.windows.get(surface)?.restore.as_ref()?;
+        Some((restore.geometry, restore.output.clone()))
+    }
+
+    pub(crate) fn override_restore_from_field(
+        &mut self,
+        surface: &WlSurface,
+        restore_geometry: Rectangle<i32, Logical>,
+        restore_output: String,
+        field_geometry: Rectangle<i32, Logical>,
+    ) {
+        if let Some(entry) = self.windows.get_mut(surface) {
+            entry.restore = Some(WindowedPlacement {
+                location: restore_geometry.loc,
+                geometry: restore_geometry,
+                output: Some(restore_output),
+            });
+            entry.presentation_windowed = Some(field_geometry);
+        }
     }
 
     pub fn should_capture_snapshot(&mut self, surface: &WlSurface, commit_serial: Serial) -> bool {
@@ -1094,6 +1130,7 @@ mod tests {
             active,
             target_output: "DP-1".to_string(),
             restore: None,
+            presentation_windowed: None,
             fullscreen_size: (1920, 1080).into(),
             transition: None,
             external_pending: None,

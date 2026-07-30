@@ -249,13 +249,24 @@ fn toggle_focused_fullscreen<D: SessionDriver>(session: &mut Session<D>, output:
     else {
         return;
     };
+    let record_output = record.output.clone();
     let focused = record.surface;
     let window = record.window;
 
     cancel_grab_for_surface(session, &focused);
     let entering = !session.fullscreen.is_fullscreen_or_pending(&focused);
-    if entering {
-        session.maximize.remove(&focused);
+    let field_restore = entering
+        .then(|| session.maximize.take_restore(&focused))
+        .flatten();
+    let field_geometry = field_restore
+        .as_ref()
+        .and_then(|_| session.wayland.space.element_geometry(&window));
+    if let Some(restore) = field_restore.as_ref() {
+        let _ = session.cameras.apply_field_maximize(&record_output, None);
+        session
+            .wayland
+            .space
+            .relocate_element(&window, restore.geometry.loc);
     }
     if let Some(toplevel) = window.toplevel() {
         if entering {
@@ -267,6 +278,14 @@ fn toggle_focused_fullscreen<D: SessionDriver>(session: &mut Session<D>, output:
         }
     } else {
         crate::xwayland::set_window_fullscreen(session, &window, entering);
+    }
+    if let (Some(restore), Some(field_geometry)) = (field_restore, field_geometry) {
+        session.fullscreen.override_restore_from_field(
+            &focused,
+            restore.geometry,
+            restore.output,
+            field_geometry,
+        );
     }
     pointer::reconcile_state(session);
     session.request_redraw();
@@ -311,6 +330,17 @@ fn toggle_focused_field_maximize<D: SessionDriver>(session: &mut Session<D>, out
         )
             .into(),
     );
+    let inherited_restore = session.fullscreen.restore_placement(&record.surface);
+    let Some(restore_geometry) = inherited_restore
+        .as_ref()
+        .map(|(geometry, _)| *geometry)
+        .or_else(|| session.wayland.space.element_geometry(&record.window))
+    else {
+        return;
+    };
+    let restore_output = inherited_restore
+        .and_then(|(_, output)| output)
+        .unwrap_or_else(|| output_name.clone());
 
     cancel_grab_for_surface(session, &record.surface);
     if session.fullscreen.is_fullscreen_or_pending(&record.surface) {
@@ -320,14 +350,65 @@ fn toggle_focused_field_maximize<D: SessionDriver>(session: &mut Session<D>, out
             crate::xwayland::set_window_fullscreen(session, &record.window, false);
         }
     }
-    session.maximize.toggle(
+    let change = session.maximize.toggle(
         &target_output,
-        record.surface,
+        record.surface.clone(),
+        restore_geometry,
+        restore_output,
         target,
         crate::frame_clock::monotonic_now(),
     );
+    if let Some(displaced) = change.displaced.as_ref() {
+        configure_field_geometry(session, displaced);
+    }
+    configure_field_geometry(
+        session,
+        &crate::wayland::maximize::FieldRestore {
+            surface: record.surface,
+            geometry: change.geometry,
+            output: change.output,
+        },
+    );
     pointer::reconcile_state(session);
     session.request_redraw();
+}
+
+pub(crate) fn configure_field_geometry<D: SessionDriver>(
+    session: &mut Session<D>,
+    request: &crate::wayland::maximize::FieldRestore,
+) {
+    let Some(window) = session
+        .nodes
+        .id_for_surface(&request.surface)
+        .and_then(|id| session.nodes.record(id))
+        .map(|record| record.window.clone())
+    else {
+        return;
+    };
+    if let Some(output) = session
+        .wayland
+        .space
+        .outputs()
+        .find(|output| output.name() == request.output)
+        .cloned()
+    {
+        crate::wayland::set_window_output(&window, &output);
+    }
+    session
+        .wayland
+        .space
+        .relocate_element(&window, request.geometry.loc);
+    if let Some(toplevel) = window.toplevel() {
+        toplevel.with_pending_state(|pending| {
+            pending.size = Some(request.geometry.size);
+            pending.bounds = Some(request.geometry.size);
+        });
+        if toplevel.is_initial_configure_sent() {
+            toplevel.send_configure();
+        }
+    } else {
+        crate::xwayland::configure_window(&window, request.geometry);
+    }
 }
 
 pub(crate) fn sync_keyboard_focus<D: SessionDriver>(

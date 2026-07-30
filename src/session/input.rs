@@ -862,10 +862,12 @@ where
                                 }) =>
                         {
                             let route = route.as_ref().expect("matched above");
-                            let was_maximized = window
-                                .wl_surface()
-                                .is_some_and(|surface| session.maximize.remove(surface.as_ref()));
-                            if was_maximized {
+                            let restore = window.wl_surface().and_then(|surface| {
+                                session.maximize.take_restore(surface.as_ref())
+                            });
+                            let was_maximized = restore.is_some();
+                            if let Some(restore) = restore.as_ref() {
+                                super::configure_field_geometry(session, restore);
                                 let _ = session
                                     .cameras
                                     .apply_field_maximize(&route.output.name(), None);
@@ -891,10 +893,10 @@ where
                                         .element_geometry(window)
                                         .unwrap_or_else(|| window.geometry())
                                 });
-                                let source = session
-                                    .wayland
-                                    .space
-                                    .element_geometry(window)
+                                let source = restore
+                                    .as_ref()
+                                    .map(|restore| restore.geometry)
+                                    .or_else(|| session.wayland.space.element_geometry(window))
                                     .unwrap_or_else(|| window.geometry());
                                 let ratio_x = ((session.pointer.position().0
                                     - f64::from(visual.loc.x))

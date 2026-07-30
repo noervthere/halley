@@ -5,10 +5,12 @@ use halley_config::{Animations, Field};
 use smithay::output::Output;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Physical, Rectangle};
+use smithay::wayland::seat::WaylandFocus;
 
 #[derive(Clone, Copy, Debug)]
 pub struct FieldMaximizePresentation {
     pub progress: f64,
+    pub windowed_rect: Rectangle<i32, Logical>,
     pub target_rect: Rectangle<i32, Physical>,
 }
 
@@ -18,9 +20,25 @@ impl FieldMaximizePresentation {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct FieldRestore {
+    pub surface: WlSurface,
+    pub geometry: Rectangle<i32, Logical>,
+    pub output: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct FieldMaximizeChange {
+    pub geometry: Rectangle<i32, Logical>,
+    pub output: String,
+    pub displaced: Option<FieldRestore>,
+}
+
 #[derive(Debug)]
 struct Entry {
     surface: WlSurface,
+    restore_geometry: Rectangle<i32, Logical>,
+    restore_output: String,
     target_rect: Rectangle<i32, Logical>,
     active: bool,
     window_timeline: Option<FieldTimeline>,
@@ -84,9 +102,11 @@ impl FieldMaximizeManager {
         &mut self,
         output: &Output,
         surface: WlSurface,
+        restore_geometry: Rectangle<i32, Logical>,
+        restore_output: String,
         target_rect: Rectangle<i32, Logical>,
         now: Duration,
-    ) {
+    ) -> FieldMaximizeChange {
         let output_name = output.name();
         match self.outputs.get_mut(&output_name) {
             Some(entry) if entry.surface == surface && entry.active => {
@@ -95,28 +115,65 @@ impl FieldMaximizeManager {
                 entry.active = false;
                 entry.window_timeline = timeline(self.animations, now, window_progress, 0.0);
                 entry.camera_timeline = timeline(self.animations, now, camera_progress, 0.0);
+                FieldMaximizeChange {
+                    geometry: entry.restore_geometry,
+                    output: entry.restore_output.clone(),
+                    displaced: None,
+                }
+            }
+            Some(entry) if entry.surface == surface => {
+                let window_progress = progress(entry.window_timeline, entry.active, now);
+                let camera_progress = progress(entry.camera_timeline, entry.active, now);
+                entry.active = true;
+                entry.target_rect = target_rect;
+                entry.window_timeline = timeline(self.animations, now, window_progress, 1.0);
+                entry.camera_timeline = timeline(self.animations, now, camera_progress, 1.0);
+                FieldMaximizeChange {
+                    geometry: target_rect,
+                    output: output_name,
+                    displaced: None,
+                }
             }
             Some(entry) => {
                 let camera_progress = progress(entry.camera_timeline, entry.active, now);
+                let displaced = FieldRestore {
+                    surface: entry.surface.clone(),
+                    geometry: entry.restore_geometry,
+                    output: entry.restore_output.clone(),
+                };
                 *entry = Entry {
                     surface,
+                    restore_geometry,
+                    restore_output,
                     target_rect,
                     active: true,
                     window_timeline: timeline(self.animations, now, 0.0, 1.0),
                     camera_timeline: timeline(self.animations, now, camera_progress, 1.0),
                 };
+                FieldMaximizeChange {
+                    geometry: target_rect,
+                    output: output_name,
+                    displaced: Some(displaced),
+                }
             }
             None => {
                 self.outputs.insert(
-                    output_name,
+                    output_name.clone(),
                     Entry {
                         surface,
+                        restore_geometry,
+                        restore_output,
                         target_rect,
                         active: true,
                         window_timeline: timeline(self.animations, now, 0.0, 1.0),
                         camera_timeline: timeline(self.animations, now, 0.0, 1.0),
                     },
                 );
+                FieldMaximizeChange {
+                    geometry: target_rect,
+                    output: output_name,
+                    displaced: None,
+                }
             }
         }
     }
@@ -135,6 +192,7 @@ impl FieldMaximizeManager {
         let progress = progress(entry.window_timeline, entry.active, now).clamp(0.0, 1.0);
         (progress > 0.0).then(|| FieldMaximizePresentation {
             progress,
+            windowed_rect: entry.restore_geometry,
             target_rect: Rectangle::new(
                 (entry.target_rect.loc - output_geometry.loc).to_physical(1),
                 entry.target_rect.size.to_physical(1),
@@ -164,9 +222,30 @@ impl FieldMaximizeManager {
     }
 
     pub fn remove(&mut self, surface: &WlSurface) -> bool {
-        let before = self.outputs.len();
-        self.outputs.retain(|_, entry| &entry.surface != surface);
-        self.outputs.len() != before
+        self.take_restore(surface).is_some()
+    }
+
+    pub fn take_restore(&mut self, surface: &WlSurface) -> Option<FieldRestore> {
+        let output = self
+            .outputs
+            .iter()
+            .find_map(|(output, entry)| (&entry.surface == surface).then(|| output.clone()))?;
+        let entry = self.outputs.remove(&output)?;
+        Some(FieldRestore {
+            surface: entry.surface,
+            geometry: entry.restore_geometry,
+            output: entry.restore_output,
+        })
+    }
+
+    pub fn restore(&self, surface: &WlSurface) -> Option<FieldRestore> {
+        self.outputs.values().find_map(|entry| {
+            (&entry.surface == surface).then(|| FieldRestore {
+                surface: entry.surface.clone(),
+                geometry: entry.restore_geometry,
+                output: entry.restore_output.clone(),
+            })
+        })
     }
 
     pub fn remove_output(&mut self, output: &str) -> bool {
@@ -204,6 +283,63 @@ impl FieldMaximizeManager {
                     .camera_timeline
                     .is_some_and(|timeline| !timeline.is_finished_at(now))
         })
+    }
+
+    pub fn handle_commit(&self, wayland: &mut super::WaylandState, surface: &WlSurface) -> bool {
+        let Some(entry) = self
+            .outputs
+            .values()
+            .find(|entry| &entry.surface == surface)
+        else {
+            return false;
+        };
+        let Some(window) = wayland
+            .space
+            .elements()
+            .find(|window| {
+                window
+                    .wl_surface()
+                    .is_some_and(|candidate| candidate.as_ref() == surface)
+            })
+            .cloned()
+        else {
+            return false;
+        };
+        let (geometry, location) = if entry.active {
+            (entry.target_rect, entry.target_rect.loc)
+        } else {
+            (entry.restore_geometry, entry.restore_geometry.loc)
+        };
+        if window.geometry().size != geometry.size {
+            return false;
+        }
+        let output = if entry.active {
+            wayland
+                .space
+                .outputs()
+                .find(|output| output.name() == self.output_for_surface_including_exit(surface))
+        } else {
+            wayland
+                .space
+                .outputs()
+                .find(|output| output.name() == entry.restore_output)
+        }
+        .cloned();
+        if let Some(output) = output {
+            super::set_window_output(&window, &output);
+        }
+        if wayland.space.element_location(&window) != Some(location) {
+            wayland.space.relocate_element(&window, location);
+            return true;
+        }
+        false
+    }
+
+    fn output_for_surface_including_exit(&self, surface: &WlSurface) -> &str {
+        self.outputs
+            .iter()
+            .find_map(|(output, entry)| (&entry.surface == surface).then_some(output.as_str()))
+            .unwrap_or("")
     }
 }
 

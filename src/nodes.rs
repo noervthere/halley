@@ -1161,7 +1161,12 @@ pub fn collapse<D: crate::session::SessionDriver>(
     {
         return false;
     }
-    let Some(geometry) = session.wayland.space.element_geometry(&record.window) else {
+    let maximize_restore = session.maximize.restore(&record.surface);
+    let Some(geometry) = maximize_restore
+        .as_ref()
+        .map(|restore| restore.geometry)
+        .or_else(|| session.wayland.space.element_geometry(&record.window))
+    else {
         return false;
     };
     let Some(stack_index) = session
@@ -1177,7 +1182,13 @@ pub fn collapse<D: crate::session::SessionDriver>(
         logical_focus_after_collapse(session.nodes.focused(), id, client_was_focused);
 
     let _ = crate::session::closing::capture_window(session, &record.window);
-    session.maximize.remove(&record.surface);
+    if let Some(restore) = session.maximize.take_restore(&record.surface) {
+        crate::session::configure_field_geometry(session, &restore);
+        let _ = session.cameras.apply_field_maximize(&record.output, None);
+        if let Some(record) = session.nodes.record_mut(id) {
+            record.geometry = restore.geometry;
+        }
+    }
     crate::session::cancel_grab_for_surface(session, &record.surface);
     if client_was_focused {
         // A collapsed surface must not keep receiving keyboard input, but the
