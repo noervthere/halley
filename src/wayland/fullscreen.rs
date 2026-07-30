@@ -333,7 +333,10 @@ impl FullscreenManager {
                 origin: FullscreenOrigin::Client,
             });
         super::set_window_output(&window, &target);
-        wayland.space.map_element(window, output_geometry.loc, true);
+        // X11 fullscreen changes presentation geometry, not stacking. Using
+        // `map_element` here would silently move an already-mapped window to
+        // the top and cover windows the user had deliberately kept above it.
+        wayland.space.relocate_element(&window, output_geometry.loc);
         Some(output_geometry)
     }
 
@@ -354,9 +357,8 @@ impl FullscreenManager {
         {
             super::set_window_output(window, &output);
         }
-        wayland
-            .space
-            .map_element(window.clone(), restore.location, true);
+        // Leaving X11 fullscreen preserves the same stack slot as entry.
+        wayland.space.relocate_element(window, restore.location);
         Some(restore.geometry)
     }
 
