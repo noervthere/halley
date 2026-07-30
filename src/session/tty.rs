@@ -541,6 +541,7 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
     let view_before = pointer_is_on_output
         .then(|| app.cameras.view(&output.name()))
         .flatten();
+    let fullscreen_camera_changed = app.sync_fullscreen_camera(output, target_presentation_time);
     let camera_animating = app.cameras.get_mut(&output.name()).is_some_and(|camera| {
         crate::input::zoom::tick(
             camera,
@@ -582,6 +583,7 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
             .cursor
             .current_is_animated(output.current_scale().integer_scale());
     let mut animating = camera_animating
+        || fullscreen_camera_changed
         || window_animating
         || closing_animating
         || node_animating

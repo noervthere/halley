@@ -238,9 +238,10 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                     .duration_since(app.driver.last_camera_tick)
                     .as_secs_f32();
                 app.driver.last_camera_tick = now;
-                let output_name = app.driver.backend.output().name();
+                let output = app.driver.backend.output().clone();
+                let output_name = output.name();
                 let view_before = app.cameras.view(&output_name);
-                let mut animating = false;
+                let mut animating = app.sync_fullscreen_camera(&output, target_presentation_time);
                 for camera in app.cameras.iter_mut() {
                     animating |= crate::input::zoom::tick(
                         camera,
@@ -263,7 +264,6 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                             .is_animating(surface.as_ref(), target_presentation_time)
                     })
                 });
-                let output = app.driver.backend.output().clone();
                 let fullscreen_animating = app
                     .fullscreen
                     .is_animating_on_output(&output, target_presentation_time);

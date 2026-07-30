@@ -12,7 +12,7 @@ use smithay::wayland::seat::WaylandFocus;
 use smithay::wayland::shell::xdg::ToplevelSurface;
 
 use crate::animation::MotionTimeline;
-use crate::camera::OutputCameras;
+use crate::camera::{FullscreenCameraFrame, OutputCameras};
 
 use super::WaylandState;
 
@@ -678,6 +678,51 @@ impl FullscreenManager {
             windowed_geometry: entry.restore.as_ref().map(|restore| restore.geometry),
             fullscreen_size: entry.fullscreen_size,
         })
+    }
+
+    /// Returns the monitor-wide camera track for the fullscreen transaction.
+    ///
+    /// The endpoint is the original window center at native output zoom, as
+    /// in old Halley. Unlike the surface presentation, this deliberately
+    /// remains present at progress zero while a request/exit transaction owns
+    /// the output, allowing input mutation to stay locked until cleanup.
+    pub fn camera_frame(
+        &self,
+        output: &Output,
+        output_geometry: Rectangle<i32, Logical>,
+        now: Duration,
+    ) -> Option<FullscreenCameraFrame> {
+        let entry = self.windows.values().find(|entry| {
+            entry.target_output == output.name()
+                && (entry.active
+                    || entry.desired
+                    || entry.transition.is_some()
+                    || entry.external_pending.is_some())
+        })?;
+        let progress = entry
+            .transition
+            .map(|transition| transition.value_at(now))
+            .unwrap_or_else(|| if entry.active { 1.0 } else { 0.0 })
+            .clamp(0.0, 1.0) as f32;
+        let center = entry
+            .restore
+            .as_ref()
+            .map(|restore| {
+                let geometry = restore.geometry;
+                Point::<f32, Physical>::from((
+                    geometry.loc.x as f32 + geometry.size.w as f32 / 2.0
+                        - output_geometry.loc.x as f32,
+                    geometry.loc.y as f32 + geometry.size.h as f32 / 2.0
+                        - output_geometry.loc.y as f32,
+                ))
+            })
+            .unwrap_or_else(|| {
+                Point::from((
+                    output_geometry.size.w as f32 / 2.0,
+                    output_geometry.size.h as f32 / 2.0,
+                ))
+            });
+        Some(FullscreenCameraFrame { center, progress })
     }
 
     pub fn covers_top(&self, _focused: Option<&WlSurface>, output: &Output, now: Duration) -> bool {

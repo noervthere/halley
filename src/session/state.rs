@@ -311,7 +311,24 @@ impl<D: SessionDriver> Session<D> {
         for surface in cleanup.finished_surfaces {
             self.fullscreen_textures.remove(&surface);
         }
+        let outputs = self.wayland.space.outputs().cloned().collect::<Vec<_>>();
+        for output in outputs {
+            self.sync_fullscreen_camera(&output, now);
+        }
         cleanup.visual_finished
+    }
+
+    pub fn sync_fullscreen_camera(
+        &mut self,
+        output: &smithay::output::Output,
+        now: std::time::Duration,
+    ) -> bool {
+        let frame = self
+            .wayland
+            .space
+            .output_geometry(output)
+            .and_then(|geometry| self.fullscreen.camera_frame(output, geometry, now));
+        self.cameras.apply_fullscreen(&output.name(), frame)
     }
 
     pub fn finish_x11_fullscreen_presentation(&mut self, surface: &WlSurface) -> bool {

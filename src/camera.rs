@@ -10,6 +10,23 @@ pub struct OutputView {
     pub scale: f32,
 }
 
+/// The output-wide camera presentation owned by a fullscreen transaction.
+///
+/// Fullscreen is a monitor state, not a special transform applied only to its
+/// client. Driving the shared camera with the same progress keeps any windows
+/// stacked above the fullscreen surface at the same 1.0 zoom and pan.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FullscreenCameraFrame {
+    pub center: Point<f32, Physical>,
+    pub progress: f32,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct FullscreenCameraRestore {
+    center: Vec2,
+    view_size: Vec2,
+}
+
 /// Independent camera state keyed by Smithay output name.
 ///
 /// The collection owns no output/protocol objects and no rendering state;
@@ -18,10 +35,12 @@ pub struct OutputView {
 #[derive(Default)]
 pub struct OutputCameras {
     cameras: HashMap<String, Camera>,
+    fullscreen: HashMap<String, FullscreenCameraRestore>,
 }
 
 impl OutputCameras {
     pub fn insert(&mut self, output_name: String, output_size: Size<i32, Physical>) {
+        self.fullscreen.remove(&output_name);
         self.cameras
             .insert(output_name, camera_at_rest(output_size));
     }
@@ -35,11 +54,20 @@ impl OutputCameras {
     }
 
     pub fn get_mut(&mut self, output_name: &str) -> Option<&mut Camera> {
+        if self.fullscreen.contains_key(output_name) {
+            return None;
+        }
         self.cameras.get_mut(output_name)
     }
 
     pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut Camera> {
-        self.cameras.values_mut()
+        let Self {
+            cameras,
+            fullscreen,
+        } = self;
+        cameras
+            .iter_mut()
+            .filter_map(move |(name, camera)| (!fullscreen.contains_key(name)).then_some(camera))
     }
 
     pub fn view(&self, output_name: &str) -> Option<OutputView> {
@@ -47,6 +75,69 @@ impl OutputCameras {
             center: Point::from((camera.center.x, camera.center.y)),
             scale: scale(camera),
         })
+    }
+
+    /// Applies or releases fullscreen ownership of one output camera.
+    ///
+    /// The first fullscreen frame captures the live pre-fullscreen camera.
+    /// Every subsequent frame derives both center and view size from that one
+    /// snapshot and the fullscreen transition progress, preventing independent
+    /// easing tracks from drifting apart. Releasing restores that snapshot and
+    /// leaves the camera settled there, matching old Halley's monitor-local
+    /// restore behavior.
+    pub fn apply_fullscreen(
+        &mut self,
+        output_name: &str,
+        frame: Option<FullscreenCameraFrame>,
+    ) -> bool {
+        let Some(camera) = self.cameras.get_mut(output_name) else {
+            self.fullscreen.remove(output_name);
+            return false;
+        };
+        let before = *camera;
+        match frame {
+            Some(frame) => {
+                let restore = self.fullscreen.entry(output_name.to_string()).or_insert(
+                    FullscreenCameraRestore {
+                        center: camera.center,
+                        view_size: camera.view_size,
+                    },
+                );
+                let progress = frame.progress.clamp(0.0, 1.0);
+                camera.center = lerp_vec2(
+                    restore.center,
+                    Vec2 {
+                        x: frame.center.x,
+                        y: frame.center.y,
+                    },
+                    progress,
+                );
+                camera.view_size = lerp_vec2(restore.view_size, camera.base_size, progress);
+                camera.target_center = camera.center;
+                camera.target_view_size = camera.view_size;
+                camera.pan_vel = Vec2 { x: 0.0, y: 0.0 };
+                camera.zoom_log_vel = 0.0;
+            }
+            None => {
+                let Some(restore) = self.fullscreen.remove(output_name) else {
+                    return false;
+                };
+                camera.center = restore.center;
+                camera.view_size = restore.view_size;
+                camera.target_center = restore.center;
+                camera.target_view_size = restore.view_size;
+                camera.pan_vel = Vec2 { x: 0.0, y: 0.0 };
+                camera.zoom_log_vel = 0.0;
+            }
+        }
+        *camera != before
+    }
+}
+
+fn lerp_vec2(from: Vec2, to: Vec2, progress: f32) -> Vec2 {
+    Vec2 {
+        x: from.x + (to.x - from.x) * progress,
+        y: from.y + (to.y - from.y) * progress,
     }
 }
 
@@ -170,6 +261,91 @@ mod tests {
         assert_eq!(
             world_viewport(view, secondary),
             Rectangle::new((1700, -650).into(), (3840, 2400).into())
+        );
+    }
+
+    #[test]
+    fn fullscreen_owns_zoom_and_pan_then_restores_the_live_camera() {
+        let mut cameras = OutputCameras::default();
+        cameras.insert("DP-1".into(), Size::from((1920, 1080)));
+        let camera = cameras.get_mut("DP-1").unwrap();
+        camera.center = Vec2 { x: 700.0, y: 420.0 };
+        camera.view_size = Vec2 {
+            x: 3840.0,
+            y: 2160.0,
+        };
+        camera.target_center = camera.center;
+        camera.target_view_size = camera.view_size;
+
+        assert!(cameras.apply_fullscreen(
+            "DP-1",
+            Some(FullscreenCameraFrame {
+                center: Point::from((1100.0, 620.0)),
+                progress: 0.5,
+            }),
+        ));
+        assert!(
+            cameras.get_mut("DP-1").is_none(),
+            "fullscreen must reject camera mutations"
+        );
+        assert_eq!(
+            cameras.get("DP-1").unwrap().center,
+            Vec2 { x: 900.0, y: 520.0 }
+        );
+        assert_eq!(
+            cameras.get("DP-1").unwrap().view_size,
+            Vec2 {
+                x: 2880.0,
+                y: 1620.0,
+            }
+        );
+
+        cameras.apply_fullscreen(
+            "DP-1",
+            Some(FullscreenCameraFrame {
+                center: Point::from((1100.0, 620.0)),
+                progress: 1.0,
+            }),
+        );
+        assert_eq!(cameras.view("DP-1").unwrap().scale, 1.0);
+
+        assert!(cameras.apply_fullscreen("DP-1", None));
+        let restored = cameras.get_mut("DP-1").unwrap();
+        assert_eq!(restored.center, Vec2 { x: 700.0, y: 420.0 });
+        assert_eq!(
+            restored.view_size,
+            Vec2 {
+                x: 3840.0,
+                y: 2160.0,
+            }
+        );
+    }
+
+    #[test]
+    fn fullscreen_retarget_keeps_the_original_restore_snapshot() {
+        let mut cameras = OutputCameras::default();
+        cameras.insert("DP-1".into(), Size::from((1000, 800)));
+        cameras.get_mut("DP-1").unwrap().center = Vec2 { x: 300.0, y: 250.0 };
+
+        cameras.apply_fullscreen(
+            "DP-1",
+            Some(FullscreenCameraFrame {
+                center: Point::from((500.0, 400.0)),
+                progress: 1.0,
+            }),
+        );
+        cameras.apply_fullscreen(
+            "DP-1",
+            Some(FullscreenCameraFrame {
+                center: Point::from((700.0, 600.0)),
+                progress: 1.0,
+            }),
+        );
+        cameras.apply_fullscreen("DP-1", None);
+
+        assert_eq!(
+            cameras.get("DP-1").unwrap().center,
+            Vec2 { x: 300.0, y: 250.0 }
         );
     }
 }
