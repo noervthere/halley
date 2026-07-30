@@ -330,7 +330,11 @@ impl FieldMaximizeManager {
         })
     }
 
-    pub fn handle_commit(&self, wayland: &mut super::WaylandState, surface: &WlSurface) -> bool {
+    pub fn handle_commit(
+        &self,
+        wayland: &mut crate::wayland::WaylandState,
+        surface: &WlSurface,
+    ) -> bool {
         let Some(entry) = self
             .outputs
             .values()
@@ -371,7 +375,7 @@ impl FieldMaximizeManager {
         }
         .cloned();
         if let Some(output) = output {
-            super::set_window_output(&window, &output);
+            crate::wayland::set_window_output(&window, &output);
         }
         if wayland.space.element_location(&window) != Some(location) {
             wayland.space.relocate_element(&window, location);

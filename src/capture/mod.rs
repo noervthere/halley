@@ -1,5 +1,6 @@
 pub mod menu;
 pub mod picker;
+pub mod screencast;
 mod screenshot;
 
 use std::path::PathBuf;

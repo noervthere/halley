@@ -1,25 +1,25 @@
 mod accessibility;
 mod animation;
-mod apogee;
 mod backend;
-mod bearings;
-mod camera;
 mod capture;
 mod config;
 mod cursor;
-mod focus_cycle;
 mod frame_clock;
 mod input;
 mod ipc;
 mod logging;
 mod nodes;
-mod overlay;
+mod presentation;
 mod render;
-mod screencast;
 mod session;
+mod shell;
 mod wayland;
 mod window;
 mod xwayland;
+
+pub(crate) use capture::screencast;
+pub(crate) use presentation::camera;
+pub(crate) use shell::{apogee, bearings, focus_cycle, overlay};
 
 fn main() {
     logging::init();

@@ -5,13 +5,14 @@ pub mod dmabuf;
 pub mod focus;
 pub mod fullscreen;
 pub mod layer_shell;
-pub mod maximize;
 pub mod popup;
 pub mod presentation;
 pub mod selection;
 pub mod session_lock;
 pub mod wlr_output_management;
 pub mod xdg_shell;
+
+pub(crate) use crate::presentation::maximize;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
