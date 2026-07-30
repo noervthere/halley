@@ -665,6 +665,7 @@ fn opening_presentation_bounds<D: SessionDriver>(
     let presentation = crate::input::presentation::WindowPresentation::for_window(
         &session.wayland.space,
         &session.cameras,
+        &session.window_open_animations,
         &session.fullscreen,
         window,
         &output,

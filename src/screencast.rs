@@ -271,12 +271,15 @@ fn cursor_position<D: SessionDriver>(
         }
         halley_ipc::CaptureSource::Window { surface_id, .. } => {
             let route = crate::input::pointer::route_to_client(
-                &session.wayland.space,
-                &session.cameras,
-                session.driver.primary_output(),
-                &session.fullscreen,
-                session.wayland.focused_window.as_ref(),
-                crate::frame_clock::monotonic_now(),
+                crate::input::pointer::PointerRoutingContext {
+                    space: &session.wayland.space,
+                    cameras: &session.cameras,
+                    window_open_animations: &session.window_open_animations,
+                    primary: session.driver.primary_output(),
+                    fullscreen: &session.fullscreen,
+                    focused: session.wayland.focused_window.as_ref(),
+                    now: crate::frame_clock::monotonic_now(),
+                },
                 session.pointer.position(),
             )?;
             let crate::input::pointer::PointerTarget::Window(window) = route.target else {

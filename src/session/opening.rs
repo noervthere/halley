@@ -114,6 +114,7 @@ pub(super) fn surface_visual_center<D: SessionDriver>(
         &session.wayland.space,
         &session.cameras,
         session.driver.primary_output(),
+        &session.window_open_animations,
         &session.fullscreen,
         surface,
         now,

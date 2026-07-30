@@ -8,11 +8,14 @@ use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::renderer::utils::{CommitCounter, with_renderer_surface_state};
 use smithay::desktop::{PopupManager, layer_map_for_output};
 use smithay::output::Output;
-use smithay::utils::{Logical, Physical, Point, Rectangle, Scale};
+use smithay::utils::{Logical, Physical, Rectangle, Scale};
 use smithay::wayland::seat::WaylandFocus;
 use smithay::wayland::shell::wlr_layer::Layer;
 
 use super::RenderRequest;
+use crate::input::presentation::window_visual_state;
+#[cfg(test)]
+use smithay::utils::Point;
 
 render_elements! {
     /// The complete front-to-back scene consumed by both presentation
@@ -1340,76 +1343,6 @@ struct LiveWindowContext<'a> {
     fullscreen: &'a crate::wayland::fullscreen::FullscreenManager,
 }
 
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct WindowVisualState {
-    pub(crate) source_geometry: Rectangle<i32, Logical>,
-    pub(crate) camera_rect: Rectangle<i32, Physical>,
-    pub(crate) presentation_rect: Rectangle<i32, Physical>,
-    pub(crate) animated_rect: Rectangle<i32, Physical>,
-    pub(crate) opening_alpha: f32,
-    pub(crate) opening_is_animating: bool,
-    pub(crate) fullscreen: Option<crate::wayland::fullscreen::FullscreenPresentation>,
-    pub(crate) camera_center: Point<f32, Physical>,
-    pub(crate) zoom_scale: f32,
-}
-
-pub(crate) fn window_visual_state(
-    space: &smithay::desktop::Space<smithay::desktop::Window>,
-    cameras: &crate::camera::OutputCameras,
-    window: &smithay::desktop::Window,
-    output: &Output,
-    window_open_animations: &crate::animation::WindowOpenAnimations,
-    fullscreen: &crate::wayland::fullscreen::FullscreenManager,
-    now: std::time::Duration,
-) -> Option<WindowVisualState> {
-    let output_geometry = space.output_geometry(output)?;
-    let output_size = output_geometry.size.to_physical(1);
-    let view = cameras.view(&output.name())?;
-    let camera_center = crate::camera::global_center(view.center, output_geometry);
-    let source_geometry = space.element_geometry(window)?;
-    let window_surface = window.wl_surface()?;
-    let camera_rect = super::camera_rect(
-        source_geometry.to_physical(1),
-        camera_center,
-        output_size,
-        view.scale,
-    );
-    let opening_is_animating = window_open_animations.is_animating(window_surface.as_ref(), now);
-    let opening_visual = window_open_animations
-        .visual(window_surface.as_ref(), now, camera_rect)
-        .unwrap_or_default();
-    let fullscreen = fullscreen.presentation(window_surface.as_ref(), output, now);
-    let presentation_rect = fullscreen
-        .map(|presentation| {
-            let windowed = presentation
-                .windowed_geometry
-                .map(|geometry| {
-                    super::camera_rect(
-                        geometry.to_physical(1),
-                        camera_center,
-                        output_size,
-                        view.scale,
-                    )
-                })
-                .unwrap_or_else(|| presentation.fullscreen_rect(output_size));
-            presentation.client_rect(windowed, output_size)
-        })
-        .unwrap_or(camera_rect);
-    let animated_rect = opening_visual.transform_rect(presentation_rect, presentation_rect);
-
-    Some(WindowVisualState {
-        source_geometry,
-        camera_rect,
-        presentation_rect,
-        animated_rect,
-        opening_alpha: opening_visual.alpha(),
-        opening_is_animating,
-        fullscreen,
-        camera_center,
-        zoom_scale: view.scale,
-    })
-}
-
 fn live_window_elements(
     renderer: &mut GlesRenderer,
     window: &smithay::desktop::Window,
@@ -1445,7 +1378,7 @@ fn live_window_elements(
     elements.extend(popup_elements.into_iter().map(|surface_element| {
         let native_geometry = surface_element.geometry(Scale::from(1.0));
         let destination = if visual.fullscreen.is_some() {
-            let destination = map_rect(
+            let destination = crate::animation::map_rect(
                 native_geometry,
                 visual.source_geometry.to_physical(1),
                 visual.presentation_rect,
@@ -1488,7 +1421,7 @@ fn live_window_elements(
         elements.extend(surface_elements.into_iter().filter_map(|surface_element| {
             let native_geometry = surface_element.geometry(Scale::from(1.0));
             let destination = if visual.fullscreen.is_some() {
-                let destination = map_rect(
+                let destination = crate::animation::map_rect(
                     native_geometry,
                     visual.source_geometry.to_physical(1),
                     visual.presentation_rect,
@@ -1802,30 +1735,6 @@ fn dashed_border_rects(rect: Rectangle<i32, Physical>) -> Vec<Rectangle<i32, Phy
     strips
 }
 
-fn map_rect(
-    rect: Rectangle<i32, Physical>,
-    source: Rectangle<i32, Physical>,
-    destination: Rectangle<i32, Physical>,
-) -> Rectangle<i32, Physical> {
-    if source.size.w == 0 || source.size.h == 0 {
-        return destination;
-    }
-    let scale_x = f64::from(destination.size.w) / f64::from(source.size.w);
-    let scale_y = f64::from(destination.size.h) / f64::from(source.size.h);
-    let left = f64::from(destination.loc.x) + f64::from(rect.loc.x - source.loc.x) * scale_x;
-    let top = f64::from(destination.loc.y) + f64::from(rect.loc.y - source.loc.y) * scale_y;
-    let right = left + f64::from(rect.size.w) * scale_x;
-    let bottom = top + f64::from(rect.size.h) * scale_y;
-    Rectangle::new(
-        (left.round() as i32, top.round() as i32).into(),
-        (
-            (right - left).round().max(0.0) as i32,
-            (bottom - top).round().max(0.0) as i32,
-        )
-            .into(),
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1923,7 +1832,7 @@ mod tests {
     #[test]
     fn surface_rects_map_into_animated_client_bounds() {
         assert_eq!(
-            map_rect(
+            crate::animation::map_rect(
                 Rectangle::new((120, 70).into(), (200, 100).into()),
                 Rectangle::new((100, 50).into(), (800, 600).into()),
                 Rectangle::new((0, 0).into(), (1600, 1200).into()),

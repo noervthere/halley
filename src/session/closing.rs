@@ -42,7 +42,7 @@ pub(crate) fn capture_window<D: SessionDriver>(session: &mut Session<D>, window:
         return false;
     };
     let now = crate::frame_clock::monotonic_now();
-    let Some(visual) = crate::backend::scene::window_visual_state(
+    let Some(visual) = crate::input::presentation::window_visual_state(
         &session.wayland.space,
         &session.cameras,
         window,

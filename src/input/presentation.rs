@@ -1,11 +1,86 @@
 use smithay::desktop::{Space, Window};
 use smithay::output::Output;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::utils::{Logical, Point, Rectangle};
+use smithay::utils::{Logical, Physical, Point, Rectangle};
 use smithay::wayland::compositor::{SubsurfaceCachedState, get_parent, with_states};
 use smithay::wayland::seat::WaylandFocus;
 
 use crate::camera::OutputCameras;
+
+/// The presentation geometry shared by scene construction and input routing.
+///
+/// Keeping this in the input-independent presentation module makes the
+/// compositor render and invert the exact same camera, fullscreen, and
+/// opening-animation rectangles.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct WindowVisualState {
+    pub(crate) source_geometry: Rectangle<i32, Logical>,
+    pub(crate) camera_rect: Rectangle<i32, Physical>,
+    pub(crate) presentation_rect: Rectangle<i32, Physical>,
+    pub(crate) animated_rect: Rectangle<i32, Physical>,
+    pub(crate) opening_alpha: f32,
+    pub(crate) opening_is_animating: bool,
+    pub(crate) fullscreen: Option<crate::wayland::fullscreen::FullscreenPresentation>,
+    pub(crate) camera_center: Point<f32, Physical>,
+    pub(crate) zoom_scale: f32,
+}
+
+pub(crate) fn window_visual_state(
+    space: &Space<Window>,
+    cameras: &OutputCameras,
+    window: &Window,
+    output: &Output,
+    window_open_animations: &crate::animation::WindowOpenAnimations,
+    fullscreen: &crate::wayland::fullscreen::FullscreenManager,
+    now: std::time::Duration,
+) -> Option<WindowVisualState> {
+    let output_geometry = space.output_geometry(output)?;
+    let output_size = output_geometry.size.to_physical(1);
+    let view = cameras.view(&output.name())?;
+    let camera_center = crate::camera::global_center(view.center, output_geometry);
+    let source_geometry = space.element_geometry(window)?;
+    let window_surface = window.wl_surface()?;
+    let camera_rect = crate::backend::camera_rect(
+        source_geometry.to_physical(1),
+        camera_center,
+        output_size,
+        view.scale,
+    );
+    let opening_is_animating = window_open_animations.is_animating(window_surface.as_ref(), now);
+    let opening_visual = window_open_animations
+        .visual(window_surface.as_ref(), now, camera_rect)
+        .unwrap_or_default();
+    let fullscreen = fullscreen.presentation(window_surface.as_ref(), output, now);
+    let presentation_rect = fullscreen
+        .map(|presentation| {
+            let windowed = presentation
+                .windowed_geometry
+                .map(|geometry| {
+                    crate::backend::camera_rect(
+                        geometry.to_physical(1),
+                        camera_center,
+                        output_size,
+                        view.scale,
+                    )
+                })
+                .unwrap_or_else(|| presentation.fullscreen_rect(output_size));
+            presentation.client_rect(windowed, output_size)
+        })
+        .unwrap_or(camera_rect);
+    let animated_rect = opening_visual.transform_rect(presentation_rect, presentation_rect);
+
+    Some(WindowVisualState {
+        source_geometry,
+        camera_rect,
+        presentation_rect,
+        animated_rect,
+        opening_alpha: opening_visual.alpha(),
+        opening_is_animating,
+        fullscreen,
+        camera_center,
+        zoom_scale: view.scale,
+    })
+}
 
 /// The live mapping between a window's compositor-space geometry and its
 /// current on-screen presentation.
@@ -26,6 +101,7 @@ impl WindowPresentation {
     pub fn for_window(
         space: &Space<Window>,
         cameras: &OutputCameras,
+        window_open_animations: &crate::animation::WindowOpenAnimations,
         fullscreen: &crate::wayland::fullscreen::FullscreenManager,
         window: &Window,
         output: &Output,
@@ -33,47 +109,44 @@ impl WindowPresentation {
     ) -> Option<Self> {
         let root = window.wl_surface()?.into_owned();
         let output_geometry = space.output_geometry(output)?;
-        let source_geometry = space.element_geometry(window)?;
+        let visual = window_visual_state(
+            space,
+            cameras,
+            window,
+            output,
+            window_open_animations,
+            fullscreen,
+            now,
+        )?;
+        let source_geometry = visual.source_geometry;
         let source_bbox = space.element_bbox(window)?;
         let element_location = space.element_location(window)?;
         let root_origin = (element_location - window.geometry().loc).to_f64();
-        let view = cameras.view(&output.name())?;
-        let camera_center = crate::camera::global_center(view.center, output_geometry);
         let output_size = output_geometry.size.to_physical(1);
-        let camera_geometry = |geometry: Rectangle<i32, Logical>| {
-            let local = crate::backend::camera_rect(
-                geometry.to_physical(1),
-                camera_center,
-                output_size,
-                view.scale,
-            );
+        let global_geometry = |local: Rectangle<i32, Physical>| {
             Rectangle::new(
                 output_geometry.loc + local.loc.to_logical(1),
                 local.size.to_logical(1),
             )
         };
-
-        let (visual_geometry, hit_geometry) = match fullscreen.presentation(&root, output, now) {
-            Some(presentation) => {
-                let windowed_geometry = presentation.windowed_geometry.unwrap_or(source_geometry);
-                let windowed = crate::backend::camera_rect(
-                    windowed_geometry.to_physical(1),
-                    camera_center,
-                    output_size,
-                    view.scale,
-                );
-                let visual = presentation.client_rect(windowed, output_size);
-                let visual = Rectangle::new(
-                    output_geometry.loc + visual.loc.to_logical(1),
-                    visual.size.to_logical(1),
-                );
-                (visual, visual)
-            }
-            None => (
-                camera_geometry(source_geometry),
-                camera_geometry(source_bbox),
-            ),
+        let hit_rect = if visual.fullscreen.is_some() {
+            let presented = crate::animation::map_rect(
+                source_bbox.to_physical(1),
+                source_geometry.to_physical(1),
+                visual.presentation_rect,
+            );
+            crate::animation::map_rect(presented, visual.presentation_rect, visual.animated_rect)
+        } else {
+            let camera_bbox = crate::backend::camera_rect(
+                source_bbox.to_physical(1),
+                visual.camera_center,
+                output_size,
+                visual.zoom_scale,
+            );
+            crate::animation::map_rect(camera_bbox, visual.camera_rect, visual.animated_rect)
         };
+        let visual_geometry = global_geometry(visual.animated_rect);
+        let hit_geometry = global_geometry(hit_rect);
 
         Some(Self {
             root,
@@ -88,6 +161,7 @@ impl WindowPresentation {
         space: &Space<Window>,
         cameras: &OutputCameras,
         primary: &Output,
+        window_open_animations: &crate::animation::WindowOpenAnimations,
         fullscreen: &crate::wayland::fullscreen::FullscreenManager,
         surface: &WlSurface,
         now: std::time::Duration,
@@ -101,11 +175,15 @@ impl WindowPresentation {
         let output = space
             .outputs()
             .find(|output| crate::wayland::window_is_on_output(window, output, primary))?;
-        Self::for_window(space, cameras, fullscreen, window, output, now)
-    }
-
-    pub fn root(&self) -> &WlSurface {
-        &self.root
+        Self::for_window(
+            space,
+            cameras,
+            window_open_animations,
+            fullscreen,
+            window,
+            output,
+            now,
+        )
     }
 
     pub fn visual_geometry(&self) -> Rectangle<i32, Logical> {

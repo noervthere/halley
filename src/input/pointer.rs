@@ -39,6 +39,17 @@ pub struct PointerRoute {
     pub visual_geometry: Option<Rectangle<i32, Logical>>,
 }
 
+#[derive(Clone, Copy)]
+pub struct PointerRoutingContext<'a> {
+    pub space: &'a Space<Window>,
+    pub cameras: &'a OutputCameras,
+    pub window_open_animations: &'a crate::animation::WindowOpenAnimations,
+    pub primary: &'a Output,
+    pub fullscreen: &'a crate::wayland::fullscreen::FullscreenManager,
+    pub focused: Option<&'a WlSurface>,
+    pub now: std::time::Duration,
+}
+
 /// Screen-space cursor tracking. Client-facing focus, buttons, implicit
 /// grabs, and axes are owned by Smithay's `PointerHandle`; this type only
 /// tracks where Halley draws the hardware/software cursor.
@@ -234,16 +245,11 @@ impl Pointer {
 /// hit-testing: a window assigned to another output cannot intercept input
 /// merely because its world-space geometry overlaps this camera's view.
 pub fn route_to_client(
-    space: &Space<Window>,
-    cameras: &OutputCameras,
-    primary: &Output,
-    fullscreen: &crate::wayland::fullscreen::FullscreenManager,
-    focused: Option<&WlSurface>,
-    now: std::time::Duration,
+    context: PointerRoutingContext<'_>,
     screen_position: (f64, f64),
 ) -> Option<PointerRoute> {
-    let output = space.output_under(screen_position).next()?;
-    let output_geometry = space.output_geometry(output)?;
+    let output = context.space.output_under(screen_position).next()?;
+    let output_geometry = context.space.output_geometry(output)?;
     let screen_location = Point::<f64, Logical>::from(screen_position);
     let output_local = screen_location - output_geometry.loc.to_f64();
 
@@ -259,7 +265,9 @@ pub fn route_to_client(
         });
     }
 
-    if !fullscreen.covers_top(focused, output, now)
+    if !context
+        .fullscreen
+        .covers_top(context.focused, output, context.now)
         && let Some((layer, focus)) =
             layer_under(output, output_geometry.loc, output_local, [Layer::Top])
     {
@@ -272,19 +280,11 @@ pub fn route_to_client(
         });
     }
 
-    if let Some(route) = window_under(
-        space,
-        cameras,
-        primary,
-        fullscreen,
-        output,
-        output_local,
-        now,
-    ) {
+    if let Some(route) = window_under(&context, output, output_local) {
         return Some(route);
     }
 
-    let camera = cameras.get(&output.name())?;
+    let camera = context.cameras.get(&output.name())?;
     let world =
         crate::input::grab::screen_to_world_on_output(screen_position, camera, output_geometry);
     let location = Point::<f64, Logical>::from((world.x as f64, world.y as f64));
@@ -343,27 +343,29 @@ fn layer_under(
 /// fullscreen-first pass lets a fullscreen surface underneath a newly
 /// raised normal window steal axes and clicks through that window.
 fn window_under(
-    space: &Space<Window>,
-    cameras: &OutputCameras,
-    primary: &Output,
-    fullscreen: &crate::wayland::fullscreen::FullscreenManager,
+    context: &PointerRoutingContext<'_>,
     output: &Output,
     output_local: Point<f64, Logical>,
-    now: std::time::Duration,
 ) -> Option<PointerRoute> {
     let screen_position = (
-        space.output_geometry(output)?.loc.x as f64 + output_local.x,
-        space.output_geometry(output)?.loc.y as f64 + output_local.y,
+        context.space.output_geometry(output)?.loc.x as f64 + output_local.x,
+        context.space.output_geometry(output)?.loc.y as f64 + output_local.y,
     );
     let screen_location = Point::<f64, Logical>::from(screen_position);
 
-    for window in space.elements().rev() {
-        if !crate::wayland::window_is_on_output(window, output, primary) {
+    for window in context.space.elements().rev() {
+        if !crate::wayland::window_is_on_output(window, output, context.primary) {
             continue;
         }
-        let Some(presentation) =
-            WindowPresentation::for_window(space, cameras, fullscreen, window, output, now)
-        else {
+        let Some(presentation) = WindowPresentation::for_window(
+            context.space,
+            context.cameras,
+            context.window_open_animations,
+            context.fullscreen,
+            window,
+            output,
+            context.now,
+        ) else {
             continue;
         };
         if !presentation.contains_screen(screen_location) {
@@ -371,7 +373,7 @@ fn window_under(
         }
         let location = presentation.source_from_screen(screen_location);
 
-        let Some(element_location) = space.element_location(window) else {
+        let Some(element_location) = context.space.element_location(window) else {
             continue;
         };
         let render_location = element_location - window.geometry().loc;

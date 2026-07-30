@@ -1,7 +1,7 @@
 use smithay::backend::renderer::utils::with_renderer_surface_state;
-use smithay::input::pointer::{MotionEvent, PointerHandle};
+use smithay::input::pointer::PointerHandle;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::utils::{IsAlive, Logical, Point, Rectangle, SERIAL_COUNTER, Size};
+use smithay::utils::{IsAlive, Logical, Point, Rectangle, Size};
 use smithay::wayland::compositor::RegionAttributes;
 use smithay::wayland::pointer_constraints::{PointerConstraint, with_pointer_constraint};
 use smithay::wayland::seat::WaylandFocus;
@@ -38,6 +38,15 @@ struct TrackedConstraint {
     surface: WlSurface,
     kind: ConstraintKind,
     position_hint: Option<Point<f64, Logical>>,
+    geometry: ConstraintGeometry,
+}
+
+#[derive(Clone)]
+struct ConstraintGeometry {
+    origin: Point<f64, Logical>,
+    surface_size: Size<i32, Logical>,
+    region: Option<RegionAttributes>,
+    presentation: WindowPresentation,
 }
 
 /// Halley's single record of the protocol constraint currently allowed to
@@ -64,22 +73,7 @@ struct OwnerContext {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ReconcileDecision {
     deactivate_current: bool,
-    establish_focus: bool,
     activate_candidate: bool,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum FocusEstablishment {
-    EnterSurface,
-    RefreshLocation,
-}
-
-fn focus_establishment(pointer_already_focused: bool) -> FocusEstablishment {
-    if pointer_already_focused {
-        FocusEstablishment::RefreshLocation
-    } else {
-        FocusEstablishment::EnterSurface
-    }
 }
 
 fn reconcile_decision(
@@ -87,15 +81,28 @@ fn reconcile_decision(
     current_is_candidate: bool,
     current_valid: bool,
     candidate_present: bool,
-    candidate_pointer_focused: bool,
     candidate_protocol_active: bool,
 ) -> ReconcileDecision {
     ReconcileDecision {
         deactivate_current: current_present && (!current_is_candidate || !current_valid),
-        establish_focus: candidate_present
-            && (!candidate_pointer_focused || !candidate_protocol_active),
         activate_candidate: candidate_present && !candidate_protocol_active,
     }
+}
+
+fn preferred_matches_focus(preferred_matches: Option<bool>) -> bool {
+    preferred_matches.unwrap_or(true)
+}
+
+fn retain_cached_geometry(current_valid: bool, current_is_candidate: bool) -> bool {
+    current_valid && current_is_candidate
+}
+
+fn retain_while_unfocused_request_waits(
+    current_valid: bool,
+    preferred_present: bool,
+    candidate_present: bool,
+) -> bool {
+    current_valid && preferred_present && !candidate_present
 }
 
 fn descriptor<D: SessionDriver>(
@@ -134,32 +141,57 @@ fn owner_context<D: SessionDriver>(
     session: &Session<D>,
     surface: &WlSurface,
 ) -> Option<OwnerContext> {
-    if !surface.alive() {
+    if !owner_is_authoritative(session, surface) {
         return None;
     }
     let presentation = WindowPresentation::for_surface(
         &session.wayland.space,
         &session.cameras,
         session.driver.primary_output(),
+        &session.window_open_animations,
         &session.fullscreen,
         surface,
         crate::frame_clock::monotonic_now(),
     )?;
-    if session.wayland.focused_window.as_ref() != Some(presentation.root()) {
-        return None;
-    }
-    let keyboard_root = session
-        .seat
-        .get_keyboard()?
-        .current_focus()?
-        .wl_surface()
-        .map(|surface| crate::wayland::compositor::root_surface(surface.as_ref()))?;
-    if keyboard_root != *presentation.root() {
-        return None;
-    }
     Some(OwnerContext {
         presentation,
         surface_size: surface_size(surface)?,
+    })
+}
+
+fn owner_is_authoritative<D: SessionDriver>(session: &Session<D>, surface: &WlSurface) -> bool {
+    if !surface.alive() {
+        return false;
+    }
+    let root = crate::wayland::compositor::root_surface(surface);
+    let mapped = session.wayland.space.elements().any(|window| {
+        window
+            .wl_surface()
+            .is_some_and(|candidate| candidate.as_ref() == &root)
+    });
+    if !mapped || session.wayland.focused_window.as_ref() != Some(&root) {
+        return false;
+    }
+    session
+        .seat
+        .get_keyboard()
+        .and_then(|keyboard| keyboard.current_focus())
+        .and_then(|focus| focus.wl_surface().map(|surface| surface.into_owned()))
+        .is_some_and(|keyboard_surface| {
+            crate::wayland::compositor::root_surface(&keyboard_surface) == root
+        })
+}
+
+fn constraint_geometry(
+    surface: &WlSurface,
+    context: OwnerContext,
+    constraint: &ConstraintDescriptor,
+) -> Option<ConstraintGeometry> {
+    Some(ConstraintGeometry {
+        origin: context.presentation.surface_origin(surface)?,
+        surface_size: context.surface_size,
+        region: constraint.region.clone(),
+        presentation: context.presentation,
     })
 }
 
@@ -169,29 +201,30 @@ fn valid_active_owner<D: SessionDriver>(
     tracked: &TrackedConstraint,
 ) -> bool {
     pointer.current_focus().as_ref() == Some(&tracked.surface)
-        && owner_context(session, &tracked.surface).is_some()
+        && owner_is_authoritative(session, &tracked.surface)
         && descriptor(&tracked.surface, pointer)
             .is_some_and(|constraint| constraint.active && constraint.kind == tracked.kind)
 }
 
-fn protocol_active_focus<D: SessionDriver>(
+fn deactivate_protocol<D: SessionDriver>(
+    surface: &WlSurface,
     pointer: &PointerHandle<Session<D>>,
-) -> Option<TrackedConstraint> {
-    let surface = pointer.current_focus()?;
-    let constraint = descriptor(&surface, pointer)?;
-    constraint.active.then_some(TrackedConstraint {
-        surface,
-        kind: constraint.kind,
-        position_hint: constraint.position_hint,
-    })
-}
-
-fn deactivate_protocol<D: SessionDriver>(surface: &WlSurface, pointer: &PointerHandle<Session<D>>) {
+    kind: ConstraintKind,
+) {
     with_pointer_constraint(surface, pointer, |constraint| {
-        if let Some(constraint) = constraint {
+        if let Some(constraint) = constraint
+            && constraint_kind_of(&constraint) == kind
+        {
             constraint.deactivate();
         }
     });
+}
+
+fn constraint_kind_of(constraint: &PointerConstraint) -> ConstraintKind {
+    match constraint {
+        PointerConstraint::Confined(_) => ConstraintKind::Confined,
+        PointerConstraint::Locked(_) => ConstraintKind::Locked,
+    }
 }
 
 fn deactivate_tracked<D: SessionDriver>(
@@ -199,24 +232,37 @@ fn deactivate_tracked<D: SessionDriver>(
     pointer: &PointerHandle<Session<D>>,
     tracked: &TrackedConstraint,
 ) {
+    eventline::debug!(
+        "pointer-constraint: deactivate kind={:?} surface={:?}",
+        tracked.kind,
+        tracked.surface
+    );
     let state = descriptor(&tracked.surface, pointer);
     let position_hint = tracked
         .position_hint
         .or_else(|| state.as_ref().and_then(|state| state.position_hint));
-    if let (Some(position_hint), Some(context)) =
-        (position_hint, owner_context(session, &tracked.surface))
-        && let Some(local) = nearest_valid_point(
+    if let Some(position_hint) = position_hint {
+        let geometry = owner_context(session, &tracked.surface)
+            .and_then(|context| {
+                let descriptor = state.as_ref()?;
+                constraint_geometry(&tracked.surface, context, descriptor)
+            })
+            .unwrap_or_else(|| tracked.geometry.clone());
+        if let Some(local) = nearest_valid_point(
             position_hint,
-            context.surface_size,
-            state.as_ref().and_then(|state| state.region.as_ref()),
-        )
-        && let Some(screen) = context
+            geometry.surface_size,
+            state
+                .as_ref()
+                .and_then(|state| state.region.as_ref())
+                .or(geometry.region.as_ref()),
+        ) && let Some(screen) = geometry
             .presentation
             .screen_from_surface(&tracked.surface, local)
-    {
-        session.pointer.set_position((screen.x, screen.y));
+        {
+            session.pointer.set_position((screen.x, screen.y));
+        }
     }
-    deactivate_protocol(&tracked.surface, pointer);
+    deactivate_protocol(&tracked.surface, pointer, tracked.kind);
 }
 
 fn activate<D: SessionDriver>(surface: &WlSurface, pointer: &PointerHandle<Session<D>>) -> bool {
@@ -233,26 +279,13 @@ fn candidate_surface<D: SessionDriver>(
     session: &Session<D>,
     pointer: &PointerHandle<Session<D>>,
     preferred: Option<&WlSurface>,
-    current: Option<&TrackedConstraint>,
 ) -> Option<WlSurface> {
-    preferred
-        .filter(|surface| {
-            owner_context(session, surface).is_some() && descriptor(surface, pointer).is_some()
-        })
-        .cloned()
-        .or_else(|| {
-            pointer.current_focus().filter(|surface| {
-                owner_context(session, surface).is_some() && descriptor(surface, pointer).is_some()
-            })
-        })
-        .or_else(|| {
-            current
-                .filter(|tracked| {
-                    owner_context(session, &tracked.surface).is_some()
-                        && descriptor(&tracked.surface, pointer).is_some()
-                })
-                .map(|tracked| tracked.surface.clone())
-        })
+    let focused = pointer.current_focus()?;
+    if !preferred_matches_focus(preferred.map(|surface| surface == &focused)) {
+        return None;
+    }
+    (owner_is_authoritative(session, &focused) && descriptor(&focused, pointer).is_some())
+        .then_some(focused)
 }
 
 fn nearest_valid_point(
@@ -323,71 +356,78 @@ fn nearest_valid_point(
         .map(Point::to_f64)
 }
 
-fn focus_candidate<D: SessionDriver>(
+fn prepare_candidate<D: SessionDriver>(
     session: &mut Session<D>,
     pointer: &PointerHandle<Session<D>>,
     surface: &WlSurface,
     context: &OwnerContext,
     constraint: &ConstraintDescriptor,
-) -> bool {
-    let screen = Point::from(session.pointer.position());
-    let Some(local) = context
-        .presentation
-        .surface_from_screen(surface, screen)
-        .and_then(|point| {
-            nearest_valid_point(point, context.surface_size, constraint.region.as_ref())
-        })
-    else {
-        return false;
-    };
-    let Some(origin) = context.presentation.surface_origin(surface) else {
-        return false;
-    };
-    let Some(screen) = context.presentation.screen_from_surface(surface, local) else {
-        return false;
-    };
-    let location = origin + local;
-    session.pointer.set_position((screen.x, screen.y));
-    match focus_establishment(pointer.current_focus().as_ref() == Some(surface)) {
-        FocusEstablishment::EnterSurface => pointer.motion(
-            session,
-            Some((surface.clone(), origin)),
-            &MotionEvent {
-                location,
-                serial: SERIAL_COUNTER.next_serial(),
-                time: session.start_time.elapsed().as_millis() as u32,
-            },
-        ),
-        // A recreated lock on the same pointer-focused surface still needs
-        // current geometry, especially after an X11 resolution change. A
-        // wl_pointer.motion here is client-visible, though, and XWayland
-        // games may interpret it as camera movement while returning from a
-        // menu. Update Smithay's bookkeeping without sending an event.
-        FocusEstablishment::RefreshLocation => pointer.set_location(location),
+) -> Option<ConstraintGeometry> {
+    if pointer.current_focus().as_ref() != Some(surface) {
+        return None;
     }
-    true
+    let screen = Point::from(session.pointer.position());
+    let local = context.presentation.surface_from_screen(surface, screen)?;
+    let bounds = Rectangle::from_size(context.surface_size);
+    if !bounds.to_f64().contains(local)
+        || !constraint
+            .region
+            .as_ref()
+            .is_none_or(|region| region.contains(local.to_i32_floor()))
+    {
+        return None;
+    }
+    let geometry = constraint_geometry(
+        surface,
+        OwnerContext {
+            presentation: context.presentation.clone(),
+            surface_size: context.surface_size,
+        },
+        constraint,
+    )?;
+    let origin = geometry.origin;
+    let location = origin + local;
+    // Refresh Smithay's coordinate bookkeeping without manufacturing a
+    // client-visible enter/motion event. Protocol activation is valid only
+    // for the surface that already owns pointer focus.
+    pointer.set_location(location);
+    Some(geometry)
 }
 
 /// Reconciles Halley's tracked owner, Smithay's protocol state, compositor
 /// focus, mapping, and live presentation geometry in one ordered transition.
 ///
-/// Pointer focus is deliberately established before activation. Conversely,
-/// an old constraint is explicitly deactivated before this function changes
-/// focus, so one-shot lifetime and client notifications remain deterministic.
+/// Existing pointer focus is verified before activation. Conversely, an old
+/// constraint is explicitly deactivated before focus changes, so one-shot
+/// lifetime and client notifications remain deterministic.
 pub(super) fn reconcile<D: SessionDriver>(
     session: &mut Session<D>,
     pointer: &PointerHandle<Session<D>>,
     preferred: Option<&WlSurface>,
 ) {
-    let tracked = session
-        .pointer_constraints
-        .active
-        .clone()
-        .or_else(|| protocol_active_focus(pointer));
-    let candidate = candidate_surface(session, pointer, preferred, tracked.as_ref());
+    let tracked = session.pointer_constraints.active.clone();
+    let candidate = candidate_surface(session, pointer, preferred);
     let current_valid = tracked
         .as_ref()
         .is_some_and(|tracked| valid_active_owner(session, pointer, tracked));
+    let retain_for_deferred_request = retain_while_unfocused_request_waits(
+        current_valid,
+        preferred.is_some(),
+        candidate.is_some(),
+    );
+    if let Some(preferred) = preferred
+        && candidate.is_none()
+    {
+        eventline::debug!(
+            "pointer-constraint: defer kind={:?} surface={:?} pointer_focus={:?}",
+            descriptor(preferred, pointer).map(|constraint| constraint.kind),
+            preferred,
+            pointer.current_focus()
+        );
+        if retain_for_deferred_request {
+            return;
+        }
+    }
     let current_is_candidate = tracked
         .as_ref()
         .zip(candidate.as_ref())
@@ -395,15 +435,11 @@ pub(super) fn reconcile<D: SessionDriver>(
     let candidate_descriptor = candidate
         .as_ref()
         .and_then(|surface| descriptor(surface, pointer));
-    let candidate_pointer_focused = candidate
-        .as_ref()
-        .is_some_and(|surface| pointer.current_focus().as_ref() == Some(surface));
     let decision = reconcile_decision(
         tracked.is_some(),
         current_is_candidate,
         current_valid,
         candidate.is_some(),
-        candidate_pointer_focused,
         candidate_descriptor
             .as_ref()
             .is_some_and(|constraint| constraint.active),
@@ -421,7 +457,11 @@ pub(super) fn reconcile<D: SessionDriver>(
         return;
     };
     let Some(context) = owner_context(session, &candidate) else {
-        session.pointer_constraints.active = None;
+        if retain_cached_geometry(current_valid, current_is_candidate) {
+            session.pointer_constraints.active = tracked;
+        } else {
+            session.pointer_constraints.active = None;
+        }
         return;
     };
     let Some(mut constraint) = descriptor(&candidate, pointer) else {
@@ -429,17 +469,28 @@ pub(super) fn reconcile<D: SessionDriver>(
         return;
     };
 
-    if decision.establish_focus
-        && !focus_candidate(session, pointer, &candidate, &context, &constraint)
-    {
-        session.pointer_constraints.active = None;
+    let Some(geometry) = prepare_candidate(session, pointer, &candidate, &context, &constraint)
+    else {
+        // Live presentation data can be transiently absent while an already
+        // active owner is resizing or changing output. Keep its last valid
+        // inverse transform until an authoritative lifecycle transition.
+        if retain_cached_geometry(current_valid, current_is_candidate) {
+            session.pointer_constraints.active = tracked;
+        } else {
+            session.pointer_constraints.active = None;
+        }
         return;
-    }
+    };
     if decision.activate_candidate {
         if !activate(&candidate, pointer) {
             session.pointer_constraints.active = None;
             return;
         }
+        eventline::debug!(
+            "pointer-constraint: activate kind={:?} surface={:?}",
+            constraint.kind,
+            candidate
+        );
         constraint.active = true;
     }
     if pointer.current_focus().as_ref() == Some(&candidate) && constraint.active {
@@ -447,6 +498,7 @@ pub(super) fn reconcile<D: SessionDriver>(
             surface: candidate,
             kind: constraint.kind,
             position_hint: constraint.position_hint,
+            geometry,
         });
         session.request_redraw();
     } else {
@@ -525,14 +577,12 @@ pub(super) fn active<D: SessionDriver>(
     if !valid_active_owner(session, pointer, tracked) {
         return None;
     }
-    let context = owner_context(session, &tracked.surface)?;
-    let descriptor = descriptor(&tracked.surface, pointer)?;
     Some(ActiveConstraint {
         surface: tracked.surface.clone(),
-        origin: context.presentation.surface_origin(&tracked.surface)?,
+        origin: tracked.geometry.origin,
         kind: tracked.kind,
-        region: descriptor.region,
-        presentation: context.presentation,
+        region: tracked.geometry.region.clone(),
+        presentation: tracked.geometry.presentation.clone(),
     })
 }
 
@@ -603,7 +653,6 @@ mod tests {
         current_is_candidate: bool,
         current_valid: bool,
         candidate_present: bool,
-        candidate_pointer_focused: bool,
         candidate_protocol_active: bool,
     ) -> ReconcileDecision {
         reconcile_decision(
@@ -611,7 +660,6 @@ mod tests {
             current_is_candidate,
             current_valid,
             candidate_present,
-            candidate_pointer_focused,
             candidate_protocol_active,
         )
     }
@@ -619,22 +667,41 @@ mod tests {
     #[test]
     fn startup_churn_retains_an_already_valid_owner() {
         assert_eq!(
-            decision(true, true, true, true, true, true),
+            decision(true, true, true, true, true),
             ReconcileDecision {
                 deactivate_current: false,
-                establish_focus: false,
                 activate_candidate: false,
             }
         );
     }
 
     #[test]
-    fn stale_focus_after_resolution_change_is_reestablished_before_activation() {
+    fn new_constraint_never_manufactures_pointer_focus() {
+        assert!(preferred_matches_focus(None));
+        assert!(preferred_matches_focus(Some(true)));
+        assert!(!preferred_matches_focus(Some(false)));
+    }
+
+    #[test]
+    fn transient_presentation_gap_retains_only_the_authoritative_owner() {
+        assert!(retain_cached_geometry(true, true));
+        assert!(!retain_cached_geometry(false, true));
+        assert!(!retain_cached_geometry(true, false));
+    }
+
+    #[test]
+    fn unfocused_new_request_does_not_displace_the_active_owner() {
+        assert!(retain_while_unfocused_request_waits(true, true, false));
+        assert!(!retain_while_unfocused_request_waits(false, true, false));
+        assert!(!retain_while_unfocused_request_waits(true, true, true));
+    }
+
+    #[test]
+    fn stale_constraint_is_replaced_only_with_an_exact_focus_candidate() {
         assert_eq!(
-            decision(true, true, false, true, false, false),
+            decision(true, true, false, true, false),
             ReconcileDecision {
                 deactivate_current: true,
-                establish_focus: true,
                 activate_candidate: true,
             }
         );
@@ -643,31 +710,20 @@ mod tests {
     #[test]
     fn replacement_constraint_refreshes_geometry_even_on_the_same_surface() {
         assert_eq!(
-            decision(true, true, false, true, true, false),
+            decision(true, true, false, true, false),
             ReconcileDecision {
                 deactivate_current: true,
-                establish_focus: true,
                 activate_candidate: true,
             }
         );
     }
 
     #[test]
-    fn same_surface_relock_refreshes_location_without_absolute_motion() {
-        assert_eq!(
-            focus_establishment(true),
-            FocusEstablishment::RefreshLocation
-        );
-        assert_eq!(focus_establishment(false), FocusEstablishment::EnterSurface);
-    }
-
-    #[test]
     fn focus_loss_and_unmap_deactivate_without_replacement() {
         assert_eq!(
-            decision(true, false, false, false, false, false),
+            decision(true, false, false, false, false),
             ReconcileDecision {
                 deactivate_current: true,
-                establish_focus: false,
                 activate_candidate: false,
             }
         );
@@ -675,16 +731,15 @@ mod tests {
 
     #[test]
     fn persistent_constraint_reactivates_only_after_remap_and_exact_focus() {
-        let unmapped = decision(true, false, false, false, false, false);
-        let remapped_without_focus = decision(false, false, false, false, false, false);
-        let remapped_and_focused = decision(false, false, false, true, true, false);
+        let unmapped = decision(true, false, false, false, false);
+        let remapped_without_focus = decision(false, false, false, false, false);
+        let remapped_and_focused = decision(false, false, false, true, false);
 
         assert!(unmapped.deactivate_current);
         assert_eq!(
             remapped_without_focus,
             ReconcileDecision {
                 deactivate_current: false,
-                establish_focus: false,
                 activate_candidate: false,
             }
         );
@@ -692,7 +747,6 @@ mod tests {
             remapped_and_focused,
             ReconcileDecision {
                 deactivate_current: false,
-                establish_focus: true,
                 activate_candidate: true,
             }
         );
@@ -700,24 +754,22 @@ mod tests {
 
     #[test]
     fn removed_oneshot_constraint_does_not_reactivate_after_remap() {
-        let remapped_without_protocol_candidate = decision(false, false, false, false, true, false);
+        let remapped_without_protocol_candidate = decision(false, false, false, false, false);
         assert_eq!(
             remapped_without_protocol_candidate,
             ReconcileDecision {
                 deactivate_current: false,
-                establish_focus: false,
                 activate_candidate: false,
             }
         );
     }
 
     #[test]
-    fn owner_replacement_deactivates_then_focuses_and_activates() {
+    fn owner_replacement_deactivates_then_activates_exact_focus() {
         assert_eq!(
-            decision(true, false, false, true, false, false),
+            decision(true, false, false, true, false),
             ReconcileDecision {
                 deactivate_current: true,
-                establish_focus: true,
                 activate_candidate: true,
             }
         );
@@ -726,10 +778,9 @@ mod tests {
     #[test]
     fn unfocused_or_unmapped_constraints_have_no_candidate() {
         assert_eq!(
-            decision(false, false, false, false, false, false),
+            decision(false, false, false, false, false),
             ReconcileDecision {
                 deactivate_current: false,
-                establish_focus: false,
                 activate_candidate: false,
             }
         );
