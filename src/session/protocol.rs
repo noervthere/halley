@@ -377,7 +377,7 @@ impl<D: SessionDriver> XdgShellHandler for Session<D> {
                 textures.capture_previous(
                     renderer,
                     &window,
-                    crate::backend::fullscreen_texture::TextureTransitionOwner::Fullscreen,
+                    crate::render::fullscreen_texture::TextureTransitionOwner::Fullscreen,
                 )
             });
             if let Err(err) = capture {

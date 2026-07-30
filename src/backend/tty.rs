@@ -23,12 +23,12 @@ use smithay::reexports::rustix::fs::OFlags;
 use smithay::utils::DeviceFd;
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
 
-use super::scene::SceneElement;
 use super::tty_output::{
     OutputState, connector_name, connector_output_info, default_mode, drm_output_mode, output_diff,
     output_target,
 };
 use super::{FrameSubmission, RenderOutcome, RenderRequest, RenderStatus, Renderable};
+use crate::render::scene::SceneElement;
 
 /// Candidate scan-out formats for the primary plane, most preferred first -
 /// Smithay walks this list when it builds each surface's swapchain.
@@ -799,13 +799,13 @@ impl Renderable for TtyBackend {
         let space = request.space;
         let session_lock = request.session_lock;
         let clear = if request.session_lock.active() {
-            super::SESSION_LOCK_COLOR
+            crate::render::SESSION_LOCK_COLOR
         } else {
             request.clear
         };
         let target_presentation_time = request.target_presentation_time;
         let session_lock_generation = request.session_lock.frame_generation();
-        let elements = super::scene::build(
+        let elements = crate::render::scene::build(
             &mut self.renderer,
             &entry.output,
             &primary_output,

@@ -127,16 +127,16 @@ pub struct Session<D: SessionDriver> {
     pub keyboard_monitor: Option<crate::accessibility::KeyboardMonitorService>,
     pub opening_origins: super::opening::OpeningOrigins,
     pub window_open_animations: crate::animation::WindowOpenAnimations,
-    pub window_close_animations: crate::backend::close::WindowCloseAnimations,
+    pub window_close_animations: crate::render::close::WindowCloseAnimations,
     pub fullscreen: crate::wayland::fullscreen::FullscreenManager,
     pub maximize: crate::wayland::maximize::FieldMaximizeManager,
-    pub fullscreen_textures: crate::backend::fullscreen_texture::FullscreenTextureTransitions,
-    pub overlay_previews: crate::backend::overlay_preview::OverlayPreviewCache,
-    pub node_renderer: crate::backend::node::NodeRenderer,
-    pub window_decoration_renderer: crate::backend::window_decoration::WindowDecorationRenderer,
-    pub backdrop_blur_renderer: crate::backend::backdrop_blur::BackdropBlurRenderer,
-    pub shadow_renderer: crate::backend::shadow::ShadowRenderer,
-    pub ui_text: crate::backend::text::UiTextRenderer,
+    pub fullscreen_textures: crate::render::fullscreen_texture::FullscreenTextureTransitions,
+    pub overlay_previews: crate::render::overlays::preview::OverlayPreviewCache,
+    pub node_renderer: crate::render::node::NodeRenderer,
+    pub window_decoration_renderer: crate::render::window_decoration::WindowDecorationRenderer,
+    pub backdrop_blur_renderer: crate::render::effects::backdrop_blur::BackdropBlurRenderer,
+    pub shadow_renderer: crate::render::effects::shadow::ShadowRenderer,
+    pub ui_text: crate::render::text::UiTextRenderer,
     pub xwayland: crate::xwayland::State<D>,
 }
 
@@ -342,13 +342,13 @@ impl<D: SessionDriver> Session<D> {
         let fullscreen_redraw = self.fullscreen.reload(config.animations);
         if fullscreen_redraw {
             self.fullscreen_textures.remove_owner(
-                crate::backend::fullscreen_texture::TextureTransitionOwner::Fullscreen,
+                crate::render::fullscreen_texture::TextureTransitionOwner::Fullscreen,
             );
         }
         let maximize_redraw = self.maximize.reload(config.field, config.animations);
         if maximize_redraw {
             self.fullscreen_textures
-                .remove_owner(crate::backend::fullscreen_texture::TextureTransitionOwner::Maximize);
+                .remove_owner(crate::render::fullscreen_texture::TextureTransitionOwner::Maximize);
         }
         if nodes_redraw {
             crate::nodes::reconcile_landmarks(self, None);

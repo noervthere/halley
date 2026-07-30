@@ -14,9 +14,9 @@ use smithay::utils::{Logical, Physical, Rectangle, Transform};
 
 const ICON_RASTER_SIZE: u32 = 48;
 const ICON_DISPLAY_SIZE: i32 = 42;
-const REGION_SVG: &[u8] = include_bytes!("../../assets/screenshot/region.svg");
-const SCREEN_SVG: &[u8] = include_bytes!("../../assets/screenshot/screen.svg");
-const WINDOW_SVG: &[u8] = include_bytes!("../../assets/screenshot/window.svg");
+const REGION_SVG: &[u8] = include_bytes!("../../../assets/screenshot/region.svg");
+const SCREEN_SVG: &[u8] = include_bytes!("../../../assets/screenshot/screen.svg");
+const WINDOW_SVG: &[u8] = include_bytes!("../../../assets/screenshot/window.svg");
 
 type IconSet = Result<[MemoryRenderBuffer; 3], String>;
 type IconCache = Mutex<HashMap<[u8; 3], IconSet>>;
@@ -26,17 +26,17 @@ static ICONS: OnceLock<IconCache> = OnceLock::new();
 render_elements! {
     pub CaptureOverlayElement<=GlesRenderer>;
     Icon=MemoryRenderBufferRenderElement<GlesRenderer>,
-    Card=super::node::LabelRenderElement,
+    Card=crate::render::node::LabelRenderElement,
 }
 
 pub fn menu_elements(
     renderer: &mut GlesRenderer,
-    node_renderer: &mut super::node::NodeRenderer,
+    node_renderer: &mut crate::render::node::NodeRenderer,
     output: Rectangle<i32, Logical>,
     selected: usize,
     hovered: Option<usize>,
     window_available: bool,
-    visuals: super::overlay::OverlayVisuals,
+    visuals: crate::render::overlays::shell::OverlayVisuals,
 ) -> Result<Vec<CaptureOverlayElement>, Box<dyn Error>> {
     let layout = crate::capture::menu::layout(output);
     let localize = |rectangle: Rectangle<i32, Logical>| {
@@ -47,14 +47,16 @@ pub fn menu_elements(
     };
     let mut elements = Vec::new();
     let bar = localize(layout.bar);
-    elements.push(CaptureOverlayElement::Card(super::overlay::card_element(
-        renderer,
-        node_renderer,
-        bar,
-        visuals,
-        visuals.fill,
-        0.96,
-    )?));
+    elements.push(CaptureOverlayElement::Card(
+        crate::render::overlays::shell::card_element(
+            renderer,
+            node_renderer,
+            bar,
+            visuals,
+            visuals.fill,
+            0.96,
+        )?,
+    ));
 
     for (index, item) in layout.items.into_iter().enumerate() {
         let disabled = index == 2 && !window_available;
@@ -77,20 +79,22 @@ pub fn menu_elements(
         let mut item_visuals = visuals;
         item_visuals.border = accent;
         item_visuals.border_px = if visuals.border_px > 0.0 { 2.0 } else { 0.0 };
-        elements.push(CaptureOverlayElement::Card(super::overlay::card_element(
-            renderer,
-            node_renderer,
-            item,
-            item_visuals,
-            fill,
-            if disabled {
-                0.50
-            } else if active {
-                0.98
-            } else {
-                0.94
-            },
-        )?));
+        elements.push(CaptureOverlayElement::Card(
+            crate::render::overlays::shell::card_element(
+                renderer,
+                node_renderer,
+                item,
+                item_visuals,
+                fill,
+                if disabled {
+                    0.50
+                } else if active {
+                    0.98
+                } else {
+                    0.94
+                },
+            )?,
+        ));
         let icon_size = ICON_DISPLAY_SIZE
             .min(item.size.w - 12)
             .min(item.size.h - 12)

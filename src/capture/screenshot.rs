@@ -17,7 +17,7 @@ use smithay::output::Output;
 use smithay::reexports::wayland_server::Resource;
 use smithay::utils::{Buffer, Logical, Physical, Rectangle, Scale, Transform};
 
-use crate::backend::{self, RenderRequest};
+use crate::render::{self, RenderRequest};
 use crate::session::{Session, SessionDriver};
 
 struct OutputImage {
@@ -89,7 +89,7 @@ pub fn save_region<D: SessionDriver>(
                     RenderRequest {
                         target_presentation_time: target_time,
                         vrr_auto_eligible: false,
-                        clear: backend::CLEAR_COLOR,
+                        clear: render::CLEAR_COLOR,
                         session_lock,
                         cursor,
                         cursor_position: pointer_position,
@@ -202,7 +202,7 @@ pub(crate) fn capture_source_pixels<D: SessionDriver>(
                     Fourcc::Abgr8888,
                     size,
                     elements,
-                    backend::CLEAR_COLOR,
+                    render::CLEAR_COLOR,
                 )
             },
         ),
@@ -243,7 +243,7 @@ pub(crate) fn render_source_dmabuf<D: SessionDriver>(
             *height,
             show_cursor,
             |renderer, elements, size| {
-                render_elements_to_dmabuf(renderer, dmabuf, size, elements, backend::CLEAR_COLOR)
+                render_elements_to_dmabuf(renderer, dmabuf, size, elements, render::CLEAR_COLOR)
             },
         ),
         halley_ipc::CaptureSource::Window {
@@ -275,7 +275,7 @@ fn with_monitor_scene<D, T>(
     show_cursor: bool,
     consume: impl FnOnce(
         &mut GlesRenderer,
-        &[backend::scene::SceneElement],
+        &[render::scene::SceneElement],
         smithay::utils::Size<i32, Physical>,
     ) -> Result<T, Box<dyn Error>>,
 ) -> Result<T, Box<dyn Error>>
@@ -328,7 +328,7 @@ where
     let ui_text = &mut session.ui_text;
     let session_lock = &session.session_lock;
     driver.with_renderer(|renderer| {
-        let elements = backend::scene::build(
+        let elements = render::scene::build(
             renderer,
             &output,
             &primary,
@@ -336,7 +336,7 @@ where
             RenderRequest {
                 target_presentation_time: target_time,
                 vrr_auto_eligible: false,
-                clear: backend::CLEAR_COLOR,
+                clear: render::CLEAR_COLOR,
                 session_lock,
                 cursor,
                 cursor_position: pointer_position,
@@ -516,14 +516,14 @@ fn capture_output(
     geometry: Rectangle<i32, Logical>,
     request: RenderRequest<'_>,
 ) -> Result<Vec<u8>, Box<dyn Error>> {
-    let elements = backend::scene::build(renderer, output, primary, geometry, request)?;
+    let elements = render::scene::build(renderer, output, primary, geometry, request)?;
     let size = geometry.size.to_physical(1);
     capture_elements(
         renderer,
         Fourcc::Abgr8888,
         size,
         &elements,
-        backend::CLEAR_COLOR,
+        render::CLEAR_COLOR,
     )
 }
 

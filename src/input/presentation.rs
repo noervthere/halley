@@ -65,7 +65,7 @@ pub(crate) fn window_visual_state(
     let camera_center = crate::camera::global_center(view.center, output_geometry);
     let source_geometry = space.element_geometry(window)?;
     let window_surface = window.wl_surface()?;
-    let mut camera_rect = crate::backend::camera_rect(
+    let mut camera_rect = crate::render::camera_rect(
         source_geometry.to_physical(1),
         camera_center,
         output_size,
@@ -84,7 +84,7 @@ pub(crate) fn window_visual_state(
             let windowed = presentation
                 .windowed_geometry
                 .map(|geometry| {
-                    crate::backend::camera_rect(
+                    crate::render::camera_rect(
                         geometry.to_physical(1),
                         camera_center,
                         output_size,
@@ -96,7 +96,7 @@ pub(crate) fn window_visual_state(
         })
         .or_else(|| {
             maximize_presentation.map(|presentation| {
-                let windowed = crate::backend::camera_rect(
+                let windowed = crate::render::camera_rect(
                     presentation.windowed_rect.to_physical(1),
                     camera_center,
                     output_size,
@@ -215,7 +215,7 @@ impl WindowPresentation {
             );
             crate::animation::map_rect(presented, visual.presentation_rect, visual.animated_rect)
         } else {
-            let camera_bbox = crate::backend::camera_rect(
+            let camera_bbox = crate::render::camera_rect(
                 source_bbox.to_physical(1),
                 visual.camera_center,
                 output_size,

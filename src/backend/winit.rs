@@ -160,7 +160,7 @@ impl Renderable for WinitBackend {
         let space = request.space;
         let session_lock = request.session_lock;
         let clear = if request.session_lock.active() {
-            super::SESSION_LOCK_COLOR
+            crate::render::SESSION_LOCK_COLOR
         } else {
             request.clear
         };
@@ -171,8 +171,13 @@ impl Renderable for WinitBackend {
         let mut element_states = RenderElementStates::default();
         {
             let (renderer, mut framebuffer) = self.backend.bind()?;
-            let elements =
-                super::scene::build(renderer, output, &self.output, output_geometry, request)?;
+            let elements = crate::render::scene::build(
+                renderer,
+                output,
+                &self.output,
+                output_geometry,
+                request,
+            )?;
 
             let mut frame = renderer.render(&mut framebuffer, size, Transform::Flipped180)?;
             frame.clear(clear, &[damage])?;

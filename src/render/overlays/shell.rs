@@ -7,9 +7,9 @@ use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::renderer::utils::CommitCounter;
 use smithay::utils::{Buffer, Logical, Physical, Rectangle};
 
-use super::node::{LabelRenderElement, NodeRenderer};
-use super::scene::SceneElement;
-use super::text::UiTextRenderer;
+use crate::render::node::{LabelRenderElement, NodeRenderer};
+use crate::render::scene::SceneElement;
+use crate::render::text::UiTextRenderer;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct OverlayRgb {

@@ -1152,7 +1152,7 @@ fn opening_target_bounds<D: SessionDriver>(
         return Some(Rectangle::new((0, 0).into(), output_size));
     }
     let view = session.cameras.view(&output.name())?;
-    Some(crate::backend::camera_rect(
+    Some(crate::render::camera_rect(
         geometry.to_physical(1),
         crate::camera::global_center(view.center, output_geometry),
         output_size,
@@ -1213,7 +1213,7 @@ fn capture_fullscreen_snapshot<D: SessionDriver>(
         textures.capture_previous(
             renderer,
             window,
-            crate::backend::fullscreen_texture::TextureTransitionOwner::Fullscreen,
+            crate::render::fullscreen_texture::TextureTransitionOwner::Fullscreen,
         )
     }) {
         Ok(()) => true,

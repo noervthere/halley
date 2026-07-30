@@ -348,7 +348,7 @@ fn toggle_focused_field_maximize<D: SessionDriver>(session: &mut Session<D>, out
             textures.capture_previous(
                 renderer,
                 &record.window,
-                crate::backend::fullscreen_texture::TextureTransitionOwner::Maximize,
+                crate::render::fullscreen_texture::TextureTransitionOwner::Maximize,
             )
         });
         if let Err(err) = capture {

@@ -14,6 +14,7 @@ mod ipc;
 mod logging;
 mod nodes;
 mod overlay;
+mod render;
 mod screencast;
 mod session;
 mod wayland;

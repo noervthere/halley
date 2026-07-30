@@ -12,7 +12,7 @@ use smithay::backend::renderer::{Color32F, element::Kind};
 use smithay::output::Output;
 use smithay::utils::{Logical, Physical, Rectangle};
 
-use super::scene::SceneElement;
+use crate::render::scene::SceneElement;
 
 const CHIP_PAD_X: i32 = 10;
 const CHIP_PAD_Y: i32 = 7;
@@ -156,9 +156,9 @@ pub fn elements(
     nodes: &crate::nodes::NodesState,
     cameras: &crate::camera::OutputCameras,
     blur_config: halley_config::Blur,
-    backdrop_blur_renderer: &mut super::backdrop_blur::BackdropBlurRenderer,
-    node_renderer: &mut super::node::NodeRenderer,
-    ui_text: &mut super::text::UiTextRenderer,
+    backdrop_blur_renderer: &mut crate::render::effects::backdrop_blur::BackdropBlurRenderer,
+    node_renderer: &mut crate::render::node::NodeRenderer,
+    ui_text: &mut crate::render::text::UiTextRenderer,
     overlay_config: &halley_config::Overlays,
     decorations: &halley_config::Decorations,
 ) -> Result<Vec<SceneElement>, Box<dyn Error>> {
@@ -171,7 +171,8 @@ pub fn elements(
     let Some(camera) = cameras.get(&output_name) else {
         return Ok(Vec::new());
     };
-    let overlay_visuals = super::overlay::resolve_visuals(overlay_config, decorations);
+    let overlay_visuals =
+        crate::render::overlays::shell::resolve_visuals(overlay_config, decorations);
     let layouts = collect_layouts(
         renderer,
         LayoutContext {
@@ -199,7 +200,7 @@ pub fn elements(
         layouts
             .iter()
             .filter(|layout| layout.alpha >= 0.04)
-            .map(|layout| super::backdrop_blur::BlurPatch {
+            .map(|layout| crate::render::effects::backdrop_blur::BlurPatch {
                 rect: layout.chip,
                 radius: overlay_visuals.radius
                     + if overlay_visuals.radius > 0.0 {
@@ -287,23 +288,27 @@ pub fn elements(
             )? {
                 foreground.push(SceneElement::UiText(text.element));
             }
-            backgrounds.push(SceneElement::NodeLabel(super::overlay::card_element(
+            backgrounds.push(SceneElement::NodeLabel(
+                crate::render::overlays::shell::card_element(
+                    renderer,
+                    node_renderer,
+                    rect,
+                    overlay_visuals,
+                    overlay_visuals.fill,
+                    layout.alpha * 0.88,
+                )?,
+            ));
+        }
+        backgrounds.push(SceneElement::NodeLabel(
+            crate::render::overlays::shell::card_element(
                 renderer,
                 node_renderer,
-                rect,
+                layout.chip,
                 overlay_visuals,
                 overlay_visuals.fill,
-                layout.alpha * 0.88,
-            )?));
-        }
-        backgrounds.push(SceneElement::NodeLabel(super::overlay::card_element(
-            renderer,
-            node_renderer,
-            layout.chip,
-            overlay_visuals,
-            overlay_visuals.fill,
-            layout.alpha * 0.92,
-        )?));
+                layout.alpha * 0.92,
+            )?,
+        ));
     }
     foreground.extend(backgrounds);
     if let Some(blur) = backdrop_blur_renderer.blur_element(
@@ -322,7 +327,7 @@ pub fn elements(
 fn collect_layouts(
     renderer: &mut GlesRenderer,
     context: LayoutContext<'_>,
-    ui_text: &mut super::text::UiTextRenderer,
+    ui_text: &mut crate::render::text::UiTextRenderer,
 ) -> Result<Vec<Layout>, Box<dyn Error>> {
     let LayoutContext {
         output_name,
@@ -418,7 +423,7 @@ fn candidate_order(left: &Candidate, right: &Candidate) -> Ordering {
 
 fn group_candidates(
     renderer: &mut GlesRenderer,
-    ui_text: &mut super::text::UiTextRenderer,
+    ui_text: &mut crate::render::text::UiTextRenderer,
     config: halley_config::Bearings,
     mix: f32,
     candidates: Vec<Candidate>,
@@ -448,7 +453,7 @@ fn group_candidates(
 
 fn finalize_group(
     renderer: &mut GlesRenderer,
-    ui_text: &mut super::text::UiTextRenderer,
+    ui_text: &mut crate::render::text::UiTextRenderer,
     config: halley_config::Bearings,
     mix: f32,
     members: Vec<Candidate>,
@@ -584,7 +589,7 @@ fn build_layout(group: Group, center: f32, screen_w: i32, screen_h: i32) -> Layo
 
 fn measure_size(
     renderer: &mut GlesRenderer,
-    ui_text: &mut super::text::UiTextRenderer,
+    ui_text: &mut crate::render::text::UiTextRenderer,
     label: &str,
     show_icon: bool,
     distance: Option<&str>,

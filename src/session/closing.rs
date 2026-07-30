@@ -68,23 +68,23 @@ pub(crate) fn capture_window<D: SessionDriver>(session: &mut Session<D>, window:
         .unwrap_or(1.0);
     let border = (fullscreen_border_alpha > 0.0).then(|| {
         let focused = session.wayland.focused_window.as_ref() == Some(&surface);
-        crate::backend::close::CloseBorder {
+        crate::render::close::CloseBorder {
             width: ((session.decorations.border_width_px as f64 * f64::from(visual.zoom_scale))
                 .round() as i32)
                 .max(1),
-            color: crate::backend::window_border_color(&session.decorations, focused)
+            color: crate::render::window_border_color(&session.decorations, focused)
                 * fullscreen_border_alpha,
         }
     });
-    let content_radius = crate::backend::window_decoration::scaled_metric(
+    let content_radius = crate::render::window_decoration::scaled_metric(
         session.decorations.border_radius_px,
         visual.zoom_scale,
     ) as f32
         * fullscreen_border_alpha;
     let anchor = if visual.fullscreen.is_some() {
-        crate::backend::close::CloseAnchor::OutputLocal
+        crate::render::close::CloseAnchor::OutputLocal
     } else {
-        crate::backend::close::CloseAnchor::Windowed {
+        crate::render::close::CloseAnchor::Windowed {
             world_geometry: visual.source_geometry,
             captured_camera_rect: visual.camera_rect,
         }
@@ -102,7 +102,7 @@ pub(crate) fn capture_window<D: SessionDriver>(session: &mut Session<D>, window:
                 )),
             )
         });
-    let metadata = crate::backend::close::CloseSnapshotMetadata {
+    let metadata = crate::render::close::CloseSnapshotMetadata {
         output_name: output.name(),
         initial_destination: visual.animated_rect,
         anchor,

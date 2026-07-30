@@ -10,11 +10,12 @@ use smithay::reexports::winit::window::Window as WinitWindow;
 use smithay::wayland::seat::WaylandFocus;
 
 use crate::backend::winit::WinitBackend;
-use crate::backend::{self, RenderRequest, Renderable};
+use crate::backend::{self, Renderable};
 use crate::cursor::CursorManager;
 use crate::input::keybinds::BackendKind;
 use crate::input::pointer::{Pointer, WheelAccumulator};
 use crate::input::{Keyboard, SuppressedButtons, SuppressedKeys};
+use crate::render::{self, RenderRequest};
 use crate::wayland;
 
 use super::{Session, SessionDriver};
@@ -193,7 +194,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
         window_open_animations: crate::animation::WindowOpenAnimations::new(
             runtime_config.animations,
         ),
-        window_close_animations: crate::backend::close::WindowCloseAnimations::new(
+        window_close_animations: crate::render::close::WindowCloseAnimations::new(
             runtime_config.animations,
         ),
         fullscreen: crate::wayland::fullscreen::FullscreenManager::new(runtime_config.animations),
@@ -202,14 +203,15 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
             runtime_config.animations,
         ),
         fullscreen_textures:
-            crate::backend::fullscreen_texture::FullscreenTextureTransitions::default(),
-        overlay_previews: crate::backend::overlay_preview::OverlayPreviewCache::default(),
-        node_renderer: crate::backend::node::NodeRenderer::default(),
+            crate::render::fullscreen_texture::FullscreenTextureTransitions::default(),
+        overlay_previews: crate::render::overlays::preview::OverlayPreviewCache::default(),
+        node_renderer: crate::render::node::NodeRenderer::default(),
         window_decoration_renderer:
-            crate::backend::window_decoration::WindowDecorationRenderer::default(),
-        backdrop_blur_renderer: crate::backend::backdrop_blur::BackdropBlurRenderer::default(),
-        shadow_renderer: crate::backend::shadow::ShadowRenderer::default(),
-        ui_text: crate::backend::text::UiTextRenderer::new(&runtime_config.font),
+            crate::render::window_decoration::WindowDecorationRenderer::default(),
+        backdrop_blur_renderer:
+            crate::render::effects::backdrop_blur::BackdropBlurRenderer::default(),
+        shadow_renderer: crate::render::effects::shadow::ShadowRenderer::default(),
+        ui_text: crate::render::text::UiTextRenderer::new(&runtime_config.font),
         xwayland,
     };
     app.wayland
@@ -323,7 +325,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                     RenderRequest {
                         target_presentation_time,
                         vrr_auto_eligible: false,
-                        clear: backend::CLEAR_COLOR,
+                        clear: render::CLEAR_COLOR,
                         session_lock: &app.session_lock,
                         cursor: &app.cursor,
                         cursor_position: position,

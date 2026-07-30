@@ -364,7 +364,7 @@ fn committed_configure_serial(window: &Window) -> Option<Serial> {
 
 /// Converts a screen-space (physical-pixel) position into world (`Space`)
 /// coordinates, given the camera's live center/zoom state and the output's
-/// physical size - the exact inverse of `backend::camera_rect`'s transform.
+/// physical size - the exact inverse of `render::camera_rect`'s transform.
 /// Needed because the pointer's tracked position is always in screen
 /// coordinates, but window positions and grab math need to be in world
 /// coordinates now that panning is real.

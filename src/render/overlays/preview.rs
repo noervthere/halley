@@ -8,7 +8,7 @@ use smithay::backend::renderer::gles::{GlesRenderer, GlesTexture};
 use smithay::desktop::Window;
 use smithay::utils::{Physical, Rectangle};
 
-use super::window_texture::WindowTexture;
+use crate::render::window_texture::WindowTexture;
 
 struct Entry {
     id: Id,
@@ -78,7 +78,7 @@ impl OverlayPreviewCache {
                 .map(|entry| entry.id.clone())
                 .unwrap_or_else(Id::new);
             let reusable = previous.map(|entry| entry.texture.texture);
-            match super::window_texture::capture(renderer, window, reusable) {
+            match crate::render::window_texture::capture(renderer, window, reusable) {
                 Ok(texture) => {
                     self.dirty.remove(&id);
                     self.entries.insert(
