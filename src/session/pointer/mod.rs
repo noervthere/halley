@@ -204,13 +204,17 @@ pub(super) fn constrain_motion<D: SessionDriver>(
 }
 
 pub(super) fn cursor_visible<D: SessionDriver>(session: &Session<D>) -> bool {
-    if session.apogee.is_active() {
+    if interactive_overlay_forces_cursor(session.apogee.is_active(), session.capture.is_active()) {
         return true;
     }
     cursor_presentation_visible(
         session.cursor_policy.visible(),
         constraints::cursor_visible(session),
     )
+}
+
+fn interactive_overlay_forces_cursor(apogee_active: bool, capture_active: bool) -> bool {
+    apogee_active || capture_active
 }
 
 fn cursor_presentation_visible(policy_visible: bool, constraint_visible: bool) -> bool {
@@ -250,8 +254,16 @@ pub(super) fn apply_position_hint<D: SessionDriver>(
 mod tests {
     use super::{
         AbsoluteMotionPolicy, constraint_requires_stable_presentation, constraints,
-        cursor_presentation_visible, should_emit_absolute_motion,
+        cursor_presentation_visible, interactive_overlay_forces_cursor,
+        should_emit_absolute_motion,
     };
+
+    #[test]
+    fn interactive_overlays_force_the_cursor_visible() {
+        assert!(interactive_overlay_forces_cursor(true, false));
+        assert!(interactive_overlay_forces_cursor(false, true));
+        assert!(!interactive_overlay_forces_cursor(false, false));
+    }
 
     #[test]
     fn locked_pointer_suppresses_every_absolute_motion_policy() {

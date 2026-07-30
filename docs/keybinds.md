@@ -200,6 +200,9 @@ and `screenshot`. `Alt+Tab` and `Alt+Shift+Tab` open and navigate the focus
 carousel; releasing Alt commits and Escape cancels. `Mod+O` opens or closes
 the multi-monitor Apogee overview. Apogee stops trapping keys as soon as its
 close transition begins.
+The interactive screenshot menu and its area, screen, and window selectors
+force the compositor cursor visible even if a client or inactivity policy had
+hidden it.
 `quit` opens Halley's modal exit confirmation instead of stopping the
 compositor immediately. Enter confirms and Escape cancels while preserving
 the focused client beneath it. Its appearance is configured in
