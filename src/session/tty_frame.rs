@@ -143,22 +143,22 @@ impl OutputFrameState {
         self.redraw = RedrawState::WaitingForEstimatedVBlank(token);
     }
 
-    pub fn estimated_vblank_fired(&mut self) -> Option<String> {
+    pub fn estimated_vblank_fired(&mut self) -> Result<bool, String> {
         match std::mem::take(&mut self.redraw) {
             RedrawState::Suspended => {
                 self.redraw = RedrawState::Suspended;
-                None
+                Ok(false)
             }
             RedrawState::WaitingForEstimatedVBlank(_) if self.unfinished_animations => {
                 self.redraw = RedrawState::Queued;
-                None
+                Ok(false)
             }
-            RedrawState::WaitingForEstimatedVBlank(_) => None,
+            RedrawState::WaitingForEstimatedVBlank(_) => Ok(true),
             RedrawState::WaitingForEstimatedVBlankAndQueued(_) => {
                 self.redraw = RedrawState::Queued;
-                None
+                Ok(false)
             }
-            other => Some(format!("{other:?}")),
+            other => Err(format!("{other:?}")),
         }
     }
 
@@ -213,6 +213,16 @@ mod tests {
         OutputFrameState::new(Duration::from_millis(10))
     }
 
+    fn registration_token() -> RegistrationToken {
+        let event_loop = calloop::EventLoop::<()>::try_new().expect("test event loop");
+        event_loop
+            .handle()
+            .insert_source(calloop::timer::Timer::immediate(), |_, _, _| {
+                calloop::timer::TimeoutAction::Drop
+            })
+            .expect("test timer")
+    }
+
     #[test]
     fn queued_requests_are_idempotent() {
         let mut state = state();
@@ -264,6 +274,29 @@ mod tests {
             state.frame_skipped(false, Duration::from_secs(5)),
             EstimatedVblankTimer::ArmAfter(Duration::from_millis(1))
         );
+    }
+
+    #[test]
+    fn estimated_vblank_releases_callbacks_after_a_settled_skipped_frame() {
+        let mut state = state();
+        state.queue_redraw();
+        state.frame_skipped(false, Duration::from_secs(5));
+        state.timer_armed(registration_token());
+
+        assert_eq!(state.estimated_vblank_fired(), Ok(true));
+        assert!(!state.is_redraw_queued());
+    }
+
+    #[test]
+    fn redraw_queued_during_estimated_wait_takes_precedence_over_callbacks() {
+        let mut state = state();
+        state.queue_redraw();
+        state.frame_skipped(false, Duration::from_secs(5));
+        state.timer_armed(registration_token());
+        state.queue_redraw();
+
+        assert_eq!(state.estimated_vblank_fired(), Ok(false));
+        assert!(state.is_redraw_queued());
     }
 
     #[test]

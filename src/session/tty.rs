@@ -562,40 +562,44 @@ fn on_vblank(app: &mut TtyApp, crtc: crtc::Handle, metadata: Option<&DrmEventMet
             .presented(time, refresh, sequence, flags);
     }
 
+    send_output_frame_callbacks(app, &output);
+}
+
+fn send_output_frame_callbacks(app: &mut TtyApp, output: &Output) {
     let elapsed = app.start_time.elapsed();
     let primary = app.driver.backend.primary_output();
     if app.session_lock.active() {
-        crate::wayland::session_lock::send_frames(&app.session_lock, &output, elapsed);
+        crate::wayland::session_lock::send_frames(&app.session_lock, output, elapsed);
     } else if app.apogee.is_active() {
         if app.apogee.take_callback_due(
             &output.name(),
             crate::frame_clock::monotonic_now(),
             app.apogee_config.preview_max_fps,
         ) {
-            crate::apogee::send_preview_frames(&app.apogee, &app.nodes, &output, elapsed);
+            crate::apogee::send_preview_frames(&app.apogee, &app.nodes, output, elapsed);
         }
     } else {
         app.wayland
             .space
             .elements()
-            .filter(|window| wayland::window_is_on_output(window, &output, primary))
+            .filter(|window| wayland::window_is_on_output(window, output, primary))
             .for_each(|window| {
-                window.send_frame(&output, elapsed, Some(Duration::ZERO), |_, _| {
+                window.send_frame(output, elapsed, Some(Duration::ZERO), |_, _| {
                     Some(output.clone())
                 });
             });
         crate::nodes::send_hover_preview_frame(
             &app.nodes,
-            &output,
+            output,
             elapsed,
             crate::frame_clock::monotonic_now(),
         );
     }
-    wayland::layer_shell::send_frames(&output, elapsed);
+    wayland::layer_shell::send_frames(output, elapsed);
     crate::cursor::surface::send_frame(
         &app.cursor,
         &app.wayland.space,
-        &output,
+        output,
         app.pointer.position(),
         elapsed,
     );
@@ -969,11 +973,15 @@ fn on_estimated_vblank_timer(app: &mut TtyApp, output: &Output) {
     let Some(state) = app.driver.output_frames.get_mut(output) else {
         return;
     };
-    if let Some(unexpected) = state.estimated_vblank_fired() {
-        eventline::warn!(
-            "unexpected redraw state on estimated-vblank timer for {:?}: {unexpected}",
-            output.name()
-        );
+    match state.estimated_vblank_fired() {
+        Ok(true) => send_output_frame_callbacks(app, output),
+        Ok(false) => {}
+        Err(unexpected) => {
+            eventline::warn!(
+                "unexpected redraw state on estimated-vblank timer for {:?}: {unexpected}",
+                output.name()
+            );
+        }
     }
 }
 
