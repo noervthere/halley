@@ -1,0 +1,219 @@
+use super::*;
+
+pub(super) fn append_compositor_overlay_blur(
+    renderer: &mut GlesRenderer,
+    output: &Output,
+    output_size: smithay::utils::Size<i32, Logical>,
+    identity: &str,
+    blur_config: halley_config::Blur,
+    shadow_config: halley_config::ShadowLayer,
+    backdrop_blur_renderer: &mut crate::render::effects::backdrop_blur::BackdropBlurRenderer,
+    shadow_renderer: &mut crate::render::effects::shadow::ShadowRenderer,
+    elements: &mut Vec<SceneElement>,
+) -> Result<(), Box<dyn Error>> {
+    if blur_config.enabled && blur_config.overlays {
+        let patches = elements
+            .iter()
+            .filter_map(|element| match element {
+                SceneElement::NodeLabel(card) => {
+                    Some(crate::render::effects::backdrop_blur::BlurPatch {
+                        rect: card.geometry(Scale::from(1.0)),
+                        radius: card.corner_radius(),
+                        alpha: card.alpha(),
+                        clip: None,
+                    })
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if let Some(blur) = backdrop_blur_renderer.blur_element(
+            renderer,
+            &output.name(),
+            identity,
+            output_size,
+            patches,
+            blur_config,
+        )? {
+            elements.push(SceneElement::BackdropBlur(blur));
+        }
+    }
+    append_overlay_shadows(
+        renderer,
+        output,
+        identity,
+        shadow_config,
+        shadow_renderer,
+        elements,
+    )?;
+    Ok(())
+}
+
+pub(super) fn append_overlay_shadows(
+    renderer: &mut GlesRenderer,
+    output: &Output,
+    identity: &str,
+    shadow_config: halley_config::ShadowLayer,
+    shadow_renderer: &mut crate::render::effects::shadow::ShadowRenderer,
+    elements: &mut Vec<SceneElement>,
+) -> Result<(), Box<dyn Error>> {
+    let casters = elements
+        .iter()
+        .filter_map(|element| match element {
+            SceneElement::NodeLabel(card) => Some((
+                card.geometry(Scale::from(1.0)),
+                card.corner_radius(),
+                card.alpha(),
+            )),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    for (index, (caster, radius, alpha)) in casters.into_iter().enumerate() {
+        if let Some(shadow) = shadow_renderer.element(
+            renderer,
+            format!("{}:overlay:{identity}:{index}", output.name()),
+            caster,
+            radius,
+            alpha,
+            shadow_config,
+        )? {
+            elements.push(SceneElement::Shadow(shadow));
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn layer_surface_scene_elements(
+    renderer: &mut GlesRenderer,
+    output: &Output,
+    output_geometry: Rectangle<i32, Logical>,
+    layer: Layer,
+    blur_config: halley_config::Blur,
+    backdrop_blur_renderer: &mut crate::render::effects::backdrop_blur::BackdropBlurRenderer,
+) -> Result<Vec<SceneElement>, Box<dyn Error>> {
+    let map = layer_map_for_output(output);
+    let scale = Scale::from(output.current_scale().fractional_scale());
+    let output_bounds = Rectangle::<i32, Physical>::from_size(output_geometry.size.to_physical(1));
+    let mut elements = Vec::new();
+
+    for surface in map.layers_on(layer).rev() {
+        let Some(geometry) = map.layer_geometry(surface) else {
+            continue;
+        };
+        for (popup, popup_offset) in PopupManager::popups_for_surface(surface.wl_surface()) {
+            let popup_origin = geometry.loc + popup_offset - popup.geometry().loc;
+            let location = popup_origin.to_f64().to_physical(scale).to_i32_round();
+            elements.extend(
+                smithay::backend::renderer::element::surface::render_elements_from_surface_tree(
+                    renderer,
+                    popup.wl_surface(),
+                    location,
+                    scale,
+                    1.0,
+                    Kind::ScanoutCandidate,
+                )
+                .into_iter()
+                .map(SceneElement::Layer),
+            );
+            append_surface_backdrop_blur(
+                renderer,
+                output,
+                output_geometry.size,
+                output_bounds,
+                popup.wl_surface(),
+                popup_origin,
+                scale,
+                layer,
+                blur_config,
+                backdrop_blur_renderer,
+                &mut elements,
+            )?;
+        }
+
+        let location = geometry.loc.to_f64().to_physical(scale).to_i32_round();
+        elements.extend(
+            smithay::backend::renderer::element::surface::render_elements_from_surface_tree(
+                renderer,
+                surface.wl_surface(),
+                location,
+                scale,
+                1.0,
+                Kind::ScanoutCandidate,
+            )
+            .into_iter()
+            .map(SceneElement::Layer),
+        );
+        append_surface_backdrop_blur(
+            renderer,
+            output,
+            output_geometry.size,
+            output_bounds,
+            surface.wl_surface(),
+            geometry.loc,
+            scale,
+            layer,
+            blur_config,
+            backdrop_blur_renderer,
+            &mut elements,
+        )?;
+    }
+
+    Ok(elements)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn append_surface_backdrop_blur(
+    renderer: &mut GlesRenderer,
+    output: &Output,
+    output_size: smithay::utils::Size<i32, Logical>,
+    output_bounds: Rectangle<i32, Physical>,
+    surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+    surface_origin: smithay::utils::Point<i32, Logical>,
+    scale: Scale<f64>,
+    layer: Layer,
+    blur_config: halley_config::Blur,
+    backdrop_blur_renderer: &mut crate::render::effects::backdrop_blur::BackdropBlurRenderer,
+    elements: &mut Vec<SceneElement>,
+) -> Result<(), Box<dyn Error>> {
+    let Some(surface_size) =
+        with_renderer_surface_state(surface, |state| state.surface_size()).flatten()
+    else {
+        return Ok(());
+    };
+    let mut requested = crate::wayland::background_effect::blur_rects(surface, surface_size);
+    let policy_blur = match blur_config.layer_shell {
+        halley_config::ClientBlurMode::Off => false,
+        halley_config::ClientBlurMode::Auto => matches!(layer, Layer::Top | Layer::Overlay),
+        halley_config::ClientBlurMode::Always => true,
+    };
+    if requested.is_empty() && policy_blur {
+        requested.push(Rectangle::from_size(surface_size));
+    }
+    let patches = requested
+        .into_iter()
+        .filter_map(|rect| {
+            let rect = Rectangle::<i32, Logical>::new(surface_origin + rect.loc, rect.size)
+                .to_f64()
+                .to_physical(scale)
+                .to_i32_up();
+            rect.intersection(output_bounds).map(|rect| {
+                crate::render::effects::backdrop_blur::BlurPatch {
+                    rect,
+                    radius: 0.0,
+                    alpha: 1.0,
+                    clip: None,
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+    if let Some(blur) = backdrop_blur_renderer.blur_element(
+        renderer,
+        &output.name(),
+        format!("layer:{:?}", surface.id()),
+        output_size,
+        patches,
+        blur_config,
+    )? {
+        elements.push(SceneElement::BackdropBlur(blur));
+    }
+    Ok(())
+}
