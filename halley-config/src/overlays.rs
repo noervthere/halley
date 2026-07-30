@@ -60,7 +60,6 @@ pub struct Overlays {
     pub shape: OverlayShape,
     pub borders: bool,
     pub border_source: OverlayBorderSource,
-    pub blur: bool,
     pub notifications: Notifications,
 }
 
@@ -78,7 +77,6 @@ impl Default for Overlays {
             shape: OverlayShape::Square,
             borders: true,
             border_source: OverlayBorderSource::Primary,
-            blur: true,
             notifications: Notifications::default(),
         }
     }
@@ -243,7 +241,6 @@ pub fn parse_overlays_checked(config: &RuneConfig) -> Result<Overlays, OverlayPa
         borders: optional_bool(config, &["overlays.borders", "overlay.borders"])?
             .unwrap_or(defaults.borders),
         border_source,
-        blur: optional_bool(config, &["overlays.blur", "overlay.blur"])?.unwrap_or(defaults.blur),
         notifications: Notifications {
             position,
             success_duration_ms,

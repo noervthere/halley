@@ -273,7 +273,6 @@ overlays:
   shape "square"
   borders true
   border-source "primary"
-  blur true
 
   notifications:
     position "top-center"
@@ -282,34 +281,71 @@ overlays:
   end
 end
 
-# Renderer-level backdrop blur. The capture occurs at each surface's exact
-# scene-stack position, so translucent windows blur only content behind them.
+# Renderer-level visual effects: backdrop blur and shadows.
+# These sample or extend the world behind a surface, so they live here rather
+# than under `decorations:` (which is compositor chrome attached to surfaces).
 effects:
   blur:
-    # Master switch. When false, no blur pipeline work is performed.
+    # Master switch. When false, no blur is computed anywhere.
     enabled false
 
-    # Let compositor-owned overlays use blur when their local `blur` knob is
-    # also enabled.
+    # Allow compositor-owned overlays (Bearings, Apogee, Alt-Tab,
+    # notifications, popups, and labels) to use blur.
     overlays true
 
-    # Client windows:
-    #   "off"    = only explicit client protocol requests are honored
-    #   "auto"   = explicit client protocol requests are honored
-    #   "always" = every eligible managed window is blurred
+    # Client window blur behaviour:
+    #   "off"    = no global client-window blur
+    #   "auto"   = blur only when requested by a translucent client
+    #   "always" = blur every eligible managed window
     windows "auto"
 
-    # Layer-shell surfaces:
-    #   "off"    = only explicit client protocol requests are honored
-    #   "auto"   = blur explicit requests plus top/overlay surfaces
-    #   "always" = blur all layer-shell surfaces
+    # Layer-shell blur behaviour for bars, launchers, notifications, etc.:
+    #   "off"    = no global layer-shell blur
+    #   "auto"   = blur top/overlay layer-shell clients
+    #   "always" = blur background/bottom/top/overlay layer-shell clients
     layer-shell "off"
 
+    # Quality / performance. Dual Kawase is a downsampled multi-pass blur
+    # tuned to look Gaussian-ish without a true large-kernel Gaussian's cost.
     method "dual-kawase"
     radius 24
     passes 3
+
+    # Frosted-glass polish.
     saturation 1.10
     noise 0.012
+  end
+
+  # Independent shadow layers. blur-radius controls softness; spread expands
+  # the solid caster before the falloff; offsets move the shadow in pixels.
+  # Colours use #rrggbbaa, with the final byte controlling shadow opacity.
+  shadows:
+    window:
+      enabled true
+      blur-radius 8
+      spread 0
+      offset-x 0
+      offset-y 5
+      colour "#05030530"
+    end
+
+    node:
+      enabled true
+      blur-radius 14
+      spread 0
+      offset-x 0
+      offset-y 3
+      colour "#05030524"
+    end
+
+    overlay:
+      enabled true
+      blur-radius 24
+      spread 1
+      offset-x 0
+      offset-y 7
+      colour "#05030538"
+    end
   end
 end
 

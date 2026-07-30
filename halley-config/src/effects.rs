@@ -43,9 +43,75 @@ impl Default for Blur {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ShadowColor {
+    pub r: f32,
+    pub g: f32,
+    pub b: f32,
+    pub a: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ShadowLayer {
+    pub enabled: bool,
+    pub blur_radius: f32,
+    pub spread: f32,
+    pub offset_x: f32,
+    pub offset_y: f32,
+    pub color: ShadowColor,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Shadows {
+    pub window: ShadowLayer,
+    pub node: ShadowLayer,
+    pub overlay: ShadowLayer,
+}
+
+impl Default for Shadows {
+    fn default() -> Self {
+        Self {
+            window: ShadowLayer {
+                enabled: true,
+                blur_radius: 8.0,
+                spread: 0.0,
+                offset_x: 0.0,
+                offset_y: 5.0,
+                color: rgba(0x05, 0x03, 0x05, 0x30),
+            },
+            node: ShadowLayer {
+                enabled: true,
+                blur_radius: 14.0,
+                spread: 0.0,
+                offset_x: 0.0,
+                offset_y: 3.0,
+                color: rgba(0x05, 0x03, 0x05, 0x24),
+            },
+            overlay: ShadowLayer {
+                enabled: true,
+                blur_radius: 24.0,
+                spread: 1.0,
+                offset_x: 0.0,
+                offset_y: 7.0,
+                color: rgba(0x05, 0x03, 0x05, 0x38),
+            },
+        }
+    }
+}
+
+const fn rgba(r: u8, g: u8, b: u8, a: u8) -> ShadowColor {
+    ShadowColor {
+        r: r as f32 / 255.0,
+        g: g as f32 / 255.0,
+        b: b as f32 / 255.0,
+        a: a as f32 / 255.0,
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Effects {
     pub blur: Blur,
+    pub shadows: Shadows,
 }
 
 #[derive(Debug)]
@@ -107,6 +173,89 @@ pub fn parse_effects(config: &RuneConfig) -> Result<Effects, EffectsParseError> 
             saturation,
             noise,
         },
+        shadows: parse_shadows(config)?,
+    })
+}
+
+fn parse_shadows(config: &RuneConfig) -> Result<Shadows, EffectsParseError> {
+    let defaults = Shadows::default();
+    Ok(Shadows {
+        window: parse_shadow_layer(config, "effects.shadows.window", defaults.window)?,
+        node: parse_shadow_layer(config, "effects.shadows.node", defaults.node)?,
+        overlay: parse_shadow_layer(config, "effects.shadows.overlay", defaults.overlay)?,
+    })
+}
+
+fn parse_shadow_layer(
+    config: &RuneConfig,
+    root: &'static str,
+    default: ShadowLayer,
+) -> Result<ShadowLayer, EffectsParseError> {
+    let color_path = format!("{root}.colour");
+    let color_alias = format!("{root}.color");
+    let raw_color = config
+        .get_optional::<String>(&color_path)?
+        .or(config.get_optional::<String>(&color_alias)?);
+    let color = match raw_color {
+        Some(value) => parse_hex_rgba(&value).ok_or(EffectsParseError::InvalidValue {
+            path: "effects.shadows.*.colour",
+            value,
+        })?,
+        None => default.color,
+    };
+    Ok(ShadowLayer {
+        enabled: config.get_or(&format!("{root}.enabled"), default.enabled),
+        blur_radius: finite_clamp(
+            config.get_or(&format!("{root}.blur-radius"), default.blur_radius),
+            0.0,
+            128.0,
+            default.blur_radius,
+        ),
+        spread: finite_clamp(
+            config.get_or(&format!("{root}.spread"), default.spread),
+            0.0,
+            64.0,
+            default.spread,
+        ),
+        offset_x: finite_clamp(
+            config.get_or(&format!("{root}.offset-x"), default.offset_x),
+            -256.0,
+            256.0,
+            default.offset_x,
+        ),
+        offset_y: finite_clamp(
+            config.get_or(&format!("{root}.offset-y"), default.offset_y),
+            -256.0,
+            256.0,
+            default.offset_y,
+        ),
+        color,
+    })
+}
+
+fn parse_hex_rgba(value: &str) -> Option<ShadowColor> {
+    let value = value.trim();
+    let hex = value.strip_prefix('#').unwrap_or(value);
+    let expanded = match hex.len() {
+        3 => format!(
+            "{}{}{}{}{}{}ff",
+            &hex[0..1],
+            &hex[0..1],
+            &hex[1..2],
+            &hex[1..2],
+            &hex[2..3],
+            &hex[2..3]
+        ),
+        4 => hex.chars().flat_map(|ch| [ch, ch]).collect(),
+        6 => format!("{hex}ff"),
+        8 => hex.to_string(),
+        _ => return None,
+    };
+    Some(ShadowColor {
+        r: u8::from_str_radix(&expanded[0..2], 16).ok()? as f32 / 255.0,
+        g: u8::from_str_radix(&expanded[2..4], 16).ok()? as f32 / 255.0,
+        b: u8::from_str_radix(&expanded[4..6], 16).ok()? as f32 / 255.0,
+        a: u8::from_str_radix(&expanded[6..8], 16).ok()? as f32 / 255.0,
     })
 }
 
@@ -163,6 +312,14 @@ mod tests {
         assert_eq!(blur.passes, 3);
         assert_eq!(blur.saturation, 1.10);
         assert_eq!(blur.noise, 0.012);
+        let shadows = Shadows::default();
+        assert_eq!(shadows.window.blur_radius, 8.0);
+        assert_eq!(shadows.window.offset_y, 5.0);
+        assert_eq!(shadows.window.color.a, 0x30 as f32 / 255.0);
+        assert_eq!(shadows.node.blur_radius, 14.0);
+        assert_eq!(shadows.overlay.blur_radius, 24.0);
+        assert_eq!(shadows.overlay.spread, 1.0);
+        assert_eq!(shadows.overlay.color.a, 0x38 as f32 / 255.0);
     }
 
     #[test]
@@ -208,5 +365,35 @@ end
                 Err(EffectsParseError::InvalidValue { .. })
             ));
         }
+    }
+
+    #[test]
+    fn parses_shadow_layers() {
+        let config = RuneConfig::from_str(
+            r##"
+effects:
+  shadows:
+    window:
+      enabled false
+      blur-radius 20
+      spread 2
+      offset-x 3
+      offset-y 9
+      colour "#10203040"
+    end
+  end
+end
+"##,
+        )
+        .unwrap();
+        let shadows = parse_effects(&config).unwrap().shadows;
+        assert!(!shadows.window.enabled);
+        assert_eq!(shadows.window.blur_radius, 20.0);
+        assert_eq!(shadows.window.spread, 2.0);
+        assert_eq!(shadows.window.offset_x, 3.0);
+        assert_eq!(shadows.window.offset_y, 9.0);
+        assert_eq!(shadows.window.color.r, 0x10 as f32 / 255.0);
+        assert_eq!(shadows.window.color.a, 0x40 as f32 / 255.0);
+        assert_eq!(shadows.node, Shadows::default().node);
     }
 }

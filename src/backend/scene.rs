@@ -412,7 +412,7 @@ fn append_compositor_overlay_blur(
     backdrop_blur_renderer: &mut super::backdrop_blur::BackdropBlurRenderer,
     elements: &mut Vec<SceneElement>,
 ) -> Result<(), Box<dyn Error>> {
-    if !blur_config.enabled || !blur_config.overlays || !overlay_config.blur {
+    if !blur_config.enabled || !blur_config.overlays {
         return Ok(());
     }
     let radius = match overlay_config.shape {
