@@ -217,6 +217,7 @@ fn example_config_has_per_output_rings_font_and_landmarks() {
     assert_eq!(runtime.focus_rings.for_output("DP-2").radius_y, 420.0);
     assert_eq!(runtime.field.gap, 20.0);
     assert!(runtime.field.close_restore_focus);
+    assert!(!runtime.field.close_restore_nodes);
     assert_eq!(
         runtime.field.close_restore_pan,
         halley_config::CloseRestorePan::IfOffscreen

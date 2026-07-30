@@ -326,9 +326,12 @@ field:
   gap 20.0
 
   # After a focused window closes, restore the most recently used window on
-  # that output (then fall back globally). "if-offscreen" minimally reveals a
-  # successor only when it is completely outside the current camera view.
+  # that output (then fall back globally). A collapsed successor remains a
+  # node unless close-restore-nodes is enabled. "if-offscreen" minimally
+  # reveals a restored successor only when it is completely outside the
+  # current camera view.
   close-restore-focus true
+  close-restore-nodes false
   close-restore-pan "if-offscreen"
 
   # Camera zoom changes both presentation and input coordinates. Halley only

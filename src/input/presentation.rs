@@ -24,6 +24,30 @@ pub(crate) struct WindowVisualState {
     pub(crate) maximize: Option<crate::wayland::maximize::FieldMaximizePresentation>,
     pub(crate) camera_center: Point<f32, Physical>,
     pub(crate) zoom_scale: f32,
+    inherited_presentation: bool,
+}
+
+impl WindowVisualState {
+    pub(crate) fn maps_from_source(self) -> bool {
+        self.inherited_presentation || self.fullscreen.is_some() || self.maximize.is_some()
+    }
+}
+
+fn inherited_visual_rects(
+    source: Rectangle<i32, Physical>,
+    owner_source: Rectangle<i32, Physical>,
+    owner_camera: Rectangle<i32, Physical>,
+    owner_presentation: Rectangle<i32, Physical>,
+    owner_animated: Rectangle<i32, Physical>,
+) -> (
+    Rectangle<i32, Physical>,
+    Rectangle<i32, Physical>,
+    Rectangle<i32, Physical>,
+) {
+    let camera = crate::animation::map_rect(source, owner_source, owner_camera);
+    let presentation = crate::animation::map_rect(source, owner_source, owner_presentation);
+    let animated = crate::animation::map_rect(presentation, owner_presentation, owner_animated);
+    (camera, presentation, animated)
 }
 
 pub(crate) fn window_visual_state(
@@ -42,7 +66,7 @@ pub(crate) fn window_visual_state(
     let camera_center = crate::camera::global_center(view.center, output_geometry);
     let source_geometry = space.element_geometry(window)?;
     let window_surface = window.wl_surface()?;
-    let camera_rect = crate::backend::camera_rect(
+    let mut camera_rect = crate::backend::camera_rect(
         source_geometry.to_physical(1),
         camera_center,
         output_size,
@@ -52,12 +76,12 @@ pub(crate) fn window_visual_state(
     let opening_visual = window_open_animations
         .visual(window_surface.as_ref(), now, camera_rect)
         .unwrap_or_default();
-    let fullscreen = fullscreen.presentation(window_surface.as_ref(), output, now);
-    let maximize = fullscreen
+    let fullscreen_presentation = fullscreen.presentation(window_surface.as_ref(), output, now);
+    let maximize_presentation = fullscreen_presentation
         .is_none()
         .then(|| maximize.presentation(window_surface.as_ref(), output, output_geometry, now))
         .flatten();
-    let presentation_rect = fullscreen
+    let mut presentation_rect = fullscreen_presentation
         .map(|presentation| {
             let windowed = presentation
                 .windowed_geometry
@@ -73,7 +97,7 @@ pub(crate) fn window_visual_state(
             presentation.client_rect(windowed, output_size)
         })
         .or_else(|| {
-            maximize.map(|presentation| {
+            maximize_presentation.map(|presentation| {
                 let windowed = crate::backend::camera_rect(
                     presentation.windowed_rect.to_physical(1),
                     camera_center,
@@ -84,19 +108,58 @@ pub(crate) fn window_visual_state(
             })
         })
         .unwrap_or(camera_rect);
-    let animated_rect = opening_visual.transform_rect(presentation_rect, presentation_rect);
+    let mut animated_rect = opening_visual.transform_rect(presentation_rect, presentation_rect);
+    let mut opening_alpha = opening_visual.alpha();
+    let mut opening_is_animating = opening_is_animating;
+    let mut inherited_presentation = false;
+    let mut inherited_camera_center = camera_center;
+    let mut inherited_zoom_scale = view.scale;
+
+    if let Some(owner_xid) = crate::wayland::window_presentation_owner(window)
+        && let Some(owner) = space.elements().find(|candidate| {
+            candidate
+                .x11_surface()
+                .is_some_and(|surface| surface.window_id() == owner_xid)
+        })
+        && let Some(owner_visual) = window_visual_state(
+            space,
+            cameras,
+            owner,
+            output,
+            window_open_animations,
+            fullscreen,
+            maximize,
+            now,
+        )
+    {
+        let source = source_geometry.to_physical(1);
+        let owner_source = owner_visual.source_geometry.to_physical(1);
+        (camera_rect, presentation_rect, animated_rect) = inherited_visual_rects(
+            source,
+            owner_source,
+            owner_visual.camera_rect,
+            owner_visual.presentation_rect,
+            owner_visual.animated_rect,
+        );
+        opening_alpha = owner_visual.opening_alpha;
+        opening_is_animating = owner_visual.opening_is_animating;
+        inherited_camera_center = owner_visual.camera_center;
+        inherited_zoom_scale = owner_visual.zoom_scale;
+        inherited_presentation = true;
+    }
 
     Some(WindowVisualState {
         source_geometry,
         camera_rect,
         presentation_rect,
         animated_rect,
-        opening_alpha: opening_visual.alpha(),
+        opening_alpha,
         opening_is_animating,
-        fullscreen,
-        maximize,
-        camera_center,
-        zoom_scale: view.scale,
+        fullscreen: fullscreen_presentation,
+        maximize: maximize_presentation,
+        camera_center: inherited_camera_center,
+        zoom_scale: inherited_zoom_scale,
+        inherited_presentation,
     })
 }
 
@@ -149,7 +212,7 @@ impl WindowPresentation {
                 local.size.to_logical(1),
             )
         };
-        let hit_rect = if visual.fullscreen.is_some() || visual.maximize.is_some() {
+        let hit_rect = if visual.maps_from_source() {
             let presented = crate::animation::map_rect(
                 source_bbox.to_physical(1),
                 source_geometry.to_physical(1),
@@ -345,6 +408,30 @@ mod tests {
         assert_eq!(
             map_point(Point::from((960.0, 540.0)), visual, source),
             Point::from((512.0, 384.0))
+        );
+    }
+
+    #[test]
+    fn x11_popup_inherits_owners_panned_and_fullscreen_presentation() {
+        let owner_source = Rectangle::<i32, Physical>::new((1090, 425).into(), (1920, 1200).into());
+        let popup_source = Rectangle::<i32, Physical>::new((1158, 491).into(), (147, 198).into());
+        let owner_camera = Rectangle::<i32, Physical>::new((0, 0).into(), (1920, 1200).into());
+        let owner_fullscreen = Rectangle::<i32, Physical>::new((0, 0).into(), (1920, 1200).into());
+        let owner_animated = Rectangle::<i32, Physical>::new((96, 60).into(), (1728, 1080).into());
+
+        let (camera, fullscreen, animated) = inherited_visual_rects(
+            popup_source,
+            owner_source,
+            owner_camera,
+            owner_fullscreen,
+            owner_animated,
+        );
+
+        assert_eq!(camera, Rectangle::new((68, 66).into(), (147, 198).into()));
+        assert_eq!(fullscreen, camera);
+        assert_eq!(
+            animated,
+            Rectangle::new((157, 119).into(), (133, 179).into())
         );
     }
 

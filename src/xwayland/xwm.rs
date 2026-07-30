@@ -1,3 +1,4 @@
+use std::cmp::Reverse;
 use std::os::fd::OwnedFd;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -6,20 +7,35 @@ use calloop::timer::{TimeoutAction, Timer};
 use smithay::backend::renderer::utils::with_renderer_surface_state;
 use smithay::desktop::Window;
 use smithay::output::Output;
-use smithay::utils::{Logical, Point, Rectangle, SERIAL_COUNTER};
+use smithay::utils::{Logical, Point, Rectangle, SERIAL_COUNTER, Size};
 use smithay::wayland::seat::WaylandFocus;
 use smithay::wayland::selection::SelectionTarget;
-use smithay::xwayland::xwm::{Reorder, ResizeEdge, XwmId};
+use smithay::xwayland::xwm::{Reorder, ResizeEdge, WmWindowProperty, WmWindowType, XwmId};
 use smithay::xwayland::{X11Surface, X11Wm, XwmHandler};
 
 use crate::session::{Session, SessionDriver};
 use crate::wayland::fullscreen::{ExternalConfigureResult, ExternalTransactionRequest};
 
 use super::lifecycle::{MapAdmission, OpeningPlacement, map_admission};
-use super::{OverrideRedirectPlacement, PendingOverrideRedirect, PendingWindow};
+use super::{
+    OverrideRedirectPlacement, PendingOverrideRedirect, PendingWindow, SavedNormalSize,
+    WindowIdentity,
+};
+
+#[derive(Clone, Debug)]
+struct MaximizeRestore {
+    geometry: Rectangle<i32, Logical>,
+    output: Option<String>,
+}
+
+#[derive(Default, Debug)]
+struct MaximizeFullscreenState {
+    active: bool,
+    restore: Option<MaximizeRestore>,
+}
 
 #[derive(Default)]
-struct MaximizeFullscreen(Mutex<bool>);
+struct MaximizeFullscreen(Mutex<MaximizeFullscreenState>);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FullscreenRequestOrigin {
@@ -88,6 +104,132 @@ fn window_for_surface<D: SessionDriver>(
         })
 }
 
+fn window_identity(surface: &X11Surface) -> Option<WindowIdentity> {
+    if surface.is_override_redirect()
+        || surface.is_transient_for().is_some()
+        || !matches!(surface.window_type(), None | Some(WmWindowType::Normal))
+    {
+        return None;
+    }
+    let instance = surface.instance();
+    let class = surface.class();
+    if instance.is_empty() || class.is_empty() {
+        return None;
+    }
+    Some(WindowIdentity {
+        instance,
+        class,
+        title: surface.title(),
+    })
+}
+
+fn is_steam_main_window(surface: &X11Surface) -> bool {
+    window_identity(surface).is_some_and(|identity| {
+        identity.instance == "steamwebhelper"
+            && identity.class.eq_ignore_ascii_case("steam")
+            && identity.title == "Steam"
+    })
+}
+
+fn maximize_restore(surface: &X11Surface) -> Option<MaximizeRestore> {
+    surface
+        .user_data()
+        .get::<MaximizeFullscreen>()
+        .and_then(|state| {
+            let state = state.0.lock().expect("X11 maximize state lock poisoned");
+            state.active.then(|| state.restore.clone()).flatten()
+        })
+}
+
+fn maximize_origin_active(surface: &X11Surface) -> bool {
+    surface
+        .user_data()
+        .get::<MaximizeFullscreen>()
+        .is_some_and(|state| {
+            state
+                .0
+                .lock()
+                .expect("X11 maximize state lock poisoned")
+                .active
+        })
+}
+
+fn remember_normal_size<D: SessionDriver>(
+    session: &mut Session<D>,
+    surface: &X11Surface,
+    size: Size<i32, Logical>,
+) {
+    if size.w <= 0
+        || size.h <= 0
+        || surface.is_fullscreen()
+        || surface.is_maximized()
+        || maximize_origin_active(surface)
+    {
+        return;
+    }
+    if is_steam_main_window(surface)
+        && window_for_surface(session, surface)
+            .and_then(|window| crate::wayland::window_output_name(&window))
+            .and_then(|name| output_named(session, &name))
+            .and_then(|output| session.wayland.space.output_geometry(&output))
+            .is_some_and(|geometry| size_fills_output(size, geometry.size))
+    {
+        return;
+    }
+    let Some(identity) = window_identity(surface) else {
+        return;
+    };
+    session
+        .xwayland
+        .normal_sizes
+        .insert(identity, SavedNormalSize(size));
+}
+
+fn cached_normal_size<D: SessionDriver>(
+    session: &Session<D>,
+    surface: &X11Surface,
+) -> Option<Size<i32, Logical>> {
+    let identity = window_identity(surface)?;
+    session
+        .xwayland
+        .normal_sizes
+        .get(&identity)
+        .map(|saved| saved.0)
+}
+
+fn size_fills_output(size: Size<i32, Logical>, output_size: Size<i32, Logical>) -> bool {
+    size.w >= output_size.w && size.h >= output_size.h
+}
+
+fn steam_recovery_size(
+    surface: &X11Surface,
+    output_size: Size<i32, Logical>,
+) -> Size<i32, Logical> {
+    recovery_window_size(output_size, surface.min_size(), surface.max_size())
+}
+
+fn recovery_window_size(
+    output_size: Size<i32, Logical>,
+    minimum: Option<Size<i32, Logical>>,
+    maximum: Option<Size<i32, Logical>>,
+) -> Size<i32, Logical> {
+    let mut size = Size::from((
+        output_size.w.saturating_mul(3) / 4,
+        output_size.h.saturating_mul(3) / 4,
+    ));
+    if let Some(minimum) = minimum {
+        size.w = size.w.max(minimum.w);
+        size.h = size.h.max(minimum.h);
+    }
+    if let Some(maximum) = maximum {
+        size.w = size.w.min(maximum.w);
+        size.h = size.h.min(maximum.h);
+    }
+    size.w = size.w.clamp(1, output_size.w.max(1));
+    size.h = size.h.clamp(1, output_size.h.max(1));
+    size
+}
+
 pub(super) fn surface_associated<D: SessionDriver>(
     session: &mut Session<D>,
     wl_surface: smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
@@ -152,15 +294,76 @@ fn admit_window<D: SessionDriver>(session: &mut Session<D>, xid: u32) {
     else {
         return;
     };
-    let opening_size = OpeningPlacement::preferred_size(initial_size, window.geometry().size);
-    let placement = crate::window::routing::initial_window_placement(
+    let saved_maximize = maximize_restore(&surface);
+    let mut opening_size = OpeningPlacement::preferred_size(initial_size, window.geometry().size);
+    let initial_placement = crate::window::routing::initial_window_placement(
         &session.wayland,
         &session.cameras,
         session.driver.primary_output(),
         opening_size,
     );
-    let output = placement.output;
-    let location = placement.location;
+    let mut output = initial_placement.output;
+    let mut location = initial_placement.location;
+
+    if let Some(restore) = saved_maximize.as_ref() {
+        opening_size = restore.geometry.size;
+        if let Some(saved_output) = restore
+            .output
+            .as_deref()
+            .and_then(|name| output_named(session, name))
+        {
+            output = saved_output;
+            location = restore.geometry.loc;
+        } else {
+            let placement = crate::window::routing::initial_window_placement(
+                &session.wayland,
+                &session.cameras,
+                session.driver.primary_output(),
+                opening_size,
+            );
+            output = placement.output;
+            location = placement.location;
+        }
+    } else if is_steam_main_window(&surface) {
+        let output_size = session
+            .wayland
+            .space
+            .output_geometry(&output)
+            .map(|geometry| geometry.size)
+            .unwrap_or(opening_size);
+        let suspicious = surface.is_fullscreen()
+            || surface.is_maximized()
+            || size_fills_output(opening_size, output_size);
+        let recovered = cached_normal_size(session, &surface)
+            .filter(|size| !size_fills_output(*size, output_size))
+            .or_else(|| suspicious.then(|| steam_recovery_size(&surface, output_size)));
+        if let Some(recovered) = recovered {
+            opening_size = Size::from((
+                recovered.w.clamp(1, output_size.w.max(1)),
+                recovered.h.clamp(1, output_size.h.max(1)),
+            ));
+            let placement = crate::window::routing::initial_window_placement(
+                &session.wayland,
+                &session.cameras,
+                session.driver.primary_output(),
+                opening_size,
+            );
+            output = placement.output;
+            location = placement.location;
+            if let Err(err) = surface.set_fullscreen(false) {
+                eventline::warn!("xwayland: failed to clear stale Steam fullscreen state: {err}");
+            }
+            if let Err(err) = surface.set_maximized(false) {
+                eventline::warn!("xwayland: failed to clear stale Steam maximized state: {err}");
+            }
+            eventline::debug!(
+                "xwayland: recovered Steam main window xid={xid} to {}x{}",
+                opening_size.w,
+                opening_size.h
+            );
+        }
+    }
+
     let opening_geometry = Rectangle::new(location, opening_size);
     if let Err(err) = surface.configure(opening_geometry) {
         eventline::warn!("xwayland: failed to prepare centered opening geometry: {err}");
@@ -182,10 +385,15 @@ fn admit_window<D: SessionDriver>(session: &mut Session<D>, xid: u32) {
         crate::nodes::reconcile_landmarks(session, Some(&output.name()));
         crate::session::closing::mapped(session, wl_surface.as_ref());
     }
-    session
-        .xwayland
-        .opening_placements
-        .insert(xid, OpeningPlacement::new(opening_geometry, initial_size));
+    session.xwayland.opening_placements.insert(
+        xid,
+        OpeningPlacement::new(
+            opening_geometry,
+            saved_maximize
+                .as_ref()
+                .map_or(initial_size, |restore| restore.geometry.size),
+        ),
+    );
     let started = window.wl_surface().is_some_and(|wl_surface| {
         crate::session::opening::start(
             session,
@@ -194,7 +402,12 @@ fn admit_window<D: SessionDriver>(session: &mut Session<D>, xid: u32) {
             crate::frame_clock::monotonic_now(),
         )
     });
-    if surface.is_fullscreen() {
+    if saved_maximize.is_some() {
+        if let Err(err) = surface.set_maximized(true) {
+            eventline::warn!("xwayland: failed to retain remapped maximized state: {err}");
+        }
+        enter_fullscreen(session, &surface, FullscreenRequestOrigin::Maximize);
+    } else if surface.is_fullscreen() {
         enter_fullscreen(session, &surface, FullscreenRequestOrigin::Initial);
     } else if surface.is_maximized() {
         // Startup maximize hints are not user decoration clicks. Keeping the
@@ -207,6 +420,7 @@ fn admit_window<D: SessionDriver>(session: &mut Session<D>, xid: u32) {
     if !surface.is_override_redirect() {
         crate::session::focus_window(session, &window, SERIAL_COUNTER.next_serial());
     }
+    refresh_override_redirect_owners(session);
     eventline::debug!(
         "xwayland: mapping admitted xid={xid} fullscreen={} maximized={} animated={started}",
         surface.is_fullscreen(),
@@ -232,32 +446,211 @@ fn output_for_geometry<D: SessionDriver>(
         .or_else(|| crate::wayland::focus::selected_output(&session.wayland).cloned())
 }
 
-fn override_redirect_output<D: SessionDriver>(
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OverrideRedirectOwnerSource {
+    Transient,
+    WindowGroup,
+}
+
+struct OverrideRedirectOwner {
+    window: Window,
+    source: OverrideRedirectOwnerSource,
+}
+
+struct OverrideRedirectResolution {
+    owner: Option<OverrideRedirectOwner>,
+    output: Option<Output>,
+}
+
+fn point_rect_distance_squared(
+    point: Point<i32, Logical>,
+    geometry: Rectangle<i32, Logical>,
+) -> i64 {
+    let right = geometry.loc.x.saturating_add(geometry.size.w);
+    let bottom = geometry.loc.y.saturating_add(geometry.size.h);
+    let dx = if point.x < geometry.loc.x {
+        i64::from(geometry.loc.x - point.x)
+    } else if point.x > right {
+        i64::from(point.x - right)
+    } else {
+        0
+    };
+    let dy = if point.y < geometry.loc.y {
+        i64::from(geometry.loc.y - point.y)
+    } else if point.y > bottom {
+        i64::from(point.y - bottom)
+    } else {
+        0
+    };
+    dx.saturating_mul(dx).saturating_add(dy.saturating_mul(dy))
+}
+
+#[derive(Clone, Copy)]
+struct OverrideRedirectIdentity<'a> {
+    pid: Option<u32>,
+    class: &'a str,
+    instance: &'a str,
+}
+
+fn override_redirect_owner_rank(
+    popup: OverrideRedirectIdentity<'_>,
+    candidate: OverrideRedirectIdentity<'_>,
+    center: Point<i32, Logical>,
+    candidate_geometry: Rectangle<i32, Logical>,
+    stack_index: usize,
+) -> (bool, bool, bool, Reverse<i64>, usize) {
+    (
+        popup.pid.is_some() && popup.pid == candidate.pid,
+        !popup.class.is_empty()
+            && popup.class == candidate.class
+            && popup.instance == candidate.instance,
+        candidate_geometry.contains(center),
+        Reverse(point_rect_distance_squared(center, candidate_geometry)),
+        stack_index,
+    )
+}
+
+fn mapped_managed_x11_window<D: SessionDriver>(session: &Session<D>, xid: u32) -> Option<Window> {
+    session.wayland.space.elements().find_map(|window| {
+        window
+            .x11_surface()
+            .filter(|candidate| candidate.window_id() == xid && !candidate.is_override_redirect())
+            .map(|_| window.clone())
+    })
+}
+
+fn transient_override_redirect_owner<D: SessionDriver>(
+    session: &Session<D>,
+    surface: &X11Surface,
+) -> Option<Window> {
+    let mut xid = surface.is_transient_for()?;
+    let mut visited = Vec::new();
+    for _ in 0..16 {
+        if visited.contains(&xid) {
+            return None;
+        }
+        visited.push(xid);
+        if let Some(owner) = mapped_managed_x11_window(session, xid) {
+            return Some(owner);
+        }
+        let candidate = session.wayland.space.elements().find_map(|window| {
+            window
+                .x11_surface()
+                .filter(|candidate| candidate.window_id() == xid)
+                .cloned()
+        })?;
+        xid = candidate.is_transient_for()?;
+    }
+    None
+}
+
+fn window_group_override_redirect_owner<D: SessionDriver>(
     session: &Session<D>,
     surface: &X11Surface,
     geometry: Rectangle<i32, Logical>,
-) -> Option<Output> {
-    let transient_output = surface.is_transient_for().and_then(|owner| {
-        session
-            .wayland
-            .space
-            .elements()
-            .find(|window| {
-                window
-                    .x11_surface()
-                    .is_some_and(|candidate| candidate.window_id() == owner)
+) -> Option<Window> {
+    let group = surface.hints()?.window_group?;
+    let center = Point::from((
+        geometry.loc.x.saturating_add(geometry.size.w / 2),
+        geometry.loc.y.saturating_add(geometry.size.h / 2),
+    ));
+    let popup_pid = surface.pid();
+    let popup_class = surface.class();
+    let popup_instance = surface.instance();
+
+    session
+        .wayland
+        .space
+        .elements()
+        .enumerate()
+        .filter_map(|(stack_index, window)| {
+            let candidate = window.x11_surface()?;
+            if candidate.is_override_redirect() || candidate.hints()?.window_group != Some(group) {
+                return None;
+            }
+            let candidate_geometry = session.wayland.space.element_geometry(window)?;
+            Some((
+                override_redirect_owner_rank(
+                    OverrideRedirectIdentity {
+                        pid: popup_pid,
+                        class: &popup_class,
+                        instance: &popup_instance,
+                    },
+                    OverrideRedirectIdentity {
+                        pid: candidate.pid(),
+                        class: &candidate.class(),
+                        instance: &candidate.instance(),
+                    },
+                    center,
+                    candidate_geometry,
+                    stack_index,
+                ),
+                window.clone(),
+            ))
+        })
+        .max_by_key(|(key, _)| *key)
+        .map(|(_, window)| window)
+}
+
+fn resolve_override_redirect_owner<D: SessionDriver>(
+    session: &Session<D>,
+    surface: &X11Surface,
+    geometry: Rectangle<i32, Logical>,
+) -> Option<OverrideRedirectOwner> {
+    transient_override_redirect_owner(session, surface)
+        .map(|window| OverrideRedirectOwner {
+            window,
+            source: OverrideRedirectOwnerSource::Transient,
+        })
+        .or_else(|| {
+            window_group_override_redirect_owner(session, surface, geometry).map(|window| {
+                OverrideRedirectOwner {
+                    window,
+                    source: OverrideRedirectOwnerSource::WindowGroup,
+                }
             })
-            .and_then(crate::wayland::window_output_name)
-            .and_then(|name| {
-                session
-                    .wayland
-                    .space
-                    .outputs()
-                    .find(|output| output.name() == name)
-                    .cloned()
-            })
-    });
-    transient_output.or_else(|| output_for_geometry(session, geometry))
+        })
+}
+
+fn output_named<D: SessionDriver>(session: &Session<D>, name: &str) -> Option<Output> {
+    session
+        .wayland
+        .space
+        .outputs()
+        .find(|output| output.name() == name)
+        .cloned()
+}
+
+fn override_redirect_resolution<D: SessionDriver>(
+    session: &Session<D>,
+    surface: &X11Surface,
+    geometry: Rectangle<i32, Logical>,
+) -> OverrideRedirectResolution {
+    let owner = resolve_override_redirect_owner(session, surface, geometry);
+    let output = owner
+        .as_ref()
+        .and_then(|owner| crate::wayland::window_output_name(&owner.window))
+        .and_then(|name| output_named(session, &name))
+        .or_else(|| output_for_geometry(session, geometry));
+    OverrideRedirectResolution { owner, output }
+}
+
+fn apply_override_redirect_resolution(window: &Window, resolution: &OverrideRedirectResolution) {
+    if let Some(owner) = resolution.owner.as_ref() {
+        if !crate::wayland::inherit_window_output(window, &owner.window)
+            && let Some(output) = resolution.output.as_ref()
+        {
+            crate::wayland::set_window_output(window, output);
+        }
+        if let Some(surface) = owner.window.x11_surface() {
+            crate::wayland::set_window_presentation_owner(window, Some(surface.window_id()));
+        }
+    } else {
+        crate::wayland::set_window_presentation_owner(window, None);
+        if let Some(output) = resolution.output.as_ref() {
+            crate::wayland::set_window_output(window, output);
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -346,10 +739,6 @@ fn restack_override_redirect<D: SessionDriver>(
     action
 }
 
-fn override_redirect_owner(surface: &X11Surface) -> Option<u32> {
-    surface.is_transient_for()
-}
-
 fn override_redirect_output_name(window: &Window) -> Option<String> {
     crate::wayland::window_output_name(window)
 }
@@ -358,11 +747,17 @@ fn describe_override_redirect_map(
     surface: &X11Surface,
     geometry: Rectangle<i32, Logical>,
     output: Option<&str>,
+    resolution: &OverrideRedirectResolution,
 ) {
+    let owner = resolution
+        .owner
+        .as_ref()
+        .and_then(|owner| owner.window.x11_surface())
+        .map(|owner| owner.window_id());
+    let owner_source = resolution.owner.as_ref().map(|owner| owner.source);
     eventline::debug!(
-        "xwayland: mapped override-redirect xid={} owner={:?} output={output:?} geometry={geometry:?}",
+        "xwayland: mapped override-redirect xid={} owner={owner:?} owner_source={owner_source:?} output={output:?} geometry={geometry:?}",
         surface.window_id(),
-        override_redirect_owner(surface),
     );
 }
 
@@ -370,13 +765,19 @@ fn describe_override_redirect_configure(
     surface: &X11Surface,
     geometry: Rectangle<i32, Logical>,
     output: Option<&str>,
+    resolution: &OverrideRedirectResolution,
     above_sibling: Option<u32>,
     action: OverrideRedirectStackAction,
 ) {
+    let owner = resolution
+        .owner
+        .as_ref()
+        .and_then(|owner| owner.window.x11_surface())
+        .map(|owner| owner.window_id());
+    let owner_source = resolution.owner.as_ref().map(|owner| owner.source);
     eventline::debug!(
-        "xwayland: configured override-redirect xid={} owner={:?} output={output:?} geometry={geometry:?} above_sibling={above_sibling:?} stack={action:?}",
+        "xwayland: configured override-redirect xid={} owner={owner:?} owner_source={owner_source:?} output={output:?} geometry={geometry:?} above_sibling={above_sibling:?} stack={action:?}",
         surface.window_id(),
-        override_redirect_owner(surface),
     );
 }
 
@@ -390,11 +791,9 @@ fn map_override_redirect<D: SessionDriver>(
     if window_for_surface(session, &surface).is_some() {
         return;
     }
-    let output = override_redirect_output(session, &surface, geometry);
+    let resolution = override_redirect_resolution(session, &surface, geometry);
     let window = Window::new_x11_window(surface.clone());
-    if let Some(output) = output {
-        crate::wayland::set_window_output(&window, &output);
-    }
+    apply_override_redirect_resolution(&window, &resolution);
     // ICCCM override-redirect windows are client-managed. Mapping one must
     // not activate it or transfer WM focus away from its managed owner.
     session
@@ -405,7 +804,7 @@ fn map_override_redirect<D: SessionDriver>(
         restack_override_redirect(session, &window, above);
     }
     let output = override_redirect_output_name(&window);
-    describe_override_redirect_map(&surface, geometry, output.as_deref());
+    describe_override_redirect_map(&surface, geometry, output.as_deref(), &resolution);
     session.request_redraw();
 }
 
@@ -457,6 +856,40 @@ fn defer_override_redirect_remap<D: SessionDriver>(
     }
 }
 
+fn refresh_override_redirect_owners<D: SessionDriver>(session: &mut Session<D>) {
+    let windows = session
+        .wayland
+        .space
+        .elements()
+        .filter_map(|window| {
+            let surface = window.x11_surface()?.clone();
+            surface.is_override_redirect().then(|| {
+                let geometry = surface.geometry();
+                (window.clone(), surface, geometry)
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut changed = false;
+    for (window, surface, geometry) in windows {
+        let previous_owner = crate::wayland::window_presentation_owner(&window);
+        let previous_output = crate::wayland::window_output_name(&window);
+        let resolution = override_redirect_resolution(session, &surface, geometry);
+        apply_override_redirect_resolution(&window, &resolution);
+        let owner = crate::wayland::window_presentation_owner(&window);
+        let output = crate::wayland::window_output_name(&window);
+        if previous_owner != owner || previous_output != output {
+            eventline::debug!(
+                "xwayland: refreshed override-redirect xid={} owner={previous_owner:?}->{owner:?} output={previous_output:?}->{output:?}",
+                surface.window_id()
+            );
+            changed = true;
+        }
+    }
+    if changed {
+        session.request_redraw();
+    }
+}
+
 fn enter_fullscreen<D: SessionDriver>(
     session: &mut Session<D>,
     surface: &X11Surface,
@@ -479,13 +912,21 @@ fn set_external_fullscreen<D: SessionDriver>(
     fullscreen: bool,
     origin: FullscreenRequestOrigin,
 ) {
+    // Maximize uses the fullscreen presentation machinery internally, but it
+    // must remain EWMH maximize to the X11 client. Advertising both
+    // _NET_WM_STATE_MAXIMIZED_* and _NET_WM_STATE_FULLSCREEN confuses Steam's
+    // client-side decoration state, so its second button press never asks to
+    // unmaximize. Hyprland keeps this same client/internal-state distinction.
+    let update_client_fullscreen = origin != FullscreenRequestOrigin::Maximize;
     if fullscreen && origin != FullscreenRequestOrigin::Maximize {
-        *surface
+        let mut maximize = surface
             .user_data()
             .get_or_insert_threadsafe(MaximizeFullscreen::default)
             .0
             .lock()
-            .expect("X11 maximize origin lock poisoned") = false;
+            .expect("X11 maximize state lock poisoned");
+        maximize.active = false;
+        maximize.restore = None;
         if let Err(err) = surface.set_maximized(false) {
             eventline::warn!("xwayland: failed to clear maximized state for fullscreen: {err}");
         }
@@ -495,7 +936,7 @@ fn set_external_fullscreen<D: SessionDriver>(
         .pending_windows
         .contains_key(&surface.window_id())
     {
-        if let Err(err) = surface.set_fullscreen(fullscreen) {
+        if update_client_fullscreen && let Err(err) = surface.set_fullscreen(fullscreen) {
             eventline::warn!("xwayland: failed to update pending fullscreen state: {err}");
         }
         return;
@@ -503,7 +944,7 @@ fn set_external_fullscreen<D: SessionDriver>(
     let Some(window) = window_for_surface(session, surface) else {
         return;
     };
-    if let Err(err) = surface.set_fullscreen(fullscreen) {
+    if update_client_fullscreen && let Err(err) = surface.set_fullscreen(fullscreen) {
         eventline::warn!("xwayland: failed to update fullscreen state: {err}");
     }
     if session
@@ -792,10 +1233,7 @@ fn maximize_window<D: SessionDriver>(session: &mut Session<D>, surface: &X11Surf
         }
         return;
     }
-    let maximize_origin_active = surface
-        .user_data()
-        .get::<MaximizeFullscreen>()
-        .is_some_and(|origin| *origin.0.lock().expect("X11 maximize origin lock poisoned"));
+    let maximize_origin_active = maximize_origin_active(surface);
     let fullscreen_active = window_for_surface(session, surface)
         .is_some_and(|window| session.fullscreen.external_desired_matches(&window, true));
     match maximize_toggle_action(maximize_origin_active, fullscreen_active) {
@@ -813,12 +1251,27 @@ fn maximize_window<D: SessionDriver>(session: &mut Session<D>, surface: &X11Surf
         }
         MaximizeToggleAction::Enter => {}
     }
-    *surface
+    let Some(window) = window_for_surface(session, surface) else {
+        return;
+    };
+    let restore_geometry = session
+        .wayland
+        .space
+        .element_geometry(&window)
+        .unwrap_or_else(|| surface.geometry());
+    remember_normal_size(session, surface, restore_geometry.size);
+    let mut maximize = surface
         .user_data()
         .get_or_insert_threadsafe(MaximizeFullscreen::default)
         .0
         .lock()
-        .expect("X11 maximize origin lock poisoned") = true;
+        .expect("X11 maximize state lock poisoned");
+    maximize.active = true;
+    maximize.restore = Some(MaximizeRestore {
+        geometry: restore_geometry,
+        output: crate::wayland::window_output_name(&window),
+    });
+    drop(maximize);
     if let Err(err) = surface.set_maximized(true) {
         eventline::warn!("xwayland: failed to set maximized state: {err}");
     }
@@ -831,26 +1284,54 @@ fn restore_window<D: SessionDriver>(session: &mut Session<D>, surface: &X11Surfa
         .pending_windows
         .contains_key(&surface.window_id())
     {
+        if let Some(state) = surface.user_data().get::<MaximizeFullscreen>() {
+            let mut state = state.0.lock().expect("X11 maximize state lock poisoned");
+            state.active = false;
+            state.restore = None;
+        }
         if let Err(err) = surface.set_maximized(false) {
             eventline::warn!("xwayland: failed to clear pending maximized state: {err}");
+        }
+        if let Err(err) = surface.set_fullscreen(false) {
+            eventline::warn!("xwayland: failed to clear pending fullscreen state: {err}");
         }
         return;
     }
     if let Err(err) = surface.set_maximized(false) {
         eventline::warn!("xwayland: failed to clear maximized state: {err}");
     }
-    let was_maximize_fullscreen =
-        surface
-            .user_data()
-            .get::<MaximizeFullscreen>()
-            .is_some_and(|origin| {
-                let mut origin = origin.0.lock().expect("X11 maximize origin lock poisoned");
-                let was_set = *origin;
-                *origin = false;
-                was_set
-            });
-    if was_maximize_fullscreen {
+    let restore = surface
+        .user_data()
+        .get::<MaximizeFullscreen>()
+        .and_then(|state| {
+            let mut state = state.0.lock().expect("X11 maximize state lock poisoned");
+            let restore = state.active.then(|| state.restore.clone()).flatten();
+            state.active = false;
+            state.restore = None;
+            restore
+        });
+    if let Some(restore) = restore {
+        let window = window_for_surface(session, surface);
+        let fullscreen_active = window
+            .as_ref()
+            .is_some_and(|window| session.fullscreen.external_desired_matches(window, true));
         leave_fullscreen(session, surface, FullscreenRequestOrigin::Maximize);
+        if !fullscreen_active && let Some(window) = window {
+            if let Some(output) = restore
+                .output
+                .as_deref()
+                .and_then(|name| output_named(session, name))
+            {
+                crate::wayland::set_window_output(&window, &output);
+            }
+            session
+                .wayland
+                .space
+                .relocate_element(&window, restore.geometry.loc);
+            if let Err(err) = surface.configure(restore.geometry) {
+                eventline::warn!("xwayland: failed to restore maximized geometry: {err}");
+            }
+        }
     }
 }
 
@@ -923,6 +1404,9 @@ fn forget_window<D: SessionDriver>(session: &mut Session<D>, surface: &X11Surfac
     let Some(window) = window_for_surface(session, surface) else {
         return;
     };
+    if let Some(geometry) = session.wayland.space.element_geometry(&window) {
+        remember_normal_size(session, surface, geometry.size);
+    }
     crate::session::closing::capture_window(session, &window);
     if let Some(wl_surface) = window.wl_surface().map(|surface| surface.into_owned()) {
         let preparation = crate::session::prepare_window_unmap(session, &wl_surface);
@@ -1027,6 +1511,7 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
         {
             eventline::warn!("xwayland: failed to acknowledge unmap: {err}");
         }
+        refresh_override_redirect_owners(self);
         crate::session::sync_keyboard_focus(self, SERIAL_COUNTER.next_serial());
         self.request_redraw();
     }
@@ -1040,6 +1525,7 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
             .override_redirect_placements
             .remove(&surface.window_id());
         forget_window(self, &surface);
+        refresh_override_redirect_owners(self);
         crate::session::sync_keyboard_focus(self, SERIAL_COUNTER.next_serial());
         self.request_redraw();
     }
@@ -1099,16 +1585,16 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
                 return;
             };
             let previous_output = crate::wayland::window_output_name(&window);
-            if let Some(output) = override_redirect_output(self, &surface, geometry) {
-                crate::wayland::set_window_output(&window, &output);
-                if previous_output.as_deref() != Some(output.name().as_str()) {
-                    eventline::debug!(
-                        "xwayland: override-redirect xid={} moved output {:?} -> {}",
-                        surface.window_id(),
-                        previous_output,
-                        output.name()
-                    );
-                }
+            let resolution = override_redirect_resolution(self, &surface, geometry);
+            apply_override_redirect_resolution(&window, &resolution);
+            let current_output = crate::wayland::window_output_name(&window);
+            if previous_output != current_output {
+                eventline::debug!(
+                    "xwayland: override-redirect xid={} moved output {:?} -> {:?}",
+                    surface.window_id(),
+                    previous_output,
+                    current_output
+                );
             }
             self.wayland.space.relocate_element(&window, geometry.loc);
             let action = restack_override_redirect(self, &window, above);
@@ -1117,6 +1603,7 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
                 &surface,
                 geometry,
                 output.as_deref(),
+                &resolution,
                 above,
                 action,
             );
@@ -1171,6 +1658,7 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
                 }
                 self.fullscreen
                     .update_external_windowed_placement(&self.wayland, &window);
+                remember_normal_size(self, &surface, geometry.size);
             }
             ExternalConfigureResult::Waiting => {}
             ExternalConfigureResult::Settled {
@@ -1184,18 +1672,49 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
                 if !animated {
                     remove_fullscreen_snapshot(self, &window);
                 }
+                if !fullscreen {
+                    remember_normal_size(self, &surface, geometry.size);
+                }
             }
         }
         crate::session::reconcile_pointer_constraints(self);
         self.request_redraw();
     }
 
+    fn property_notify(&mut self, _xwm: XwmId, _surface: X11Surface, property: WmWindowProperty) {
+        if matches!(
+            property,
+            WmWindowProperty::Hints
+                | WmWindowProperty::TransientFor
+                | WmWindowProperty::Class
+                | WmWindowProperty::Pid
+        ) {
+            refresh_override_redirect_owners(self);
+        }
+    }
+
     fn maximize_request(&mut self, _xwm: XwmId, surface: X11Surface) {
+        eventline::debug!(
+            "xwayland: maximize request xid={} client_maximized={} client_fullscreen={} \
+             maximize_origin={}",
+            surface.window_id(),
+            surface.is_maximized(),
+            surface.is_fullscreen(),
+            maximize_origin_active(&surface),
+        );
         maximize_window(self, &surface);
         self.request_redraw();
     }
 
     fn unmaximize_request(&mut self, _xwm: XwmId, surface: X11Surface) {
+        eventline::debug!(
+            "xwayland: unmaximize request xid={} client_maximized={} client_fullscreen={} \
+             maximize_origin={}",
+            surface.window_id(),
+            surface.is_maximized(),
+            surface.is_fullscreen(),
+            maximize_origin_active(&surface),
+        );
         restore_window(self, &surface);
         self.request_redraw();
     }
@@ -1313,9 +1832,12 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
 mod tests {
     use super::{
         ExternalPresentationPolicy, FullscreenRequestOrigin, MaximizeToggleAction,
-        OverrideRedirectMapAdmission, OverrideRedirectStackAction, external_presentation_policy,
-        maximize_toggle_action, override_redirect_map_admission, override_redirect_stack_action,
+        OverrideRedirectIdentity, OverrideRedirectMapAdmission, OverrideRedirectStackAction,
+        external_presentation_policy, maximize_toggle_action, override_redirect_map_admission,
+        override_redirect_owner_rank, override_redirect_stack_action, recovery_window_size,
+        size_fills_output,
     };
+    use smithay::utils::{Logical, Point, Rectangle, Size};
 
     #[test]
     fn first_override_redirect_map_is_never_delayed() {
@@ -1363,6 +1885,95 @@ mod tests {
             override_redirect_stack_action(Some(41), false),
             OverrideRedirectStackAction::PreserveMissing(41)
         );
+    }
+
+    #[test]
+    fn steam_group_owner_prefers_matching_window_containing_popup() {
+        let center = Point::<i32, Logical>::from((1230, 540));
+        let owner = override_redirect_owner_rank(
+            OverrideRedirectIdentity {
+                pid: Some(77),
+                class: "steam",
+                instance: "steamwebhelper",
+            },
+            OverrideRedirectIdentity {
+                pid: Some(77),
+                class: "steam",
+                instance: "steamwebhelper",
+            },
+            center,
+            Rectangle::new((1090, 425).into(), (1920, 1200).into()),
+            2,
+        );
+        let other_group_window = override_redirect_owner_rank(
+            OverrideRedirectIdentity {
+                pid: Some(77),
+                class: "steam",
+                instance: "steamwebhelper",
+            },
+            OverrideRedirectIdentity {
+                pid: Some(77),
+                class: "steam",
+                instance: "steamwebhelper",
+            },
+            center,
+            Rectangle::new((3300, 200).into(), (800, 600).into()),
+            3,
+        );
+        let unrelated_overlap = override_redirect_owner_rank(
+            OverrideRedirectIdentity {
+                pid: Some(77),
+                class: "steam",
+                instance: "steamwebhelper",
+            },
+            OverrideRedirectIdentity {
+                pid: Some(88),
+                class: "other",
+                instance: "other",
+            },
+            center,
+            Rectangle::new((1100, 450).into(), (500, 500).into()),
+            4,
+        );
+
+        assert!(owner > other_group_window);
+        assert!(owner > unrelated_overlap);
+    }
+
+    #[test]
+    fn steam_cache_miss_uses_bounded_three_quarter_recovery() {
+        assert_eq!(
+            recovery_window_size(
+                Size::from((1920, 1200)),
+                Some(Size::from((1010, 600))),
+                None,
+            ),
+            Size::from((1440, 900))
+        );
+        assert_eq!(
+            recovery_window_size(
+                Size::from((1920, 1200)),
+                Some(Size::from((1800, 1000))),
+                Some(Size::from((1850, 1100))),
+            ),
+            Size::from((1800, 1000))
+        );
+        assert_eq!(
+            recovery_window_size(
+                Size::from((1920, 1200)),
+                None,
+                Some(Size::from((1200, 700))),
+            ),
+            Size::from((1200, 700))
+        );
+    }
+
+    #[test]
+    fn output_sized_steam_geometry_is_not_a_normal_restore_size() {
+        let output = Size::from((1920, 1200));
+        assert!(size_fills_output(Size::from((1920, 1200)), output));
+        assert!(size_fills_output(Size::from((2560, 1440)), output));
+        assert!(!size_fills_output(Size::from((1440, 900)), output));
     }
 
     #[test]

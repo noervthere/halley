@@ -1383,7 +1383,7 @@ fn live_window_elements(
         super::window_surface_elements(renderer, window, surface_location, visual.opening_alpha);
     elements.extend(popup_elements.into_iter().map(|surface_element| {
         let native_geometry = surface_element.geometry(Scale::from(1.0));
-        let destination = if visual.fullscreen.is_some() || visual.maximize.is_some() {
+        let destination = if visual.maps_from_source() {
             let destination = crate::animation::map_rect(
                 native_geometry,
                 visual.source_geometry.to_physical(1),
@@ -1426,7 +1426,7 @@ fn live_window_elements(
     } else {
         elements.extend(surface_elements.into_iter().filter_map(|surface_element| {
             let native_geometry = surface_element.geometry(Scale::from(1.0));
-            let destination = if visual.fullscreen.is_some() || visual.maximize.is_some() {
+            let destination = if visual.maps_from_source() {
                 let destination = crate::animation::map_rect(
                     native_geometry,
                     visual.source_geometry.to_physical(1),
@@ -1470,7 +1470,7 @@ fn live_window_elements(
                         surface_location + rect.loc.to_physical(1),
                         rect.size.to_physical(1),
                     );
-                    let destination = if visual.fullscreen.is_some() || visual.maximize.is_some() {
+                    let destination = if visual.maps_from_source() {
                         let destination = crate::animation::map_rect(
                             native,
                             visual.source_geometry.to_physical(1),

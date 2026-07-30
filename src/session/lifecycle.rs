@@ -12,6 +12,21 @@ struct FocusSuccession {
     pan: halley_config::CloseRestorePan,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CloseSuccessorAction {
+    FocusWindow,
+    FocusNode,
+    RestoreNode,
+}
+
+fn close_successor_action(collapsed: bool, restore_nodes: bool) -> CloseSuccessorAction {
+    match (collapsed, restore_nodes) {
+        (false, _) => CloseSuccessorAction::FocusWindow,
+        (true, false) => CloseSuccessorAction::FocusNode,
+        (true, true) => CloseSuccessorAction::RestoreNode,
+    }
+}
+
 pub(crate) struct WindowUnmapPreparation {
     surface: WlSurface,
     focus: Option<FocusSuccession>,
@@ -189,12 +204,27 @@ pub(crate) fn finish_window_unmap<D: SessionDriver>(
             .nodes
             .record(id)
             .is_some_and(|record| record.collapsed);
-        if collapsed {
-            let _ = crate::nodes::restore_for_close(session, id, SERIAL_COUNTER.next_serial());
-        } else if let Some(window) = session.nodes.record(id).map(|record| record.window.clone()) {
-            super::focus_window(session, &window, SERIAL_COUNTER.next_serial());
+        let serial = SERIAL_COUNTER.next_serial();
+        match close_successor_action(collapsed, session.field_config.close_restore_nodes) {
+            CloseSuccessorAction::FocusWindow => {
+                if let Some(window) = session.nodes.record(id).map(|record| record.window.clone()) {
+                    super::focus_window(session, &window, serial);
+                }
+                crate::nodes::pan_after_close_restore(session, id, focus.pan);
+            }
+            CloseSuccessorAction::FocusNode => {
+                crate::window::clear_focus(&mut session.wayland);
+                session
+                    .nodes
+                    .focus(Some(id), session.start_time.elapsed().as_millis() as u64);
+                super::sync_keyboard_focus(session, serial);
+                session.request_redraw();
+            }
+            CloseSuccessorAction::RestoreNode => {
+                let _ = crate::nodes::restore_for_close(session, id, serial);
+                crate::nodes::pan_after_close_restore(session, id, focus.pan);
+            }
         }
-        crate::nodes::pan_after_close_restore(session, id, focus.pan);
     } else {
         crate::window::clear_focus(&mut session.wayland);
         session
@@ -207,7 +237,7 @@ pub(crate) fn finish_window_unmap<D: SessionDriver>(
 mod tests {
     use std::collections::HashMap;
 
-    use super::select_ordered_successor;
+    use super::{CloseSuccessorAction, close_successor_action, select_ordered_successor};
 
     fn output_lookup(
         outputs: &HashMap<&'static str, Option<&'static str>>,
@@ -301,6 +331,34 @@ mod tests {
                 |_| 0
             ),
             None
+        );
+    }
+
+    #[test]
+    fn collapsed_successor_stays_a_node_by_default() {
+        assert_eq!(
+            close_successor_action(true, false),
+            CloseSuccessorAction::FocusNode
+        );
+    }
+
+    #[test]
+    fn collapsed_successor_restores_when_enabled() {
+        assert_eq!(
+            close_successor_action(true, true),
+            CloseSuccessorAction::RestoreNode
+        );
+    }
+
+    #[test]
+    fn active_successor_focus_is_independent_of_node_restore_policy() {
+        assert_eq!(
+            close_successor_action(false, false),
+            CloseSuccessorAction::FocusWindow
+        );
+        assert_eq!(
+            close_successor_action(false, true),
+            CloseSuccessorAction::FocusWindow
         );
     }
 }

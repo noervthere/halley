@@ -12,7 +12,7 @@ pub mod wlr_output_management;
 pub mod xdg_shell;
 
 use std::collections::{HashMap, HashSet};
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 
 use smithay::desktop::{LayerSurface, PopupManager, Space, Window};
 use smithay::output::Output;
@@ -44,38 +44,141 @@ use smithay::wayland::xdg_activation::XdgActivationState;
 /// The one output responsible for painting a window. Smithay's `Space`
 /// still owns output geometry and pointer routing; this is only Halley's
 /// whole-window handoff policy, matching the original compositor.
-struct WindowOutput(RwLock<String>);
+struct WindowOutputState {
+    assigned: RwLock<String>,
+    inherited: RwLock<Option<Arc<WindowOutputState>>>,
+}
+
+struct WindowOutput(Arc<WindowOutputState>);
+
+struct WindowPresentationOwner(RwLock<Option<u32>>);
+
+fn new_window_output(name: String) -> WindowOutput {
+    WindowOutput(Arc::new(WindowOutputState {
+        assigned: RwLock::new(name),
+        inherited: RwLock::new(None),
+    }))
+}
+
+fn window_output_state_name(state: &Arc<WindowOutputState>, depth: usize) -> String {
+    if depth < 8 {
+        let inherited = state
+            .inherited
+            .read()
+            .expect("window output inheritance lock poisoned")
+            .clone();
+        if let Some(inherited) = inherited {
+            return window_output_state_name(&inherited, depth + 1);
+        }
+    }
+    state
+        .assigned
+        .read()
+        .expect("window output lock poisoned")
+        .clone()
+}
 
 pub fn set_window_output(window: &Window, output: &Output) {
     let owner = window
         .user_data()
-        .get_or_insert_threadsafe(|| WindowOutput(RwLock::new(output.name())));
-    *owner.0.write().expect("window output lock poisoned") = output.name();
+        .get_or_insert_threadsafe(|| new_window_output(output.name()));
+    *owner
+        .0
+        .assigned
+        .write()
+        .expect("window output lock poisoned") = output.name();
+    *owner
+        .0
+        .inherited
+        .write()
+        .expect("window output inheritance lock poisoned") = None;
+}
+
+/// Makes `window` follow a managed owner's output without allowing writes to
+/// the child to mutate the owner. Override-redirect X11 menus use this so an
+/// already-open menu follows an owner handed to another output.
+pub fn inherit_window_output(window: &Window, owner: &Window) -> bool {
+    let Some(owner_output) = owner.user_data().get::<WindowOutput>() else {
+        return false;
+    };
+    let name = window_output_state_name(&owner_output.0, 0);
+    let child_output = window
+        .user_data()
+        .get_or_insert_threadsafe(|| new_window_output(name));
+    *child_output
+        .0
+        .inherited
+        .write()
+        .expect("window output inheritance lock poisoned") = Some(owner_output.0.clone());
+    true
 }
 
 pub fn window_output_name(window: &Window) -> Option<String> {
     window
         .user_data()
         .get::<WindowOutput>()
-        .map(|owner| owner.0.read().expect("window output lock poisoned").clone())
+        .map(|owner| window_output_state_name(&owner.0, 0))
+}
+
+/// Associates an override-redirect X11 surface with the managed X11 window
+/// whose presentation transform it must inherit.
+pub fn set_window_presentation_owner(window: &Window, owner: Option<u32>) {
+    let state = window
+        .user_data()
+        .get_or_insert_threadsafe(|| WindowPresentationOwner(RwLock::new(owner)));
+    *state
+        .0
+        .write()
+        .expect("window presentation owner lock poisoned") = owner;
+}
+
+pub fn window_presentation_owner(window: &Window) -> Option<u32> {
+    window
+        .user_data()
+        .get::<WindowPresentationOwner>()
+        .and_then(|owner| {
+            *owner
+                .0
+                .read()
+                .expect("window presentation owner lock poisoned")
+        })
 }
 
 pub fn window_is_on_output(window: &Window, output: &Output, primary: &Output) -> bool {
-    window
-        .user_data()
-        .get::<WindowOutput>()
-        .map(|owner| {
-            owner
-                .0
-                .read()
-                .expect("window output lock poisoned")
-                .as_str()
-                == output.name()
-        })
+    window_output_name(window)
+        .map(|owner| owner == output.name())
         // Windows are assigned during their initial map. Retaining this
         // fallback keeps an already-mapped window visible if that invariant
         // is ever broken while developing.
         .unwrap_or_else(|| output == primary)
+}
+
+#[cfg(test)]
+mod window_output_tests {
+    use super::{new_window_output, window_output_state_name};
+
+    #[test]
+    fn inherited_output_follows_owner_without_child_writes_mutating_it() {
+        let owner = new_window_output("DP-1".to_owned());
+        let child = new_window_output("fallback".to_owned());
+        *child
+            .0
+            .inherited
+            .write()
+            .expect("child inheritance lock poisoned") = Some(owner.0.clone());
+
+        *owner.0.assigned.write().expect("owner lock poisoned") = "DP-2".to_owned();
+        assert_eq!(window_output_state_name(&child.0, 0), "DP-2");
+
+        *child
+            .0
+            .inherited
+            .write()
+            .expect("child inheritance lock poisoned") = None;
+        *child.0.assigned.write().expect("child lock poisoned") = "DP-3".to_owned();
+        assert_eq!(window_output_state_name(&child.0, 0), "DP-3");
+        assert_eq!(window_output_state_name(&owner.0, 0), "DP-2");
+    }
 }
 
 /// Wayland protocol and shell-model state shared by both session drivers.

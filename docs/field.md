@@ -7,6 +7,7 @@ camera zoom, close succession, and Halley's field-maximized state:
 field:
   gap 20.0
   close-restore-focus true
+  close-restore-nodes false
   close-restore-pan "if-offscreen"
 
   zoom:
@@ -72,11 +73,14 @@ end
 
 When `close-restore-focus` is true, closing the focused window selects the
 most recently focused surviving window on the same output, then falls back to
-the global MRU window. A collapsed successor is restored and focused in that
-single close action. When false, Halley clears focus instead of implicitly
-choosing the topmost window.
+the global MRU window. An active successor is focused normally. A collapsed
+successor remains collapsed and becomes Halley's logical node focus by default.
+Set `close-restore-nodes` to true to restore and focus that node in the same
+close action. When `close-restore-focus` is false, Halley clears focus instead
+of selecting a successor, regardless of `close-restore-nodes`.
 
-`close-restore-pan` controls the successor camera:
+`close-restore-pan` controls the camera when an active successor is focused or
+a collapsed successor is restored:
 
 - `"never"` changes focus without moving the camera.
 - `"if-offscreen"` is the default. A fully offscreen successor is moved into

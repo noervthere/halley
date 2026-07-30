@@ -17,7 +17,7 @@ use smithay::reexports::wayland_protocols::xwayland::shell::v1::server::{
     xwayland_shell_v1::XwaylandShellV1, xwayland_surface_v1::XwaylandSurfaceV1,
 };
 use smithay::reexports::wayland_server::{Dispatch, DisplayHandle, GlobalDispatch};
-use smithay::utils::{Logical, Rectangle};
+use smithay::utils::{Logical, Rectangle, Size};
 use smithay::wayland::compositor::CompositorClientState;
 use smithay::wayland::seat::WaylandFocus;
 use smithay::wayland::xwayland_keyboard_grab::{
@@ -50,6 +50,16 @@ struct PendingOverrideRedirect {
     timer: RegistrationToken,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct WindowIdentity {
+    instance: String,
+    class: String,
+    title: String,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SavedNormalSize(Size<i32, Logical>);
+
 pub struct State<D: SessionDriver> {
     shell_state: XWaylandShellState,
     _keyboard_grab_state: XWaylandKeyboardGrabState,
@@ -61,6 +71,7 @@ pub struct State<D: SessionDriver> {
     known_override_redirects: HashSet<u32>,
     pending_override_redirects: HashMap<u32, PendingOverrideRedirect>,
     override_redirect_placements: HashMap<u32, OverrideRedirectPlacement>,
+    normal_sizes: HashMap<WindowIdentity, SavedNormalSize>,
 }
 
 impl<D: SessionDriver> State<D> {
@@ -85,6 +96,7 @@ impl<D: SessionDriver> State<D> {
             known_override_redirects: HashSet::new(),
             pending_override_redirects: HashMap::new(),
             override_redirect_placements: HashMap::new(),
+            normal_sizes: HashMap::new(),
         }
     }
 
@@ -115,6 +127,7 @@ impl<D: SessionDriver> State<D> {
         self.opening_placements.clear();
         self.known_override_redirects.clear();
         self.override_redirect_placements.clear();
+        self.normal_sizes.clear();
     }
 }
 

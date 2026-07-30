@@ -27,6 +27,7 @@ impl CloseRestorePan {
 pub struct Field {
     pub gap: f32,
     pub close_restore_focus: bool,
+    pub close_restore_nodes: bool,
     pub close_restore_pan: CloseRestorePan,
     pub zoom: Zoom,
 }
@@ -36,6 +37,7 @@ impl Default for Field {
         Self {
             gap: 20.0,
             close_restore_focus: true,
+            close_restore_nodes: false,
             close_restore_pan: CloseRestorePan::IfOffscreen,
             zoom: Zoom::default(),
         }
@@ -122,6 +124,8 @@ pub fn parse_field_checked(config: &RuneConfig) -> Result<Field, FieldParseError
         ),
         close_restore_focus: config
             .get_or("field.close-restore-focus", defaults.close_restore_focus),
+        close_restore_nodes: config
+            .get_or("field.close-restore-nodes", defaults.close_restore_nodes),
         close_restore_pan: pan,
         zoom: Zoom {
             enabled: canonical_or_legacy_bool(
@@ -178,6 +182,7 @@ field:
   gap-px 80.0
   gap 24.0
   close-restore-focus false
+  close-restore-nodes true
   close-restore-pan "always"
   zoom:
     enabled true
@@ -194,6 +199,7 @@ end
             Field {
                 gap: 24.0,
                 close_restore_focus: false,
+                close_restore_nodes: true,
                 close_restore_pan: CloseRestorePan::Always,
                 zoom: Zoom {
                     enabled: true,
@@ -221,6 +227,12 @@ end
         let field = parse_field_checked(&config).unwrap();
         assert_eq!(field.gap, 18.0);
         assert_eq!(field.zoom.min, 0.2);
+    }
+
+    #[test]
+    fn close_restore_nodes_defaults_to_false() {
+        let config = RuneConfig::from_str("").unwrap();
+        assert!(!parse_field_checked(&config).unwrap().close_restore_nodes);
     }
 
     #[test]
