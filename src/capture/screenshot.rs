@@ -54,6 +54,7 @@ pub fn save_region<D: SessionDriver>(
     let pointer_position = session.pointer.position();
     let wayland = &session.wayland;
     let decorations = &session.decorations;
+    let blur = session.effects.blur;
     let cameras = &session.cameras;
     let window_open_animations = &session.window_open_animations;
     let window_close_animations = &mut session.window_close_animations;
@@ -91,6 +92,7 @@ pub fn save_region<D: SessionDriver>(
                         space: &wayland.space,
                         focused: wayland.focused_window.as_ref(),
                         decorations,
+                        blur,
                         cameras,
                         window_open_animations,
                         window_close_animations: &mut *window_close_animations,
@@ -292,6 +294,7 @@ where
     let pointer_position = session.pointer.position();
     let wayland = &session.wayland;
     let decorations = &session.decorations;
+    let blur = session.effects.blur;
     let cameras = &session.cameras;
     let window_open_animations = &session.window_open_animations;
     let window_close_animations = &mut session.window_close_animations;
@@ -326,6 +329,7 @@ where
                 space: &wayland.space,
                 focused: wayland.focused_window.as_ref(),
                 decorations,
+                blur,
                 cameras,
                 window_open_animations,
                 window_close_animations,

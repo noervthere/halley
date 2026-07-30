@@ -109,6 +109,7 @@ pub struct Session<D: SessionDriver> {
     pub apogee_config: halley_config::Apogee,
     pub input: halley_config::Input,
     pub decorations: halley_config::Decorations,
+    pub effects: halley_config::Effects,
     pub cameras: OutputCameras,
     pub field_config: halley_config::Field,
     pub zoom: halley_config::Zoom,
@@ -318,6 +319,7 @@ impl<D: SessionDriver> Session<D> {
             super::environment::publish_cursor(&config.cursor);
         }
         let redraw = self.decorations != config.decorations
+            || self.effects != config.effects
             || self.zoom != config.field.zoom
             || self.overlay_config != config.overlays
             || cursor_changed
@@ -329,6 +331,7 @@ impl<D: SessionDriver> Session<D> {
         let font_redraw = self.ui_text.reload_font(&config.font);
         self.apogee_config = config.apogee;
         self.decorations = config.decorations;
+        self.effects = config.effects;
         self.field_config = config.field;
         self.overlay_config = config.overlays;
         self.zoom = config.field.zoom;

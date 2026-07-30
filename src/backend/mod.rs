@@ -202,6 +202,7 @@ pub struct RenderRequest<'a> {
     pub space: &'a Space<Window>,
     pub focused: Option<&'a WlSurface>,
     pub decorations: &'a Decorations,
+    pub blur: halley_config::Blur,
     pub cameras: &'a crate::camera::OutputCameras,
     pub window_open_animations: &'a crate::animation::WindowOpenAnimations,
     pub window_close_animations: &'a mut crate::backend::close::WindowCloseAnimations,

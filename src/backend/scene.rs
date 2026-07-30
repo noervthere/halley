@@ -8,6 +8,7 @@ use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::renderer::utils::{CommitCounter, with_renderer_surface_state};
 use smithay::desktop::{PopupManager, layer_map_for_output};
 use smithay::output::Output;
+use smithay::reexports::wayland_server::Resource;
 use smithay::utils::{Logical, Physical, Rectangle, Scale};
 use smithay::wayland::seat::WaylandFocus;
 use smithay::wayland::shell::wlr_layer::Layer;
@@ -174,6 +175,7 @@ pub fn build(
         request.bearings,
         request.nodes,
         request.cameras,
+        request.blur,
         request.backdrop_blur_renderer,
         request.node_renderer,
         request.ui_text,
@@ -185,6 +187,7 @@ pub fn build(
         output,
         output_geometry,
         Layer::Overlay,
+        request.blur,
         request.backdrop_blur_renderer,
     )?);
     elements.extend(focus_cycle_elements(
@@ -208,6 +211,7 @@ pub fn build(
             output,
             output_geometry,
             Layer::Top,
+            request.blur,
             request.backdrop_blur_renderer,
         )?);
     }
@@ -292,6 +296,7 @@ pub fn build(
         target_presentation_time: request.target_presentation_time,
         focused: request.focused,
         decorations: request.decorations,
+        blur: request.blur,
         window_open_animations: request.window_open_animations,
         fullscreen: request.fullscreen,
         maximize: request.maximize,
@@ -324,6 +329,7 @@ pub fn build(
         output,
         output_geometry,
         Layer::Bottom,
+        request.blur,
         request.backdrop_blur_renderer,
     )?);
     elements.extend(layer_surface_scene_elements(
@@ -331,6 +337,7 @@ pub fn build(
         output,
         output_geometry,
         Layer::Background,
+        request.blur,
         request.backdrop_blur_renderer,
     )?);
 
@@ -368,6 +375,7 @@ fn layer_surface_scene_elements(
     output: &Output,
     output_geometry: Rectangle<i32, Logical>,
     layer: Layer,
+    blur_config: halley_config::Blur,
     backdrop_blur_renderer: &mut super::backdrop_blur::BackdropBlurRenderer,
 ) -> Result<Vec<SceneElement>, Box<dyn Error>> {
     let map = layer_map_for_output(output);
@@ -402,6 +410,8 @@ fn layer_surface_scene_elements(
                 popup.wl_surface(),
                 popup_origin,
                 scale,
+                layer,
+                blur_config,
                 backdrop_blur_renderer,
                 &mut elements,
             )?;
@@ -428,6 +438,8 @@ fn layer_surface_scene_elements(
             surface.wl_surface(),
             geometry.loc,
             scale,
+            layer,
+            blur_config,
             backdrop_blur_renderer,
             &mut elements,
         )?;
@@ -445,6 +457,8 @@ fn append_surface_backdrop_blur(
     surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
     surface_origin: smithay::utils::Point<i32, Logical>,
     scale: Scale<f64>,
+    layer: Layer,
+    blur_config: halley_config::Blur,
     backdrop_blur_renderer: &mut super::backdrop_blur::BackdropBlurRenderer,
     elements: &mut Vec<SceneElement>,
 ) -> Result<(), Box<dyn Error>> {
@@ -453,7 +467,16 @@ fn append_surface_backdrop_blur(
     else {
         return Ok(());
     };
-    let patches = crate::wayland::background_effect::blur_rects(surface, surface_size)
+    let mut requested = crate::wayland::background_effect::blur_rects(surface, surface_size);
+    let policy_blur = match blur_config.layer_shell {
+        halley_config::ClientBlurMode::Off => false,
+        halley_config::ClientBlurMode::Auto => matches!(layer, Layer::Top | Layer::Overlay),
+        halley_config::ClientBlurMode::Always => true,
+    };
+    if requested.is_empty() && policy_blur {
+        requested.push(Rectangle::from_size(surface_size));
+    }
+    let patches = requested
         .into_iter()
         .filter_map(|rect| {
             let rect = Rectangle::<i32, Logical>::new(surface_origin + rect.loc, rect.size)
@@ -469,9 +492,14 @@ fn append_surface_backdrop_blur(
                 })
         })
         .collect::<Vec<_>>();
-    if let Some(blur) =
-        backdrop_blur_renderer.blur_element(renderer, &output.name(), output_size, patches)?
-    {
+    if let Some(blur) = backdrop_blur_renderer.blur_element(
+        renderer,
+        &output.name(),
+        format!("layer:{:?}", surface.id()),
+        output_size,
+        patches,
+        blur_config,
+    )? {
         elements.push(SceneElement::BackdropBlur(blur));
     }
     Ok(())
@@ -1429,6 +1457,7 @@ struct LiveWindowContext<'a> {
     target_presentation_time: std::time::Duration,
     focused: Option<&'a smithay::reexports::wayland_server::protocol::wl_surface::WlSurface>,
     decorations: &'a halley_config::Decorations,
+    blur: halley_config::Blur,
     window_open_animations: &'a crate::animation::WindowOpenAnimations,
     fullscreen: &'a crate::wayland::fullscreen::FullscreenManager,
     maximize: &'a crate::wayland::maximize::FieldMaximizeManager,
@@ -1594,55 +1623,63 @@ fn live_window_elements(
     if let Some(surface_size) = surface_size {
         let output_bounds =
             Rectangle::<i32, Physical>::from_size(context.output_geometry.size.to_physical(1));
-        let patches =
-            crate::wayland::background_effect::blur_rects(window_surface.as_ref(), surface_size)
-                .into_iter()
-                .filter_map(|rect| {
-                    let native = Rectangle::<i32, Physical>::new(
-                        surface_location + rect.loc.to_physical(1),
-                        rect.size.to_physical(1),
+        let mut requested =
+            crate::wayland::background_effect::blur_rects(window_surface.as_ref(), surface_size);
+        let policy_blur = managed
+            && visual.fullscreen.is_none()
+            && matches!(context.blur.windows, halley_config::ClientBlurMode::Always);
+        if requested.is_empty() && policy_blur {
+            requested.push(Rectangle::from_size(surface_size));
+        }
+        let patches = requested
+            .into_iter()
+            .filter_map(|rect| {
+                let native = Rectangle::<i32, Physical>::new(
+                    surface_location + rect.loc.to_physical(1),
+                    rect.size.to_physical(1),
+                );
+                let destination = if visual.maps_from_source() {
+                    let destination = crate::animation::map_rect(
+                        native,
+                        visual.source_geometry.to_physical(1),
+                        visual.presentation_rect,
                     );
-                    let destination = if visual.maps_from_source() {
-                        let destination = crate::animation::map_rect(
-                            native,
-                            visual.source_geometry.to_physical(1),
-                            visual.presentation_rect,
-                        );
-                        crate::animation::map_rect(
-                            destination,
-                            visual.presentation_rect,
-                            visual.animated_rect,
-                        )
-                    } else {
-                        let final_destination = super::camera_rect(
-                            native,
-                            visual.camera_center,
-                            context.output_geometry.size.to_physical(1),
-                            visual.zoom_scale,
-                        );
-                        crate::animation::map_rect(
-                            final_destination,
-                            visual.camera_rect,
-                            visual.animated_rect,
-                        )
-                    };
-                    destination
-                        .intersection(output_bounds)
-                        .and_then(|rect| rect.intersection(visual.animated_rect))
-                        .map(|rect| super::backdrop_blur::BlurPatch {
-                            rect,
-                            radius: 0.0,
-                            alpha: visual.opening_alpha,
-                            clip: rounded_available
-                                .then_some((visual.animated_rect, content_radius)),
-                        })
-                })
-                .collect::<Vec<_>>();
+                    crate::animation::map_rect(
+                        destination,
+                        visual.presentation_rect,
+                        visual.animated_rect,
+                    )
+                } else {
+                    let final_destination = super::camera_rect(
+                        native,
+                        visual.camera_center,
+                        context.output_geometry.size.to_physical(1),
+                        visual.zoom_scale,
+                    );
+                    crate::animation::map_rect(
+                        final_destination,
+                        visual.camera_rect,
+                        visual.animated_rect,
+                    )
+                };
+                destination
+                    .intersection(output_bounds)
+                    .and_then(|rect| rect.intersection(visual.animated_rect))
+                    .map(|rect| super::backdrop_blur::BlurPatch {
+                        rect,
+                        radius: 0.0,
+                        alpha: visual.opening_alpha,
+                        clip: rounded_available.then_some((visual.animated_rect, content_radius)),
+                    })
+            })
+            .collect::<Vec<_>>();
         if let Some(blur) = backdrop_blur_renderer.blur_element(
             renderer,
             &context.output.name(),
+            format!("window:{:?}", window_surface.id()),
             context.output_geometry.size,
             patches,
+            context.blur,
         )? {
             elements.push(SceneElement::BackdropBlur(blur));
         }

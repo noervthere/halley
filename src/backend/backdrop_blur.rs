@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::error::Error;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::rc::Rc;
 
 use smithay::backend::allocator::Fourcc;
@@ -19,11 +20,6 @@ use smithay::utils::{Buffer, Logical, Physical, Rectangle, Scale, Size, Transfor
 const DOWN_SHADER: &str = include_str!("shaders/blur_down.frag");
 const UP_SHADER: &str = include_str!("shaders/blur_up.frag");
 const COMPOSITE_SHADER: &str = include_str!("shaders/blur_composite.frag");
-const BLUR_LEVELS: u32 = 3;
-const BLUR_OFFSET: f32 = 1.0;
-const SATURATION: f32 = 1.08;
-const NOISE: f32 = 0.006;
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BlurPatch {
     pub rect: Rectangle<i32, Physical>,
@@ -41,6 +37,7 @@ struct Programs {
 
 struct BlurTextures {
     size: Size<i32, Physical>,
+    levels: u32,
     accum: GlesTexture,
     chain: Vec<GlesTexture>,
     result: GlesTexture,
@@ -49,6 +46,7 @@ struct BlurTextures {
 
 struct OutputResources {
     textures: Rc<RefCell<BlurTextures>>,
+    ids: HashMap<String, Id>,
 }
 
 #[derive(Default)]
@@ -66,6 +64,9 @@ pub struct BackdropBlurElement {
     down: GlesTexProgram,
     up: GlesTexProgram,
     composite: GlesTexProgram,
+    offset: f32,
+    saturation: f32,
+    noise: f32,
 }
 
 impl BackdropBlurRenderer {
@@ -73,42 +74,66 @@ impl BackdropBlurRenderer {
         &mut self,
         renderer: &mut GlesRenderer,
         output: &str,
+        identity: impl Into<String>,
         size: Size<i32, Logical>,
         patches: Vec<BlurPatch>,
+        config: halley_config::Blur,
     ) -> Result<Option<BackdropBlurElement>, Box<dyn Error>> {
-        if patches.is_empty() {
+        if !config.enabled || patches.is_empty() {
             return Ok(None);
         }
         self.ensure_programs(renderer)?;
         let physical_size = size.to_physical(1);
         let context = renderer.context_id();
-        let needs_textures = self
-            .outputs
-            .get(output)
-            .is_none_or(|resources| resources.textures.borrow().size != physical_size);
+        let levels = config.passes.clamp(1, 5);
+        let needs_textures = self.outputs.get(output).is_none_or(|resources| {
+            let textures = resources.textures.borrow();
+            textures.size != physical_size || textures.levels != levels
+        });
         if needs_textures {
-            self.outputs.insert(
-                output.to_string(),
-                OutputResources {
-                    textures: Rc::new(RefCell::new(create_textures(renderer, physical_size)?)),
-                },
-            );
+            let textures = Rc::new(RefCell::new(create_textures(
+                renderer,
+                physical_size,
+                levels,
+            )?));
+            match self.outputs.get_mut(output) {
+                Some(resources) => resources.textures = textures,
+                None => {
+                    self.outputs.insert(
+                        output.to_string(),
+                        OutputResources {
+                            textures,
+                            ids: HashMap::new(),
+                        },
+                    );
+                }
+            }
         }
-        let resources = self.outputs.get(output).expect("inserted above");
+        let resources = self.outputs.get_mut(output).expect("inserted above");
         let programs = self.programs.as_ref().expect("ensured above");
         debug_assert_eq!(programs.context, context);
+        let identity = identity.into();
+        let id = resources
+            .ids
+            .entry(identity)
+            .or_insert_with(Id::new)
+            .clone();
+        let commit = blur_commit(&patches, config);
         Ok(Some(BackdropBlurElement {
-            // Several z-ordered effects share the output-sized scratch
-            // textures. Their identities remain independent so Smithay never
-            // aliases damage/state between two client surfaces.
-            id: Id::new(),
-            commit: CommitCounter::default(),
+            // Each stack position keeps a stable identity. Smithay can then
+            // retain its per-effect capture cache without ever aliasing two
+            // z-ordered surfaces that share the scratch textures.
+            id,
+            commit,
             size: physical_size,
             patches,
             textures: Rc::clone(&resources.textures),
             down: programs.down.clone(),
             up: programs.up.clone(),
             composite: programs.composite.clone(),
+            offset: blur_offset(config.radius),
+            saturation: config.saturation,
+            noise: config.noise,
         }))
     }
 
@@ -168,13 +193,16 @@ fn create_texture(
 fn create_textures(
     renderer: &mut GlesRenderer,
     size: Size<i32, Physical>,
+    levels: u32,
 ) -> Result<BlurTextures, GlesError> {
-    let mut chain = Vec::with_capacity(BLUR_LEVELS as usize);
-    for level in 0..BLUR_LEVELS {
+    let levels = levels.clamp(1, 5);
+    let mut chain = Vec::with_capacity(levels as usize);
+    for level in 0..levels {
         chain.push(create_texture(renderer, level_size(size, level))?);
     }
     Ok(BlurTextures {
         size,
+        levels,
         accum: create_texture(renderer, size)?,
         chain,
         result: create_texture(renderer, size)?,
@@ -189,6 +217,7 @@ fn blur_pass(
     source: &GlesTexture,
     source_size: Size<i32, Physical>,
     program: &GlesTexProgram,
+    offset: f32,
 ) -> Result<(), GlesError> {
     let mut bound = renderer.bind(target)?;
     let damage = Rectangle::<i32, Physical>::from_size(target_size);
@@ -214,7 +243,7 @@ fn blur_pass(
                     0.5 / source_size.h.max(1) as f32,
                 ),
             ),
-            Uniform::new("offset", BLUR_OFFSET),
+            Uniform::new("offset", offset),
         ],
     )?;
     let _ = frame.finish()?;
@@ -226,6 +255,7 @@ fn run_blur(
     textures: &mut BlurTextures,
     down: &GlesTexProgram,
     up: &GlesTexProgram,
+    offset: f32,
 ) -> Result<(), GlesError> {
     let size = textures.size;
     blur_pass(
@@ -235,6 +265,7 @@ fn run_blur(
         &textures.accum,
         size,
         down,
+        offset,
     )?;
     for index in 1..textures.chain.len() {
         let (lower, upper) = textures.chain.split_at_mut(index);
@@ -245,6 +276,7 @@ fn run_blur(
             &lower[index - 1],
             level_size(size, index as u32 - 1),
             down,
+            offset,
         )?;
     }
     for index in (1..textures.chain.len()).rev() {
@@ -256,6 +288,7 @@ fn run_blur(
             &upper[0],
             level_size(size, index as u32),
             up,
+            offset,
         )?;
     }
     blur_pass(
@@ -265,6 +298,7 @@ fn run_blur(
         &textures.chain[0],
         level_size(size, 0),
         up,
+        offset,
     )
 }
 
@@ -359,11 +393,25 @@ impl RenderElement<GlesRenderer> for BackdropBlurElement {
         let mut textures = self.textures.borrow_mut();
         if textures.dirty {
             let mut renderer = frame.renderer();
-            run_blur(renderer.as_mut(), &mut textures, &self.down, &self.up)?;
+            run_blur(
+                renderer.as_mut(),
+                &mut textures,
+                &self.down,
+                &self.up,
+                self.offset,
+            )?;
             textures.dirty = false;
         }
         for patch in &self.patches {
-            composite_patch(frame, &textures.result, &self.composite, *patch, damage)?;
+            composite_patch(
+                frame,
+                &textures.result,
+                &self.composite,
+                *patch,
+                damage,
+                self.saturation,
+                self.noise,
+            )?;
         }
         Ok(())
     }
@@ -379,6 +427,8 @@ fn composite_patch(
     program: &GlesTexProgram,
     patch: BlurPatch,
     damage: &[Rectangle<i32, Physical>],
+    saturation: f32,
+    noise: f32,
 ) -> Result<(), GlesError> {
     let local_damage = damage
         .iter()
@@ -446,8 +496,39 @@ fn composite_patch(
             Uniform::new("clip_size", clip_size),
             Uniform::new("clip_radius", clip_radius),
             Uniform::new("use_clip", use_clip),
-            Uniform::new("saturation", SATURATION),
-            Uniform::new("noise", NOISE),
+            Uniform::new("saturation", saturation.clamp(0.0, 4.0)),
+            Uniform::new("noise", noise.clamp(0.0, 0.25)),
         ],
     )
+}
+
+fn blur_offset(radius: f32) -> f32 {
+    (radius / 16.0).clamp(0.6, 3.0)
+}
+
+fn blur_commit(patches: &[BlurPatch], config: halley_config::Blur) -> CommitCounter {
+    let mut hash = DefaultHasher::new();
+    config.passes.hash(&mut hash);
+    config.radius.to_bits().hash(&mut hash);
+    config.saturation.to_bits().hash(&mut hash);
+    config.noise.to_bits().hash(&mut hash);
+    for patch in patches {
+        patch.rect.loc.x.hash(&mut hash);
+        patch.rect.loc.y.hash(&mut hash);
+        patch.rect.size.w.hash(&mut hash);
+        patch.rect.size.h.hash(&mut hash);
+        patch.radius.to_bits().hash(&mut hash);
+        patch.alpha.to_bits().hash(&mut hash);
+        if let Some((clip, radius)) = patch.clip {
+            true.hash(&mut hash);
+            clip.loc.x.hash(&mut hash);
+            clip.loc.y.hash(&mut hash);
+            clip.size.w.hash(&mut hash);
+            clip.size.h.hash(&mut hash);
+            radius.to_bits().hash(&mut hash);
+        } else {
+            false.hash(&mut hash);
+        }
+    }
+    CommitCounter::from(hash.finish() as usize)
 }
