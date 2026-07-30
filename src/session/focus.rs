@@ -65,6 +65,9 @@ fn focus_window_with_raise<D: SessionDriver>(
     serial: Serial,
     raise: bool,
 ) {
+    if !crate::window::accepts_wm_focus(window) {
+        return;
+    }
     crate::window::focus(&mut session.wayland, window, raise);
     if let Some(surface) = window.wl_surface() {
         session.nodes.focus_surface(

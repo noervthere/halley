@@ -230,6 +230,134 @@ fn output_for_geometry<D: SessionDriver>(
         .or_else(|| crate::wayland::focus::selected_output(&session.wayland).cloned())
 }
 
+fn override_redirect_output<D: SessionDriver>(
+    session: &Session<D>,
+    surface: &X11Surface,
+    geometry: Rectangle<i32, Logical>,
+) -> Option<Output> {
+    let transient_output = surface.is_transient_for().and_then(|owner| {
+        session
+            .wayland
+            .space
+            .elements()
+            .find(|window| {
+                window
+                    .x11_surface()
+                    .is_some_and(|candidate| candidate.window_id() == owner)
+            })
+            .and_then(crate::wayland::window_output_name)
+            .and_then(|name| {
+                session
+                    .wayland
+                    .space
+                    .outputs()
+                    .find(|output| output.name() == name)
+                    .cloned()
+            })
+    });
+    transient_output.or_else(|| output_for_geometry(session, geometry))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OverrideRedirectStackAction {
+    Bottom,
+    Above(u32),
+    PreserveMissing(u32),
+}
+
+fn override_redirect_stack_action(
+    above_sibling: Option<u32>,
+    sibling_is_mapped: bool,
+) -> OverrideRedirectStackAction {
+    match above_sibling {
+        None => OverrideRedirectStackAction::Bottom,
+        Some(sibling) if sibling_is_mapped => OverrideRedirectStackAction::Above(sibling),
+        Some(sibling) => OverrideRedirectStackAction::PreserveMissing(sibling),
+    }
+}
+
+fn restack_override_redirect<D: SessionDriver>(
+    session: &mut Session<D>,
+    window: &Window,
+    above_sibling: Option<u32>,
+) -> OverrideRedirectStackAction {
+    // ConfigureNotify reports the X server's completed stack operation. This
+    // only mirrors that order in the compositor scene; it never sends a WM
+    // restack request back to an override-redirect client.
+    let reference = above_sibling.and_then(|sibling| {
+        session
+            .wayland
+            .space
+            .elements()
+            .find(|candidate| {
+                candidate
+                    .x11_surface()
+                    .is_some_and(|surface| surface.window_id() == sibling)
+            })
+            .cloned()
+    });
+    let action = override_redirect_stack_action(above_sibling, reference.is_some());
+    match (&action, reference) {
+        (OverrideRedirectStackAction::Bottom, _) => {
+            // X11 defines a missing above_sibling as the bottom of the sibling
+            // stack, not the top.
+            session.wayland.space.lower_element(window);
+        }
+        (OverrideRedirectStackAction::Above(_), Some(reference)) => {
+            // The configured window is immediately on top of above_sibling.
+            // The sibling may be a managed owner or another popup.
+            session
+                .wayland
+                .space
+                .raise_element_above(window, &reference, false);
+        }
+        (OverrideRedirectStackAction::PreserveMissing(_), _) => {
+            // Smithay may report an X sibling which has no compositor element
+            // (or was destroyed earlier in this dispatch). Relocation already
+            // preserves the last known order, which is safer than hiding the
+            // popup or spuriously raising it.
+        }
+        (OverrideRedirectStackAction::Above(_), None) => {
+            unreachable!("mapped sibling action requires a reference")
+        }
+    }
+    action
+}
+
+fn override_redirect_owner(surface: &X11Surface) -> Option<u32> {
+    surface.is_transient_for()
+}
+
+fn override_redirect_output_name(window: &Window) -> Option<String> {
+    crate::wayland::window_output_name(window)
+}
+
+fn describe_override_redirect_map(
+    surface: &X11Surface,
+    geometry: Rectangle<i32, Logical>,
+    output: Option<&str>,
+) {
+    eventline::debug!(
+        "xwayland: mapped override-redirect xid={} owner={:?} output={output:?} geometry={geometry:?}",
+        surface.window_id(),
+        override_redirect_owner(surface),
+    );
+}
+
+fn describe_override_redirect_configure(
+    surface: &X11Surface,
+    geometry: Rectangle<i32, Logical>,
+    output: Option<&str>,
+    above_sibling: Option<u32>,
+    action: OverrideRedirectStackAction,
+) {
+    eventline::debug!(
+        "xwayland: configured override-redirect xid={} owner={:?} output={output:?} geometry={geometry:?} above_sibling={above_sibling:?} stack={action:?}",
+        surface.window_id(),
+        override_redirect_owner(surface),
+    );
+}
+
 fn enter_fullscreen<D: SessionDriver>(
     session: &mut Session<D>,
     surface: &X11Surface,
@@ -757,11 +885,18 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
 
     fn mapped_override_redirect_window(&mut self, _xwm: XwmId, surface: X11Surface) {
         let geometry = surface.geometry();
-        let window = Window::new_x11_window(surface);
-        if let Some(output) = output_for_geometry(self, geometry) {
+        let output = override_redirect_output(self, &surface, geometry);
+        let window = Window::new_x11_window(surface.clone());
+        if let Some(output) = output {
             crate::wayland::set_window_output(&window, &output);
         }
-        self.wayland.space.map_element(window, geometry.loc, true);
+        // ICCCM override-redirect windows are client-managed. Mapping one must
+        // not activate it or transfer WM focus away from its managed owner.
+        self.wayland
+            .space
+            .map_element(window.clone(), geometry.loc, false);
+        let output = override_redirect_output_name(&window);
+        describe_override_redirect_map(&surface, geometry, output.as_deref());
         self.request_redraw();
     }
 
@@ -786,17 +921,18 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
         &mut self,
         _xwm: XwmId,
         surface: X11Surface,
-        x: Option<i32>,
-        y: Option<i32>,
+        _x: Option<i32>,
+        _y: Option<i32>,
         width: Option<u32>,
         height: Option<u32>,
         _reorder: Option<Reorder>,
     ) {
-        let mut geometry = surface.geometry();
+        // ICCCM override-redirect clients configure themselves directly.
+        // Smithay reports their resulting ConfigureNotify separately.
         if surface.is_override_redirect() {
-            geometry.loc.x = x.unwrap_or(geometry.loc.x);
-            geometry.loc.y = y.unwrap_or(geometry.loc.y);
+            return;
         }
+        let mut geometry = surface.geometry();
         geometry.size.w = width
             .and_then(|value| i32::try_from(value).ok())
             .unwrap_or(geometry.size.w);
@@ -813,7 +949,7 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
         _xwm: XwmId,
         surface: X11Surface,
         geometry: Rectangle<i32, Logical>,
-        _above: Option<u32>,
+        above: Option<u32>,
     ) {
         if self
             .xwayland
@@ -826,6 +962,32 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
         let Some(window) = window_for_surface(self, &surface) else {
             return;
         };
+        if surface.is_override_redirect() {
+            let previous_output = crate::wayland::window_output_name(&window);
+            if let Some(output) = override_redirect_output(self, &surface, geometry) {
+                crate::wayland::set_window_output(&window, &output);
+                if previous_output.as_deref() != Some(output.name().as_str()) {
+                    eventline::debug!(
+                        "xwayland: override-redirect xid={} moved output {:?} -> {}",
+                        surface.window_id(),
+                        previous_output,
+                        output.name()
+                    );
+                }
+            }
+            self.wayland.space.relocate_element(&window, geometry.loc);
+            let action = restack_override_redirect(self, &window, above);
+            let output = override_redirect_output_name(&window);
+            describe_override_redirect_configure(
+                &surface,
+                geometry,
+                output.as_deref(),
+                above,
+                action,
+            );
+            self.request_redraw();
+            return;
+        }
         let now = crate::frame_clock::monotonic_now();
         match self
             .fullscreen
@@ -968,6 +1130,13 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
         _timestamp: u32,
         _currently_active_window: Option<X11Surface>,
     ) {
+        if surface.is_override_redirect() {
+            eventline::debug!(
+                "xwayland: ignored activation request for override-redirect xid={}",
+                surface.window_id()
+            );
+            return;
+        }
         if let Some(window) = window_for_surface(self, &surface) {
             crate::session::focus_window(self, &window, SERIAL_COUNTER.next_serial());
             self.request_redraw();
@@ -1006,8 +1175,33 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
 mod tests {
     use super::{
         ExternalPresentationPolicy, FullscreenRequestOrigin, MaximizeToggleAction,
-        external_presentation_policy, maximize_toggle_action,
+        OverrideRedirectStackAction, external_presentation_policy, maximize_toggle_action,
+        override_redirect_stack_action,
     };
+
+    #[test]
+    fn override_redirect_stacks_immediately_above_a_mapped_sibling() {
+        assert_eq!(
+            override_redirect_stack_action(Some(41), true),
+            OverrideRedirectStackAction::Above(41)
+        );
+    }
+
+    #[test]
+    fn override_redirect_without_an_above_sibling_is_at_the_bottom() {
+        assert_eq!(
+            override_redirect_stack_action(None, false),
+            OverrideRedirectStackAction::Bottom
+        );
+    }
+
+    #[test]
+    fn override_redirect_preserves_order_when_the_x_sibling_is_unmapped() {
+        assert_eq!(
+            override_redirect_stack_action(Some(41), false),
+            OverrideRedirectStackAction::PreserveMissing(41)
+        );
+    }
 
     #[test]
     fn initial_fullscreen_uses_the_existing_opening_when_available() {

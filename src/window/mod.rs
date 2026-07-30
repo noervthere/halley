@@ -35,9 +35,18 @@ impl ManagedWindowStack {
     }
 }
 
+/// Override-redirect X11 windows are deliberately outside normal window
+/// manager focus policy. ICCCM leaves keyboard focus for those windows to the
+/// client (typically via a grab or a managed owner using WM_TAKE_FOCUS).
+pub fn accepts_wm_focus(window: &Window) -> bool {
+    focus_policy(crate::xwayland::is_override_redirect(window))
+}
+
 pub fn focus(wayland: &mut WaylandState, window: &Window, raise: bool) {
+    if !accepts_wm_focus(window) {
+        return;
+    }
     if let Some(surface) = window.wl_surface().map(|surface| surface.into_owned())
-        && !crate::xwayland::is_override_redirect(window)
         && raise
     {
         wayland.managed_windows.raise(surface);
@@ -72,4 +81,17 @@ pub fn clear_focus(wayland: &mut WaylandState) {
         }
     }
     wayland.focused_window = None;
+}
+
+fn focus_policy(override_redirect: bool) -> bool {
+    !override_redirect
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn override_redirect_policy_is_unmanaged() {
+        assert!(!super::focus_policy(true));
+        assert!(super::focus_policy(false));
+    }
 }
