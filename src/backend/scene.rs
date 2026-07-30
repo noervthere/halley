@@ -1826,6 +1826,18 @@ struct LiveWindowContext<'a> {
     maximize: &'a crate::wayland::maximize::FieldMaximizeManager,
 }
 
+/// Crossfade progress past which the captured textures stop contributing.
+///
+/// A spring's settle time is numeric, not perceptual: `spring_duration` hunts
+/// for a displacement below 1e-4, which for the default fullscreen spring is
+/// roughly 230ms after the motion has visually stopped. Holding the offscreen
+/// texture path open across that tail puts the swap back to live surfaces well
+/// clear of the animation, where it reads as a discrete flash rather than part
+/// of it. Past this point the previous texture contributes under one part in
+/// two hundred, so retiring the blend early is not visible - but the swap now
+/// happens under the last pixels of motion, which is.
+const CROSSFADE_COMPLETE: f64 = 0.995;
+
 fn live_window_elements(
     renderer: &mut GlesRenderer,
     window: &smithay::desktop::Window,
@@ -1903,7 +1915,8 @@ fn live_window_elements(
             visual
                 .maximize
                 .map(|presentation| presentation.transition_completion)
-        });
+        })
+        .filter(|completion| *completion < CROSSFADE_COMPLETE);
     let texture_blend = if let Some(completion) = texture_transition_completion {
         match fullscreen_textures.blend_element(
             renderer,

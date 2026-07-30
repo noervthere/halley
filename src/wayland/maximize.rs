@@ -43,6 +43,12 @@ struct Entry {
     restore_geometry: Rectangle<i32, Logical>,
     restore_output: String,
     target_rect: Rectangle<i32, Logical>,
+    /// Rect the window animation eases from, when it differs from
+    /// `restore_geometry`. Set by the fullscreen handoff so the grow starts at
+    /// the on-screen fullscreen rect instead of the small windowed rect the
+    /// window will eventually restore to. Mirrors
+    /// `FullscreenManager::presentation_windowed`.
+    presentation_windowed: Option<Rectangle<i32, Logical>>,
     active: bool,
     window_timeline: Option<MotionTimeline>,
     camera_timeline: Option<MotionTimeline>,
@@ -101,6 +107,7 @@ impl FieldMaximizeManager {
                 let (camera_progress, camera_velocity) =
                     motion_state(entry.camera_timeline, entry.active, now);
                 entry.active = false;
+                entry.presentation_windowed = None;
                 entry.window_timeline =
                     timeline(self.animations, now, window_progress, 0.0, window_velocity);
                 entry.camera_timeline =
@@ -118,6 +125,7 @@ impl FieldMaximizeManager {
                     motion_state(entry.camera_timeline, entry.active, now);
                 entry.active = true;
                 entry.target_rect = target_rect;
+                entry.presentation_windowed = None;
                 entry.window_timeline =
                     timeline(self.animations, now, window_progress, 1.0, window_velocity);
                 entry.camera_timeline =
@@ -141,6 +149,7 @@ impl FieldMaximizeManager {
                     restore_geometry,
                     restore_output,
                     target_rect,
+                    presentation_windowed: None,
                     active: true,
                     window_timeline: timeline(self.animations, now, 0.0, 1.0, 0.0),
                     camera_timeline: timeline(
@@ -165,6 +174,7 @@ impl FieldMaximizeManager {
                         restore_geometry,
                         restore_output,
                         target_rect,
+                        presentation_windowed: None,
                         active: true,
                         window_timeline: timeline(self.animations, now, 0.0, 1.0, 0.0),
                         camera_timeline: timeline(self.animations, now, 0.0, 1.0, 0.0),
@@ -195,15 +205,39 @@ impl FieldMaximizeManager {
             .window_timeline
             .map(|timeline| timeline.completion_at(now))
             .unwrap_or(1.0);
-        (progress > 0.0).then(|| FieldMaximizePresentation {
-            progress,
-            transition_completion,
-            windowed_rect: entry.restore_geometry,
-            target_rect: Rectangle::new(
-                (entry.target_rect.loc - output_geometry.loc).to_physical(1),
-                entry.target_rect.size.to_physical(1),
-            ),
+        presentation_is_visible(progress, entry.window_timeline.is_some()).then(|| {
+            FieldMaximizePresentation {
+                progress,
+                transition_completion,
+                windowed_rect: entry
+                    .presentation_windowed
+                    .unwrap_or(entry.restore_geometry),
+                target_rect: Rectangle::new(
+                    (entry.target_rect.loc - output_geometry.loc).to_physical(1),
+                    entry.target_rect.size.to_physical(1),
+                ),
+            }
         })
+    }
+
+    /// Eases the window animation from the rect a retiring fullscreen
+    /// presentation last occupied, rather than from the windowed rect the
+    /// window restores to. The mirror of
+    /// `FullscreenManager::override_restore_from_field`, which is what already
+    /// makes the maximize -> fullscreen direction start from the maximized
+    /// rect.
+    pub(crate) fn override_windowed_from_fullscreen(
+        &mut self,
+        surface: &WlSurface,
+        fullscreen_geometry: Rectangle<i32, Logical>,
+    ) {
+        if let Some(entry) = self
+            .outputs
+            .values_mut()
+            .find(|entry| &entry.surface == surface && entry.active)
+        {
+            entry.presentation_windowed = Some(fullscreen_geometry);
+        }
     }
 
     pub fn camera_progress(&self, output: &Output, now: Duration) -> Option<f32> {
@@ -363,6 +397,15 @@ fn animations_enabled(animations: Animations) -> bool {
     animations.enabled && animations.maximize.enabled
 }
 
+fn presentation_is_visible(progress: f64, timeline_active: bool) -> bool {
+    // A running timeline owns the handoff even at its exact zero endpoint.
+    // Dropping presentation there exposes the plain camera path for one frame -
+    // the window has already been relocated to the maximized rect while still
+    // carrying its old buffer - which reads as a flash. Same guard as
+    // `fullscreen_presentation_is_visible`.
+    timeline_active || progress > 0.0
+}
+
 fn timeline(
     animations: Animations,
     now: Duration,
@@ -434,5 +477,33 @@ mod tests {
         let from = Rectangle::new((100, 80).into(), (800, 600).into());
         let to = Rectangle::new((20, 20).into(), (1880, 1040).into());
         assert_eq!(interpolate_rect(from, to, 1.0), to);
+    }
+
+    #[test]
+    fn presentation_survives_its_own_zero_endpoint() {
+        assert!(
+            presentation_is_visible(0.0, true),
+            "the handoff frame must not fall back to the plain camera path"
+        );
+        assert!(presentation_is_visible(0.5, false));
+        assert!(!presentation_is_visible(0.0, false));
+    }
+
+    #[test]
+    fn fullscreen_handoff_starts_the_grow_at_the_fullscreen_rect() {
+        let fullscreen = Rectangle::new((0, 0).into(), (1920, 1080).into());
+        let target = Rectangle::new((20, 20).into(), (1880, 1040).into());
+        let presentation = |progress| FieldMaximizePresentation {
+            progress,
+            transition_completion: progress,
+            windowed_rect: Rectangle::new((100, 80).into(), (800, 600).into()),
+            target_rect: target,
+        };
+
+        // The handoff source replaces the windowed rect the window restores to,
+        // so the first frame is exactly where fullscreen left off rather than a
+        // jump down to the small rect.
+        assert_eq!(presentation(0.0).client_rect(fullscreen), fullscreen);
+        assert_eq!(presentation(1.0).client_rect(fullscreen), target);
     }
 }

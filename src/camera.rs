@@ -27,6 +27,19 @@ struct FullscreenCameraRestore {
     view_size: Vec2,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct FieldMaximizeCameraRestore {
+    center: Vec2,
+    view_size: Vec2,
+    /// Where the camera eases *from* at progress zero, when that is not the
+    /// restore snapshot itself. Only the fullscreen handoff sets these: the
+    /// window is already presented at native zoom on the fullscreen camera, so
+    /// starting the maximize track from the zoomed-out pre-fullscreen snapshot
+    /// would pop the whole output on the handoff frame.
+    from_center: Option<Vec2>,
+    from_view_size: Option<Vec2>,
+}
+
 /// Independent camera state keyed by Smithay output name.
 ///
 /// The collection owns no output/protocol objects and no rendering state;
@@ -36,7 +49,7 @@ struct FullscreenCameraRestore {
 pub struct OutputCameras {
     cameras: HashMap<String, Camera>,
     fullscreen: HashMap<String, FullscreenCameraRestore>,
-    field_maximize: HashMap<String, FullscreenCameraRestore>,
+    field_maximize: HashMap<String, FieldMaximizeCameraRestore>,
 }
 
 impl OutputCameras {
@@ -138,6 +151,47 @@ impl OutputCameras {
         *camera != before
     }
 
+    /// Transfers fullscreen camera ownership straight to field maximize.
+    ///
+    /// The pre-fullscreen snapshot moves into the field-maximize slot, so
+    /// un-maximizing later still restores the camera the window had before any
+    /// of this started. The camera's live state becomes the maximize track's
+    /// progress-zero endpoint, which is what keeps the handoff frame identical
+    /// to the frame before it: releasing fullscreen normally
+    /// (`apply_fullscreen(.., None)`) would snap the output back to the
+    /// zoomed-out snapshot instead.
+    pub fn handoff_fullscreen_to_field_maximize(&mut self, output_name: &str) -> bool {
+        let Some(camera) = self.cameras.get(output_name) else {
+            return false;
+        };
+        let Some(restore) = self.fullscreen.remove(output_name) else {
+            return false;
+        };
+        self.field_maximize.insert(
+            output_name.to_string(),
+            FieldMaximizeCameraRestore {
+                center: restore.center,
+                view_size: restore.view_size,
+                from_center: Some(camera.center),
+                from_view_size: Some(camera.view_size),
+            },
+        );
+        true
+    }
+
+    /// Drops a recorded handoff source, so the field-maximize track eases
+    /// between its own endpoints again.
+    ///
+    /// The source is entry-only: progress runs backwards on un-maximize, so a
+    /// stale one would walk the camera toward the retired fullscreen view and
+    /// then snap to the restore snapshot when the track releases.
+    pub fn clear_field_maximize_handoff(&mut self, output_name: &str) {
+        if let Some(restore) = self.field_maximize.get_mut(output_name) {
+            restore.from_center = None;
+            restore.from_view_size = None;
+        }
+    }
+
     /// Owns one output camera for field maximize while keeping its center
     /// fixed and easing its scale to native 1.0. Releasing restores the exact
     /// pre-maximize camera snapshot.
@@ -152,13 +206,23 @@ impl OutputCameras {
                 let restore = self
                     .field_maximize
                     .entry(output_name.to_string())
-                    .or_insert(FullscreenCameraRestore {
+                    .or_insert(FieldMaximizeCameraRestore {
                         center: camera.center,
                         view_size: camera.view_size,
+                        from_center: None,
+                        from_view_size: None,
                     });
                 let progress = progress.clamp(0.0, 1.0);
-                camera.center = restore.center;
-                camera.view_size = lerp_vec2(restore.view_size, camera.base_size, progress);
+                camera.center = lerp_vec2(
+                    restore.from_center.unwrap_or(restore.center),
+                    restore.center,
+                    progress,
+                );
+                camera.view_size = lerp_vec2(
+                    restore.from_view_size.unwrap_or(restore.view_size),
+                    camera.base_size,
+                    progress,
+                );
                 camera.target_center = camera.center;
                 camera.target_view_size = camera.view_size;
                 camera.pan_vel = Vec2 { x: 0.0, y: 0.0 };

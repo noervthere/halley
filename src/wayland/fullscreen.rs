@@ -227,6 +227,11 @@ impl FullscreenManager {
         entry.desired = true;
         entry.target_output = target.name();
         entry.origin = origin;
+        // The destination is the size we are about to configure, decided once
+        // here, exactly like field maximize decides its target rect at toggle
+        // time. `handle_commit` only re-reads the client's committed size once
+        // the transition has settled, to letterbox a client that stays smaller.
+        entry.fullscreen_size = output_geometry.size;
 
         toplevel.with_pending_state(|state| {
             state.states.set(State::Fullscreen);
@@ -298,6 +303,27 @@ impl FullscreenManager {
         {
             entry.snapshot_serials.push(serial);
         }
+    }
+
+    /// Drops fullscreen state without arming the exit transition.
+    ///
+    /// Used only when another presentation immediately takes ownership of the
+    /// same window - today the field-maximize handoff. The caller's animation
+    /// covers the whole travel from the on-screen fullscreen rect, so a second
+    /// shrink transition here would fight it (fullscreen wins in
+    /// `window_visual_state`, so the maximize grow would only become visible
+    /// once the shrink retired, mid-flight). Sending no configure and pushing
+    /// no snapshot serial leaves the single configure and the captured
+    /// crossfade texture to the caller.
+    pub(crate) fn retire_for_handoff(&mut self, toplevel: &ToplevelSurface) {
+        if self.windows.remove(toplevel.wl_surface()).is_none() {
+            return;
+        }
+        toplevel.with_pending_state(|state| {
+            state.states.unset(State::Fullscreen);
+            state.fullscreen_output = None;
+            super::decoration::apply_tiled_hint(state);
+        });
     }
 
     pub(crate) fn request_external(
@@ -626,10 +652,10 @@ impl FullscreenManager {
             if wayland.space.element_location(&window) != Some(location) {
                 wayland.space.relocate_element(&window, location);
             }
-            self.windows
-                .get_mut(surface)
-                .expect("entry checked above")
-                .fullscreen_size = size;
+            let entry = self.windows.get_mut(surface).expect("entry checked above");
+            if may_adopt_client_size(entry, now) {
+                entry.fullscreen_size = size;
+            }
             return false;
         }
 
@@ -679,9 +705,6 @@ impl FullscreenManager {
                 output: Some(output.name()),
             });
             entry.presentation_windowed = Some(geometry);
-        }
-        if committed {
-            entry.fullscreen_size = window.geometry().size;
         }
         retarget_visual(entry, self.animations, now, committed);
         entry.active = committed;
@@ -965,6 +988,20 @@ fn fullscreen_origin_allows_global_blur(origin: FullscreenOrigin) -> bool {
     origin != FullscreenOrigin::Client
 }
 
+/// Whether a commit may retarget the fullscreen rect to the client's own size.
+///
+/// Adopting the committed size is how a client that stays smaller than the
+/// output gets letterboxed, but the fullscreen rect is also the transition's
+/// destination. Clients routinely ack the fullscreen configure a commit or two
+/// before their buffer catches up, so sampling mid-flight aims the grow at the
+/// old windowed size and then snaps outward when the real buffer lands. Field
+/// maximize never had this because its target rect is fixed at toggle time.
+fn may_adopt_client_size(entry: &FullscreenWindow, now: Duration) -> bool {
+    entry
+        .transition
+        .is_none_or(|transition| transition.is_finished_at(now))
+}
+
 fn entry_covers_top(entry: &FullscreenWindow, output: &str, now: Duration) -> bool {
     entry.target_output == output
         && entry.active
@@ -1219,6 +1256,31 @@ mod tests {
             center_in_rect((1280, 720).into(), (1920, 0).into(), (2560, 1440).into()),
             (2560, 360).into()
         );
+    }
+
+    #[test]
+    fn client_size_cannot_retarget_a_running_transition() {
+        let motion = AnimationMotion::Easing(EasingMotion {
+            duration_ms: 400,
+            curve: AnimationCurve::Linear,
+        });
+        let started = Duration::from_secs(1);
+        let mut entry = test_entry(true);
+
+        assert!(
+            may_adopt_client_size(&entry, started),
+            "a settled fullscreen still letterboxes an undersized client"
+        );
+
+        entry.transition = Some(MotionTimeline::between(motion, started, 0.0, 1.0, 0.0));
+        assert!(!may_adopt_client_size(
+            &entry,
+            started + Duration::from_millis(200)
+        ));
+        assert!(may_adopt_client_size(
+            &entry,
+            started + Duration::from_millis(400)
+        ));
     }
 
     #[test]

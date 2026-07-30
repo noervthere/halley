@@ -39,13 +39,20 @@ uniform vec3 uv_to_draw_col_1;
 uniform vec3 uv_to_draw_col_2;
 uniform vec4 content_color;
 
+// Signed distance to a rounded rectangle, negative inside.
+//
+// The interior term `min(max(q.x, q.y), 0.0)` is load-bearing: without it an
+// interior pixel reports a distance of exactly -radius rather than its real
+// depth, so once the radius eases below the smoothstep half-width the band
+// swallows the whole surface and fades it toward 50% opacity. That is only
+// invisible while the radius stays large - a radius animating to zero, as the
+// fullscreen transition does, dims the entire window just before it lands.
 float rounded_alpha(vec2 coords, vec2 size, float radius) {
-    radius = min(max(radius, 0.0), min(size.x, size.y) * 0.5);
-    if (radius <= 0.0) {
-        return 1.0;
-    }
-    vec2 nearest = clamp(coords, vec2(radius), size - vec2(radius));
-    float distance_to_edge = length(coords - nearest) - radius;
+    radius = clamp(radius, 0.0, min(size.x, size.y) * 0.5);
+    vec2 half_size = size * 0.5;
+    vec2 q = abs(coords - half_size) - (half_size - vec2(radius));
+    float distance_to_edge =
+        length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - radius;
     return 1.0 - smoothstep(-0.75, 0.75, distance_to_edge);
 }
 
@@ -718,5 +725,50 @@ mod tests {
     #[test]
     fn tiny_windows_clamp_the_content_radius() {
         assert_eq!(clamp_radius(8.0, 10, 6), 3.0);
+    }
+
+    /// Rust mirror of the `rounded_alpha` GLSL in `SURFACE_SHADER` and
+    /// `fullscreen_texture.rs`. Kept in step by hand; it exists to pin the
+    /// interior term, which has no other executable coverage.
+    fn rounded_alpha(coords: (f32, f32), size: (f32, f32), radius: f32) -> f32 {
+        let radius = radius.clamp(0.0, size.0.min(size.1) * 0.5);
+        let half = (size.0 * 0.5, size.1 * 0.5);
+        let q = (
+            (coords.0 - half.0).abs() - (half.0 - radius),
+            (coords.1 - half.1).abs() - (half.1 - radius),
+        );
+        let outside = (q.0.max(0.0).powi(2) + q.1.max(0.0).powi(2)).sqrt();
+        let distance = outside + q.0.max(q.1).min(0.0) - radius;
+        let t = ((distance + 0.75) / 1.5).clamp(0.0, 1.0);
+        1.0 - t * t * (3.0 - 2.0 * t)
+    }
+
+    #[test]
+    fn a_radius_easing_to_zero_never_dims_the_interior() {
+        // The fullscreen transition eases the content radius to zero. Once it
+        // drops under the smoothstep half-width, an interior-blind distance
+        // reports -radius everywhere and fades the whole window toward 50%,
+        // which read as an opacity flash just before the animation landed.
+        let size = (1280.0, 800.0);
+        for radius in [12.0, 1.0, 0.75, 0.5, 0.1, 0.001, 0.0] {
+            let center = rounded_alpha((640.0, 400.0), size, radius);
+            assert!(
+                (center - 1.0).abs() < 1e-4,
+                "radius {radius} dimmed the interior to {center}"
+            );
+        }
+    }
+
+    #[test]
+    fn corners_are_still_rounded_and_edges_antialiased() {
+        let size = (1280.0, 800.0);
+        assert!(
+            rounded_alpha((0.0, 0.0), size, 12.0) < 0.01,
+            "corner is cut"
+        );
+        assert!(
+            (rounded_alpha((0.0, 400.0), size, 12.0) - 0.5).abs() < 0.1,
+            "straight edge keeps its half-covered antialiasing"
+        );
     }
 }

@@ -357,12 +357,32 @@ fn toggle_focused_field_maximize<D: SessionDriver>(session: &mut Session<D>, out
     }
     cancel_grab_for_surface(session, &record.surface);
     let now = crate::frame_clock::monotonic_now();
-    if session.fullscreen.is_fullscreen_or_pending(&record.surface) {
-        if let Some(toplevel) = record.window.toplevel() {
-            session.fullscreen.unrequest(&session.wayland, toplevel);
-        } else {
-            crate::xwayland::set_window_fullscreen(session, &record.window, false);
-        }
+    // Maximizing straight out of fullscreen hands the whole travel to the
+    // maximize animation: it eases from the rect the window occupies right now
+    // down to the maximized rect. Letting fullscreen arm its own exit
+    // transition instead would run two timelines at once, and fullscreen wins
+    // in `window_visual_state`, so the shrink toward the small windowed rect is
+    // what you would see until it retired and the maximize track took over
+    // mid-flight.
+    let handoff_geometry = session
+        .fullscreen
+        .is_fullscreen_or_pending(&record.surface)
+        .then(|| {
+            let geometry = session.wayland.space.element_geometry(&record.window);
+            session
+                .cameras
+                .handoff_fullscreen_to_field_maximize(&output_name);
+            if let Some(toplevel) = record.window.toplevel() {
+                session.fullscreen.retire_for_handoff(toplevel);
+            } else {
+                crate::xwayland::set_window_fullscreen(session, &record.window, false);
+                session.fullscreen.remove(&record.surface);
+            }
+            geometry
+        })
+        .flatten();
+    if handoff_geometry.is_none() {
+        session.cameras.clear_field_maximize_handoff(&output_name);
     }
     let change = session.maximize.toggle(
         &target_output,
@@ -372,6 +392,11 @@ fn toggle_focused_field_maximize<D: SessionDriver>(session: &mut Session<D>, out
         target,
         now,
     );
+    if let Some(handoff_geometry) = handoff_geometry {
+        session
+            .maximize
+            .override_windowed_from_fullscreen(&record.surface, handoff_geometry);
+    }
     if let Some(displaced) = change.displaced.as_ref() {
         session.fullscreen_textures.remove(&displaced.surface);
         configure_field_geometry(session, displaced);

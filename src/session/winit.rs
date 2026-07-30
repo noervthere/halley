@@ -428,6 +428,12 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                 app.window_close_animations
                     .cleanup(target_presentation_time);
                 if app.cleanup_fullscreen(target_presentation_time) {
+                    // Cleanup retires the transition and drops its crossfade
+                    // textures, so the scene this frame rendered is the last
+                    // one drawn from those textures. One more frame is owed to
+                    // swap back to the live surfaces; without it the swap waits
+                    // on unrelated damage and lands as a pop.
+                    animating = true;
                     super::sync_keyboard_focus(app, smithay::utils::SERIAL_COUNTER.next_serial());
                     super::pointer::update_client_state(
                         app,

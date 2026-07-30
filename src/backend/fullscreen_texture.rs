@@ -43,12 +43,15 @@ uniform float halley_corner_radius;
 uniform float tint;
 #endif
 
+// Signed distance to a rounded rectangle, negative inside. See the matching
+// note in `window_decoration.rs`: the interior term is what stops a radius
+// animating toward zero from fading the whole surface to half opacity.
 float rounded_alpha(vec2 coords, vec2 size, float radius) {
-    radius = min(max(radius, 0.0), min(size.x, size.y) * 0.5);
-    if (radius <= 0.0)
-        return 1.0;
-    vec2 nearest = clamp(coords, vec2(radius), size - vec2(radius));
-    float distance_to_edge = length(coords - nearest) - radius;
+    radius = clamp(radius, 0.0, min(size.x, size.y) * 0.5);
+    vec2 half_size = size * 0.5;
+    vec2 q = abs(coords - half_size) - (half_size - vec2(radius));
+    float distance_to_edge =
+        length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - radius;
     return 1.0 - smoothstep(-0.75, 0.75, distance_to_edge);
 }
 
