@@ -3,11 +3,12 @@ use std::error::Error;
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::egl::EGLDevice;
 use smithay::backend::renderer::ImportDma;
+use smithay::backend::renderer::element::{Element, RenderElement};
 use smithay::backend::renderer::gles::GlesRenderer;
-use smithay::backend::renderer::utils::draw_render_elements;
 use smithay::backend::renderer::{Frame, Renderer};
 use smithay::backend::winit::WinitGraphicsBackend;
 use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
+use smithay::utils::user_data::UserDataMap;
 use smithay::utils::{Physical, Rectangle, Size, Transform};
 
 use super::{RenderOutcome, RenderRequest, RenderStatus, Renderable};
@@ -163,7 +164,37 @@ impl Renderable for WinitBackend {
 
             let mut frame = renderer.render(&mut framebuffer, size, Transform::Flipped180)?;
             frame.clear(clear, &[damage])?;
-            draw_render_elements(&mut frame, 1.0, &elements, &[damage])?;
+            let effect_cache = UserDataMap::new();
+            // Winit bypasses Smithay's output damage tracker, so explicitly
+            // preserve the same back-to-front effect contract it provides on
+            // DRM: capture the already-rendered backdrop immediately before
+            // drawing each framebuffer effect.
+            for element in elements.iter().rev() {
+                let geometry = element.geometry(1.0.into());
+                let Some(visible) = geometry.intersection(damage) else {
+                    continue;
+                };
+                let local_damage = [Rectangle::new(visible.loc - geometry.loc, visible.size)];
+                let cache = if element.is_framebuffer_effect() {
+                    element.capture_framebuffer(
+                        &mut frame,
+                        element.src(),
+                        geometry,
+                        &effect_cache,
+                    )?;
+                    Some(&effect_cache)
+                } else {
+                    None
+                };
+                element.draw(
+                    &mut frame,
+                    element.src(),
+                    geometry,
+                    &local_damage,
+                    &[],
+                    cache,
+                )?;
+            }
             let _ = frame.finish()?;
         }
 

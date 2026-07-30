@@ -32,6 +32,9 @@ use smithay::wayland::selection::SelectionHandler;
 use smithay::wayland::selection::data_device::{
     DataDeviceHandler, DataDeviceState, WaylandDndGrabHandler,
 };
+use smithay::wayland::selection::ext_data_control::{
+    DataControlHandler as ExtDataControlHandler, DataControlState as ExtDataControlState,
+};
 use smithay::wayland::selection::primary_selection::{
     PrimarySelectionHandler, PrimarySelectionState,
 };
@@ -50,7 +53,8 @@ use smithay::wayland::xdg_activation::{
     XdgActivationHandler, XdgActivationState, XdgActivationToken, XdgActivationTokenData,
 };
 use smithay::{
-    delegate_compositor, delegate_cursor_shape, delegate_data_device, delegate_dmabuf,
+    delegate_background_effect, delegate_compositor, delegate_cursor_shape, delegate_data_device,
+    delegate_dmabuf, delegate_ext_data_control,
     delegate_fractional_scale,
     delegate_keyboard_shortcuts_inhibit, delegate_layer_shell, delegate_output,
     delegate_pointer_constraints, delegate_primary_selection, delegate_relative_pointer,
@@ -665,7 +669,34 @@ impl<D: SessionDriver> PrimarySelectionHandler for Session<D> {
     }
 }
 
+impl<D: SessionDriver> ExtDataControlHandler for Session<D> {
+    fn data_control_state(&mut self) -> &mut ExtDataControlState {
+        &mut self.wayland.ext_data_control_state
+    }
+}
+
+impl<D: SessionDriver> smithay::wayland::background_effect::ExtBackgroundEffectHandler
+    for Session<D>
+{
+    fn capabilities(&self) -> smithay::wayland::background_effect::Capability {
+        smithay::wayland::background_effect::Capability::Blur
+    }
+
+    fn set_blur_region(
+        &mut self,
+        _surface: WlSurface,
+        _region: smithay::wayland::compositor::RegionAttributes,
+    ) {
+        self.request_redraw();
+    }
+
+    fn unset_blur_region(&mut self, _surface: WlSurface) {
+        self.request_redraw();
+    }
+}
+
 delegate_compositor!(@<D: SessionDriver> Session<D>);
+delegate_background_effect!(@<D: SessionDriver> Session<D>);
 delegate_dmabuf!(@<D: SessionDriver> Session<D>);
 delegate_shm!(@<D: SessionDriver> Session<D>);
 delegate_xdg_shell!(@<D: SessionDriver> Session<D>);
@@ -684,6 +715,7 @@ delegate_virtual_keyboard_manager!(@<D: SessionDriver> Session<D>);
 delegate_keyboard_shortcuts_inhibit!(@<D: SessionDriver> Session<D>);
 delegate_data_device!(@<D: SessionDriver> Session<D>);
 delegate_primary_selection!(@<D: SessionDriver> Session<D>);
+delegate_ext_data_control!(@<D: SessionDriver> Session<D>);
 
 #[cfg(test)]
 mod tests {

@@ -155,7 +155,7 @@ pub fn elements(
     bearings: &crate::bearings::BearingsState,
     nodes: &crate::nodes::NodesState,
     cameras: &crate::camera::OutputCameras,
-    bearings_renderer: &mut super::bearing_blur::BearingsRenderer,
+    backdrop_blur_renderer: &mut super::backdrop_blur::BackdropBlurRenderer,
     node_renderer: &mut super::node::NodeRenderer,
     ui_text: &mut super::text::UiTextRenderer,
     overlay_config: &halley_config::Overlays,
@@ -198,7 +198,7 @@ pub fn elements(
         layouts
             .iter()
             .filter(|layout| layout.alpha >= 0.04)
-            .map(|layout| super::bearing_blur::BlurPatch {
+            .map(|layout| super::backdrop_blur::BlurPatch {
                 rect: layout.chip,
                 radius: match overlay_visuals.shape {
                     halley_config::OverlayShape::Square => 0.0,
@@ -302,13 +302,13 @@ pub fn elements(
         )?));
     }
     foreground.extend(backgrounds);
-    if let Some(blur) = bearings_renderer.blur_element(
+    if let Some(blur) = backdrop_blur_renderer.blur_element(
         renderer,
         &output_name,
         output_geometry.size,
         blur_patches,
     )? {
-        foreground.push(SceneElement::BearingBlur(blur));
+        foreground.push(SceneElement::BackdropBlur(blur));
     }
     Ok(foreground)
 }

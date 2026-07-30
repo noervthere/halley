@@ -7,6 +7,7 @@ use smithay::input::{Seat, SeatState};
 use smithay::output::Output;
 use smithay::reexports::wayland_server::DisplayHandle;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+use smithay::wayland::background_effect::BackgroundEffectState;
 use smithay::wayland::compositor::CompositorState;
 use smithay::wayland::cursor_shape::CursorShapeManagerState;
 use smithay::wayland::dmabuf::DmabufState;
@@ -18,6 +19,7 @@ use smithay::wayland::pointer_gestures::PointerGesturesState;
 use smithay::wayland::relative_pointer::RelativePointerManagerState;
 use smithay::wayland::seat::WaylandFocus;
 use smithay::wayland::selection::data_device::DataDeviceState;
+use smithay::wayland::selection::ext_data_control::DataControlState;
 use smithay::wayland::selection::primary_selection::PrimarySelectionState;
 use smithay::wayland::shell::wlr_layer::WlrLayerShellState;
 use smithay::wayland::shell::xdg::XdgShellState;
@@ -102,7 +104,7 @@ pub struct Session<D: SessionDriver> {
     pub fullscreen_textures: crate::backend::fullscreen_texture::FullscreenTextureTransitions,
     pub overlay_previews: crate::backend::overlay_preview::OverlayPreviewCache,
     pub node_renderer: crate::backend::node::NodeRenderer,
-    pub bearings_renderer: crate::backend::bearing_blur::BearingsRenderer,
+    pub backdrop_blur_renderer: crate::backend::backdrop_blur::BackdropBlurRenderer,
     pub ui_text: crate::backend::text::UiTextRenderer,
     pub xwayland: crate::xwayland::State,
 }
@@ -149,6 +151,12 @@ impl<D: SessionDriver> Session<D> {
             &display_handle,
             &capabilities,
         );
+        let primary_selection_state = PrimarySelectionState::new::<Self>(&display_handle);
+        let ext_data_control_state = DataControlState::new::<Self, _>(
+            &display_handle,
+            Some(&primary_selection_state),
+            |_| true,
+        );
 
         WaylandState::new(
             display_handle.clone(),
@@ -158,6 +166,7 @@ impl<D: SessionDriver> Session<D> {
             XdgShellState::new::<Self>(&display_handle),
             XdgActivationState::new::<Self>(&display_handle),
             WlrLayerShellState::new::<Self>(&display_handle),
+            BackgroundEffectState::new::<Self>(&display_handle),
             XdgDecorationState::new::<Self>(&display_handle),
             ViewporterState::new::<Self>(&display_handle),
             FractionalScaleManagerState::new::<Self>(&display_handle),
@@ -173,7 +182,8 @@ impl<D: SessionDriver> Session<D> {
             OutputManagerState::new_with_xdg_output::<Self>(&display_handle),
             crate::wayland::wlr_output_management::State::new::<Self>(&display_handle),
             DataDeviceState::new::<Self>(&display_handle),
-            PrimarySelectionState::new::<Self>(&display_handle),
+            primary_selection_state,
+            ext_data_control_state,
         )
     }
 

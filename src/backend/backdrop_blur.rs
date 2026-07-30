@@ -47,19 +47,16 @@ struct BlurTextures {
 }
 
 struct OutputResources {
-    id: Id,
-    commit: CommitCounter,
-    patches: Vec<BlurPatch>,
     textures: Rc<RefCell<BlurTextures>>,
 }
 
 #[derive(Default)]
-pub struct BearingsRenderer {
+pub struct BackdropBlurRenderer {
     programs: Option<Programs>,
     outputs: HashMap<String, OutputResources>,
 }
 
-pub struct BearingBlurElement {
+pub struct BackdropBlurElement {
     id: Id,
     commit: CommitCounter,
     size: Size<i32, Physical>,
@@ -70,14 +67,14 @@ pub struct BearingBlurElement {
     composite: GlesTexProgram,
 }
 
-impl BearingsRenderer {
+impl BackdropBlurRenderer {
     pub fn blur_element(
         &mut self,
         renderer: &mut GlesRenderer,
         output: &str,
         size: Size<i32, Logical>,
         patches: Vec<BlurPatch>,
-    ) -> Result<Option<BearingBlurElement>, Box<dyn Error>> {
+    ) -> Result<Option<BackdropBlurElement>, Box<dyn Error>> {
         if patches.is_empty() {
             return Ok(None);
         }
@@ -92,23 +89,19 @@ impl BearingsRenderer {
             self.outputs.insert(
                 output.to_string(),
                 OutputResources {
-                    id: Id::new(),
-                    commit: CommitCounter::default(),
-                    patches: Vec::new(),
                     textures: Rc::new(RefCell::new(create_textures(renderer, physical_size)?)),
                 },
             );
         }
-        let resources = self.outputs.get_mut(output).expect("inserted above");
-        if resources.patches != patches {
-            resources.patches = patches.clone();
-            resources.commit.increment();
-        }
+        let resources = self.outputs.get(output).expect("inserted above");
         let programs = self.programs.as_ref().expect("ensured above");
         debug_assert_eq!(programs.context, context);
-        Ok(Some(BearingBlurElement {
-            id: resources.id.clone(),
-            commit: resources.commit,
+        Ok(Some(BackdropBlurElement {
+            // Several z-ordered effects share the output-sized scratch
+            // textures. Their identities remain independent so Smithay never
+            // aliases damage/state between two client surfaces.
+            id: Id::new(),
+            commit: CommitCounter::default(),
             size: physical_size,
             patches,
             textures: Rc::clone(&resources.textures),
@@ -270,7 +263,7 @@ fn run_blur(
     )
 }
 
-impl Element for BearingBlurElement {
+impl Element for BackdropBlurElement {
     fn id(&self) -> &Id {
         &self.id
     }
@@ -299,7 +292,7 @@ impl Element for BearingBlurElement {
     }
 }
 
-impl RenderElement<GlesRenderer> for BearingBlurElement {
+impl RenderElement<GlesRenderer> for BackdropBlurElement {
     fn capture_framebuffer(
         &self,
         frame: &mut GlesFrame<'_, '_>,

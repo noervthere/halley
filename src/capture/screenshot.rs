@@ -59,7 +59,7 @@ pub fn save_region<D: SessionDriver>(
     let overlay_previews = &mut session.overlay_previews;
     let nodes = &session.nodes;
     let bearings = &session.bearings;
-    let bearings_renderer = &mut session.bearings_renderer;
+    let backdrop_blur_renderer = &mut session.backdrop_blur_renderer;
     let overlays = &session.overlays;
     let overlay_config = &session.overlay_config;
     let node_renderer = &mut session.node_renderer;
@@ -91,7 +91,7 @@ pub fn save_region<D: SessionDriver>(
                         overlay_previews: &mut *overlay_previews,
                         nodes,
                         bearings,
-                        bearings_renderer: &mut *bearings_renderer,
+                        backdrop_blur_renderer: &mut *backdrop_blur_renderer,
                         focus_cycle: &session.focus_cycle,
                         apogee: &session.apogee,
                         apogee_config: session.apogee_config,
@@ -281,7 +281,7 @@ where
     let overlay_previews = &mut session.overlay_previews;
     let nodes = &session.nodes;
     let bearings = &session.bearings;
-    let bearings_renderer = &mut session.bearings_renderer;
+    let backdrop_blur_renderer = &mut session.backdrop_blur_renderer;
     let overlays = &session.overlays;
     let overlay_config = &session.overlay_config;
     let node_renderer = &mut session.node_renderer;
@@ -310,7 +310,7 @@ where
                 overlay_previews,
                 nodes,
                 bearings,
-                bearings_renderer,
+                backdrop_blur_renderer,
                 focus_cycle: &session.focus_cycle,
                 apogee: &session.apogee,
                 apogee_config: session.apogee_config,

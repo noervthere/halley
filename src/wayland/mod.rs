@@ -1,3 +1,4 @@
+pub mod background_effect;
 pub mod compositor;
 pub mod decoration;
 pub mod dmabuf;
@@ -18,6 +19,7 @@ use smithay::reexports::wayland_server::DisplayHandle;
 use smithay::reexports::wayland_server::backend::{ClientData, ClientId, DisconnectReason};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point};
+use smithay::wayland::background_effect::BackgroundEffectState;
 use smithay::wayland::compositor::{CompositorClientState, CompositorState};
 use smithay::wayland::cursor_shape::CursorShapeManagerState;
 use smithay::wayland::dmabuf::{DmabufGlobal, DmabufState};
@@ -28,6 +30,7 @@ use smithay::wayland::pointer_constraints::PointerConstraintsState;
 use smithay::wayland::pointer_gestures::PointerGesturesState;
 use smithay::wayland::relative_pointer::RelativePointerManagerState;
 use smithay::wayland::selection::data_device::DataDeviceState;
+use smithay::wayland::selection::ext_data_control::DataControlState;
 use smithay::wayland::selection::primary_selection::PrimarySelectionState;
 use smithay::wayland::shell::wlr_layer::WlrLayerShellState;
 use smithay::wayland::shell::xdg::XdgShellState;
@@ -87,6 +90,9 @@ pub struct WaylandState {
     pub xdg_shell_state: XdgShellState,
     pub xdg_activation_state: XdgActivationState,
     pub layer_shell_state: WlrLayerShellState,
+    // Retained for the lifetime of the advertised ext-background-effect
+    // global. Committed per-surface regions live in Smithay's surface cache.
+    _background_effect_state: BackgroundEffectState,
     // Retained for the lifetime of its advertised global.
     _xdg_decoration_state: XdgDecorationState,
     _viewporter_state: ViewporterState,
@@ -111,6 +117,10 @@ pub struct WaylandState {
     /// a mode of it: clients set the two selections independently and
     /// expect them to hold different contents.
     pub primary_selection_state: PrimarySelectionState,
+    /// Clipboard-manager access through the standardized ext-data-control
+    /// protocol. It shares the same seat selections as wl_data_device and
+    /// primary-selection instead of buffering a second clipboard in Halley.
+    pub ext_data_control_state: DataControlState,
     /// Tracks popup trees once for both xdg-toplevel and layer-shell roots.
     /// Rendering and input can then ask Smithay for the same canonical tree
     /// instead of each subsystem inventing its own parent/offset bookkeeping.
@@ -165,6 +175,7 @@ impl WaylandState {
         xdg_shell_state: XdgShellState,
         xdg_activation_state: XdgActivationState,
         layer_shell_state: WlrLayerShellState,
+        background_effect_state: BackgroundEffectState,
         xdg_decoration_state: XdgDecorationState,
         viewporter_state: ViewporterState,
         fractional_scale_manager_state: FractionalScaleManagerState,
@@ -179,6 +190,7 @@ impl WaylandState {
         wlr_output_management_state: wlr_output_management::State,
         data_device_state: DataDeviceState,
         primary_selection_state: PrimarySelectionState,
+        ext_data_control_state: DataControlState,
     ) -> Self {
         Self {
             display_handle,
@@ -188,6 +200,7 @@ impl WaylandState {
             xdg_shell_state,
             xdg_activation_state,
             layer_shell_state,
+            _background_effect_state: background_effect_state,
             _xdg_decoration_state: xdg_decoration_state,
             _viewporter_state: viewporter_state,
             _fractional_scale_manager_state: fractional_scale_manager_state,
@@ -202,6 +215,7 @@ impl WaylandState {
             _wlr_output_management_state: wlr_output_management_state,
             data_device_state,
             primary_selection_state,
+            ext_data_control_state,
             popup_manager: PopupManager::default(),
             space: Space::default(),
             managed_windows: crate::window::ManagedWindowStack::default(),

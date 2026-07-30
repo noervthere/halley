@@ -1,5 +1,5 @@
 mod app_icon;
-pub mod bearing_blur;
+pub mod backdrop_blur;
 mod bearings;
 mod capture_overlay;
 pub mod close;
@@ -202,7 +202,7 @@ pub struct RenderRequest<'a> {
     pub overlay_previews: &'a mut crate::backend::overlay_preview::OverlayPreviewCache,
     pub nodes: &'a crate::nodes::NodesState,
     pub bearings: &'a crate::bearings::BearingsState,
-    pub bearings_renderer: &'a mut crate::backend::bearing_blur::BearingsRenderer,
+    pub backdrop_blur_renderer: &'a mut crate::backend::backdrop_blur::BackdropBlurRenderer,
     pub focus_cycle: &'a crate::focus_cycle::FocusCycleState,
     pub apogee: &'a crate::apogee::ApogeeState,
     pub apogee_config: halley_config::Apogee,

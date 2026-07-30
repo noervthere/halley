@@ -5,7 +5,8 @@ use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
 use smithay::backend::renderer::element::utils::CropRenderElement;
 use smithay::backend::renderer::element::{Element, Id, Kind, render_elements};
 use smithay::backend::renderer::gles::GlesRenderer;
-use smithay::backend::renderer::utils::CommitCounter;
+use smithay::backend::renderer::utils::{CommitCounter, with_renderer_surface_state};
+use smithay::desktop::{PopupManager, layer_map_for_output};
 use smithay::output::Output;
 use smithay::utils::{Logical, Physical, Point, Rectangle, Scale};
 use smithay::wayland::seat::WaylandFocus;
@@ -26,7 +27,7 @@ render_elements! {
     NodeLabel=super::node::LabelRenderElement,
     NodeTexture=super::node::NodeTextureElement,
     UiText=super::text::UiTextElement,
-    BearingBlur=super::bearing_blur::BearingBlurElement,
+    BackdropBlur=super::backdrop_blur::BackdropBlurElement,
     Closing=smithay::backend::renderer::element::texture::TextureRenderElement<
         smithay::backend::renderer::gles::GlesTexture
     >,
@@ -115,17 +116,19 @@ pub fn build(
         request.bearings,
         request.nodes,
         request.cameras,
-        request.bearings_renderer,
+        request.backdrop_blur_renderer,
         request.node_renderer,
         request.ui_text,
         request.overlay_config,
         request.decorations,
     )?);
-    elements.extend(
-        super::layer_surface_elements(renderer, output, Layer::Overlay)
-            .into_iter()
-            .map(SceneElement::Layer),
-    );
+    elements.extend(layer_surface_scene_elements(
+        renderer,
+        output,
+        output_geometry,
+        Layer::Overlay,
+        request.backdrop_blur_renderer,
+    )?);
     elements.extend(focus_cycle_elements(
         renderer,
         output_geometry,
@@ -142,11 +145,13 @@ pub fn build(
         .fullscreen
         .covers_top(request.focused, output, request.target_presentation_time)
     {
-        elements.extend(
-            super::layer_surface_elements(renderer, output, Layer::Top)
-                .into_iter()
-                .map(SceneElement::Layer),
-        );
+        elements.extend(layer_surface_scene_elements(
+            renderer,
+            output,
+            output_geometry,
+            Layer::Top,
+            request.backdrop_blur_renderer,
+        )?);
     }
 
     let node_scene = node_elements(
@@ -207,8 +212,13 @@ pub fn build(
         if !crate::wayland::window_is_on_output(window, output, primary_output) {
             continue;
         }
-        let window_elements =
-            live_window_elements(renderer, window, context, request.fullscreen_textures)?;
+        let window_elements = live_window_elements(
+            renderer,
+            window,
+            context,
+            request.fullscreen_textures,
+            request.backdrop_blur_renderer,
+        )?;
         if !window_elements.is_empty() {
             stack.push(StackGroup {
                 stack_index,
@@ -220,16 +230,20 @@ pub fn build(
     sort_stack_groups(&mut stack);
     elements.extend(stack.into_iter().rev().flat_map(|group| group.elements));
 
-    elements.extend(
-        super::layer_surface_elements(renderer, output, Layer::Bottom)
-            .into_iter()
-            .map(SceneElement::Layer),
-    );
-    elements.extend(
-        super::layer_surface_elements(renderer, output, Layer::Background)
-            .into_iter()
-            .map(SceneElement::Layer),
-    );
+    elements.extend(layer_surface_scene_elements(
+        renderer,
+        output,
+        output_geometry,
+        Layer::Bottom,
+        request.backdrop_blur_renderer,
+    )?);
+    elements.extend(layer_surface_scene_elements(
+        renderer,
+        output,
+        output_geometry,
+        Layer::Background,
+        request.backdrop_blur_renderer,
+    )?);
 
     let overlay_elements = super::overlay::elements(
         renderer,
@@ -257,6 +271,119 @@ pub fn build(
     }
 
     Ok(elements)
+}
+
+fn layer_surface_scene_elements(
+    renderer: &mut GlesRenderer,
+    output: &Output,
+    output_geometry: Rectangle<i32, Logical>,
+    layer: Layer,
+    backdrop_blur_renderer: &mut super::backdrop_blur::BackdropBlurRenderer,
+) -> Result<Vec<SceneElement>, Box<dyn Error>> {
+    let map = layer_map_for_output(output);
+    let scale = Scale::from(output.current_scale().fractional_scale());
+    let output_bounds = Rectangle::<i32, Physical>::from_size(output_geometry.size.to_physical(1));
+    let mut elements = Vec::new();
+
+    for surface in map.layers_on(layer).rev() {
+        let Some(geometry) = map.layer_geometry(surface) else {
+            continue;
+        };
+        for (popup, popup_offset) in PopupManager::popups_for_surface(surface.wl_surface()) {
+            let popup_origin = geometry.loc + popup_offset - popup.geometry().loc;
+            let location = popup_origin.to_f64().to_physical(scale).to_i32_round();
+            elements.extend(
+                smithay::backend::renderer::element::surface::render_elements_from_surface_tree(
+                    renderer,
+                    popup.wl_surface(),
+                    location,
+                    scale,
+                    1.0,
+                    Kind::ScanoutCandidate,
+                )
+                .into_iter()
+                .map(SceneElement::Layer),
+            );
+            append_surface_backdrop_blur(
+                renderer,
+                output,
+                output_geometry.size,
+                output_bounds,
+                popup.wl_surface(),
+                popup_origin,
+                scale,
+                backdrop_blur_renderer,
+                &mut elements,
+            )?;
+        }
+
+        let location = geometry.loc.to_f64().to_physical(scale).to_i32_round();
+        elements.extend(
+            smithay::backend::renderer::element::surface::render_elements_from_surface_tree(
+                renderer,
+                surface.wl_surface(),
+                location,
+                scale,
+                1.0,
+                Kind::ScanoutCandidate,
+            )
+            .into_iter()
+            .map(SceneElement::Layer),
+        );
+        append_surface_backdrop_blur(
+            renderer,
+            output,
+            output_geometry.size,
+            output_bounds,
+            surface.wl_surface(),
+            geometry.loc,
+            scale,
+            backdrop_blur_renderer,
+            &mut elements,
+        )?;
+    }
+
+    Ok(elements)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_surface_backdrop_blur(
+    renderer: &mut GlesRenderer,
+    output: &Output,
+    output_size: smithay::utils::Size<i32, Logical>,
+    output_bounds: Rectangle<i32, Physical>,
+    surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+    surface_origin: smithay::utils::Point<i32, Logical>,
+    scale: Scale<f64>,
+    backdrop_blur_renderer: &mut super::backdrop_blur::BackdropBlurRenderer,
+    elements: &mut Vec<SceneElement>,
+) -> Result<(), Box<dyn Error>> {
+    let Some(surface_size) =
+        with_renderer_surface_state(surface, |state| state.surface_size()).flatten()
+    else {
+        return Ok(());
+    };
+    let patches = crate::wayland::background_effect::blur_rects(surface, surface_size)
+        .into_iter()
+        .filter_map(|rect| {
+            let rect = Rectangle::<i32, Logical>::new(surface_origin + rect.loc, rect.size)
+                .to_f64()
+                .to_physical(scale)
+                .to_i32_up();
+            rect.intersection(output_bounds)
+                .map(|rect| super::backdrop_blur::BlurPatch {
+                    rect,
+                    radius: 0.0,
+                    alpha: 1.0,
+                })
+        })
+        .collect::<Vec<_>>();
+    if let Some(blur) =
+        backdrop_blur_renderer.blur_element(renderer, &output.name(), output_size, patches)?
+    {
+        elements.push(SceneElement::BackdropBlur(blur));
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1243,6 +1370,7 @@ fn live_window_elements(
     window: &smithay::desktop::Window,
     context: LiveWindowContext<'_>,
     fullscreen_textures: &mut super::fullscreen_texture::FullscreenTextureTransitions,
+    backdrop_blur_renderer: &mut super::backdrop_blur::BackdropBlurRenderer,
 ) -> Result<Vec<SceneElement>, Box<dyn Error>> {
     let Some(location) = context.space.element_location(window) else {
         return Ok(Vec::new());
@@ -1342,6 +1470,63 @@ fn live_window_elements(
             CropRenderElement::from_element(element, 1.0, visual.animated_rect)
                 .map(SceneElement::Cropped)
         }));
+    }
+
+    let surface_size =
+        with_renderer_surface_state(window_surface.as_ref(), |state| state.surface_size())
+            .flatten();
+    if let Some(surface_size) = surface_size {
+        let output_bounds =
+            Rectangle::<i32, Physical>::from_size(context.output_geometry.size.to_physical(1));
+        let patches =
+            crate::wayland::background_effect::blur_rects(window_surface.as_ref(), surface_size)
+                .into_iter()
+                .filter_map(|rect| {
+                    let native = Rectangle::<i32, Physical>::new(
+                        surface_location + rect.loc.to_physical(1),
+                        rect.size.to_physical(1),
+                    );
+                    let destination = if visual.fullscreen.is_some() {
+                        let destination = crate::animation::map_rect(
+                            native,
+                            visual.source_geometry.to_physical(1),
+                            visual.presentation_rect,
+                        );
+                        crate::animation::map_rect(
+                            destination,
+                            visual.presentation_rect,
+                            visual.animated_rect,
+                        )
+                    } else {
+                        let final_destination = super::camera_rect(
+                            native,
+                            visual.camera_center,
+                            context.output_geometry.size.to_physical(1),
+                            visual.zoom_scale,
+                        );
+                        crate::animation::map_rect(
+                            final_destination,
+                            visual.camera_rect,
+                            visual.animated_rect,
+                        )
+                    };
+                    destination.intersection(output_bounds).map(|rect| {
+                        super::backdrop_blur::BlurPatch {
+                            rect,
+                            radius: 0.0,
+                            alpha: visual.opening_alpha,
+                        }
+                    })
+                })
+                .collect::<Vec<_>>();
+        if let Some(blur) = backdrop_blur_renderer.blur_element(
+            renderer,
+            &context.output.name(),
+            context.output_geometry.size,
+            patches,
+        )? {
+            elements.push(SceneElement::BackdropBlur(blur));
+        }
     }
 
     let is_focused = Some(window_surface.as_ref()) == context.focused;

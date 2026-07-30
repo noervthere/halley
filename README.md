@@ -37,5 +37,6 @@ References:
 - [Bearings](docs/bearings.md)
 - [Apogee and Alt+Tab](docs/apogee.md)
 - [Compositor overlays and configuration notices](docs/overlays.md)
+- [Wayland protocol support](docs/wayland-protocols.md)
 - [Fonts](docs/fonts.md)
 - [Animations](docs/animations.md)
