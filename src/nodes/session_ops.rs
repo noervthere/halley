@@ -43,7 +43,7 @@ fn reconcile_landmarks_inner<D: crate::session::SessionDriver>(
             session
                 .cameras
                 .get(&output)
-                .map(crate::camera::scale)
+                .map(crate::presentation::camera::scale)
                 .unwrap_or(1.0)
         });
         let destination = session.nodes.nearest_free_position(id, current, scale);
@@ -77,7 +77,7 @@ fn dynamics_bodies<D: crate::session::SessionDriver>(
             let scale = session
                 .cameras
                 .get(&record.output)
-                .map(crate::camera::scale)
+                .map(crate::presentation::camera::scale)
                 .unwrap_or(1.0)
                 .max(0.05);
             let (kind, half) = if record.collapsed {
@@ -390,7 +390,7 @@ pub fn collapse<D: crate::session::SessionDriver>(
     let scale = session
         .cameras
         .get(&record.output)
-        .map(crate::camera::scale)
+        .map(crate::presentation::camera::scale)
         .unwrap_or(1.0);
     let node_position = session
         .nodes
@@ -566,7 +566,7 @@ pub fn pan_after_close_restore<D: crate::session::SessionDriver>(
         .space
         .element_geometry(&record.window)
         .unwrap_or(record.geometry);
-    let viewport = crate::camera::world_viewport(view, output_geometry);
+    let viewport = crate::presentation::camera::world_viewport(view, output_geometry);
     let delta = match policy {
         halley_config::CloseRestorePan::Never => return,
         halley_config::CloseRestorePan::IfOffscreen => {
@@ -634,7 +634,7 @@ pub fn focus_or_restore_from_bearing<D: crate::session::SessionDriver>(
         .element_geometry(&record.window)
         .unwrap_or(record.geometry);
     let delta = minimal_reveal_delta(
-        crate::camera::world_viewport(view, output_geometry),
+        crate::presentation::camera::world_viewport(view, output_geometry),
         geometry,
         24,
     );
@@ -687,7 +687,7 @@ pub fn reveal_for_focus_cycle<D: crate::session::SessionDriver>(
         .element_geometry(&record.window)
         .unwrap_or(record.geometry);
     let delta = minimal_reveal_delta(
-        crate::camera::world_viewport(view, output_geometry),
+        crate::presentation::camera::world_viewport(view, output_geometry),
         geometry,
         24,
     );
@@ -773,7 +773,7 @@ pub fn tick_decay<D: crate::session::SessionDriver>(
         let Some(view) = session.cameras.view(&record.output) else {
             continue;
         };
-        let global = crate::camera::global_center(view.center, output_geometry);
+        let global = crate::presentation::camera::global_center(view.center, output_geometry);
         centers.insert(
             record.output.clone(),
             Vec2 {

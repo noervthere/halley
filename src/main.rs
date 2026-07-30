@@ -17,10 +17,6 @@ mod wayland;
 mod window;
 mod xwayland;
 
-pub(crate) use capture::screencast;
-pub(crate) use presentation::camera;
-pub(crate) use shell::{apogee, bearings, focus_cycle, overlay};
-
 fn main() {
     logging::init();
     let args = match StartupArgs::parse(std::env::args().skip(1)) {

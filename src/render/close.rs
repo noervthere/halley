@@ -15,7 +15,7 @@ use smithay::utils::{Logical, Physical, Rectangle};
 use smithay::wayland::seat::WaylandFocus;
 
 use crate::animation::close::CloseTimeline;
-use crate::camera::OutputCameras;
+use crate::presentation::camera::OutputCameras;
 use halley_core::field::Vec2;
 
 #[derive(Clone, Copy, Debug)]
@@ -272,7 +272,8 @@ fn destination_for(
             captured_camera_rect,
         } => {
             let view = cameras.view(&output.name())?;
-            let camera_center = crate::camera::global_center(view.center, output_geometry);
+            let camera_center =
+                crate::presentation::camera::global_center(view.center, output_geometry);
             let current_camera_rect = super::camera_rect(
                 world_geometry.to_physical(1),
                 camera_center,

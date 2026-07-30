@@ -10,7 +10,7 @@ use smithay::utils::{Rectangle, Serial};
 use smithay::wayland::seat::WaylandFocus;
 use smithay::wayland::shell::xdg::{PopupSurface, PositionerState};
 
-use crate::camera::OutputCameras;
+use crate::presentation::camera::OutputCameras;
 
 use super::WaylandState;
 
@@ -110,7 +110,7 @@ fn unconstrain(wayland: &WaylandState, cameras: &OutputCameras, popup: &PopupKin
         let Some(view) = cameras.view(&output.name()) else {
             return;
         };
-        let mut target = crate::camera::world_viewport(view, output_geometry);
+        let mut target = crate::presentation::camera::world_viewport(view, output_geometry);
         target.loc -= window_geometry.loc;
         target.loc -= get_popup_toplevel_coords(popup);
         set_unconstrained_geometry(popup, target);

@@ -265,7 +265,7 @@ fn move_node<D: crate::session::SessionDriver>(
         let scale = session
             .cameras
             .get(&record.output)
-            .map(crate::camera::scale)
+            .map(crate::presentation::camera::scale)
             .unwrap_or(1.0);
         let destination = session.nodes.nearest_free_position(id, desired, scale);
         if let Some(node) = session.nodes.field.node_mut(id) {
@@ -285,7 +285,7 @@ fn move_node<D: crate::session::SessionDriver>(
         let scale = session
             .cameras
             .get(&record.output)
-            .map(crate::camera::scale)
+            .map(crate::presentation::camera::scale)
             .unwrap_or(1.0);
         let next = session
             .nodes

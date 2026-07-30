@@ -5,7 +5,7 @@ pub(super) struct NodeElementContext<'a> {
     pub(super) output_geometry: Rectangle<i32, Logical>,
     pub(super) nodes: &'a crate::nodes::NodesState,
     pub(super) node_grab_active: bool,
-    pub(super) cameras: &'a crate::camera::OutputCameras,
+    pub(super) cameras: &'a crate::presentation::camera::OutputCameras,
     pub(super) decorations: &'a halley_config::Decorations,
     pub(super) shadow_config: halley_config::ShadowLayer,
     pub(super) shadow_renderer: &'a mut crate::render::effects::shadow::ShadowRenderer,
@@ -46,7 +46,7 @@ pub(super) fn node_elements(
 
     if nodes.debug.show_focus_ring || nodes.ring_is_previewed(&output.name(), now) {
         let focus_ring = nodes.focus_ring_for_output(&output.name());
-        let scale = crate::camera::scale(camera);
+        let scale = crate::presentation::camera::scale(camera);
         let center = (
             output_geometry.size.w as f32 / 2.0 + focus_ring.offset_x * scale,
             output_geometry.size.h as f32 / 2.0 + focus_ring.offset_y * scale,

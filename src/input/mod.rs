@@ -5,8 +5,6 @@ pub mod keybinds;
 pub mod pointer;
 pub mod zoom;
 
-pub(crate) use crate::presentation::window as presentation;
-
 use std::collections::HashSet;
 use std::hash::Hash;
 

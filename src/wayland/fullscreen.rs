@@ -12,7 +12,7 @@ use smithay::wayland::seat::WaylandFocus;
 use smithay::wayland::shell::xdg::ToplevelSurface;
 
 use crate::animation::MotionTimeline;
-use crate::camera::{FullscreenCameraFrame, OutputCameras};
+use crate::presentation::camera::{FullscreenCameraFrame, OutputCameras};
 
 use super::WaylandState;
 

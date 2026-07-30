@@ -264,7 +264,7 @@ pub fn handle_request<D: crate::session::SessionDriver>(
             halley_ipc::Response::Ack
         }
         halley_ipc::Request::CaptureFrame(request) => {
-            match crate::screencast::capture_frame(app, request, fds) {
+            match crate::capture::screencast::capture_frame(app, request, fds) {
                 Ok(response) => halley_ipc::Response::Frame(response),
                 Err(message) => halley_ipc::Response::Error(message),
             }

@@ -15,7 +15,7 @@ pub(super) struct LiveWindowContext<'a> {
     pub(super) space: &'a smithay::desktop::Space<smithay::desktop::Window>,
     pub(super) output: &'a Output,
     pub(super) output_geometry: Rectangle<i32, Logical>,
-    pub(super) cameras: &'a crate::camera::OutputCameras,
+    pub(super) cameras: &'a crate::presentation::camera::OutputCameras,
     pub(super) target_presentation_time: std::time::Duration,
     pub(super) focused:
         Option<&'a smithay::reexports::wayland_server::protocol::wl_surface::WlSurface>,
@@ -24,7 +24,7 @@ pub(super) struct LiveWindowContext<'a> {
     pub(super) shadow_config: halley_config::ShadowLayer,
     pub(super) window_open_animations: &'a crate::animation::WindowOpenAnimations,
     pub(super) fullscreen: &'a crate::wayland::fullscreen::FullscreenManager,
-    pub(super) maximize: &'a crate::wayland::maximize::FieldMaximizeManager,
+    pub(super) maximize: &'a crate::presentation::maximize::FieldMaximizeManager,
 }
 
 /// Crossfade progress past which the captured textures stop contributing.

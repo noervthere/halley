@@ -123,7 +123,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
     let _output_global = winit_backend.output().create_global::<App>(&dh);
 
     let output_size = winit_backend.window_size();
-    let mut cameras = crate::camera::OutputCameras::default();
+    let mut cameras = crate::presentation::camera::OutputCameras::default();
     cameras.insert(winit_backend.output().name(), output_size);
 
     let mut driver = WinitDriver {
@@ -167,13 +167,13 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
         start_time: Instant::now(),
         config_path: config_path.clone(),
         startup_config_diagnostic: initial.diagnostic,
-        overlays: crate::overlay::OverlayManager::default(),
+        overlays: crate::shell::overlay::OverlayManager::default(),
         overlay_config: runtime_config.overlays,
         nodes: crate::nodes::NodesState::new(&runtime_config),
-        bearings: crate::bearings::BearingsState::new(runtime_config.bearings),
-        focus_cycle: crate::focus_cycle::FocusCycleState::default(),
+        bearings: crate::shell::bearings::BearingsState::new(runtime_config.bearings),
+        focus_cycle: crate::shell::focus_cycle::FocusCycleState::default(),
         pending_pointer_warp: None,
-        apogee: crate::apogee::ApogeeState::default(),
+        apogee: crate::shell::apogee::ApogeeState::default(),
         apogee_config: runtime_config.apogee,
         input: applied_input,
         decorations: runtime_config.decorations,
@@ -183,7 +183,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
         zoom: runtime_config.field.zoom,
         screenshot: runtime_config.screenshot,
         capture: crate::capture::CaptureState::default(),
-        screencast: crate::screencast::ScreencastState::default(),
+        screencast: crate::capture::screencast::ScreencastState::default(),
         grab: crate::input::grab::Grab::None,
         resize_anchor: None,
         suppressed_buttons: SuppressedButtons::default(),
@@ -202,7 +202,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
             &runtime_config.font,
         ),
         fullscreen: crate::wayland::fullscreen::FullscreenManager::new(runtime_config.animations),
-        maximize: crate::wayland::maximize::FieldMaximizeManager::new(
+        maximize: crate::presentation::maximize::FieldMaximizeManager::new(
             runtime_config.field,
             runtime_config.animations,
         ),
@@ -281,7 +281,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                             .is_animating(surface.as_ref(), target_presentation_time)
                     })
                 });
-                let _ = crate::focus_cycle::finish_pending_pointer_warp(app);
+                let _ = crate::shell::focus_cycle::finish_pending_pointer_warp(app);
                 let fullscreen_animating = app
                     .fullscreen
                     .is_animating_on_output(&output, target_presentation_time);
@@ -296,7 +296,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                 let bearings_animating =
                     app.bearings.tick(&output.name(), target_presentation_time);
                 let focus_cycle_animating = app.focus_cycle.tick(target_presentation_time);
-                let apogee_animating = crate::apogee::tick(app, target_presentation_time);
+                let apogee_animating = crate::shell::apogee::tick(app, target_presentation_time);
                 if fullscreen_animating || maximize_animating {
                     super::pointer::update_client_state(
                         app,
@@ -394,7 +394,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                         target_presentation_time,
                         app.apogee_config.preview_max_fps,
                     ) {
-                        crate::apogee::send_preview_frames(
+                        crate::shell::apogee::send_preview_frames(
                             &app.apogee,
                             &app.nodes,
                             &output,

@@ -197,10 +197,10 @@ pub struct DesktopContext<'a> {
     pub session_lock: &'a crate::wayland::session_lock::State,
     pub space: &'a Space<Window>,
     pub focused: Option<&'a WlSurface>,
-    pub cameras: &'a crate::camera::OutputCameras,
+    pub cameras: &'a crate::presentation::camera::OutputCameras,
     pub window_open_animations: &'a crate::animation::WindowOpenAnimations,
     pub fullscreen: &'a crate::wayland::fullscreen::FullscreenManager,
-    pub maximize: &'a crate::wayland::maximize::FieldMaximizeManager,
+    pub maximize: &'a crate::presentation::maximize::FieldMaximizeManager,
     pub nodes: &'a crate::nodes::NodesState,
     pub node_grab_active: bool,
 }
@@ -217,11 +217,11 @@ pub struct CursorContext<'a> {
 /// Shell-owned overlays and replacement scenes.
 pub struct OverlayContext<'a> {
     pub capture_overlay: crate::capture::CaptureOverlay<'a>,
-    pub bearings: &'a crate::bearings::BearingsState,
-    pub focus_cycle: &'a crate::focus_cycle::FocusCycleState,
-    pub apogee: &'a crate::apogee::ApogeeState,
+    pub bearings: &'a crate::shell::bearings::BearingsState,
+    pub focus_cycle: &'a crate::shell::focus_cycle::FocusCycleState,
+    pub apogee: &'a crate::shell::apogee::ApogeeState,
     pub apogee_config: halley_config::Apogee,
-    pub overlays: &'a crate::overlay::OverlayManager,
+    pub overlays: &'a crate::shell::overlay::OverlayManager,
     pub overlay_config: &'a halley_config::Overlays,
 }
 

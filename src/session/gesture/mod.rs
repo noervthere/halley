@@ -389,7 +389,7 @@ where
                 if !event.cancelled()
                     && gesture.net_y >= session.input.gestures.swipe_threshold_px as f64
                 {
-                    crate::apogee::cancel(session);
+                    crate::shell::apogee::cancel(session);
                 }
             }
         },

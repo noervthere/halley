@@ -4,7 +4,7 @@ use smithay::output::Output;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::wayland::shell::xdg::ToplevelSurface;
 
-use crate::camera::OutputCameras;
+use crate::presentation::camera::OutputCameras;
 
 use super::WaylandState;
 

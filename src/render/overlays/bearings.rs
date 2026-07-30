@@ -152,9 +152,9 @@ pub fn elements(
     renderer: &mut GlesRenderer,
     output: &Output,
     output_geometry: Rectangle<i32, Logical>,
-    bearings: &crate::bearings::BearingsState,
+    bearings: &crate::shell::bearings::BearingsState,
     nodes: &crate::nodes::NodesState,
-    cameras: &crate::camera::OutputCameras,
+    cameras: &crate::presentation::camera::OutputCameras,
     blur_config: halley_config::Blur,
     backdrop_blur_renderer: &mut crate::render::effects::backdrop_blur::BackdropBlurRenderer,
     node_renderer: &mut crate::render::node::NodeRenderer,
@@ -189,7 +189,7 @@ pub fn elements(
         &output_name,
         layouts
             .iter()
-            .map(|layout| crate::bearings::BearingHitbox {
+            .map(|layout| crate::shell::bearings::BearingHitbox {
                 id: layout.id,
                 rect: layout.chip.to_logical(1),
             })
@@ -337,8 +337,10 @@ fn collect_layouts(
         nodes,
         camera,
     } = context;
-    let center =
-        crate::camera::global_center((camera.center.x, camera.center.y).into(), output_geometry);
+    let center = crate::presentation::camera::global_center(
+        (camera.center.x, camera.center.y).into(),
+        output_geometry,
+    );
     let viewport = Viewport::new(
         Vec2 {
             x: center.x,

@@ -10,9 +10,9 @@ use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point, Rectangle};
 use smithay::wayland::shell::wlr_layer::Layer;
 
-use crate::camera::OutputCameras;
 use crate::input::keybinds::WheelDirection;
-use crate::input::presentation::WindowPresentation;
+use crate::presentation::camera::OutputCameras;
+use crate::presentation::window::WindowPresentation;
 
 #[derive(Debug)]
 pub enum PointerTarget {
@@ -46,7 +46,7 @@ pub struct PointerRoutingContext<'a> {
     pub window_open_animations: &'a crate::animation::WindowOpenAnimations,
     pub primary: &'a Output,
     pub fullscreen: &'a crate::wayland::fullscreen::FullscreenManager,
-    pub maximize: &'a crate::wayland::maximize::FieldMaximizeManager,
+    pub maximize: &'a crate::presentation::maximize::FieldMaximizeManager,
     pub focused: Option<&'a WlSurface>,
     pub now: std::time::Duration,
 }

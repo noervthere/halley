@@ -33,11 +33,11 @@ use smithay::wayland::viewporter::ViewporterState;
 use smithay::wayland::virtual_keyboard::VirtualKeyboardManagerState;
 use smithay::wayland::xdg_activation::XdgActivationState;
 
-use crate::camera::OutputCameras;
 use crate::cursor::CursorManager;
 use crate::input::grab::{Grab, ResizeAnchor};
 use crate::input::pointer::{Pointer, WheelAccumulator};
 use crate::input::{Keyboard, SuppressedButtons, SuppressedKeys};
+use crate::presentation::camera::OutputCameras;
 use crate::wayland::{ClientState, WaylandState};
 
 /// The narrow contract shared compositor policy needs from a session driver.
@@ -99,13 +99,13 @@ pub struct Session<D: SessionDriver> {
     pub start_time: std::time::Instant,
     pub config_path: Option<PathBuf>,
     pub startup_config_diagnostic: Option<halley_config::ConfigDiagnostic>,
-    pub overlays: crate::overlay::OverlayManager,
+    pub overlays: crate::shell::overlay::OverlayManager,
     pub overlay_config: halley_config::Overlays,
     pub nodes: crate::nodes::NodesState,
-    pub bearings: crate::bearings::BearingsState,
-    pub focus_cycle: crate::focus_cycle::FocusCycleState,
+    pub bearings: crate::shell::bearings::BearingsState,
+    pub focus_cycle: crate::shell::focus_cycle::FocusCycleState,
     pub pending_pointer_warp: Option<WlSurface>,
-    pub apogee: crate::apogee::ApogeeState,
+    pub apogee: crate::shell::apogee::ApogeeState,
     pub apogee_config: halley_config::Apogee,
     pub input: halley_config::Input,
     pub decorations: halley_config::Decorations,
@@ -115,7 +115,7 @@ pub struct Session<D: SessionDriver> {
     pub zoom: halley_config::Zoom,
     pub screenshot: halley_config::Screenshot,
     pub capture: crate::capture::CaptureState,
-    pub screencast: crate::screencast::ScreencastState,
+    pub screencast: crate::capture::screencast::ScreencastState,
     pub grab: Grab,
     pub resize_anchor: Option<ResizeAnchor>,
     pub suppressed_buttons: SuppressedButtons,
@@ -129,7 +129,7 @@ pub struct Session<D: SessionDriver> {
     pub window_open_animations: crate::animation::WindowOpenAnimations,
     pub render: crate::render::resources::RenderState,
     pub fullscreen: crate::wayland::fullscreen::FullscreenManager,
-    pub maximize: crate::wayland::maximize::FieldMaximizeManager,
+    pub maximize: crate::presentation::maximize::FieldMaximizeManager,
     pub xwayland: crate::xwayland::State<D>,
 }
 

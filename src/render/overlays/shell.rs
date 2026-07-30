@@ -206,7 +206,7 @@ pub fn label_card_element(
 pub fn elements(
     renderer: &mut GlesRenderer,
     output_geometry: Rectangle<i32, Logical>,
-    snapshot: crate::overlay::OverlaySnapshot,
+    snapshot: crate::shell::overlay::OverlaySnapshot,
     config: &halley_config::Overlays,
     decorations: &halley_config::Decorations,
     node_renderer: &mut NodeRenderer,
@@ -356,7 +356,7 @@ fn exit_elements(
 fn notification_elements(
     renderer: &mut GlesRenderer,
     screen: Rectangle<i32, Physical>,
-    notification: crate::overlay::NotificationSnapshot,
+    notification: crate::shell::overlay::NotificationSnapshot,
     position: halley_config::NotificationPosition,
     visuals: OverlayVisuals,
     node_renderer: &mut NodeRenderer,
@@ -365,8 +365,8 @@ fn notification_elements(
 ) -> Result<(), Box<dyn Error>> {
     let max_text_width = ((screen.size.w as f32 * 0.70).round() as i32 - 32).max(80);
     let color = match notification.kind {
-        crate::overlay::NotificationKind::Success => visuals.text,
-        crate::overlay::NotificationKind::Error => visuals.error,
+        crate::shell::overlay::NotificationKind::Success => visuals.text,
+        crate::shell::overlay::NotificationKind::Error => visuals.error,
     };
     let (message, text_size) = fit_middle(
         renderer,

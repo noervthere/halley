@@ -166,10 +166,10 @@ fn dispatch_action<D: SessionDriver>(
             SERIAL_COUNTER.next_serial(),
         ),
         super::SessionControl::Apogee => {
-            crate::apogee::toggle(session);
+            crate::shell::apogee::toggle(session);
         }
         super::SessionControl::FocusCycle(direction) => {
-            crate::focus_cycle::start_or_step(session, direction);
+            crate::shell::focus_cycle::start_or_step(session, direction);
         }
         super::SessionControl::BearingsShow => {
             let changed = match held_keycode {
@@ -201,7 +201,7 @@ fn dispatch_action<D: SessionDriver>(
         let scale = session
             .cameras
             .get(output_name)
-            .map(crate::camera::target_scale);
+            .map(crate::presentation::camera::target_scale);
         if let Some(scale) = scale {
             crate::nodes::reconcile_landmarks_at_scale(session, output_name, scale);
         }
@@ -216,7 +216,7 @@ enum KeyboardOutcome {
     AccessibilityIntercept,
     ApogeeCancel,
     ApogeeAccept,
-    ApogeeMove(crate::apogee::Direction),
+    ApogeeMove(crate::shell::apogee::Direction),
     ApogeeIntercept,
     FocusCycleCancel,
     FocusCycleIntercept,
@@ -364,13 +364,13 @@ where
     if session.apogee.accepts_input() {
         match event {
             InputEvent::PointerMotion { .. } | InputEvent::PointerMotionAbsolute { .. } => {
-                crate::apogee::pointer_motion(session, proposed_position);
+                crate::shell::apogee::pointer_motion(session, proposed_position);
             }
             InputEvent::PointerButton { event } if event.button_code() == BTN_LEFT => {
                 match event.state() {
                     ButtonState::Pressed => {
                         session.suppressed_buttons.suppress(BTN_LEFT);
-                        crate::apogee::pointer_press(session, proposed_position);
+                        crate::shell::apogee::pointer_press(session, proposed_position);
                     }
                     ButtonState::Released => {
                         session.suppressed_buttons.release_is_suppressed(BTN_LEFT);
@@ -1117,16 +1117,16 @@ where
                         Some(Keysym::Escape) => KeyboardOutcome::ApogeeCancel,
                         Some(Keysym::Return | Keysym::KP_Enter) => KeyboardOutcome::ApogeeAccept,
                         Some(Keysym::Left) => {
-                            KeyboardOutcome::ApogeeMove(crate::apogee::Direction::Left)
+                            KeyboardOutcome::ApogeeMove(crate::shell::apogee::Direction::Left)
                         }
                         Some(Keysym::Right) => {
-                            KeyboardOutcome::ApogeeMove(crate::apogee::Direction::Right)
+                            KeyboardOutcome::ApogeeMove(crate::shell::apogee::Direction::Right)
                         }
                         Some(Keysym::Up) => {
-                            KeyboardOutcome::ApogeeMove(crate::apogee::Direction::Up)
+                            KeyboardOutcome::ApogeeMove(crate::shell::apogee::Direction::Up)
                         }
                         Some(Keysym::Down) => {
-                            KeyboardOutcome::ApogeeMove(crate::apogee::Direction::Down)
+                            KeyboardOutcome::ApogeeMove(crate::shell::apogee::Direction::Down)
                         }
                         _ => {
                             if let Some(
@@ -1251,15 +1251,15 @@ where
             Some(KeyboardOutcome::AccessibilityIntercept) => {}
             Some(KeyboardOutcome::ApogeeCancel) => {
                 session.suppressed_keys.suppress(keycode);
-                crate::apogee::cancel(session);
+                crate::shell::apogee::cancel(session);
             }
             Some(KeyboardOutcome::ApogeeAccept) => {
                 session.suppressed_keys.suppress(keycode);
-                crate::apogee::select(session);
+                crate::shell::apogee::select(session);
             }
             Some(KeyboardOutcome::ApogeeMove(direction)) => {
                 session.suppressed_keys.suppress(keycode);
-                crate::apogee::move_selection(session, direction);
+                crate::shell::apogee::move_selection(session, direction);
             }
             Some(KeyboardOutcome::ApogeeIntercept) => {
                 if state == KeyState::Pressed {
@@ -1268,7 +1268,7 @@ where
             }
             Some(KeyboardOutcome::FocusCycleCancel) => {
                 session.suppressed_keys.suppress(keycode);
-                crate::focus_cycle::cancel(session);
+                crate::shell::focus_cycle::cancel(session);
             }
             Some(KeyboardOutcome::FocusCycleIntercept) => {
                 if state == KeyState::Pressed {
@@ -1312,7 +1312,7 @@ where
             && session.focus_cycle.is_open()
             && !keyboard.modifier_state().alt
         {
-            crate::focus_cycle::commit(session, SERIAL_COUNTER.next_serial());
+            crate::shell::focus_cycle::commit(session, SERIAL_COUNTER.next_serial());
         }
     }
 }

@@ -19,7 +19,7 @@ pub fn prepare_commit<D: 'static>(surface: &WlSurface) {
 
 pub fn commit(
     wayland: &mut WaylandState,
-    cameras: &crate::camera::OutputCameras,
+    cameras: &crate::presentation::camera::OutputCameras,
     primary_output: &Output,
     surface: &WlSurface,
 ) -> xdg_shell::ToplevelCommit {

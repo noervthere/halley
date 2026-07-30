@@ -224,7 +224,7 @@ where
     let location = match target.coordinates {
         CoordinateSpace::Screen => screen,
         CoordinateSpace::Window(surface) => {
-            let Some(presentation) = crate::input::presentation::WindowPresentation::for_surface(
+            let Some(presentation) = crate::presentation::window::WindowPresentation::for_surface(
                 &session.wayland.space,
                 &session.cameras,
                 session.driver.primary_output(),

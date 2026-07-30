@@ -12,8 +12,6 @@ pub mod session_lock;
 pub mod wlr_output_management;
 pub mod xdg_shell;
 
-pub(crate) use crate::presentation::maximize;
-
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 

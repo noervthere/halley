@@ -110,7 +110,7 @@ pub(super) fn surface_visual_center<D: SessionDriver>(
     surface: &WlSurface,
 ) -> Option<Point<f64, Logical>> {
     let now = crate::frame_clock::monotonic_now();
-    if let Some(presentation) = crate::input::presentation::WindowPresentation::for_surface(
+    if let Some(presentation) = crate::presentation::window::WindowPresentation::for_surface(
         &session.wayland.space,
         &session.cameras,
         session.driver.primary_output(),

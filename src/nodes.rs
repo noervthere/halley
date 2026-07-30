@@ -889,9 +889,11 @@ pub fn screen_from_world(
     camera: &halley_core::camera::Camera,
     output_geometry: Rectangle<i32, Logical>,
 ) -> Point<i32, Logical> {
-    let scale = crate::camera::scale(camera);
-    let global_center =
-        crate::camera::global_center((camera.center.x, camera.center.y).into(), output_geometry);
+    let scale = crate::presentation::camera::scale(camera);
+    let global_center = crate::presentation::camera::global_center(
+        (camera.center.x, camera.center.y).into(),
+        output_geometry,
+    );
     (
         output_geometry.loc.x
             + output_geometry.size.w / 2

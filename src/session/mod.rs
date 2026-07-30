@@ -212,7 +212,7 @@ pub(crate) fn warp_pointer_to_window_center<D: SessionDriver>(
     else {
         return false;
     };
-    let Some(presentation) = crate::input::presentation::WindowPresentation::for_window(
+    let Some(presentation) = crate::presentation::window::WindowPresentation::for_window(
         &session.wayland.space,
         &session.cameras,
         &session.window_open_animations,
@@ -406,7 +406,7 @@ fn toggle_focused_field_maximize<D: SessionDriver>(session: &mut Session<D>, out
     }
     configure_field_geometry(
         session,
-        &crate::wayland::maximize::FieldRestore {
+        &crate::presentation::maximize::FieldRestore {
             surface: record.surface,
             geometry: change.geometry,
             output: change.output,
@@ -418,7 +418,7 @@ fn toggle_focused_field_maximize<D: SessionDriver>(session: &mut Session<D>, out
 
 pub(crate) fn configure_field_geometry<D: SessionDriver>(
     session: &mut Session<D>,
-    request: &crate::wayland::maximize::FieldRestore,
+    request: &crate::presentation::maximize::FieldRestore,
 ) {
     let Some(window) = session
         .nodes

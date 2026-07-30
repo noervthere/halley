@@ -52,7 +52,7 @@ pub fn tick(
 /// and by `input::grab`'s screen↔world conversion, so there's exactly one
 /// definition of "what does the camera's zoom state mean as a scale factor".
 pub fn scale(camera: &Camera) -> f32 {
-    crate::camera::scale(camera)
+    crate::presentation::camera::scale(camera)
 }
 
 /// Applies one zoom-out step - a no-op if zoom is disabled in config

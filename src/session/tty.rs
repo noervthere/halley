@@ -297,23 +297,23 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
         start_time: Instant::now(),
         config_path: config_path.clone(),
         startup_config_diagnostic: initial.diagnostic,
-        overlays: crate::overlay::OverlayManager::default(),
+        overlays: crate::shell::overlay::OverlayManager::default(),
         overlay_config: runtime_config.overlays,
         nodes: crate::nodes::NodesState::new(&runtime_config),
-        bearings: crate::bearings::BearingsState::new(runtime_config.bearings),
-        focus_cycle: crate::focus_cycle::FocusCycleState::default(),
+        bearings: crate::shell::bearings::BearingsState::new(runtime_config.bearings),
+        focus_cycle: crate::shell::focus_cycle::FocusCycleState::default(),
         pending_pointer_warp: None,
-        apogee: crate::apogee::ApogeeState::default(),
+        apogee: crate::shell::apogee::ApogeeState::default(),
         apogee_config: runtime_config.apogee,
         input: applied_input,
         decorations: runtime_config.decorations,
         effects: runtime_config.effects,
-        cameras: crate::camera::OutputCameras::default(),
+        cameras: crate::presentation::camera::OutputCameras::default(),
         field_config: runtime_config.field,
         zoom: runtime_config.field.zoom,
         screenshot: runtime_config.screenshot,
         capture: crate::capture::CaptureState::default(),
-        screencast: crate::screencast::ScreencastState::default(),
+        screencast: crate::capture::screencast::ScreencastState::default(),
         grab: crate::input::grab::Grab::None,
         resize_anchor: None,
         suppressed_buttons: SuppressedButtons::default(),
@@ -332,7 +332,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
             &runtime_config.font,
         ),
         fullscreen: crate::wayland::fullscreen::FullscreenManager::new(runtime_config.animations),
-        maximize: crate::wayland::maximize::FieldMaximizeManager::new(
+        maximize: crate::presentation::maximize::FieldMaximizeManager::new(
             runtime_config.field,
             runtime_config.animations,
         ),
@@ -576,7 +576,7 @@ fn send_output_frame_callbacks(app: &mut TtyApp, output: &Output) {
             crate::frame_clock::monotonic_now(),
             app.apogee_config.preview_max_fps,
         ) {
-            crate::apogee::send_preview_frames(&app.apogee, &app.nodes, output, elapsed);
+            crate::shell::apogee::send_preview_frames(&app.apogee, &app.nodes, output, elapsed);
         }
     } else {
         app.wayland
@@ -765,7 +765,7 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
                     .is_animating(surface.as_ref(), target_presentation_time)
             })
     });
-    let _ = crate::focus_cycle::finish_pending_pointer_warp(app);
+    let _ = crate::shell::focus_cycle::finish_pending_pointer_warp(app);
     let fullscreen_animating = app
         .fullscreen
         .is_animating_on_output(output, target_presentation_time);
@@ -779,7 +779,7 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
         .is_animating_on_output(&output.name(), target_presentation_time);
     let bearings_animating = app.bearings.tick(&output.name(), target_presentation_time);
     let focus_cycle_animating = app.focus_cycle.tick(target_presentation_time);
-    let apogee_animating = crate::apogee::tick(app, target_presentation_time);
+    let apogee_animating = crate::shell::apogee::tick(app, target_presentation_time);
     let overlay_animating = app.overlays.animating(target_presentation_time);
     let show_cursor = super::pointer::cursor_visible(app);
     let cursor_override = app

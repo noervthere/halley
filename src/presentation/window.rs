@@ -5,7 +5,7 @@ use smithay::utils::{Logical, Physical, Point, Rectangle};
 use smithay::wayland::compositor::{SubsurfaceCachedState, get_parent, with_states};
 use smithay::wayland::seat::WaylandFocus;
 
-use crate::camera::OutputCameras;
+use crate::presentation::camera::OutputCameras;
 
 /// The presentation geometry shared by scene construction and input routing.
 ///
@@ -20,7 +20,7 @@ pub(crate) struct WindowVisualState {
     pub(crate) animated_rect: Rectangle<i32, Physical>,
     pub(crate) opening_alpha: f32,
     pub(crate) fullscreen: Option<crate::wayland::fullscreen::FullscreenPresentation>,
-    pub(crate) maximize: Option<crate::wayland::maximize::FieldMaximizePresentation>,
+    pub(crate) maximize: Option<crate::presentation::maximize::FieldMaximizePresentation>,
     pub(crate) camera_center: Point<f32, Physical>,
     pub(crate) zoom_scale: f32,
     inherited_presentation: bool,
@@ -59,13 +59,13 @@ pub(crate) fn window_visual_state(
     output: &Output,
     window_open_animations: &crate::animation::WindowOpenAnimations,
     fullscreen: &crate::wayland::fullscreen::FullscreenManager,
-    maximize: &crate::wayland::maximize::FieldMaximizeManager,
+    maximize: &crate::presentation::maximize::FieldMaximizeManager,
     now: std::time::Duration,
 ) -> Option<WindowVisualState> {
     let output_geometry = space.output_geometry(output)?;
     let output_size = output_geometry.size.to_physical(1);
     let view = cameras.view(&output.name())?;
-    let camera_center = crate::camera::global_center(view.center, output_geometry);
+    let camera_center = crate::presentation::camera::global_center(view.center, output_geometry);
     let source_geometry = space.element_geometry(window)?;
     let window_surface = window.wl_surface()?;
     let mut camera_rect = crate::render::camera_rect(
@@ -185,7 +185,7 @@ impl WindowPresentation {
         cameras: &OutputCameras,
         window_open_animations: &crate::animation::WindowOpenAnimations,
         fullscreen: &crate::wayland::fullscreen::FullscreenManager,
-        maximize: &crate::wayland::maximize::FieldMaximizeManager,
+        maximize: &crate::presentation::maximize::FieldMaximizeManager,
         window: &Window,
         output: &Output,
         now: std::time::Duration,
@@ -248,7 +248,7 @@ impl WindowPresentation {
         primary: &Output,
         window_open_animations: &crate::animation::WindowOpenAnimations,
         fullscreen: &crate::wayland::fullscreen::FullscreenManager,
-        maximize: &crate::wayland::maximize::FieldMaximizeManager,
+        maximize: &crate::presentation::maximize::FieldMaximizeManager,
         surface: &WlSurface,
         now: std::time::Duration,
     ) -> Option<Self> {

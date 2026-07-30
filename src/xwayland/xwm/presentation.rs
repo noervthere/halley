@@ -220,7 +220,7 @@ pub(super) fn opening_presentation_bounds<D: SessionDriver>(
         .or_else(|| crate::wayland::focus::selected_output(&session.wayland))
         .cloned()?;
     let output_geometry = session.wayland.space.output_geometry(&output)?;
-    let presentation = crate::input::presentation::WindowPresentation::for_window(
+    let presentation = crate::presentation::window::WindowPresentation::for_window(
         &session.wayland.space,
         &session.cameras,
         &session.window_open_animations,
@@ -254,7 +254,7 @@ pub(super) fn opening_target_bounds<D: SessionDriver>(
     let view = session.cameras.view(&output.name())?;
     Some(crate::render::camera_rect(
         geometry.to_physical(1),
-        crate::camera::global_center(view.center, output_geometry),
+        crate::presentation::camera::global_center(view.center, output_geometry),
         output_size,
         view.scale,
     ))

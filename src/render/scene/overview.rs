@@ -10,19 +10,19 @@ pub(super) fn apogee_elements(
     renderer: &mut GlesRenderer,
     output: &Output,
     output_geometry: Rectangle<i32, Logical>,
-    state: &crate::apogee::ApogeeState,
+    state: &crate::shell::apogee::ApogeeState,
     config: halley_config::Apogee,
     overlay_config: &halley_config::Overlays,
     decorations: &halley_config::Decorations,
     space: &smithay::desktop::Space<smithay::desktop::Window>,
-    cameras: &crate::camera::OutputCameras,
+    cameras: &crate::presentation::camera::OutputCameras,
     nodes: &crate::nodes::NodesState,
     node_renderer: &mut crate::render::node::NodeRenderer,
     window_decoration_renderer: &mut crate::render::window_decoration::WindowDecorationRenderer,
     ui_text: &mut crate::render::text::UiTextRenderer,
     window_open_animations: &crate::animation::WindowOpenAnimations,
     fullscreen: &crate::wayland::fullscreen::FullscreenManager,
-    maximize: &crate::wayland::maximize::FieldMaximizeManager,
+    maximize: &crate::presentation::maximize::FieldMaximizeManager,
     overlay_previews: &mut crate::render::overlays::preview::OverlayPreviewCache,
     now: std::time::Duration,
 ) -> Result<Vec<SceneElement>, Box<dyn Error>> {
@@ -242,7 +242,7 @@ pub(super) fn apogee_transition_visuals(progress: f32) -> ApogeeTransitionVisual
 }
 
 pub(super) fn sort_apogee_tiles(
-    tiles: &mut [&crate::apogee::Tile],
+    tiles: &mut [&crate::shell::apogee::Tile],
     selected: Option<halley_core::field::NodeId>,
 ) {
     tiles.sort_by_key(|tile| {
@@ -296,7 +296,7 @@ pub(super) fn apogee_caption_rect(
 }
 
 pub(super) struct FocusCycleRenderContext<'a> {
-    pub state: &'a crate::focus_cycle::FocusCycleState,
+    pub state: &'a crate::shell::focus_cycle::FocusCycleState,
     pub nodes: &'a crate::nodes::NodesState,
     pub overlay_config: &'a halley_config::Overlays,
     pub decorations: &'a halley_config::Decorations,
@@ -330,7 +330,7 @@ pub(super) fn focus_cycle_elements(
     let rail_step = (screen.w as f32 * 0.28).clamp(260.0, 440.0) + 9.0;
     let center_y = screen.h as f32 * 0.5;
     let mut cards = session
-        .visible_slots(crate::focus_cycle::VISIBLE_RADIUS)
+        .visible_slots(crate::shell::focus_cycle::VISIBLE_RADIUS)
         .into_iter()
         .filter_map(|(_, id)| {
             let record = context.nodes.record(id)?;
@@ -591,7 +591,7 @@ pub(super) fn hover_preview_elements(
     output: &Output,
     output_geometry: Rectangle<i32, Logical>,
     nodes: &crate::nodes::NodesState,
-    cameras: &crate::camera::OutputCameras,
+    cameras: &crate::presentation::camera::OutputCameras,
     overlay_previews: &mut crate::render::overlays::preview::OverlayPreviewCache,
     node_renderer: &mut crate::render::node::NodeRenderer,
     ui_text: &mut crate::render::text::UiTextRenderer,

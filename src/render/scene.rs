@@ -14,7 +14,7 @@ use smithay::wayland::seat::WaylandFocus;
 use smithay::wayland::shell::wlr_layer::Layer;
 
 use super::RenderRequest;
-use crate::input::presentation::window_visual_state;
+use crate::presentation::window::window_visual_state;
 mod capture_ui;
 mod effects;
 mod nodes;
@@ -612,7 +612,8 @@ mod tests {
     #[test]
     fn secondary_window_geometry_becomes_output_local() {
         let secondary = Rectangle::<i32, Logical>::new((2560, 0).into(), (1920, 1200).into());
-        let camera_center = crate::camera::global_center(Point::from((1060.0, 550.0)), secondary);
+        let camera_center =
+            crate::presentation::camera::global_center(Point::from((1060.0, 550.0)), secondary);
         let world_rect = Rectangle::<i32, Physical>::new((3520, 600).into(), (200, 100).into());
 
         assert_eq!(
@@ -696,21 +697,21 @@ mod tests {
 
     #[test]
     fn apogee_transition_preserves_source_stack_and_promotes_selection() {
-        let back = crate::apogee::Tile {
+        let back = crate::shell::apogee::Tile {
             id: halley_core::field::NodeId::new(1),
             output: "DP-1".into(),
             target: Rectangle::new((0, 0).into(), (100, 100).into()),
             source_stack_index: 0,
             source_stack_order: u64::MAX,
         };
-        let middle = crate::apogee::Tile {
+        let middle = crate::shell::apogee::Tile {
             id: halley_core::field::NodeId::new(2),
             output: "DP-1".into(),
             target: Rectangle::new((100, 0).into(), (100, 100).into()),
             source_stack_index: 1,
             source_stack_order: 0,
         };
-        let front = crate::apogee::Tile {
+        let front = crate::shell::apogee::Tile {
             id: halley_core::field::NodeId::new(3),
             output: "DP-1".into(),
             target: Rectangle::new((200, 0).into(), (100, 100).into()),

@@ -1,7 +1,7 @@
 use smithay::output::Output;
 use smithay::utils::{Logical, Physical, Point, Size};
 
-use crate::camera::OutputCameras;
+use crate::presentation::camera::OutputCameras;
 use crate::wayland::WaylandState;
 
 pub(crate) struct InitialWindowPlacement {
@@ -42,7 +42,7 @@ pub(crate) fn centered_location_for_size(
                 output_geometry.size.h as f32 / 2.0,
             ))
         });
-    let center = crate::camera::global_center(local_camera_center, output_geometry);
+    let center = crate::presentation::camera::global_center(local_camera_center, output_geometry);
     center_window(center, window_size)
 }
 

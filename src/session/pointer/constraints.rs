@@ -6,7 +6,7 @@ use smithay::wayland::compositor::RegionAttributes;
 use smithay::wayland::pointer_constraints::{PointerConstraint, with_pointer_constraint};
 use smithay::wayland::seat::WaylandFocus;
 
-use crate::input::presentation::WindowPresentation;
+use crate::presentation::window::WindowPresentation;
 use crate::session::{Session, SessionDriver};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
