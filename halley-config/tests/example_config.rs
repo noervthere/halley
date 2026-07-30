@@ -184,6 +184,21 @@ fn example_config_apogee_section_parses() {
 }
 
 #[test]
+fn example_config_overlay_section_is_the_bootstrap_style() {
+    let config = RuneConfig::from_file(EXAMPLE_PATH).expect("example config parses");
+    let overlays = halley_config::parse_overlays_checked(&config).expect("overlays parse");
+
+    assert_eq!(overlays.shape, halley_config::OverlayShape::Square);
+    assert!(overlays.borders);
+    assert_eq!(
+        overlays.notifications.position,
+        halley_config::NotificationPosition::TopCenter
+    );
+    assert_eq!(overlays.notifications.success_duration_ms, 4_000);
+    assert_eq!(overlays.notifications.error_duration_ms, 9_000);
+}
+
+#[test]
 fn example_config_has_per_output_rings_font_and_landmarks() {
     let config = RuneConfig::from_file(EXAMPLE_PATH).expect("example config parses");
     let runtime = halley_config::parse_runtime_config(&config).expect("runtime config parses");

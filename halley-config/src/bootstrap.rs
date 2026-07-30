@@ -130,6 +130,9 @@ mod tests {
             "\"alt+tab\" \"cycle-focus\"",
             "live-previews true",
             "max-rows 3",
+            "overlays:",
+            "notifications:",
+            "success-duration-ms 4000",
             "\"retract\" - reverse \"launch\"",
         ] {
             assert!(
