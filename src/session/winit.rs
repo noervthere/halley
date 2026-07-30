@@ -70,9 +70,13 @@ type App = Session<WinitDriver>;
 
 fn apply_runtime_config(app: &mut App, reload: crate::config::ConfigReload) {
     match reload {
-        crate::config::ConfigReload::Loaded(config) => app.apply_common_config(&config),
+        crate::config::ConfigReload::Loaded(config) => {
+            app.apply_common_config(&config);
+            app.clear_config_reload_error();
+        }
         crate::config::ConfigReload::Rejected(diagnostic) => {
             eventline::debug!("config: rejected reload for {:?}", diagnostic.path);
+            app.show_config_reload_error();
         }
     }
 }
@@ -148,6 +152,8 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
         start_time: Instant::now(),
         config_path: config_path.clone(),
         startup_config_diagnostic: initial.diagnostic,
+        overlays: crate::overlay::OverlayManager::default(),
+        overlay_config: runtime_config.overlays,
         nodes: crate::nodes::NodesState::new(&runtime_config),
         bearings: crate::bearings::BearingsState::new(runtime_config.bearings),
         focus_cycle: crate::focus_cycle::FocusCycleState::default(),
@@ -188,6 +194,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
     app.wayland
         .space
         .map_output(app.driver.backend.output(), (0, 0));
+    app.initialize_config_notification();
 
     let socket_name = super::protocol::init_wayland_listener(display, &mut event_loop);
     eventline::info!("halley (winit) starting, WAYLAND_DISPLAY={socket_name:?}");
@@ -213,12 +220,15 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
     if let Err(err) = super::install_apogee_preview_timer(&event_loop.handle()) {
         eventline::warn!("apogee: failed to start preview timer: {err}");
     }
+    if let Err(err) = super::install_overlay_timer(&event_loop.handle()) {
+        eventline::warn!("overlays: failed to start lifecycle timer: {err}");
+    }
 
     event_loop
         .handle()
         .insert_source(winit_source, move |event, _, app| match event {
             WinitEvent::CloseRequested => {
-                app.driver.exit = true;
+                app.show_exit_confirmation();
             }
             WinitEvent::Redraw => {
                 let now = Instant::now();
@@ -304,6 +314,8 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                         focus_cycle: &app.focus_cycle,
                         apogee: &app.apogee,
                         apogee_config: app.apogee_config,
+                        overlays: &app.overlays,
+                        overlay_config: &app.overlay_config,
                         node_renderer: &mut app.node_renderer,
                         ui_text: &mut app.ui_text,
                     },
@@ -366,6 +378,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                     || bearings_animating
                     || focus_cycle_animating
                     || apogee_animating
+                    || app.overlays.animating(target_presentation_time)
                     || app.node_renderer.has_pending_icons()
                     || cursor_animating
                 {

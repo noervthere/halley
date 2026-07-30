@@ -184,6 +184,8 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
         start_time: Instant::now(),
         config_path: config_path.clone(),
         startup_config_diagnostic: initial.diagnostic,
+        overlays: crate::overlay::OverlayManager::default(),
+        overlay_config: runtime_config.overlays,
         nodes: crate::nodes::NodesState::new(&runtime_config),
         bearings: crate::bearings::BearingsState::new(runtime_config.bearings),
         focus_cycle: crate::focus_cycle::FocusCycleState::default(),
@@ -233,6 +235,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
         app.cameras
             .insert(output.name(), geometry.size.to_physical(1));
     }
+    app.initialize_config_notification();
 
     let socket_name = super::protocol::init_wayland_listener(display, &mut event_loop);
     eventline::info!("wayland socket ready, WAYLAND_DISPLAY={socket_name:?}");
@@ -260,6 +263,9 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
     }
     if let Err(err) = super::install_apogee_preview_timer(&event_loop.handle()) {
         eventline::warn!("apogee: failed to start preview timer: {err}");
+    }
+    if let Err(err) = super::install_overlay_timer(&event_loop.handle()) {
+        eventline::warn!("overlays: failed to start lifecycle timer: {err}");
     }
 
     // Queue every output's first frame through the same state machine used
@@ -441,9 +447,11 @@ fn apply_runtime_config(app: &mut TtyApp, reload: crate::config::ConfigReload) {
                 apply_tty_output_config(app, &config.outputs);
             }
             app.run_autostart_reload(&reload_commands);
+            app.clear_config_reload_error();
         }
         crate::config::ConfigReload::Rejected(diagnostic) => {
             eventline::debug!("config: rejected reload for {:?}", diagnostic.path);
+            app.show_config_reload_error();
         }
     }
 }
@@ -562,6 +570,7 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
     let bearings_animating = app.bearings.tick(&output.name(), target_presentation_time);
     let focus_cycle_animating = app.focus_cycle.tick(target_presentation_time);
     let apogee_animating = crate::apogee::tick(app, target_presentation_time);
+    let overlay_animating = app.overlays.animating(target_presentation_time);
     let show_cursor = super::pointer::cursor_visible(app);
     crate::cursor::surface::refresh_outputs(
         &app.cursor,
@@ -579,6 +588,7 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
         || bearings_animating
         || focus_cycle_animating
         || apogee_animating
+        || overlay_animating
         || fullscreen_animating
         || cursor_animating;
     if fullscreen_animating && pointer_is_on_output {
@@ -615,6 +625,8 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
             focus_cycle: &app.focus_cycle,
             apogee: &app.apogee,
             apogee_config: app.apogee_config,
+            overlays: &app.overlays,
+            overlay_config: &app.overlay_config,
             node_renderer: &mut app.node_renderer,
             ui_text: &mut app.ui_text,
         },

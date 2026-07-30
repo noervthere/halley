@@ -45,7 +45,9 @@ the old distance fade and is clamped from 120 through 100000 field pixels.
 
 Labels and distance text use the shared Cosmic Text renderer and the global
 `font:` section. Titles are Unicode-safe and shorten after 24 characters.
-Crowded groups use a count such as `3 nodes`.
+Crowded groups use a count such as `3 nodes`. Chip shape, palette, and borders
+come from the shared [`overlays:`](overlays.md) section; `bearings.blur`
+continues to control the Bearings-only backdrop effect.
 
 With `blur true`, all chips on one output share a single persistent backdrop
 capture and Dual Kawase blur chain. The blurred result is recomputed when the
@@ -64,4 +66,4 @@ halleyctl bearings status
 ```
 
 `status` prints `visible` or `hidden`. These commands and node controls use IPC
-protocol version 7; keep `halleyctl` and the compositor from the same build.
+protocol version 8; keep `halleyctl` and the compositor from the same build.

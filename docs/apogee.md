@@ -10,6 +10,8 @@ window area, prevents tile overlap, and reserves the original upper core band.
 Apogee replaces the desktop scene while it is visible. The only scene behind
 its tiles is the wallpaper/background layer: normal windows, nodes, panels,
 and other desktop layers never poke through the dimming backdrop.
+Its tile title bands and Alt+Tab's cards use the shared
+[`overlays:`](overlays.md) shape, palette, and border settings.
 
 Arrow keys navigate spatially across monitor geometry. Enter or a tile click
 selects a window, Escape or an outside click cancels, and `Mod+O` toggles the

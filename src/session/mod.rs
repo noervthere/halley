@@ -161,6 +161,23 @@ fn install_apogee_preview_timer<D: SessionDriver>(
         .map_err(Into::into)
 }
 
+fn install_overlay_timer<D: SessionDriver>(
+    handle: &LoopHandle<'_, Session<D>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    handle
+        .insert_source(
+            Timer::from_duration(Duration::from_millis(50)),
+            |_, _, session| {
+                if session.overlays.wakeup(crate::frame_clock::monotonic_now()) {
+                    session.request_redraw();
+                }
+                TimeoutAction::ToDuration(Duration::from_millis(50))
+            },
+        )
+        .map(|_| ())
+        .map_err(Into::into)
+}
+
 pub(crate) fn reconcile_pointer_constraints<D: SessionDriver>(session: &mut Session<D>) {
     pointer::reconcile_state(session);
 }

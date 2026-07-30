@@ -294,6 +294,15 @@ pub fn handle_request<D: crate::session::SessionDriver>(
                 })
             }
         },
+        halley_ipc::Request::Quit => {
+            app.show_exit_confirmation();
+            halley_ipc::Response::Ack
+        }
+        halley_ipc::Request::ConfigPath => halley_ipc::Response::ConfigPath(
+            app.config_path
+                .as_ref()
+                .map(|path| path.to_string_lossy().into_owned()),
+        ),
     };
     let _ = reply.send(response, Vec::new());
 }

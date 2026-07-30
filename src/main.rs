@@ -13,6 +13,7 @@ mod input;
 mod ipc;
 mod logging;
 mod nodes;
+mod overlay;
 mod screencast;
 mod session;
 mod wayland;

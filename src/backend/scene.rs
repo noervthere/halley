@@ -46,6 +46,9 @@ pub fn build(
         .cameras
         .view(&output.name())
         .ok_or_else(|| format!("output {:?} has no camera", output.name()))?;
+    let overlay_snapshot = request
+        .overlays
+        .snapshot(&output.name(), request.target_presentation_time);
 
     // Apogee is a replacement scene, not a translucent layer over the live
     // desktop. Keep only its tiles and the wallpaper layer behind them; normal
@@ -57,6 +60,8 @@ pub fn build(
             output_geometry,
             request.apogee,
             request.apogee_config,
+            request.overlay_config,
+            request.decorations,
             request.space,
             request.cameras,
             request.nodes,
@@ -72,6 +77,16 @@ pub fn build(
                 .into_iter()
                 .map(SceneElement::Layer),
         );
+        let overlay_elements = super::overlay::elements(
+            renderer,
+            output_geometry,
+            overlay_snapshot,
+            request.overlay_config,
+            request.decorations,
+            request.node_renderer,
+            request.ui_text,
+        )?;
+        elements.splice(0..0, overlay_elements);
         if request.show_cursor {
             let cursor = crate::cursor::render::elements(
                 renderer,
@@ -103,6 +118,8 @@ pub fn build(
         request.bearings_renderer,
         request.node_renderer,
         request.ui_text,
+        request.overlay_config,
+        request.decorations,
     )?);
     elements.extend(
         super::layer_surface_elements(renderer, output, Layer::Overlay)
@@ -117,6 +134,8 @@ pub fn build(
         request.overlay_previews,
         request.node_renderer,
         request.ui_text,
+        request.overlay_config,
+        request.decorations,
         request.target_presentation_time,
     )?);
     if !request
@@ -212,6 +231,17 @@ pub fn build(
             .map(SceneElement::Layer),
     );
 
+    let overlay_elements = super::overlay::elements(
+        renderer,
+        output_geometry,
+        overlay_snapshot,
+        request.overlay_config,
+        request.decorations,
+        request.node_renderer,
+        request.ui_text,
+    )?;
+    elements.splice(0..0, overlay_elements);
+
     if request.show_cursor {
         let cursor = crate::cursor::render::elements(
             renderer,
@@ -236,6 +266,8 @@ fn apogee_elements(
     output_geometry: Rectangle<i32, Logical>,
     state: &crate::apogee::ApogeeState,
     config: halley_config::Apogee,
+    overlay_config: &halley_config::Overlays,
+    decorations: &halley_config::Decorations,
     space: &smithay::desktop::Space<smithay::desktop::Window>,
     cameras: &crate::camera::OutputCameras,
     nodes: &crate::nodes::NodesState,
@@ -254,6 +286,7 @@ fn apogee_elements(
         return Ok(Vec::new());
     }
     let output_local = Rectangle::<i32, Physical>::from_size(output_geometry.size.to_physical(1));
+    let overlay_visuals = super::overlay::resolve_visuals(overlay_config, decorations);
     let mut tiles = session
         .tiles
         .iter()
@@ -321,7 +354,7 @@ fn apogee_elements(
                 ui_text,
                 &record.title,
                 1,
-                [238, 243, 250],
+                overlay_visuals.text.bytes(),
                 caption.size.w - 16,
             )?;
             if !title.is_empty()
@@ -334,25 +367,27 @@ fn apogee_elements(
                         .into(),
                     &title,
                     1,
-                    [238, 243, 250],
+                    overlay_visuals.text.bytes(),
                     chrome_alpha,
                 )?
             {
                 elements.push(SceneElement::UiText(text.element));
             }
-            elements.push(SceneElement::NodeLabel(node_renderer.label_element(
+            let fill = if selected || hovered {
+                overlay_visuals.fill.mix(overlay_visuals.border, 0.16)
+            } else {
+                overlay_visuals.fill
+            };
+            elements.push(SceneElement::NodeLabel(super::overlay::card_element(
                 renderer,
+                node_renderer,
                 caption,
-                halley_config::NodeShape::Squircle,
+                overlay_visuals,
+                fill,
                 if selected || hovered {
-                    (0.10, 0.20, 0.31)
+                    0.96 * chrome_alpha
                 } else {
-                    (0.02, 0.025, 0.035)
-                },
-                if selected || hovered {
-                    0.62 * chrome_alpha
-                } else {
-                    0.50 * chrome_alpha
+                    0.88 * chrome_alpha
                 },
             )?));
         }
@@ -403,11 +438,17 @@ fn apogee_elements(
             .into_iter()
             .map(SceneElement::Border),
         );
-        elements.push(SceneElement::NodeLabel(node_renderer.label_element(
+        let card_fill = if selected || hovered {
+            overlay_visuals.fill.mix(overlay_visuals.border, 0.12)
+        } else {
+            overlay_visuals.fill
+        };
+        elements.push(SceneElement::NodeLabel(super::overlay::card_element(
             renderer,
+            node_renderer,
             card,
-            halley_config::NodeShape::Squircle,
-            (0.045, 0.062, 0.088),
+            overlay_visuals,
+            card_fill,
             0.96 * progress,
         )?));
     }
@@ -468,6 +509,8 @@ fn focus_cycle_elements(
     overlay_previews: &mut super::overlay_preview::OverlayPreviewCache,
     node_renderer: &mut super::node::NodeRenderer,
     ui_text: &mut super::text::UiTextRenderer,
+    overlay_config: &halley_config::Overlays,
+    decorations: &halley_config::Decorations,
     now: std::time::Duration,
 ) -> Result<Vec<SceneElement>, Box<dyn Error>> {
     let Some(session) = state.session() else {
@@ -481,6 +524,7 @@ fn focus_cycle_elements(
     }
 
     let screen = output_geometry.size.to_physical(1);
+    let overlay_visuals = super::overlay::resolve_visuals(overlay_config, decorations);
     let rail_step = (screen.w as f32 * 0.28).clamp(260.0, 440.0) + 9.0;
     let center_y = screen.h as f32 * 0.5;
     let mut cards = session
@@ -546,7 +590,7 @@ fn focus_cycle_elements(
 
         // Top-right monitor badge, over the preview.
         let monitor = truncate_chars(&record.output, 10);
-        if let Some(size) = ui_text.measure(renderer, &monitor, 1, [238, 243, 250])? {
+        if let Some(size) = ui_text.measure(renderer, &monitor, 1, overlay_visuals.text.bytes())? {
             let badge = Rectangle::<i32, Physical>::new(
                 (body.loc.x + body.size.w - size.w - 22, body.loc.y + 8).into(),
                 (size.w + 14, size.h + 8).into(),
@@ -556,22 +600,24 @@ fn focus_cycle_elements(
                 (badge.loc.x + 7, badge.loc.y + 4).into(),
                 &monitor,
                 1,
-                [238, 243, 250],
+                overlay_visuals.text.bytes(),
                 alpha,
             )? {
                 elements.push(SceneElement::UiText(text.element));
             }
-            elements.push(SceneElement::NodeLabel(node_renderer.label_element(
+            elements.push(SceneElement::NodeLabel(super::overlay::card_element(
                 renderer,
+                node_renderer,
                 badge,
-                halley_config::NodeShape::Squircle,
-                (0.19, 0.23, 0.30),
+                overlay_visuals,
+                overlay_visuals.fill.mix(overlay_visuals.border, 0.12),
                 if selected { 0.95 * alpha } else { 0.78 * alpha },
             )?));
         }
 
         if record.collapsed
-            && let Some(size) = ui_text.measure(renderer, "NODE", 1, [151, 205, 255])?
+            && let Some(size) =
+                ui_text.measure(renderer, "NODE", 1, overlay_visuals.border.bytes())?
         {
             let badge = Rectangle::<i32, Physical>::new(
                 (body.loc.x + 8, body.loc.y + 8).into(),
@@ -582,16 +628,17 @@ fn focus_cycle_elements(
                 (badge.loc.x + 7, badge.loc.y + 4).into(),
                 "NODE",
                 1,
-                [151, 205, 255],
+                overlay_visuals.border.bytes(),
                 alpha,
             )? {
                 elements.push(SceneElement::UiText(text.element));
             }
-            elements.push(SceneElement::NodeLabel(node_renderer.label_element(
+            elements.push(SceneElement::NodeLabel(super::overlay::card_element(
                 renderer,
+                node_renderer,
                 badge,
-                halley_config::NodeShape::Squircle,
-                (0.08, 0.15, 0.23),
+                overlay_visuals,
+                overlay_visuals.fill,
                 0.94 * alpha,
             )?));
         }
@@ -612,7 +659,7 @@ fn focus_cycle_elements(
             },
         );
         let text_size = ui_text
-            .measure(renderer, &title, title_scale, [238, 243, 250])?
+            .measure(renderer, &title, title_scale, overlay_visuals.text.bytes())?
             .unwrap_or_default();
         let band_margin = 6;
         let band_h = (text_size.h + 10)
@@ -646,21 +693,22 @@ fn focus_cycle_elements(
             (text_x, band.loc.y + (band_h - text_size.h) / 2).into(),
             &title,
             title_scale,
-            [238, 243, 250],
+            overlay_visuals.text.bytes(),
             alpha,
         )? {
             elements.push(SceneElement::UiText(text.element));
         }
-        elements.push(SceneElement::NodeLabel(node_renderer.label_element(
+        elements.push(SceneElement::NodeLabel(super::overlay::card_element(
             renderer,
+            node_renderer,
             band,
-            halley_config::NodeShape::Squircle,
+            overlay_visuals,
             if selected {
-                (0.10, 0.20, 0.31)
+                overlay_visuals.fill.mix(overlay_visuals.border, 0.18)
             } else {
-                (0.0, 0.0, 0.0)
+                overlay_visuals.fill
             },
-            if selected { 0.78 * alpha } else { 0.55 * alpha },
+            if selected { 0.96 * alpha } else { 0.88 * alpha },
         )?));
 
         match overlay_previews.element(renderer, id, &record.window, body, alpha, selected) {
@@ -687,27 +735,28 @@ fn focus_cycle_elements(
             .into_iter()
             .map(SceneElement::Border),
         );
-        elements.push(SceneElement::NodeLabel(node_renderer.label_element(
+        elements.push(SceneElement::NodeLabel(super::overlay::card_element(
             renderer,
+            node_renderer,
             card,
-            halley_config::NodeShape::Squircle,
+            overlay_visuals,
             if selected {
-                (0.10, 0.20, 0.31)
+                overlay_visuals.fill.mix(overlay_visuals.border, 0.12)
             } else {
-                (0.055, 0.075, 0.105)
+                overlay_visuals.fill
             },
             if selected { 0.99 * alpha } else { 0.82 * alpha },
         )?));
     }
 
     let hints = "Tab  next     Shift+Tab  previous     Esc  cancel";
-    if let Some(size) = ui_text.measure(renderer, hints, 1, [206, 216, 230])?
+    if let Some(size) = ui_text.measure(renderer, hints, 1, overlay_visuals.subtext.bytes())?
         && let Some(text) = ui_text.element(
             renderer,
             ((screen.w - size.w) / 2, screen.h - size.h - 28).into(),
             hints,
             1,
-            [206, 216, 230],
+            overlay_visuals.subtext.bytes(),
             alpha,
         )?
     {

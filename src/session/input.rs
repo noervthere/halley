@@ -150,7 +150,7 @@ fn dispatch_action<D: SessionDriver>(
         &session.zoom,
     ) {
         super::SessionControl::Continue => {}
-        super::SessionControl::Quit => session.driver.stop(),
+        super::SessionControl::Quit => session.show_exit_confirmation(),
         super::SessionControl::CloseFocusedWindow => {
             crate::nodes::close_focused_on_output(session, action_output.as_deref())
         }
@@ -218,6 +218,9 @@ fn dispatch_action<D: SessionDriver>(
 
 enum KeyboardOutcome {
     Action(halley_config::Action),
+    ExitConfirm,
+    ExitCancel,
+    ExitIntercept,
     AccessibilityIntercept,
     ApogeeCancel,
     ApogeeAccept,
@@ -259,6 +262,28 @@ where
     D: SessionDriver,
     B: InputBackend,
 {
+    if session.overlays.exit_modal_active() && !matches!(event, InputEvent::Keyboard { .. }) {
+        match event {
+            InputEvent::PointerMotion { .. } | InputEvent::PointerMotionAbsolute { .. } => {
+                session
+                    .pointer
+                    .process_input_event(event, &session.wayland.space);
+                session.cursor_policy.pointer_activity();
+                session.request_redraw();
+            }
+            InputEvent::PointerButton { event } => match event.state() {
+                ButtonState::Pressed => session.suppressed_buttons.suppress(event.button_code()),
+                ButtonState::Released => {
+                    session
+                        .suppressed_buttons
+                        .release_is_suppressed(event.button_code());
+                }
+            },
+            InputEvent::PointerAxis { .. } => session.wheel_accumulator.reset_all(),
+            _ => {}
+        }
+        return;
+    }
     if super::touch::handle(session, event) || super::gesture::handle(session, event) {
         return;
     }
@@ -993,12 +1018,16 @@ where
         }
         let release_is_suppressed =
             state == KeyState::Released && session.suppressed_keys.release_is_suppressed(keycode);
-        let accessibility = crate::accessibility::process_key(
-            session,
-            std::time::Duration::from_millis(u64::from(time)),
-            keycode,
-            state,
-        );
+        let accessibility = if session.overlays.exit_modal_active() {
+            crate::accessibility::KeyboardDisposition::Pass
+        } else {
+            crate::accessibility::process_key(
+                session,
+                std::time::Duration::from_millis(u64::from(time)),
+                keycode,
+                state,
+            )
+        };
         let keyboard = session
             .seat
             .get_keyboard()
@@ -1011,6 +1040,24 @@ where
             SERIAL_COUNTER.next_serial(),
             time,
             |data, modifiers, handle| {
+                if data.overlays.exit_modal_active() {
+                    if state == KeyState::Released {
+                        return if release_is_suppressed {
+                            FilterResult::Intercept(KeyboardOutcome::ExitIntercept)
+                        } else {
+                            FilterResult::Forward
+                        };
+                    }
+                    return match handle.raw_latin_sym_or_raw_current_sym() {
+                        Some(Keysym::Return | Keysym::KP_Enter) => {
+                            FilterResult::Intercept(KeyboardOutcome::ExitConfirm)
+                        }
+                        Some(Keysym::Escape) => {
+                            FilterResult::Intercept(KeyboardOutcome::ExitCancel)
+                        }
+                        _ => FilterResult::Intercept(KeyboardOutcome::ExitIntercept),
+                    };
+                }
                 if state == KeyState::Released && data.bearings.is_show_key_held(keycode.raw()) {
                     return FilterResult::Intercept(KeyboardOutcome::BearingsRelease);
                 }
@@ -1126,6 +1173,19 @@ where
             .map(Output::name);
 
         match action {
+            Some(KeyboardOutcome::ExitConfirm) => {
+                session.suppressed_keys.suppress(keycode);
+                session.confirm_exit();
+            }
+            Some(KeyboardOutcome::ExitCancel) => {
+                session.suppressed_keys.suppress(keycode);
+                session.cancel_exit_confirmation();
+            }
+            Some(KeyboardOutcome::ExitIntercept) => {
+                if state == KeyState::Pressed {
+                    session.suppressed_keys.suppress(keycode);
+                }
+            }
             Some(KeyboardOutcome::Action(action)) => {
                 session.suppressed_keys.suppress(keycode);
                 dispatch_action(

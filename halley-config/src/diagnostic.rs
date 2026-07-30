@@ -37,12 +37,14 @@ impl ConfigDiagnostic {
     pub fn from_runtime_error(path: &Path, error: &RuntimeConfigError) -> Self {
         let mut diagnostic = match error {
             RuntimeConfigError::Rune(error) => from_rune_error(error),
+            RuntimeConfigError::Keybind(crate::ParseError::Rune(error))
+            | RuntimeConfigError::Overlay(crate::OverlayParseError::Rune(error)) => {
+                from_rune_error(error)
+            }
             _ => Self::message(Some(path.to_path_buf()), error.to_string()),
         };
         diagnostic.path = Some(path.to_path_buf());
-        diagnostic.source_line = diagnostic
-            .line
-            .and_then(|line| source_line(path, line));
+        diagnostic.source_line = diagnostic.line.and_then(|line| source_line(path, line));
         diagnostic
     }
 }
@@ -182,9 +184,8 @@ mod tests {
 
     #[test]
     fn semantic_diagnostic_does_not_invent_a_location() {
-        let error = RuntimeConfigError::Keybind(crate::ParseError::UnknownModifier(
-            "explode".to_string(),
-        ));
+        let error =
+            RuntimeConfigError::Keybind(crate::ParseError::UnknownModifier("explode".to_string()));
         let diagnostic =
             ConfigDiagnostic::from_runtime_error(Path::new("/tmp/halley.rune"), &error);
 

@@ -72,6 +72,8 @@ pub struct Session<D: SessionDriver> {
     pub start_time: std::time::Instant,
     pub config_path: Option<PathBuf>,
     pub startup_config_diagnostic: Option<halley_config::ConfigDiagnostic>,
+    pub overlays: crate::overlay::OverlayManager,
+    pub overlay_config: halley_config::Overlays,
     pub nodes: crate::nodes::NodesState,
     pub bearings: crate::bearings::BearingsState,
     pub focus_cycle: crate::focus_cycle::FocusCycleState,
@@ -183,6 +185,77 @@ impl<D: SessionDriver> Session<D> {
         self.driver.request_redraw(Some(output));
     }
 
+    pub fn notification_output_name(&self) -> String {
+        crate::wayland::focus::selected_output(&self.wayland)
+            .unwrap_or_else(|| self.driver.primary_output())
+            .name()
+    }
+
+    pub fn initialize_config_notification(&mut self) {
+        let now = crate::frame_clock::monotonic_now();
+        let output = self.notification_output_name();
+        if self.startup_config_diagnostic.take().is_some() {
+            self.overlays.show_config_error(
+                output,
+                self.overlay_config.notifications.error_duration_ms,
+                now,
+            );
+        } else if let Some(path) = self.config_path.as_deref() {
+            self.overlays.show_config_success(
+                output,
+                path,
+                self.overlay_config.notifications.success_duration_ms,
+                now,
+            );
+        }
+        self.request_redraw();
+    }
+
+    pub fn show_config_reload_error(&mut self) {
+        let output = self.notification_output_name();
+        self.overlays.show_config_error(
+            output,
+            self.overlay_config.notifications.error_duration_ms,
+            crate::frame_clock::monotonic_now(),
+        );
+        self.request_redraw();
+    }
+
+    pub fn clear_config_reload_error(&mut self) {
+        if self
+            .overlays
+            .clear_config_error(crate::frame_clock::monotonic_now())
+        {
+            self.request_redraw();
+        }
+    }
+
+    pub fn show_exit_confirmation(&mut self) {
+        if !self.overlays.show_exit(crate::frame_clock::monotonic_now()) {
+            return;
+        }
+        self.grab = Grab::None;
+        self.cursor.set_override(None);
+        super::gesture::cancel_all(self);
+        super::touch::cancel_all(self);
+        self.request_redraw();
+    }
+
+    pub fn cancel_exit_confirmation(&mut self) {
+        if self
+            .overlays
+            .cancel_exit(crate::frame_clock::monotonic_now())
+        {
+            self.request_redraw();
+        }
+    }
+
+    pub fn confirm_exit(&mut self) {
+        if self.overlays.exit_modal_active() {
+            self.driver.stop();
+        }
+    }
+
     /// Applies every backend-independent setting from one validated config
     /// snapshot. Output hardware policy remains with the concrete driver.
     pub fn apply_common_config(&mut self, config: &halley_config::RuntimeConfig) {
@@ -207,6 +280,7 @@ impl<D: SessionDriver> Session<D> {
         }
         let redraw = self.decorations != config.decorations
             || self.zoom != config.zoom
+            || self.overlay_config != config.overlays
             || cursor_changed
             || cursor_visibility_changed;
         let nodes_redraw = self
@@ -216,6 +290,7 @@ impl<D: SessionDriver> Session<D> {
         let font_redraw = self.ui_text.reload_font(&config.font);
         self.apogee_config = config.apogee;
         self.decorations = config.decorations;
+        self.overlay_config = config.overlays;
         self.zoom = config.zoom;
         self.screenshot = config.screenshot.clone();
         self.window_open_animations.reload(config.animations);

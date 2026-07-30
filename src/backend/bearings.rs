@@ -27,7 +27,6 @@ const MAX_LABEL_CHARS: usize = 24;
 const MIN_DISTANCE_ALPHA: f32 = 0.34;
 const DISTANCE_HIDE_MULTIPLIER: f32 = 1.5;
 const TEXT_RGB: [u8; 3] = [238, 242, 249];
-const CHIP_RGB: (f32, f32, f32) = (0.035, 0.045, 0.065);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Lane {
@@ -159,6 +158,8 @@ pub fn elements(
     bearings_renderer: &mut super::bearing_blur::BearingsRenderer,
     node_renderer: &mut super::node::NodeRenderer,
     ui_text: &mut super::text::UiTextRenderer,
+    overlay_config: &halley_config::Overlays,
+    decorations: &halley_config::Decorations,
 ) -> Result<Vec<SceneElement>, Box<dyn Error>> {
     let output_name = output.name();
     let mix = bearings.mix(&output_name);
@@ -169,6 +170,7 @@ pub fn elements(
     let Some(camera) = cameras.get(&output_name) else {
         return Ok(Vec::new());
     };
+    let overlay_visuals = super::overlay::resolve_visuals(overlay_config, decorations);
     let layouts = collect_layouts(
         renderer,
         LayoutContext {
@@ -198,7 +200,10 @@ pub fn elements(
             .filter(|layout| layout.alpha >= 0.04)
             .map(|layout| super::bearing_blur::BlurPatch {
                 rect: layout.chip,
-                radius: 11.0,
+                radius: match overlay_visuals.shape {
+                    halley_config::OverlayShape::Square => 0.0,
+                    halley_config::OverlayShape::Rounded => 11.0,
+                },
                 alpha: layout.alpha,
             })
             .collect::<Vec<_>>()
@@ -209,7 +214,7 @@ pub fn elements(
     let mut backgrounds = Vec::new();
     for layout in layouts {
         let label_size = ui_text
-            .measure(renderer, &layout.label, 2, TEXT_RGB)?
+            .measure(renderer, &layout.label, 2, overlay_visuals.text.bytes())?
             .unwrap_or((0, 0).into());
         let text_x = layout.chip.loc.x
             + CHIP_PAD_X
@@ -227,7 +232,7 @@ pub fn elements(
                 .into(),
             &layout.label,
             2,
-            TEXT_RGB,
+            overlay_visuals.text.bytes(),
             layout.alpha,
         )? {
             foreground.push(SceneElement::UiText(text.element));
@@ -262,7 +267,7 @@ pub fn elements(
 
         if let Some((distance, rect)) = layout.distance {
             let text_size = ui_text
-                .measure(renderer, &distance, 2, TEXT_RGB)?
+                .measure(renderer, &distance, 2, overlay_visuals.text.bytes())?
                 .unwrap_or((0, 0).into());
             if let Some(text) = ui_text.element(
                 renderer,
@@ -273,24 +278,26 @@ pub fn elements(
                     .into(),
                 &distance,
                 2,
-                TEXT_RGB,
+                overlay_visuals.text.bytes(),
                 layout.alpha * 0.96,
             )? {
                 foreground.push(SceneElement::UiText(text.element));
             }
-            backgrounds.push(SceneElement::NodeLabel(node_renderer.label_element(
+            backgrounds.push(SceneElement::NodeLabel(super::overlay::card_element(
                 renderer,
+                node_renderer,
                 rect,
-                halley_config::NodeShape::Squircle,
-                CHIP_RGB,
+                overlay_visuals,
+                overlay_visuals.fill,
                 layout.alpha * 0.88,
             )?));
         }
-        backgrounds.push(SceneElement::NodeLabel(node_renderer.label_element(
+        backgrounds.push(SceneElement::NodeLabel(super::overlay::card_element(
             renderer,
+            node_renderer,
             layout.chip,
-            halley_config::NodeShape::Squircle,
-            CHIP_RGB,
+            overlay_visuals,
+            overlay_visuals.fill,
             layout.alpha * 0.92,
         )?));
     }

@@ -60,6 +60,8 @@ pub fn save_region<D: SessionDriver>(
     let nodes = &session.nodes;
     let bearings = &session.bearings;
     let bearings_renderer = &mut session.bearings_renderer;
+    let overlays = &session.overlays;
+    let overlay_config = &session.overlay_config;
     let node_renderer = &mut session.node_renderer;
     let ui_text = &mut session.ui_text;
     let images = driver.with_renderer(|renderer| -> Result<Vec<OutputImage>, Box<dyn Error>> {
@@ -93,6 +95,8 @@ pub fn save_region<D: SessionDriver>(
                         focus_cycle: &session.focus_cycle,
                         apogee: &session.apogee,
                         apogee_config: session.apogee_config,
+                        overlays,
+                        overlay_config,
                         node_renderer: &mut *node_renderer,
                         ui_text: &mut *ui_text,
                     },
@@ -278,6 +282,8 @@ where
     let nodes = &session.nodes;
     let bearings = &session.bearings;
     let bearings_renderer = &mut session.bearings_renderer;
+    let overlays = &session.overlays;
+    let overlay_config = &session.overlay_config;
     let node_renderer = &mut session.node_renderer;
     let ui_text = &mut session.ui_text;
     driver.with_renderer(|renderer| {
@@ -308,6 +314,8 @@ where
                 focus_cycle: &session.focus_cycle,
                 apogee: &session.apogee,
                 apogee_config: session.apogee_config,
+                overlays,
+                overlay_config,
                 node_renderer,
                 ui_text,
             },

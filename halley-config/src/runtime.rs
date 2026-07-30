@@ -7,11 +7,12 @@ use rune_cfg::RuneConfig;
 use crate::{
     Animations, Apogee, Autostart, Bearings, Cursor, Debug, Decay, Decorations,
     FocusRingParseError, FocusRings, Font, Input, InputParseError, Keybinds, LandmarkPlacement,
-    LaunchConfigError, NodeParseError, Nodes, OutputConfig, OutputParseError, Physics, Screenshot,
-    Zoom, parse_animations, parse_apogee, parse_autostart, parse_bearings, parse_cursor,
-    parse_debug, parse_decay, parse_decorations, parse_env, parse_focus_rings_checked, parse_font,
-    parse_input, parse_keybinds, parse_landmark_placement, parse_nodes_checked,
-    parse_outputs_checked, parse_physics, parse_screenshot, parse_zoom,
+    LaunchConfigError, NodeParseError, Nodes, OutputConfig, OutputParseError, OverlayParseError,
+    Overlays, Physics, Screenshot, Zoom, parse_animations, parse_apogee, parse_autostart,
+    parse_bearings, parse_cursor, parse_debug, parse_decay, parse_decorations, parse_env,
+    parse_focus_rings_checked, parse_font, parse_input, parse_keybinds, parse_landmark_placement,
+    parse_nodes_checked, parse_outputs_checked, parse_overlays_checked, parse_physics,
+    parse_screenshot, parse_zoom,
 };
 
 /// One validated snapshot of every setting the running compositor currently
@@ -36,6 +37,7 @@ pub struct RuntimeConfig {
     pub physics: Physics,
     pub decay: Decay,
     pub nodes: Nodes,
+    pub overlays: Overlays,
     pub debug: Debug,
     pub outputs: Vec<OutputConfig>,
 }
@@ -49,6 +51,7 @@ pub enum RuntimeConfigError {
     Output(OutputParseError),
     FocusRing(FocusRingParseError),
     Node(NodeParseError),
+    Overlay(OverlayParseError),
 }
 
 impl fmt::Display for RuntimeConfigError {
@@ -61,6 +64,7 @@ impl fmt::Display for RuntimeConfigError {
             Self::Output(err) => write!(f, "{err}"),
             Self::FocusRing(err) => write!(f, "{err}"),
             Self::Node(err) => write!(f, "{err}"),
+            Self::Overlay(err) => write!(f, "{err}"),
         }
     }
 }
@@ -109,6 +113,12 @@ impl From<NodeParseError> for RuntimeConfigError {
     }
 }
 
+impl From<OverlayParseError> for RuntimeConfigError {
+    fn from(value: OverlayParseError) -> Self {
+        Self::Overlay(value)
+    }
+}
+
 pub fn parse_runtime_config(config: &RuneConfig) -> Result<RuntimeConfig, RuntimeConfigError> {
     Ok(RuntimeConfig {
         env: parse_env(config)?,
@@ -128,6 +138,7 @@ pub fn parse_runtime_config(config: &RuneConfig) -> Result<RuntimeConfig, Runtim
         physics: parse_physics(config),
         decay: parse_decay(config),
         nodes: parse_nodes_checked(config)?,
+        overlays: parse_overlays_checked(config)?,
         debug: parse_debug(config),
         outputs: parse_outputs_checked(config)?,
     })

@@ -1179,6 +1179,7 @@ dependencies = [
 name = "halley-cli"
 version = "0.1.0"
 dependencies = [
+ "halley-config",
  "halley-ipc",
  "serde_json",
 ]

@@ -320,6 +320,8 @@ mod tests {
                 output: None,
             }),
             Request::Bearings(crate::BearingsRequest::Toggle),
+            Request::Quit,
+            Request::ConfigPath,
         ] {
             let bytes = encode_request(&req).unwrap();
             let decoded = decode_request(&bytes).unwrap();
@@ -330,6 +332,15 @@ mod tests {
     #[test]
     fn bearings_status_round_trips_through_postcard() {
         let response = Response::BearingsStatus(crate::BearingsStatusResponse { visible: true });
+        let bytes = encode_response(&response).unwrap();
+        let decoded = decode_response(&bytes).unwrap();
+        assert_eq!(format!("{decoded:?}"), format!("{response:?}"));
+    }
+
+    #[test]
+    fn config_path_response_round_trips_through_postcard() {
+        let response =
+            Response::ConfigPath(Some("/home/test/.config/halley/halley.rune".to_string()));
         let bytes = encode_response(&response).unwrap();
         let decoded = decode_response(&bytes).unwrap();
         assert_eq!(format!("{decoded:?}"), format!("{response:?}"));

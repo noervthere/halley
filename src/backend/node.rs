@@ -47,9 +47,11 @@ pub struct LabelRenderElement {
     base: TextureRenderElement<GlesTexture>,
     texture: GlesTexture,
     program: GlesTexProgram,
-    color: (f32, f32, f32, f32),
+    fill: (f32, f32, f32, f32),
+    border: (f32, f32, f32, f32),
     size: (f32, f32),
     corner_radius: f32,
+    border_px: f32,
 }
 
 #[derive(Clone, Copy)]
@@ -160,9 +162,63 @@ impl NodeRenderer {
             base,
             texture: resources.texture.clone(),
             program,
-            color: (rgb.0, rgb.1, rgb.2, 1.0),
+            fill: (rgb.0, rgb.1, rgb.2, 1.0),
+            border: (rgb.0, rgb.1, rgb.2, 1.0),
             size: (destination.size.w as f32, destination.size.h as f32),
             corner_radius: destination.size.h as f32 * 0.32,
+            border_px: 0.0,
+        })
+    }
+
+    pub fn overlay_card_element(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        destination: Rectangle<i32, Physical>,
+        shape: halley_config::OverlayShape,
+        fill: (f32, f32, f32, f32),
+        border: (f32, f32, f32, f32),
+        border_px: f32,
+        alpha: f32,
+    ) -> Result<LabelRenderElement, Box<dyn Error>> {
+        self.ensure_resources(renderer)?;
+        let resources = self.resources.as_ref().expect("ensured above");
+        let program = match shape {
+            halley_config::OverlayShape::Square => resources.label_square.clone(),
+            halley_config::OverlayShape::Rounded => resources.label_rounded.clone(),
+        };
+        let source = Rectangle::<f64, Logical>::new(
+            (0.0, 0.0).into(),
+            (
+                resources.texture.size().w as f64,
+                resources.texture.size().h as f64,
+            )
+                .into(),
+        );
+        let base = TextureRenderElement::from_static_texture(
+            Id::new(),
+            resources.context.clone(),
+            destination.loc.to_f64(),
+            resources.texture.clone(),
+            1,
+            Transform::Normal,
+            Some(alpha.clamp(0.0, 1.0)),
+            Some(source),
+            Some(destination.size.to_logical(1)),
+            None,
+            Kind::Unspecified,
+        );
+        Ok(LabelRenderElement {
+            base,
+            texture: resources.texture.clone(),
+            program,
+            fill,
+            border,
+            size: (destination.size.w as f32, destination.size.h as f32),
+            corner_radius: match shape {
+                halley_config::OverlayShape::Square => 0.0,
+                halley_config::OverlayShape::Rounded => destination.size.h as f32 * 0.32,
+            },
+            border_px: border_px.max(0.0),
         })
     }
 
@@ -377,14 +433,23 @@ impl RenderElement<GlesRenderer> for LabelRenderElement {
             self.base.alpha(),
             Some(&self.program),
             &[
-                Uniform::new("node_color", self.color),
-                Uniform::new("fill_color", self.color),
+                Uniform::new("node_color", self.border),
+                Uniform::new("fill_color", self.fill),
                 Uniform::new("rect_size", self.size),
-                Uniform::new("inner_rect_size", self.size),
-                Uniform::new("inner_rect_offset", (0.0_f32, 0.0_f32)),
+                Uniform::new(
+                    "inner_rect_size",
+                    (
+                        (self.size.0 - self.border_px * 2.0).max(1.0),
+                        (self.size.1 - self.border_px * 2.0).max(1.0),
+                    ),
+                ),
+                Uniform::new("inner_rect_offset", (self.border_px, self.border_px)),
                 Uniform::new("corner_radius", self.corner_radius),
-                Uniform::new("inner_corner_radius", self.corner_radius),
-                Uniform::new("border_px", 0.0_f32),
+                Uniform::new(
+                    "inner_corner_radius",
+                    (self.corner_radius - self.border_px).max(0.0),
+                ),
+                Uniform::new("border_px", self.border_px),
             ],
         )
     }

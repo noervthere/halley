@@ -200,6 +200,10 @@ and `screenshot`. `Alt+Tab` and `Alt+Shift+Tab` open and navigate the focus
 carousel; releasing Alt commits and Escape cancels. `Mod+O` opens or closes
 the multi-monitor Apogee overview. Apogee stops trapping keys as soon as its
 close transition begins.
+`quit` opens Halley's modal exit confirmation instead of stopping the
+compositor immediately. Enter confirms and Escape cancels while preserving
+the focused client beneath it. Its appearance is configured in
+[Compositor overlays](overlays.md).
 See [Apogee and Alt+Tab](apogee.md) for navigation, gestures, and preview
 performance.
 Holding the default `Mod+Z` `bearings-show` binding exposes offscreen nodes and

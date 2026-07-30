@@ -6,6 +6,7 @@ pub mod close;
 pub mod dmabuf;
 pub mod fullscreen_texture;
 pub mod node;
+pub mod overlay;
 pub mod overlay_preview;
 pub mod rescale;
 pub mod scene;
@@ -205,6 +206,8 @@ pub struct RenderRequest<'a> {
     pub focus_cycle: &'a crate::focus_cycle::FocusCycleState,
     pub apogee: &'a crate::apogee::ApogeeState,
     pub apogee_config: halley_config::Apogee,
+    pub overlays: &'a crate::overlay::OverlayManager,
+    pub overlay_config: &'a halley_config::Overlays,
     pub node_renderer: &'a mut crate::backend::node::NodeRenderer,
     pub ui_text: &'a mut crate::backend::text::UiTextRenderer,
 }

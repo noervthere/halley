@@ -280,6 +280,24 @@ font:
   size 11
 end
 
+# Shared compositor-owned UI. This styles Apogee, Alt+Tab, Bearings,
+# configuration notices, and the exit confirmation. Window decorations and
+# node labels keep their own existing configuration.
+overlays:
+  background-colour "auto"
+  text-colour "auto"
+  error-colour "#fb4934"
+  shape "square"
+  borders true
+  border-source "primary"
+
+  notifications:
+    position "top-center"
+    success-duration-ms 4000
+    error-duration-ms 9000
+  end
+end
+
 # Offscreen node navigation. Bearings are laid out independently per monitor
 # around that monitor's current camera view. Hold Mod+Z for a temporary view;
 # Mod+Shift+Z toggles a persistent view.
@@ -468,7 +486,8 @@ keybinds:
   mod "super"
 
   # Built-in compositor actions.
-  # `quit` exits immediately without a confirmation dialog.
+  # `quit` opens the compositor-owned confirmation; Enter leaves and Escape
+  # returns to the running session.
   "$var.mod+shift+e" "quit"
   "$var.mod+q" "close-focused"
   "$var.mod+f" "toggle-fullscreen"

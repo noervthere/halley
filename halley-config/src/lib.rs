@@ -12,6 +12,7 @@ pub mod keybinds;
 pub mod launch;
 pub mod nodes;
 pub mod output;
+pub mod overlays;
 pub mod parse;
 pub mod physics;
 pub mod runtime;
@@ -51,6 +52,11 @@ pub use nodes::{
 };
 pub use output::{
     OutputConfig, OutputParseError, Vrr, load_outputs, parse_outputs, parse_outputs_checked,
+};
+pub use overlays::{
+    DEFAULT_ERROR_DURATION_MS, DEFAULT_SUCCESS_DURATION_MS, NotificationPosition, Notifications,
+    OverlayBorderSource, OverlayColorMode, OverlayParseError, OverlayShape, Overlays,
+    parse_overlays_checked,
 };
 pub use parse::{ParseError, parse_keybinds};
 pub use physics::{Physics, parse_physics};
