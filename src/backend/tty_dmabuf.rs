@@ -9,12 +9,8 @@ use smithay::wayland::dmabuf::DmabufFeedbackBuilder;
 use super::dmabuf::{SurfaceDmabufFeedback, scanout_formats};
 use super::tty::TtyDrmOutput;
 
-pub fn frame_flags(vrr_active: bool) -> FrameFlags {
-    let mut flags = FrameFlags::ALLOW_CURSOR_PLANE_SCANOUT;
-    if !vrr_active {
-        flags |= FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT_ANY;
-    }
-    flags
+pub fn frame_flags() -> FrameFlags {
+    FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT_ANY | FrameFlags::ALLOW_CURSOR_PLANE_SCANOUT
 }
 
 pub fn surface_feedback(
@@ -49,17 +45,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fixed_refresh_allows_primary_and_cursor_plane_scanout() {
-        let flags = frame_flags(false);
+    fn direct_scanout_policy_excludes_overlay_planes() {
+        let flags = frame_flags();
         assert!(flags.contains(FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT_ANY));
-        assert!(flags.contains(FrameFlags::ALLOW_CURSOR_PLANE_SCANOUT));
-        assert!(!flags.contains(FrameFlags::ALLOW_OVERLAY_PLANE_SCANOUT));
-    }
-
-    #[test]
-    fn vrr_excludes_primary_but_keeps_cursor_plane_scanout() {
-        let flags = frame_flags(true);
-        assert!(!flags.contains(FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT_ANY));
         assert!(flags.contains(FrameFlags::ALLOW_CURSOR_PLANE_SCANOUT));
         assert!(!flags.contains(FrameFlags::ALLOW_OVERLAY_PLANE_SCANOUT));
     }
