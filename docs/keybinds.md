@@ -218,9 +218,11 @@ creates a center-first second-click interaction. Any other action string is
 launched as a command line.
 
 `toggle-fullscreen` and a client decoration's maximize button both enter the
-same Halley fullscreen presentation. Unmaximize exits only a fullscreen
-created by maximize; it does not cancel a fullscreen entered with `Mod+F`, a
-client fullscreen request, or an initial fullscreen hint. Top layer-shell
+same Halley fullscreen presentation. The maximize button toggles that
+presentation off on its second press, including reversing an exit transition
+when pressed again. It never takes ownership of or cancels a fullscreen entered
+with `Mod+F`, a client fullscreen request, or an initial fullscreen hint.
+Top layer-shell
 surfaces are suppressed per fullscreen output, independent of pointer or
 keyboard focus on another monitor. Fullscreen also owns that output's complete
 camera: zoom and pan ease to the window center and native 1.0 scale on the same

@@ -50,6 +50,13 @@ enum ExternalPresentationKind {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MaximizeToggleAction {
+    Enter,
+    Exit,
+    Ignore,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ExternalPending {
     geometry: Rectangle<i32, Logical>,
     presentation: ExternalPresentationKind,
@@ -142,12 +149,22 @@ impl FullscreenManager {
         self.request_with_origin(wayland, toplevel, None, FullscreenOrigin::Compositor);
     }
 
-    pub(crate) fn request_maximize(
+    pub(crate) fn toggle_maximize(
         &mut self,
         wayland: &mut WaylandState,
         toplevel: &ToplevelSurface,
-    ) {
-        self.request_with_origin(wayland, toplevel, None, FullscreenOrigin::Maximize);
+    ) -> bool {
+        match maximize_toggle_action(self.windows.get(toplevel.wl_surface())) {
+            MaximizeToggleAction::Enter => {
+                self.request_with_origin(wayland, toplevel, None, FullscreenOrigin::Maximize);
+                true
+            }
+            MaximizeToggleAction::Exit => {
+                self.unrequest(wayland, toplevel);
+                true
+            }
+            MaximizeToggleAction::Ignore => false,
+        }
     }
 
     fn request_with_origin(
@@ -855,6 +872,24 @@ fn desired_matches(entry: Option<&FullscreenWindow>, desired: bool) -> bool {
     entry.is_some_and(|entry| entry.desired == desired)
 }
 
+fn maximize_toggle_action(entry: Option<&FullscreenWindow>) -> MaximizeToggleAction {
+    match entry {
+        Some(entry) if entry.origin == FullscreenOrigin::Maximize && entry.desired => {
+            MaximizeToggleAction::Exit
+        }
+        Some(entry)
+            if entry.origin != FullscreenOrigin::Maximize
+                && (entry.active
+                    || entry.desired
+                    || entry.transition.is_some()
+                    || entry.external_pending.is_some()) =>
+        {
+            MaximizeToggleAction::Ignore
+        }
+        _ => MaximizeToggleAction::Enter,
+    }
+}
+
 fn prefer_seeded_restore(
     seeded: Option<WindowedPlacement>,
     current: Option<WindowedPlacement>,
@@ -1078,6 +1113,32 @@ mod tests {
         let entry = test_entry(true);
         assert!(entry_covers_top(&entry, "DP-1", Duration::ZERO));
         assert!(!entry_covers_top(&entry, "DP-2", Duration::ZERO));
+    }
+
+    #[test]
+    fn maximize_button_toggles_only_its_own_fullscreen() {
+        assert_eq!(maximize_toggle_action(None), MaximizeToggleAction::Enter);
+
+        let mut maximize = test_entry(true);
+        maximize.origin = FullscreenOrigin::Maximize;
+        assert_eq!(
+            maximize_toggle_action(Some(&maximize)),
+            MaximizeToggleAction::Exit
+        );
+
+        maximize.desired = false;
+        assert_eq!(
+            maximize_toggle_action(Some(&maximize)),
+            MaximizeToggleAction::Enter,
+            "pressing again during exit reverses the toggle"
+        );
+
+        let client = test_entry(true);
+        assert_eq!(
+            maximize_toggle_action(Some(&client)),
+            MaximizeToggleAction::Ignore,
+            "maximize must not take ownership of client fullscreen"
+        );
     }
 
     #[test]

@@ -28,6 +28,13 @@ enum FullscreenRequestOrigin {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MaximizeToggleAction {
+    Enter,
+    Exit,
+    Ignore,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ExternalPresentationPolicy {
     Initial,
     Opening,
@@ -556,6 +563,27 @@ fn maximize_window<D: SessionDriver>(session: &mut Session<D>, surface: &X11Surf
         }
         return;
     }
+    let maximize_origin_active = surface
+        .user_data()
+        .get::<MaximizeFullscreen>()
+        .is_some_and(|origin| *origin.0.lock().expect("X11 maximize origin lock poisoned"));
+    let fullscreen_active = window_for_surface(session, surface)
+        .is_some_and(|window| session.fullscreen.external_desired_matches(&window, true));
+    match maximize_toggle_action(maximize_origin_active, fullscreen_active) {
+        MaximizeToggleAction::Exit => {
+            restore_window(session, surface);
+            return;
+        }
+        MaximizeToggleAction::Ignore => {
+            if let Err(err) = surface.set_maximized(false) {
+                eventline::warn!(
+                    "xwayland: ignored maximize while another fullscreen origin owns the window: {err}"
+                );
+            }
+            return;
+        }
+        MaximizeToggleAction::Enter => {}
+    }
     *surface
         .user_data()
         .get_or_insert_threadsafe(MaximizeFullscreen::default)
@@ -594,6 +622,19 @@ fn restore_window<D: SessionDriver>(session: &mut Session<D>, surface: &X11Surfa
             });
     if was_maximize_fullscreen {
         leave_fullscreen(session, surface, FullscreenRequestOrigin::Maximize);
+    }
+}
+
+fn maximize_toggle_action(
+    maximize_origin_active: bool,
+    fullscreen_active: bool,
+) -> MaximizeToggleAction {
+    if maximize_origin_active {
+        MaximizeToggleAction::Exit
+    } else if fullscreen_active {
+        MaximizeToggleAction::Ignore
+    } else {
+        MaximizeToggleAction::Enter
     }
 }
 
@@ -931,7 +972,8 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ExternalPresentationPolicy, FullscreenRequestOrigin, external_presentation_policy,
+        ExternalPresentationPolicy, FullscreenRequestOrigin, MaximizeToggleAction,
+        external_presentation_policy, maximize_toggle_action,
     };
 
     #[test]
@@ -984,5 +1026,21 @@ mod tests {
                 ExternalPresentationPolicy::Animated
             );
         }
+    }
+
+    #[test]
+    fn maximize_button_toggles_without_hijacking_other_fullscreen_origins() {
+        assert_eq!(
+            maximize_toggle_action(false, false),
+            MaximizeToggleAction::Enter
+        );
+        assert_eq!(
+            maximize_toggle_action(true, true),
+            MaximizeToggleAction::Exit
+        );
+        assert_eq!(
+            maximize_toggle_action(false, true),
+            MaximizeToggleAction::Ignore
+        );
     }
 }

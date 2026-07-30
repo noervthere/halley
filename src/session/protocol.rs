@@ -370,10 +370,10 @@ impl<D: SessionDriver> XdgShellHandler for Session<D> {
             crate::nodes::restore(self, id, SERIAL_COUNTER.next_serial());
         }
         super::cancel_grab_for_surface(self, surface.wl_surface());
-        self.fullscreen
-            .request_maximize(&mut self.wayland, &surface);
-        super::pointer::reconcile_state(self);
-        self.request_redraw();
+        if self.fullscreen.toggle_maximize(&mut self.wayland, &surface) {
+            super::pointer::reconcile_state(self);
+            self.request_redraw();
+        }
     }
 
     fn unmaximize_request(&mut self, surface: ToplevelSurface) {
