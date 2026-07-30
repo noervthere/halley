@@ -197,6 +197,46 @@ pub(crate) fn note_pointer_activity<D: SessionDriver>(session: &mut Session<D>) 
     session.cursor_policy.pointer_activity();
 }
 
+pub(crate) fn warp_pointer_to_window_center<D: SessionDriver>(
+    session: &mut Session<D>,
+    window: &smithay::desktop::Window,
+) -> bool {
+    let Some(output) = session
+        .wayland
+        .space
+        .outputs()
+        .find(|output| {
+            crate::wayland::window_is_on_output(window, output, session.driver.primary_output())
+        })
+        .cloned()
+    else {
+        return false;
+    };
+    let Some(presentation) = crate::input::presentation::WindowPresentation::for_window(
+        &session.wayland.space,
+        &session.cameras,
+        &session.window_open_animations,
+        &session.fullscreen,
+        &session.maximize,
+        window,
+        &output,
+        crate::frame_clock::monotonic_now(),
+    ) else {
+        return false;
+    };
+    let geometry = presentation.visual_geometry();
+    let center = (
+        f64::from(geometry.loc.x) + f64::from(geometry.size.w) * 0.5,
+        f64::from(geometry.loc.y) + f64::from(geometry.size.h) * 0.5,
+    );
+    pointer::release_for_compositor_warp(session);
+    session.pointer.set_position(center);
+    session.cursor_policy.pointer_activity();
+    pointer::update_client_state(session, session.start_time.elapsed().as_millis() as u32);
+    session.request_output_redraw(&output);
+    true
+}
+
 fn toggle_focused_fullscreen<D: SessionDriver>(session: &mut Session<D>, output: Option<&str>) {
     let id = match output {
         Some(output) => session.nodes.focused_on_output(output),

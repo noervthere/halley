@@ -157,6 +157,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
         nodes: crate::nodes::NodesState::new(&runtime_config),
         bearings: crate::bearings::BearingsState::new(runtime_config.bearings),
         focus_cycle: crate::focus_cycle::FocusCycleState::default(),
+        pending_pointer_warp: None,
         apogee: crate::apogee::ApogeeState::default(),
         apogee_config: runtime_config.apogee,
         input: applied_input,
@@ -269,6 +270,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                             .is_animating(surface.as_ref(), target_presentation_time)
                     })
                 });
+                let _ = crate::focus_cycle::finish_pending_pointer_warp(app);
                 let fullscreen_animating = app
                     .fullscreen
                     .is_animating_on_output(&output, target_presentation_time);

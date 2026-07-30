@@ -162,6 +162,10 @@ pub(super) fn update_client_state<D: SessionDriver>(session: &mut Session<D>, ti
     finish_frame(session, &pointer);
 }
 
+pub(super) fn release_for_compositor_warp<D: SessionDriver>(session: &mut Session<D>) {
+    constraints::deactivate_before_pointer_focus_change(session, None);
+}
+
 pub(super) fn reconcile_state<D: SessionDriver>(session: &mut Session<D>) {
     let Some(pointer) = session.seat.get_pointer() else {
         return;

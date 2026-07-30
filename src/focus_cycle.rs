@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use halley_config::FocusCycleDirection;
 use halley_core::field::NodeId;
+use smithay::wayland::seat::WaylandFocus;
 
 pub const OPEN_MS: u64 = 140;
 pub const STEP_MS: u64 = 130;
@@ -268,8 +269,35 @@ pub fn commit<D: crate::session::SessionDriver>(
     } else {
         crate::session::focus_window(session, &record.window, serial);
     }
+    crate::nodes::reveal_for_focus_cycle(session, target);
+    session.pending_pointer_warp = Some(record.surface);
+    let _ = finish_pending_pointer_warp(session);
     session.request_redraw();
     true
+}
+
+pub fn finish_pending_pointer_warp<D: crate::session::SessionDriver>(
+    session: &mut crate::session::Session<D>,
+) -> bool {
+    let Some(surface) = session.pending_pointer_warp.clone() else {
+        return false;
+    };
+    let now = crate::frame_clock::monotonic_now();
+    if session.window_open_animations.is_animating(&surface, now) {
+        return false;
+    }
+    let window = session
+        .wayland
+        .space
+        .elements()
+        .find(|window| {
+            window
+                .wl_surface()
+                .is_some_and(|candidate| candidate.as_ref() == &surface)
+        })
+        .cloned();
+    session.pending_pointer_warp = None;
+    window.is_some_and(|window| crate::session::warp_pointer_to_window_center(session, &window))
 }
 
 #[cfg(test)]

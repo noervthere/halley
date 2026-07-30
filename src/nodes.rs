@@ -1376,6 +1376,59 @@ pub fn focus_or_restore_from_bearing<D: crate::session::SessionDriver>(
     true
 }
 
+/// Makes an Alt+Tab target visible without adding a second animation track.
+/// The camera snaps only by the minimum reveal delta; the focus-cycle overlay
+/// already owns the visible close transition.
+pub fn reveal_for_focus_cycle<D: crate::session::SessionDriver>(
+    session: &mut crate::session::Session<D>,
+    id: NodeId,
+) {
+    let Some(record) = session.nodes.record(id).cloned() else {
+        return;
+    };
+    if session.fullscreen.is_fullscreen_or_pending(&record.surface)
+        || session.maximize.contains(&record.surface)
+    {
+        return;
+    }
+    let Some(output) = session
+        .wayland
+        .space
+        .outputs()
+        .find(|output| output.name() == record.output)
+        .cloned()
+    else {
+        return;
+    };
+    let Some(output_geometry) = session.wayland.space.output_geometry(&output) else {
+        return;
+    };
+    let Some(view) = session.cameras.view(&record.output) else {
+        return;
+    };
+    let geometry = session
+        .wayland
+        .space
+        .element_geometry(&record.window)
+        .unwrap_or(record.geometry);
+    let delta = minimal_reveal_delta(
+        crate::camera::world_viewport(view, output_geometry),
+        geometry,
+        24,
+    );
+    if delta.x == 0.0 && delta.y == 0.0 {
+        return;
+    }
+    if let Some(camera) = session.cameras.get_mut(&record.output) {
+        camera.center = Vec2 {
+            x: camera.center.x + delta.x,
+            y: camera.center.y + delta.y,
+        };
+        camera.target_center = camera.center;
+        camera.pan_vel = Vec2 { x: 0.0, y: 0.0 };
+    }
+}
+
 fn minimal_reveal_delta(
     viewport: Rectangle<i32, Logical>,
     target: Rectangle<i32, Logical>,

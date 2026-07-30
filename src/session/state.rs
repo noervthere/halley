@@ -79,6 +79,7 @@ pub struct Session<D: SessionDriver> {
     pub nodes: crate::nodes::NodesState,
     pub bearings: crate::bearings::BearingsState,
     pub focus_cycle: crate::focus_cycle::FocusCycleState,
+    pub pending_pointer_warp: Option<WlSurface>,
     pub apogee: crate::apogee::ApogeeState,
     pub apogee_config: halley_config::Apogee,
     pub input: halley_config::Input,
