@@ -1,6 +1,9 @@
 use std::error::Error;
 use std::time::Duration;
 
+mod dmabuf;
+mod output;
+
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::allocator::gbm::{GbmAllocator, GbmBufferFlags, GbmDevice};
 use smithay::backend::allocator::{Format, Fourcc};
@@ -23,7 +26,7 @@ use smithay::reexports::rustix::fs::OFlags;
 use smithay::utils::DeviceFd;
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
 
-use super::tty_output::{
+use self::output::{
     OutputState, connector_name, connector_output_info, default_mode, drm_output_mode, output_diff,
     output_target,
 };
@@ -272,7 +275,7 @@ impl TtyBackend {
 
             match result {
                 Ok(drm_output) => {
-                    let dmabuf_feedback = match super::tty_dmabuf::surface_feedback(
+                    let dmabuf_feedback = match dmabuf::surface_feedback(
                         &drm_output,
                         renderer.dmabuf_formats(),
                         render_node,
@@ -817,7 +820,7 @@ impl Renderable for TtyBackend {
             &mut self.renderer,
             &elements,
             clear,
-            super::tty_dmabuf::frame_flags(),
+            dmabuf::frame_flags(),
         )?;
 
         let element_states = result.states.clone();

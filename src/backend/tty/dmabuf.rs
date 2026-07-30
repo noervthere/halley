@@ -6,8 +6,8 @@ use smithay::backend::drm::DrmNode;
 use smithay::reexports::wayland_protocols::wp::linux_dmabuf::zv1::server::zwp_linux_dmabuf_feedback_v1::TrancheFlags;
 use smithay::wayland::dmabuf::DmabufFeedbackBuilder;
 
-use super::dmabuf::{SurfaceDmabufFeedback, scanout_formats};
-use super::tty::TtyDrmOutput;
+use super::TtyDrmOutput;
+use crate::backend::dmabuf::{SurfaceDmabufFeedback, scanout_formats};
 
 pub fn frame_flags() -> FrameFlags {
     FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT_ANY | FrameFlags::ALLOW_CURSOR_PLANE_SCANOUT
