@@ -520,3 +520,250 @@ pub fn build(
 
     Ok(elements)
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use smithay::utils::{Physical, Rectangle};
+
+    #[test]
+    fn hover_preview_aspect_fit_centers_wide_and_tall_windows() {
+        let bounds = Rectangle::<i32, Physical>::new((10, 20).into(), (200, 160).into());
+        assert_eq!(
+            aspect_fit_rect(bounds, 1_600, 900),
+            Rectangle::new((10, 43).into(), (200, 113).into())
+        );
+        assert_eq!(
+            aspect_fit_rect(bounds, 900, 1_600),
+            Rectangle::new((65, 20).into(), (90, 160).into())
+        );
+    }
+
+    #[test]
+    fn preview_rounding_uses_the_exact_configured_window_border_radius() {
+        let mut decorations = halley_config::Decorations {
+            border_radius_px: 7,
+            ..halley_config::Decorations::default()
+        };
+        assert_eq!(preview_content_radius(&decorations), 7.0);
+        decorations.border_radius_px = 0;
+        assert_eq!(preview_content_radius(&decorations), 0.0);
+    }
+
+    #[test]
+    fn resize_handles_are_reserved_for_region_selection() {
+        let output = Rectangle::<i32, Logical>::new((0, 0).into(), (1920, 1080).into());
+        let selection = Rectangle::<i32, Logical>::new((320, 180).into(), (1280, 720).into());
+
+        let visuals = super::super::overlays::shell::resolve_visuals(
+            &halley_config::Overlays::default(),
+            &halley_config::Decorations::default(),
+        );
+        let region = capture_picker_elements(output, selection, true, visuals);
+        let highlight = capture_picker_elements(output, selection, false, visuals);
+
+        let handles = |elements: &[SolidColorRenderElement]| {
+            elements
+                .iter()
+                .filter(|element| element.geometry(Scale::from(1.0)).size == (12, 12).into())
+                .count()
+        };
+        assert_eq!(handles(&region), 4);
+        assert_eq!(handles(&highlight), 0);
+    }
+
+    #[test]
+    fn region_border_uses_ten_pixel_dashes_with_six_pixel_gaps() {
+        let selection = Rectangle::<i32, Physical>::new((320, 180).into(), (100, 80).into());
+        let strips = dashed_border_rects(selection);
+
+        assert!(strips.contains(&Rectangle::new((320, 180).into(), (10, 2).into())));
+        assert!(strips.contains(&Rectangle::new((336, 180).into(), (10, 2).into())));
+        assert!(!strips.iter().any(|strip| {
+            strip.loc.y == 180 && strip.loc.x < 336 && strip.loc.x + strip.size.w > 330
+        }));
+    }
+
+    #[test]
+    fn full_screen_highlight_border_stays_inside_the_output() {
+        let output = Rectangle::<i32, Physical>::new((0, 0).into(), (1920, 1080).into());
+        let border = inner_border_rects(output, 2);
+
+        assert!(border.into_iter().all(|strip| output.contains_rect(strip)));
+        assert_eq!(border[0], Rectangle::new((0, 0).into(), (1920, 2).into()));
+        assert_eq!(
+            border[1],
+            Rectangle::new((0, 1078).into(), (1920, 2).into())
+        );
+    }
+
+    #[test]
+    fn secondary_window_geometry_becomes_output_local() {
+        let secondary = Rectangle::<i32, Logical>::new((2560, 0).into(), (1920, 1200).into());
+        let camera_center = crate::camera::global_center(Point::from((1060.0, 550.0)), secondary);
+        let world_rect = Rectangle::<i32, Physical>::new((3520, 600).into(), (200, 100).into());
+
+        assert_eq!(
+            super::super::camera_rect(
+                world_rect,
+                camera_center,
+                secondary.size.to_physical(1),
+                0.5,
+            ),
+            Rectangle::new((910, 625).into(), (100, 50).into())
+        );
+    }
+
+    #[test]
+    fn fullscreen_rect_interpolates_position_and_size() {
+        let windowed = Rectangle::new((100, 50).into(), (800, 600).into());
+        let start = crate::wayland::fullscreen::FullscreenPresentation {
+            progress: 0.0,
+            transition_completion: 0.0,
+            windowed_geometry: None,
+            fullscreen_size: (1920, 1080).into(),
+        };
+        let end = crate::wayland::fullscreen::FullscreenPresentation {
+            progress: 1.0,
+            ..start
+        };
+        let middle = crate::wayland::fullscreen::FullscreenPresentation {
+            progress: 0.5,
+            ..start
+        };
+
+        assert_eq!(start.client_rect(windowed, (1920, 1080).into()), windowed);
+        assert_eq!(
+            end.client_rect(windowed, (1920, 1080).into()),
+            Rectangle::new((0, 0).into(), (1920, 1080).into())
+        );
+        assert_eq!(
+            middle.client_rect(windowed, (1920, 1080).into()),
+            Rectangle::new((50, 25).into(), (1360, 840).into())
+        );
+    }
+
+    #[test]
+    fn surface_rects_map_into_animated_client_bounds() {
+        assert_eq!(
+            crate::animation::map_rect(
+                Rectangle::new((120, 70).into(), (200, 100).into()),
+                Rectangle::new((100, 50).into(), (800, 600).into()),
+                Rectangle::new((0, 0).into(), (1600, 1200).into()),
+            ),
+            Rectangle::new((40, 40).into(), (400, 200).into())
+        );
+    }
+
+    #[test]
+    fn apogee_caption_overlays_the_preview_instead_of_growing_a_footer() {
+        let body = Rectangle::<i32, Physical>::new((100, 80).into(), (480, 240).into());
+        let caption = apogee_caption_rect(body).expect("large preview has a caption");
+
+        assert_eq!(caption, Rectangle::new((108, 281).into(), (464, 31).into()));
+        assert!(body.contains_rect(caption));
+        assert_eq!(outset_physical(body, 4).size, (488, 248).into());
+    }
+
+    #[test]
+    fn apogee_caption_waits_until_node_transition_is_large_enough() {
+        let node_sized = Rectangle::<i32, Physical>::new((100, 80).into(), (64, 64).into());
+        assert_eq!(apogee_caption_rect(node_sized), None);
+    }
+
+    #[test]
+    fn apogee_transition_never_fades_the_handoff_preview() {
+        for progress in [0.0, 0.0005, 0.5, 1.0] {
+            let visuals = apogee_transition_visuals(progress);
+            assert_eq!(visuals.preview_alpha, 1.0);
+            assert_eq!(visuals.overlay_alpha, progress);
+        }
+        assert_eq!(apogee_transition_visuals(0.0).chrome_alpha, 0.0);
+        assert_eq!(apogee_transition_visuals(1.0).chrome_alpha, 1.0);
+    }
+
+    #[test]
+    fn apogee_transition_preserves_source_stack_and_promotes_selection() {
+        let back = crate::apogee::Tile {
+            id: halley_core::field::NodeId::new(1),
+            output: "DP-1".into(),
+            target: Rectangle::new((0, 0).into(), (100, 100).into()),
+            source_stack_index: 0,
+            source_stack_order: u64::MAX,
+        };
+        let middle = crate::apogee::Tile {
+            id: halley_core::field::NodeId::new(2),
+            output: "DP-1".into(),
+            target: Rectangle::new((100, 0).into(), (100, 100).into()),
+            source_stack_index: 1,
+            source_stack_order: 0,
+        };
+        let front = crate::apogee::Tile {
+            id: halley_core::field::NodeId::new(3),
+            output: "DP-1".into(),
+            target: Rectangle::new((200, 0).into(), (100, 100).into()),
+            source_stack_index: 2,
+            source_stack_order: u64::MAX,
+        };
+        let mut tiles = vec![&middle, &front, &back];
+
+        sort_apogee_tiles(&mut tiles, None);
+        assert_eq!(
+            tiles.iter().map(|tile| tile.id).collect::<Vec<_>>(),
+            vec![front.id, middle.id, back.id]
+        );
+
+        sort_apogee_tiles(&mut tiles, Some(middle.id));
+        assert_eq!(
+            tiles.iter().map(|tile| tile.id).collect::<Vec<_>>(),
+            vec![middle.id, front.id, back.id]
+        );
+    }
+
+    #[test]
+    fn collapsed_node_keeps_front_middle_and_back_stack_depth() {
+        let presented = |collapsed_index: usize, remaining: &[(usize, u64)]| {
+            let mut groups = remaining
+                .iter()
+                .copied()
+                .map(|(stack_index, order)| StackGroup {
+                    stack_index,
+                    order,
+                    elements: Vec::new(),
+                })
+                .chain([
+                    StackGroup {
+                        stack_index: collapsed_index,
+                        order: 1,
+                        elements: Vec::new(),
+                    },
+                    StackGroup {
+                        stack_index: collapsed_index,
+                        order: 0,
+                        elements: Vec::new(),
+                    },
+                ])
+                .collect::<Vec<_>>();
+            sort_stack_groups(&mut groups);
+            groups
+                .into_iter()
+                .rev()
+                .map(|group| (group.stack_index, group.order))
+                .collect::<Vec<_>>()
+        };
+
+        // u64::MAX identifies a live window. The close snapshot (1) and
+        // resulting node (0) remain on the collapsed window's side of it.
+        assert_eq!(
+            presented(2, &[(0, u64::MAX), (1, u64::MAX)])[..2],
+            [(2, 1), (2, 0)]
+        );
+        assert_eq!(
+            presented(1, &[(0, u64::MAX), (1, u64::MAX)])[..3],
+            [(1, u64::MAX), (1, 1), (1, 0)]
+        );
+        assert_eq!(
+            presented(0, &[(0, u64::MAX), (1, u64::MAX)])[..4],
+            [(1, u64::MAX), (0, u64::MAX), (0, 1), (0, 0)]
+        );
+    }
+}
