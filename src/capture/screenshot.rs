@@ -17,7 +17,9 @@ use smithay::output::Output;
 use smithay::reexports::wayland_server::Resource;
 use smithay::utils::{Buffer, Logical, Physical, Rectangle, Scale, Transform};
 
-use crate::render::{self, RenderRequest};
+use crate::render::{
+    self, CursorContext, DesktopContext, FrameContext, OverlayContext, RenderRequest, VisualContext,
+};
 use crate::session::{Session, SessionDriver};
 
 struct OutputImage {
@@ -62,20 +64,13 @@ pub fn save_region<D: SessionDriver>(
     let shadows = session.effects.shadows;
     let cameras = &session.cameras;
     let window_open_animations = &session.window_open_animations;
-    let window_close_animations = &mut session.render.window_close_animations;
     let fullscreen = &session.fullscreen;
     let maximize = &session.maximize;
-    let fullscreen_textures = &mut session.render.fullscreen_textures;
-    let overlay_previews = &mut session.render.overlay_previews;
     let nodes = &session.nodes;
     let bearings = &session.bearings;
-    let backdrop_blur_renderer = &mut session.render.backdrop_blur_renderer;
-    let shadow_renderer = &mut session.render.shadow_renderer;
     let overlays = &session.overlays;
     let overlay_config = &session.overlay_config;
-    let node_renderer = &mut session.render.node_renderer;
-    let window_decoration_renderer = &mut session.render.window_decoration_renderer;
-    let ui_text = &mut session.render.ui_text;
+    let resources = &mut session.render;
     let session_lock = &session.session_lock;
     let images = driver.with_renderer(|renderer| -> Result<Vec<OutputImage>, Box<dyn Error>> {
         outputs
@@ -87,40 +82,43 @@ pub fn save_region<D: SessionDriver>(
                     &primary,
                     *geometry,
                     RenderRequest {
-                        target_presentation_time: target_time,
-                        vrr_auto_eligible: false,
-                        clear: render::CLEAR_COLOR,
-                        session_lock,
-                        cursor,
-                        cursor_position: pointer_position,
-                        show_cursor: false,
-                        cursor_override: None,
-                        capture_overlay: crate::capture::CaptureOverlay::None,
-                        space: &wayland.space,
-                        focused: wayland.focused_window.as_ref(),
-                        decorations,
-                        blur,
-                        shadows,
-                        cameras,
-                        window_open_animations,
-                        window_close_animations: &mut *window_close_animations,
-                        fullscreen,
-                        maximize,
-                        fullscreen_textures: &mut *fullscreen_textures,
-                        overlay_previews: &mut *overlay_previews,
-                        nodes,
-                        node_grab_active,
-                        bearings,
-                        backdrop_blur_renderer: &mut *backdrop_blur_renderer,
-                        shadow_renderer: &mut *shadow_renderer,
-                        focus_cycle: &session.focus_cycle,
-                        apogee: &session.apogee,
-                        apogee_config: session.apogee_config,
-                        overlays,
-                        overlay_config,
-                        node_renderer: &mut *node_renderer,
-                        window_decoration_renderer: &mut *window_decoration_renderer,
-                        ui_text: &mut *ui_text,
+                        frame: FrameContext {
+                            target_presentation_time: target_time,
+                            vrr_auto_eligible: false,
+                            clear: render::CLEAR_COLOR,
+                        },
+                        desktop: DesktopContext {
+                            session_lock,
+                            space: &wayland.space,
+                            focused: wayland.focused_window.as_ref(),
+                            cameras,
+                            window_open_animations,
+                            fullscreen,
+                            maximize,
+                            nodes,
+                            node_grab_active,
+                        },
+                        cursor: CursorContext {
+                            cursor,
+                            cursor_position: pointer_position,
+                            show_cursor: false,
+                            cursor_override: None,
+                        },
+                        overlays: OverlayContext {
+                            capture_overlay: crate::capture::CaptureOverlay::None,
+                            bearings,
+                            focus_cycle: &session.focus_cycle,
+                            apogee: &session.apogee,
+                            apogee_config: session.apogee_config,
+                            overlays,
+                            overlay_config,
+                        },
+                        visuals: VisualContext {
+                            decorations,
+                            blur,
+                            shadows,
+                        },
+                        resources: crate::render::resources::RenderResources::from(&mut *resources),
                     },
                 )?;
                 Ok(OutputImage {
@@ -312,20 +310,13 @@ where
     let shadows = session.effects.shadows;
     let cameras = &session.cameras;
     let window_open_animations = &session.window_open_animations;
-    let window_close_animations = &mut session.render.window_close_animations;
     let fullscreen = &session.fullscreen;
     let maximize = &session.maximize;
-    let fullscreen_textures = &mut session.render.fullscreen_textures;
-    let overlay_previews = &mut session.render.overlay_previews;
     let nodes = &session.nodes;
     let bearings = &session.bearings;
-    let backdrop_blur_renderer = &mut session.render.backdrop_blur_renderer;
-    let shadow_renderer = &mut session.render.shadow_renderer;
     let overlays = &session.overlays;
     let overlay_config = &session.overlay_config;
-    let node_renderer = &mut session.render.node_renderer;
-    let window_decoration_renderer = &mut session.render.window_decoration_renderer;
-    let ui_text = &mut session.render.ui_text;
+    let resources = &mut session.render;
     let session_lock = &session.session_lock;
     driver.with_renderer(|renderer| {
         let elements = render::scene::build(
@@ -334,40 +325,43 @@ where
             &primary,
             geometry,
             RenderRequest {
-                target_presentation_time: target_time,
-                vrr_auto_eligible: false,
-                clear: render::CLEAR_COLOR,
-                session_lock,
-                cursor,
-                cursor_position: pointer_position,
-                show_cursor,
-                cursor_override: None,
-                capture_overlay: crate::capture::CaptureOverlay::None,
-                space: &wayland.space,
-                focused: wayland.focused_window.as_ref(),
-                decorations,
-                blur,
-                shadows,
-                cameras,
-                window_open_animations,
-                window_close_animations,
-                fullscreen,
-                maximize,
-                fullscreen_textures,
-                overlay_previews,
-                nodes,
-                node_grab_active,
-                bearings,
-                backdrop_blur_renderer,
-                shadow_renderer,
-                focus_cycle: &session.focus_cycle,
-                apogee: &session.apogee,
-                apogee_config: session.apogee_config,
-                overlays,
-                overlay_config,
-                node_renderer,
-                window_decoration_renderer,
-                ui_text,
+                frame: FrameContext {
+                    target_presentation_time: target_time,
+                    vrr_auto_eligible: false,
+                    clear: render::CLEAR_COLOR,
+                },
+                desktop: DesktopContext {
+                    session_lock,
+                    space: &wayland.space,
+                    focused: wayland.focused_window.as_ref(),
+                    cameras,
+                    window_open_animations,
+                    fullscreen,
+                    maximize,
+                    nodes,
+                    node_grab_active,
+                },
+                cursor: CursorContext {
+                    cursor,
+                    cursor_position: pointer_position,
+                    show_cursor,
+                    cursor_override: None,
+                },
+                overlays: OverlayContext {
+                    capture_overlay: crate::capture::CaptureOverlay::None,
+                    bearings,
+                    focus_cycle: &session.focus_cycle,
+                    apogee: &session.apogee,
+                    apogee_config: session.apogee_config,
+                    overlays,
+                    overlay_config,
+                },
+                visuals: VisualContext {
+                    decorations,
+                    blur,
+                    shadows,
+                },
+                resources: crate::render::resources::RenderResources::from(resources),
             },
         )?;
         consume(renderer, &elements, geometry.size.to_physical(1))

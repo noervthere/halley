@@ -788,23 +788,24 @@ impl Renderable for TtyBackend {
         }
         let requested_vrr = configured_vrr_target(
             entry.configured_vrr,
-            request.vrr_auto_eligible,
+            request.frame.vrr_auto_eligible,
             entry.vrr_support,
         );
         set_entry_vrr(entry, requested_vrr);
         let output_geometry = request
+            .desktop
             .space
             .output_geometry(&entry.output)
             .ok_or_else(|| format!("tty output {:?} is not mapped", entry.output.name()))?;
-        let space = request.space;
-        let session_lock = request.session_lock;
-        let clear = if request.session_lock.active() {
+        let space = request.desktop.space;
+        let session_lock = request.desktop.session_lock;
+        let clear = if request.desktop.session_lock.active() {
             crate::render::SESSION_LOCK_COLOR
         } else {
-            request.clear
+            request.frame.clear
         };
-        let target_presentation_time = request.target_presentation_time;
-        let session_lock_generation = request.session_lock.frame_generation();
+        let target_presentation_time = request.frame.target_presentation_time;
+        let session_lock_generation = request.desktop.session_lock.frame_generation();
         let elements = crate::render::scene::build(
             &mut self.renderer,
             &entry.output,

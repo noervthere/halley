@@ -25,6 +25,36 @@ pub struct RenderState {
     pub(crate) ui_text: UiTextRenderer,
 }
 
+/// Per-frame mutable view over [`RenderState`].
+///
+/// Splitting the aggregate once at the request boundary lets the scene builder
+/// borrow independent caches without exposing many session-level fields.
+pub struct RenderResources<'a> {
+    pub window_close_animations: &'a mut WindowCloseAnimations,
+    pub fullscreen_textures: &'a mut FullscreenTextureTransitions,
+    pub overlay_previews: &'a mut OverlayPreviewCache,
+    pub node_renderer: &'a mut NodeRenderer,
+    pub window_decoration_renderer: &'a mut WindowDecorationRenderer,
+    pub backdrop_blur_renderer: &'a mut BackdropBlurRenderer,
+    pub shadow_renderer: &'a mut ShadowRenderer,
+    pub ui_text: &'a mut UiTextRenderer,
+}
+
+impl<'a> From<&'a mut RenderState> for RenderResources<'a> {
+    fn from(state: &'a mut RenderState) -> Self {
+        Self {
+            window_close_animations: &mut state.window_close_animations,
+            fullscreen_textures: &mut state.fullscreen_textures,
+            overlay_previews: &mut state.overlay_previews,
+            node_renderer: &mut state.node_renderer,
+            window_decoration_renderer: &mut state.window_decoration_renderer,
+            backdrop_blur_renderer: &mut state.backdrop_blur_renderer,
+            shadow_renderer: &mut state.shadow_renderer,
+            ui_text: &mut state.ui_text,
+        }
+    }
+}
+
 impl RenderState {
     pub fn new(animations: Animations, font: &Font) -> Self {
         Self {

@@ -154,15 +154,16 @@ impl Renderable for WinitBackend {
         let size = self.backend.window_size();
         let damage = Rectangle::from_size(size);
         let output_geometry = request
+            .desktop
             .space
             .output_geometry(output)
             .ok_or_else(|| format!("winit output {:?} is not mapped", output.name()))?;
-        let space = request.space;
-        let session_lock = request.session_lock;
-        let clear = if request.session_lock.active() {
+        let space = request.desktop.space;
+        let session_lock = request.desktop.session_lock;
+        let clear = if request.desktop.session_lock.active() {
             crate::render::SESSION_LOCK_COLOR
         } else {
-            request.clear
+            request.frame.clear
         };
 
         // Scoped so `renderer`/`framebuffer` (both borrowed from

@@ -183,46 +183,63 @@ pub struct FrameSubmission {
     pub variable_refresh: bool,
 }
 
-/// Immutable scene data needed to construct one output frame.
-pub struct RenderRequest<'a> {
+/// Per-frame scheduling and output policy.
+pub struct FrameContext {
     pub target_presentation_time: std::time::Duration,
     /// True only when the output has a committed, fully settled fullscreen
     /// window and no compositor or layer-shell overlay is visible.
     pub vrr_auto_eligible: bool,
     pub clear: Color32F,
+}
+
+/// Desktop state and presentation policy used to place live surfaces.
+pub struct DesktopContext<'a> {
     pub session_lock: &'a crate::wayland::session_lock::State,
+    pub space: &'a Space<Window>,
+    pub focused: Option<&'a WlSurface>,
+    pub cameras: &'a crate::camera::OutputCameras,
+    pub window_open_animations: &'a crate::animation::WindowOpenAnimations,
+    pub fullscreen: &'a crate::wayland::fullscreen::FullscreenManager,
+    pub maximize: &'a crate::wayland::maximize::FieldMaximizeManager,
+    pub nodes: &'a crate::nodes::NodesState,
+    pub node_grab_active: bool,
+}
+
+/// Cursor presentation inputs. Pointer constraint policy is deliberately not
+/// part of rendering and remains owned by the session input subsystem.
+pub struct CursorContext<'a> {
     pub cursor: &'a CursorManager,
     pub cursor_position: (f64, f64),
     pub show_cursor: bool,
     pub cursor_override: Option<CursorIcon>,
+}
+
+/// Shell-owned overlays and replacement scenes.
+pub struct OverlayContext<'a> {
     pub capture_overlay: crate::capture::CaptureOverlay<'a>,
-    pub space: &'a Space<Window>,
-    pub focused: Option<&'a WlSurface>,
-    pub decorations: &'a Decorations,
-    pub blur: halley_config::Blur,
-    pub shadows: halley_config::Shadows,
-    pub cameras: &'a crate::camera::OutputCameras,
-    pub window_open_animations: &'a crate::animation::WindowOpenAnimations,
-    pub window_close_animations: &'a mut crate::render::close::WindowCloseAnimations,
-    pub fullscreen: &'a crate::wayland::fullscreen::FullscreenManager,
-    pub maximize: &'a crate::wayland::maximize::FieldMaximizeManager,
-    pub fullscreen_textures:
-        &'a mut crate::render::fullscreen_texture::FullscreenTextureTransitions,
-    pub overlay_previews: &'a mut crate::render::overlays::preview::OverlayPreviewCache,
-    pub nodes: &'a crate::nodes::NodesState,
-    pub node_grab_active: bool,
     pub bearings: &'a crate::bearings::BearingsState,
-    pub backdrop_blur_renderer: &'a mut crate::render::effects::backdrop_blur::BackdropBlurRenderer,
-    pub shadow_renderer: &'a mut crate::render::effects::shadow::ShadowRenderer,
     pub focus_cycle: &'a crate::focus_cycle::FocusCycleState,
     pub apogee: &'a crate::apogee::ApogeeState,
     pub apogee_config: halley_config::Apogee,
     pub overlays: &'a crate::overlay::OverlayManager,
     pub overlay_config: &'a halley_config::Overlays,
-    pub node_renderer: &'a mut crate::render::node::NodeRenderer,
-    pub window_decoration_renderer:
-        &'a mut crate::render::window_decoration::WindowDecorationRenderer,
-    pub ui_text: &'a mut crate::render::text::UiTextRenderer,
+}
+
+/// Immutable visual configuration for one frame.
+pub struct VisualContext<'a> {
+    pub decorations: &'a Decorations,
+    pub blur: halley_config::Blur,
+    pub shadows: halley_config::Shadows,
+}
+
+/// Complete input to one scene build, grouped by ownership boundary.
+pub struct RenderRequest<'a> {
+    pub frame: FrameContext,
+    pub desktop: DesktopContext<'a>,
+    pub cursor: CursorContext<'a>,
+    pub overlays: OverlayContext<'a>,
+    pub visuals: VisualContext<'a>,
+    pub resources: resources::RenderResources<'a>,
 }
 
 /// A presentation backend for one already-described scene.

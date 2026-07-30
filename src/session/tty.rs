@@ -24,7 +24,10 @@ use crate::cursor::CursorManager;
 use crate::input::keybinds::BackendKind;
 use crate::input::pointer::{Pointer, WheelAccumulator};
 use crate::input::{Keyboard, SuppressedButtons, SuppressedKeys};
-use crate::render::{CLEAR_COLOR, RenderRequest};
+use crate::render::{
+    CLEAR_COLOR, CursorContext, DesktopContext, FrameContext, OverlayContext, RenderRequest,
+    VisualContext,
+};
 use crate::wayland;
 
 use super::SessionDriver;
@@ -814,44 +817,47 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
     let outcome = match app.driver.backend.render(
         output,
         RenderRequest {
-            target_presentation_time,
-            vrr_auto_eligible,
-            clear: CLEAR_COLOR,
-            session_lock: &app.session_lock,
-            cursor: &app.cursor,
-            cursor_position: app.pointer.position(),
-            show_cursor,
-            cursor_override,
-            capture_overlay: app.capture.overlay(),
-            space: &app.wayland.space,
-            focused: app.wayland.focused_window.as_ref(),
-            decorations: &app.decorations,
-            blur: app.effects.blur,
-            shadows: app.effects.shadows,
-            cameras: &app.cameras,
-            window_open_animations: &app.window_open_animations,
-            window_close_animations: &mut app.render.window_close_animations,
-            fullscreen: &app.fullscreen,
-            maximize: &app.maximize,
-            fullscreen_textures: &mut app.render.fullscreen_textures,
-            overlay_previews: &mut app.render.overlay_previews,
-            nodes: &app.nodes,
-            node_grab_active: matches!(
-                &app.grab,
-                crate::input::grab::Grab::PendingNode { .. }
-                    | crate::input::grab::Grab::MoveNode { .. }
-            ),
-            bearings: &app.bearings,
-            backdrop_blur_renderer: &mut app.render.backdrop_blur_renderer,
-            shadow_renderer: &mut app.render.shadow_renderer,
-            focus_cycle: &app.focus_cycle,
-            apogee: &app.apogee,
-            apogee_config: app.apogee_config,
-            overlays: &app.overlays,
-            overlay_config: &app.overlay_config,
-            node_renderer: &mut app.render.node_renderer,
-            window_decoration_renderer: &mut app.render.window_decoration_renderer,
-            ui_text: &mut app.render.ui_text,
+            frame: FrameContext {
+                target_presentation_time,
+                vrr_auto_eligible,
+                clear: CLEAR_COLOR,
+            },
+            desktop: DesktopContext {
+                session_lock: &app.session_lock,
+                space: &app.wayland.space,
+                focused: app.wayland.focused_window.as_ref(),
+                cameras: &app.cameras,
+                window_open_animations: &app.window_open_animations,
+                fullscreen: &app.fullscreen,
+                maximize: &app.maximize,
+                nodes: &app.nodes,
+                node_grab_active: matches!(
+                    &app.grab,
+                    crate::input::grab::Grab::PendingNode { .. }
+                        | crate::input::grab::Grab::MoveNode { .. }
+                ),
+            },
+            cursor: CursorContext {
+                cursor: &app.cursor,
+                cursor_position: app.pointer.position(),
+                show_cursor,
+                cursor_override,
+            },
+            overlays: OverlayContext {
+                capture_overlay: app.capture.overlay(),
+                bearings: &app.bearings,
+                focus_cycle: &app.focus_cycle,
+                apogee: &app.apogee,
+                apogee_config: app.apogee_config,
+                overlays: &app.overlays,
+                overlay_config: &app.overlay_config,
+            },
+            visuals: VisualContext {
+                decorations: &app.decorations,
+                blur: app.effects.blur,
+                shadows: app.effects.shadows,
+            },
+            resources: crate::render::resources::RenderResources::from(&mut app.render),
         },
     ) {
         Ok(outcome) => outcome,
