@@ -53,11 +53,6 @@ pub fn focus(wayland: &mut WaylandState, window: &Window, raise: bool) {
     if !accepts_wm_focus(window) {
         return;
     }
-    if let Some(surface) = window.wl_surface().map(|surface| surface.into_owned())
-        && raise
-    {
-        wayland.managed_windows.raise(surface);
-    }
     wayland.focused_layer = None;
     for mapped in wayland.space.elements() {
         if mapped.set_activated(mapped == window)
@@ -67,10 +62,22 @@ pub fn focus(wayland: &mut WaylandState, window: &Window, raise: bool) {
             toplevel.send_pending_configure();
         }
     }
-    if raise && let Some(location) = wayland.space.element_location(window) {
-        wayland.space.map_element(window.clone(), location, true);
+    if raise {
+        raise_managed(wayland, window);
     }
     wayland.focused_window = window.wl_surface().map(|surface| surface.into_owned());
+}
+
+pub fn raise_managed(wayland: &mut WaylandState, window: &Window) {
+    if !accepts_wm_focus(window) {
+        return;
+    }
+    if let Some(surface) = window.wl_surface().map(|surface| surface.into_owned()) {
+        wayland.managed_windows.raise(surface);
+    }
+    if let Some(location) = wayland.space.element_location(window) {
+        wayland.space.map_element(window.clone(), location, true);
+    }
 }
 
 pub fn focus_and_raise(wayland: &mut WaylandState, window: &Window) {

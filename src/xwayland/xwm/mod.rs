@@ -468,9 +468,9 @@ mod tests {
     use super::{
         ExternalPresentationPolicy, FullscreenRequestOrigin, MaximizeToggleAction,
         OverrideRedirectIdentity, OverrideRedirectMapAdmission, OverrideRedirectStackAction,
-        external_presentation_policy, maximize_toggle_action, override_redirect_map_admission,
-        override_redirect_owner_rank, override_redirect_stack_action, recovery_window_size,
-        size_fills_output,
+        compositor_fullscreen_should_raise, external_presentation_policy, maximize_toggle_action,
+        override_redirect_map_admission, override_redirect_owner_rank,
+        override_redirect_stack_action, recovery_window_size, size_fills_output,
     };
     use smithay::utils::{Logical, Point, Rectangle, Size};
 
@@ -491,6 +491,25 @@ mod tests {
             FullscreenRequestOrigin::Client,
         ] {
             assert_eq!(origin.presentation_origin(), FullscreenOrigin::Client);
+        }
+    }
+
+    #[test]
+    fn only_compositor_fullscreen_entry_promotes_the_x11_window() {
+        assert!(compositor_fullscreen_should_raise(
+            true,
+            FullscreenRequestOrigin::Compositor
+        ));
+        assert!(!compositor_fullscreen_should_raise(
+            false,
+            FullscreenRequestOrigin::Compositor
+        ));
+        for origin in [
+            FullscreenRequestOrigin::Initial,
+            FullscreenRequestOrigin::Client,
+            FullscreenRequestOrigin::Maximize,
+        ] {
+            assert!(!compositor_fullscreen_should_raise(true, origin));
         }
     }
 

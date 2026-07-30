@@ -54,6 +54,10 @@ pub(super) fn set_external_fullscreen<D: SessionDriver>(
     let Some(window) = window_for_surface(session, surface) else {
         return;
     };
+    if compositor_fullscreen_should_raise(fullscreen, origin) {
+        crate::window::raise_managed(&mut session.wayland, &window);
+        session.xwayland.raise_window(&window);
+    }
     if update_client_fullscreen && let Err(err) = surface.set_fullscreen(fullscreen) {
         eventline::warn!("xwayland: failed to update fullscreen state: {err}");
     }
@@ -129,6 +133,13 @@ pub(super) fn set_external_fullscreen<D: SessionDriver>(
         settle_external_immediately(session, surface, &window, fullscreen, origin);
     }
     crate::session::reconcile_pointer_constraints(session);
+}
+
+pub(super) fn compositor_fullscreen_should_raise(
+    fullscreen: bool,
+    origin: FullscreenRequestOrigin,
+) -> bool {
+    fullscreen && origin == FullscreenRequestOrigin::Compositor
 }
 
 pub(super) fn preserve_opening_center<D: SessionDriver>(
