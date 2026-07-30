@@ -92,8 +92,10 @@ type TtyApp = super::Session<TtyDriver>;
 /// free VT. Returns (rather than panicking) if `TtyBackend::new()` fails,
 /// since that's expected when nested under a host compositor that already
 /// holds exclusive session control.
-pub fn run() {
-    let (config_path, runtime_config) = crate::config::load_initial();
+pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
+    let initial = crate::config::load_initial(explicit_config_path);
+    let config_path = initial.path;
+    let runtime_config = initial.config;
     let (backend, session_notifier, drm_notifier) = match TtyBackend::new(&runtime_config.outputs) {
         Ok(parts) => parts,
         Err(err) => {
@@ -180,6 +182,8 @@ pub fn run() {
         seat_state,
         seat,
         start_time: Instant::now(),
+        config_path: config_path.clone(),
+        startup_config_diagnostic: initial.diagnostic,
         nodes: crate::nodes::NodesState::new(&runtime_config),
         bearings: crate::bearings::BearingsState::new(runtime_config.bearings),
         focus_cycle: crate::focus_cycle::FocusCycleState::default(),
@@ -424,17 +428,24 @@ fn queue_output_redraw(app: &mut TtyApp, output: &Output) {
     app.request_output_redraw(output);
 }
 
-fn apply_runtime_config(app: &mut TtyApp, config: halley_config::RuntimeConfig) {
-    let reload_commands = config.autostart.on_reload.clone();
-    app.apply_common_config(&config);
-    app.driver.physical_input.reload(&app.input);
+fn apply_runtime_config(app: &mut TtyApp, reload: crate::config::ConfigReload) {
+    match reload {
+        crate::config::ConfigReload::Loaded(config) => {
+            let reload_commands = config.autostart.on_reload.clone();
+            app.apply_common_config(&config);
+            app.driver.physical_input.reload(&app.input);
 
-    if app.driver.paused {
-        app.driver.pending_output_config = Some(config.outputs);
-    } else {
-        apply_tty_output_config(app, &config.outputs);
+            if app.driver.paused {
+                app.driver.pending_output_config = Some(config.outputs);
+            } else {
+                apply_tty_output_config(app, &config.outputs);
+            }
+            app.run_autostart_reload(&reload_commands);
+        }
+        crate::config::ConfigReload::Rejected(diagnostic) => {
+            eventline::debug!("config: rejected reload for {:?}", diagnostic.path);
+        }
     }
-    app.run_autostart_reload(&reload_commands);
 }
 
 fn apply_tty_output_config(app: &mut TtyApp, outputs_config: &[halley_config::OutputConfig]) {

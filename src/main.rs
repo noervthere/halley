@@ -40,15 +40,15 @@ fn main() {
 
     if args.session {
         session::environment::prepare_session();
-        session::tty::run();
+        session::tty::run(args.config_path);
     } else if args.force_winit || detect_nested_session() {
-        session::winit::run();
+        session::winit::run(args.config_path);
     } else {
         // Reaching the DRM/KMS backend means this process is the desktop
         // session even when it was launched directly from a tty instead of
         // through the display-manager `--session` entry point.
         session::environment::prepare_session();
-        session::tty::run();
+        session::tty::run(args.config_path);
     }
     logging::flush();
 }
@@ -59,17 +59,28 @@ struct StartupArgs {
     session: bool,
     help: bool,
     version: bool,
+    config_path: Option<std::path::PathBuf>,
 }
 
 impl StartupArgs {
     fn parse(args: impl IntoIterator<Item = String>) -> Result<Self, String> {
         let mut parsed = Self::default();
-        for arg in args {
+        let mut args = args.into_iter();
+        while let Some(arg) = args.next() {
             match arg.as_str() {
                 "--winit" => parsed.force_winit = true,
                 "--session" => parsed.session = true,
                 "-h" | "--help" => parsed.help = true,
                 "-V" | "--version" => parsed.version = true,
+                "-c" | "--config" => {
+                    let path = args
+                        .next()
+                        .ok_or_else(|| format!("`{arg}` requires a path"))?;
+                    set_config_path(&mut parsed, path)?;
+                }
+                _ if arg.starts_with("--config=") => {
+                    set_config_path(&mut parsed, arg["--config=".len()..].to_string())?;
+                }
                 _ => return Err(format!("unknown argument {arg:?}")),
             }
         }
@@ -86,10 +97,25 @@ fn print_help() {
     println!("Usage: halley [OPTIONS]");
     println!();
     println!("Options:");
+    println!("  -c, --config PATH  Load configuration from PATH");
     println!("      --session  Start a full TTY desktop session");
     println!("      --winit    Run nested inside the current desktop");
     println!("  -h, --help     Show this help");
     println!("  -V, --version  Show the version");
+}
+
+fn set_config_path(parsed: &mut StartupArgs, path: String) -> Result<(), String> {
+    if path.is_empty() {
+        return Err("configuration path cannot be empty".to_string());
+    }
+    if parsed
+        .config_path
+        .replace(std::path::PathBuf::from(path))
+        .is_some()
+    {
+        return Err("configuration path was specified more than once".to_string());
+    }
+    Ok(())
 }
 
 /// Whether we're already running inside another Wayland/X compositor - if
@@ -112,5 +138,41 @@ mod tests {
     #[test]
     fn unknown_arguments_are_rejected() {
         assert!(StartupArgs::parse(["--mystery".to_string()]).is_err());
+    }
+
+    #[test]
+    fn config_path_accepts_short_long_and_equals_forms() {
+        assert_eq!(
+            StartupArgs::parse(["-c".to_string(), "one.rune".to_string()])
+                .unwrap()
+                .config_path,
+            Some("one.rune".into())
+        );
+        assert_eq!(
+            StartupArgs::parse(["--config".to_string(), "two.rune".to_string()])
+                .unwrap()
+                .config_path,
+            Some("two.rune".into())
+        );
+        assert_eq!(
+            StartupArgs::parse(["--config=three.rune".to_string()])
+                .unwrap()
+                .config_path,
+            Some("three.rune".into())
+        );
+    }
+
+    #[test]
+    fn config_path_rejects_missing_empty_and_duplicate_values() {
+        assert!(StartupArgs::parse(["-c".to_string()]).is_err());
+        assert!(StartupArgs::parse(["--config=".to_string()]).is_err());
+        assert!(
+            StartupArgs::parse([
+                "-c".to_string(),
+                "one".to_string(),
+                "--config=two".to_string()
+            ])
+            .is_err()
+        );
     }
 }

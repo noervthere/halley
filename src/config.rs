@@ -1,4 +1,5 @@
 use std::error::Error;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, SystemTime};
@@ -9,73 +10,157 @@ use calloop::channel::{Event, sync_channel};
 const POLLING_INTERVAL: Duration = Duration::from_millis(500);
 
 #[derive(Debug, PartialEq, Eq)]
-struct FileProps {
-    canonical: PathBuf,
-    modified: SystemTime,
+enum FileProps {
+    Present {
+        canonical: PathBuf,
+        modified: SystemTime,
+        len: u64,
+        device: u64,
+        inode: u64,
+    },
+    Unavailable(String),
 }
 
 impl FileProps {
-    fn read(path: &Path) -> std::io::Result<Self> {
-        let canonical = path.canonicalize()?;
-        let modified = canonical.metadata()?.modified()?;
-        Ok(Self {
-            canonical,
-            modified,
+    fn read(path: &Path) -> Self {
+        let result = (|| {
+            let canonical = path.canonicalize()?;
+            let metadata = canonical.metadata()?;
+            Ok::<_, std::io::Error>(Self::Present {
+                canonical,
+                modified: metadata.modified()?,
+                len: metadata.len(),
+                device: metadata.dev(),
+                inode: metadata.ino(),
+            })
+        })();
+        result.unwrap_or_else(|error| {
+            Self::Unavailable(format!("{:?}:{}", error.kind(), error.raw_os_error().unwrap_or(0)))
         })
     }
 }
 
 struct ConfigFileState {
     path: PathBuf,
-    last_props: Option<FileProps>,
+    last_props: FileProps,
 }
 
 impl ConfigFileState {
     fn new(path: PathBuf) -> Self {
-        let last_props = FileProps::read(&path).ok();
+        let last_props = FileProps::read(&path);
         Self { path, last_props }
     }
 
     fn changed(&mut self) -> bool {
-        let Ok(props) = FileProps::read(&self.path) else {
-            return false;
-        };
-        if self.last_props.as_ref() == Some(&props) {
+        let props = FileProps::read(&self.path);
+        if self.last_props == props {
             return false;
         }
-        self.last_props = Some(props);
+        self.last_props = props;
         true
     }
 }
 
-/// Loads the initial validated snapshot and returns the path to watch.
-/// Startup remains resilient: a missing/invalid file uses defaults, while a
-/// later valid save is still picked up by the watcher.
-pub fn load_initial() -> (Option<PathBuf>, halley_config::RuntimeConfig) {
-    let Some(path) = halley_config::config_path() else {
-        eventline::warn!("config: no config path resolvable, using defaults");
-        return (None, halley_config::RuntimeConfig::default());
-    };
-    if let Err(err) = halley_config::bootstrap_default_config_at(&path) {
-        eventline::warn!("config: failed to bootstrap default config: {err}");
-    }
-
-    let config = match halley_config::load_runtime_config_at(&path) {
-        Ok(config) => config,
-        Err(err) => {
-            eventline::warn!("config: failed to load {path:?}, using defaults: {err}");
-            halley_config::RuntimeConfig::default()
-        }
-    };
-    (Some(path), config)
+#[derive(Clone, Debug)]
+pub struct InitialConfig {
+    pub path: Option<PathBuf>,
+    pub config: halley_config::RuntimeConfig,
+    pub diagnostic: Option<halley_config::ConfigDiagnostic>,
 }
 
-/// Polls the canonical path plus mtime on a background thread, parses there,
-/// and delivers complete snapshots onto the compositor event loop.
+#[derive(Clone, Debug)]
+pub enum ConfigReload {
+    Loaded(halley_config::RuntimeConfig),
+    Rejected(halley_config::ConfigDiagnostic),
+}
+
+/// Resolve a user-supplied path without requiring the file to exist.
+///
+/// Keeping the lexical path, rather than canonicalizing it, lets Halley
+/// report and watch an explicitly selected file that will be created later.
+pub fn absolute_path(path: PathBuf) -> std::io::Result<PathBuf> {
+    if path.is_absolute() {
+        Ok(path)
+    } else {
+        Ok(std::env::current_dir()?.join(path))
+    }
+}
+
+/// Loads the initial validated snapshot and retains the exact path that later
+/// reloads and `halleyctl config verify` must use.
+pub fn load_initial(explicit_path: Option<PathBuf>) -> InitialConfig {
+    let explicit = explicit_path.is_some();
+    let selected = match explicit_path {
+        Some(path) => absolute_path(path).map(Some),
+        None => match halley_config::config_path() {
+            Some(path) => absolute_path(path).map(Some),
+            None => Ok(None),
+        },
+    };
+
+    let path = match selected {
+        Ok(path) => path,
+        Err(error) => {
+            let diagnostic = halley_config::ConfigDiagnostic::message(
+                None,
+                format!("could not resolve the configuration path: {error}"),
+            );
+            eventline::warn!("config: {}, using defaults", diagnostic.message);
+            return InitialConfig {
+                path: None,
+                config: halley_config::RuntimeConfig::default(),
+                diagnostic: Some(diagnostic),
+            };
+        }
+    };
+
+    let Some(path) = path else {
+        let diagnostic = halley_config::ConfigDiagnostic::message(
+            None,
+            "no configuration path is available because HOME and XDG_CONFIG_HOME are unset",
+        );
+        eventline::warn!("config: {}, using defaults", diagnostic.message);
+        return InitialConfig {
+            path: None,
+            config: halley_config::RuntimeConfig::default(),
+            diagnostic: Some(diagnostic),
+        };
+    };
+
+    if !explicit
+        && let Err(error) = halley_config::bootstrap_default_config_at(&path)
+    {
+        eventline::warn!("config: failed to bootstrap default config: {error}");
+    }
+
+    match halley_config::load_runtime_config_diagnostic_at(&path) {
+        Ok(config) => InitialConfig {
+            path: Some(path),
+            config,
+            diagnostic: None,
+        },
+        Err(diagnostic) => {
+            eventline::warn!(
+                "config: failed to load {:?}, using defaults: {}",
+                diagnostic.path,
+                diagnostic.message
+            );
+            InitialConfig {
+                path: Some(path),
+                config: halley_config::RuntimeConfig::default(),
+                diagnostic: Some(diagnostic),
+            }
+        }
+    }
+}
+
+/// Polls the selected file identity and mtime on a background thread, parses
+/// there, and delivers both valid snapshots and rejected attempts onto the
+/// compositor event loop.
 pub fn watch<App: 'static>(
     loop_handle: &LoopHandle<'_, App>,
     path: PathBuf,
-    mut apply: impl FnMut(&mut App, halley_config::RuntimeConfig) + 'static,
+    mut notify: impl FnMut(&mut App, ConfigReload) + 'static,
 ) -> Result<(), Box<dyn Error>> {
     let (sender, receiver) = sync_channel(1);
     thread::Builder::new()
@@ -87,8 +172,7 @@ pub fn watch<App: 'static>(
                 if !state.changed() {
                     continue;
                 }
-                let loaded = halley_config::load_runtime_config_at(&state.path)
-                    .map_err(|err| err.to_string());
+                let loaded = halley_config::load_runtime_config_diagnostic_at(&state.path);
                 if sender.send(loaded).is_err() {
                     break;
                 }
@@ -96,23 +180,24 @@ pub fn watch<App: 'static>(
         })?;
 
     loop_handle.insert_source(receiver, move |event, _, app| {
-        if let Event::Msg(loaded) = event
-            && let Some(config) = accept_reload(loaded)
-        {
-            apply(app, config);
+        if let Event::Msg(loaded) = event {
+            notify(app, classify_reload(loaded));
         }
     })?;
     Ok(())
 }
 
-fn accept_reload(
-    loaded: Result<halley_config::RuntimeConfig, String>,
-) -> Option<halley_config::RuntimeConfig> {
+fn classify_reload(
+    loaded: Result<halley_config::RuntimeConfig, halley_config::ConfigDiagnostic>,
+) -> ConfigReload {
     match loaded {
-        Ok(config) => Some(config),
-        Err(err) => {
-            eventline::warn!("config: reload rejected, keeping last valid config: {err}");
-            None
+        Ok(config) => ConfigReload::Loaded(config),
+        Err(diagnostic) => {
+            eventline::warn!(
+                "config: reload rejected, keeping last valid config: {}",
+                diagnostic.message
+            );
+            ConfigReload::Rejected(diagnostic)
         }
     }
 }
@@ -129,8 +214,10 @@ mod tests {
 
     impl ScratchFile {
         fn new(name: &str) -> Self {
-            let dir = std::env::temp_dir()
-                .join(format!("halley-config-watch-{}-{name}", std::process::id()));
+            let dir = std::env::temp_dir().join(format!(
+                "halley-config-watch-{}-{name}",
+                std::process::id()
+            ));
             fs::create_dir_all(&dir).unwrap();
             Self {
                 path: dir.join("halley.rune"),
@@ -147,7 +234,7 @@ mod tests {
     }
 
     #[test]
-    fn file_state_detects_create_and_replacement_but_not_unchanged_file() {
+    fn file_state_detects_create_delete_and_replacement_but_not_unchanged_file() {
         let scratch = ScratchFile::new("props");
         let mut state = ConfigFileState::new(scratch.path.clone());
         assert!(!state.changed());
@@ -159,6 +246,10 @@ mod tests {
             .unwrap()
             .set_times(FileTimes::new().set_modified(UNIX_EPOCH + Duration::from_secs(1)))
             .unwrap();
+        assert!(state.changed());
+        assert!(!state.changed());
+
+        fs::remove_file(&scratch.path).unwrap();
         assert!(state.changed());
         assert!(!state.changed());
 
@@ -175,8 +266,35 @@ mod tests {
     }
 
     #[test]
-    fn rejected_live_reload_keeps_the_last_valid_snapshot() {
-        assert!(accept_reload(Err("invalid keybind".to_owned())).is_none());
-        assert!(accept_reload(Ok(halley_config::RuntimeConfig::default())).is_some());
+    fn explicit_missing_path_is_not_bootstrapped() {
+        let scratch = ScratchFile::new("explicit");
+        let initial = load_initial(Some(scratch.path.clone()));
+
+        assert_eq!(initial.path.as_deref(), Some(scratch.path.as_path()));
+        assert!(initial.diagnostic.is_some());
+        assert!(!scratch.path.exists());
+    }
+
+    #[test]
+    fn relative_paths_are_resolved_against_the_launch_directory() {
+        let relative = PathBuf::from("relative/halley.rune");
+        assert_eq!(
+            absolute_path(relative.clone()).unwrap(),
+            std::env::current_dir().unwrap().join(relative)
+        );
+    }
+
+    #[test]
+    fn rejected_live_reload_keeps_structured_diagnostics() {
+        let diagnostic =
+            halley_config::ConfigDiagnostic::message(None, "invalid keybind".to_string());
+        assert!(matches!(
+            classify_reload(Err(diagnostic)),
+            ConfigReload::Rejected(_)
+        ));
+        assert!(matches!(
+            classify_reload(Ok(halley_config::RuntimeConfig::default())),
+            ConfigReload::Loaded(_)
+        ));
     }
 }

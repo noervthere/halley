@@ -138,6 +138,15 @@ pub fn load_runtime_config_at(path: &Path) -> Result<RuntimeConfig, RuntimeConfi
     parse_runtime_config(&config)
 }
 
+/// Strict, read-only load used by both the compositor watcher and
+/// `halleyctl config verify`.
+pub fn load_runtime_config_diagnostic_at(
+    path: &Path,
+) -> Result<RuntimeConfig, crate::ConfigDiagnostic> {
+    load_runtime_config_at(path)
+        .map_err(|error| crate::ConfigDiagnostic::from_runtime_error(path, &error))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

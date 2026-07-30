@@ -68,16 +68,23 @@ impl SessionDriver for WinitDriver {
 
 type App = Session<WinitDriver>;
 
-fn apply_runtime_config(app: &mut App, config: halley_config::RuntimeConfig) {
-    app.apply_common_config(&config);
+fn apply_runtime_config(app: &mut App, reload: crate::config::ConfigReload) {
+    match reload {
+        crate::config::ConfigReload::Loaded(config) => app.apply_common_config(&config),
+        crate::config::ConfigReload::Rejected(diagnostic) => {
+            eventline::debug!("config: rejected reload for {:?}", diagnostic.path);
+        }
+    }
 }
 
 /// Runs the nested (winit) session - a real window on the host desktop,
 /// standing in for real hardware output. Used when we're not the ones
 /// actually driving a display (see `detect_nested_session` in `main.rs`) or
 /// when `--winit` is passed explicitly.
-pub fn run() {
-    let (config_path, runtime_config) = crate::config::load_initial();
+pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
+    let initial = crate::config::load_initial(explicit_config_path);
+    let config_path = initial.path;
+    let runtime_config = initial.config;
     let window_attributes = WinitWindow::default_attributes()
         .with_inner_size(LogicalSize::new(1280.0, 800.0))
         .with_title("halley");
@@ -139,6 +146,8 @@ pub fn run() {
         seat_state,
         seat,
         start_time: Instant::now(),
+        config_path: config_path.clone(),
+        startup_config_diagnostic: initial.diagnostic,
         nodes: crate::nodes::NodesState::new(&runtime_config),
         bearings: crate::bearings::BearingsState::new(runtime_config.bearings),
         focus_cycle: crate::focus_cycle::FocusCycleState::default(),

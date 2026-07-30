@@ -5,6 +5,7 @@ pub mod bootstrap;
 pub mod chord;
 pub mod cursor;
 pub mod decorations;
+pub mod diagnostic;
 pub mod font;
 pub mod input;
 pub mod keybinds;
@@ -31,6 +32,7 @@ pub use bootstrap::{
 pub use chord::parse_chord;
 pub use cursor::{Cursor, parse_cursor};
 pub use decorations::{BorderColor, Decorations, load_decorations, parse_decorations};
+pub use diagnostic::ConfigDiagnostic;
 pub use font::{Font, parse_font};
 pub use input::{
     AccelProfile, ClickMethod, DeviceKind, DeviceOverride, DeviceSettings, FocusMode,
@@ -53,7 +55,8 @@ pub use output::{
 pub use parse::{ParseError, parse_keybinds};
 pub use physics::{Physics, parse_physics};
 pub use runtime::{
-    RuntimeConfig, RuntimeConfigError, load_runtime_config_at, parse_runtime_config,
+    RuntimeConfig, RuntimeConfigError, load_runtime_config_at, load_runtime_config_diagnostic_at,
+    parse_runtime_config,
 };
 pub use screenshot::{Screenshot, parse_screenshot};
 pub use terminal::{

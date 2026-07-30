@@ -1,4 +1,5 @@
 use std::ffi::OsStr;
+use std::path::PathBuf;
 
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::renderer::gles::GlesRenderer;
@@ -69,6 +70,8 @@ pub struct Session<D: SessionDriver> {
     pub seat_state: SeatState<Self>,
     pub seat: Seat<Self>,
     pub start_time: std::time::Instant,
+    pub config_path: Option<PathBuf>,
+    pub startup_config_diagnostic: Option<halley_config::ConfigDiagnostic>,
     pub nodes: crate::nodes::NodesState,
     pub bearings: crate::bearings::BearingsState,
     pub focus_cycle: crate::focus_cycle::FocusCycleState,
