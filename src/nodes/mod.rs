@@ -14,7 +14,6 @@ use smithay::wayland::seat::WaylandFocus;
 use smithay::wayland::shell::xdg::XdgToplevelSurfaceData;
 use smithay::wayland::shell::xdg::dialog::ToplevelDialogHint;
 
-#[path = "nodes/dynamics.rs"]
 mod dynamics;
 mod ipc;
 mod session_ops;
