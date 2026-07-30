@@ -1,5 +1,6 @@
 use smithay::desktop::Window;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+use smithay::utils::SERIAL_COUNTER;
 use smithay::wayland::seat::WaylandFocus;
 
 use super::{Session, SessionDriver};
@@ -8,6 +9,7 @@ use crate::wayland::WaylandState;
 struct FocusSuccession {
     output: Option<String>,
     preferred: Option<WlSurface>,
+    pan: halley_config::CloseRestorePan,
 }
 
 pub(crate) struct WindowUnmapPreparation {
@@ -39,6 +41,7 @@ fn mapped_managed_window(wayland: &WaylandState, surface: &WlSurface) -> Option<
 
 fn select_focus_successor(
     wayland: &WaylandState,
+    nodes: &crate::nodes::NodesState,
     closing: &WlSurface,
     closing_output: Option<&str>,
 ) -> Option<WlSurface> {
@@ -47,8 +50,18 @@ fn select_focus_successor(
         closing,
         closing_output,
         |surface| {
-            mapped_managed_window(wayland, surface)
-                .map(|window| crate::wayland::window_output_name(&window))
+            nodes
+                .id_for_surface(surface)
+                .and_then(|id| nodes.record(id))
+                .filter(|record| record.attached)
+                .map(|record| Some(record.output.clone()))
+        },
+        |surface| {
+            nodes
+                .id_for_surface(surface)
+                .and_then(|id| nodes.last_focus_ms().get(&id))
+                .copied()
+                .unwrap_or(0)
         },
     )
 }
@@ -58,11 +71,13 @@ fn select_ordered_successor<T>(
     closing: &T,
     closing_output: Option<&str>,
     mut mapped_output: impl FnMut(&T) -> Option<Option<String>>,
+    mut last_focus_ms: impl FnMut(&T) -> u64,
 ) -> Option<T>
 where
     T: Clone + Eq,
 {
-    let mut global = None;
+    let mut global: Option<(T, u64)> = None;
+    let mut local: Option<(T, u64)> = None;
     for candidate in candidates {
         if &candidate == closing {
             continue;
@@ -70,12 +85,20 @@ where
         let Some(output) = mapped_output(&candidate) else {
             continue;
         };
-        global.get_or_insert_with(|| candidate.clone());
+        let recency = last_focus_ms(&candidate);
+        if global
+            .as_ref()
+            .is_none_or(|(_, current)| recency > *current)
+        {
+            global = Some((candidate.clone(), recency));
+        }
         if closing_output.is_some_and(|closing_output| output.as_deref() == Some(closing_output)) {
-            return Some(candidate);
+            if local.as_ref().is_none_or(|(_, current)| recency > *current) {
+                local = Some((candidate, recency));
+            }
         }
     }
-    global
+    local.or(global).map(|(candidate, _)| candidate)
 }
 
 pub(crate) fn prepare_window_unmap<D: SessionDriver>(
@@ -88,8 +111,18 @@ pub(crate) fn prepare_window_unmap<D: SessionDriver>(
     let focus = (session.wayland.focused_window.as_ref() == Some(surface)).then(|| {
         let output = mapped_managed_window(&session.wayland, surface)
             .and_then(|window| crate::wayland::window_output_name(&window));
-        let preferred = select_focus_successor(&session.wayland, surface, output.as_deref());
-        FocusSuccession { output, preferred }
+        let preferred = session
+            .field_config
+            .close_restore_focus
+            .then(|| {
+                select_focus_successor(&session.wayland, &session.nodes, surface, output.as_deref())
+            })
+            .flatten();
+        FocusSuccession {
+            output,
+            preferred,
+            pan: session.field_config.close_restore_pan,
+        }
     });
     WindowUnmapPreparation {
         surface: surface.clone(),
@@ -109,7 +142,11 @@ pub(crate) fn finish_window_unmap<D: SessionDriver>(
     }
     session.window_open_animations.remove(&surface);
     session.fullscreen.remove(&surface);
-    session.maximize.remove(&surface);
+    if session.maximize.remove(&surface)
+        && let Some(output) = focus.as_ref().and_then(|focus| focus.output.as_deref())
+    {
+        let _ = session.cameras.apply_field_maximize(output, None);
+    }
     session.fullscreen_textures.remove(&surface);
     super::cancel_grab_for_surface(session, &surface);
     crate::input::grab::forget_resize_anchor(&mut session.resize_anchor, &surface);
@@ -127,18 +164,42 @@ pub(crate) fn finish_window_unmap<D: SessionDriver>(
         return;
     }
 
-    let revalidated = select_focus_successor(&session.wayland, &surface, focus.output.as_deref());
+    if !session.field_config.close_restore_focus {
+        crate::window::clear_focus(&mut session.wayland);
+        session
+            .nodes
+            .focus(None, session.start_time.elapsed().as_millis() as u64);
+        return;
+    }
+
+    let revalidated = select_focus_successor(
+        &session.wayland,
+        &session.nodes,
+        &surface,
+        focus.output.as_deref(),
+    );
     if revalidated != focus.preferred {
         eventline::debug!("focus: successor changed while window teardown completed");
     }
     let successor = revalidated
         .as_ref()
-        .and_then(|surface| mapped_managed_window(&session.wayland, surface));
-    if let Some(window) = successor {
-        crate::window::focus_and_raise(&mut session.wayland, &window);
-        session.xwayland.raise_window(&window);
+        .and_then(|surface| session.nodes.id_for_surface(surface));
+    if let Some(id) = successor {
+        let collapsed = session
+            .nodes
+            .record(id)
+            .is_some_and(|record| record.collapsed);
+        if collapsed {
+            let _ = crate::nodes::restore_for_close(session, id, SERIAL_COUNTER.next_serial());
+        } else if let Some(window) = session.nodes.record(id).map(|record| record.window.clone()) {
+            super::focus_window(session, &window, SERIAL_COUNTER.next_serial());
+        }
+        crate::nodes::pan_after_close_restore(session, id, focus.pan);
     } else {
-        session.wayland.focused_window = None;
+        crate::window::clear_focus(&mut session.wayland);
+        session
+            .nodes
+            .focus(None, session.start_time.elapsed().as_millis() as u64);
     }
 }
 
@@ -171,13 +232,18 @@ mod tests {
                 &"closing",
                 Some("DP-1"),
                 |candidate| output_lookup(&outputs, candidate),
+                |candidate| match *candidate {
+                    "global-top" => 200,
+                    "same-output" => 100,
+                    _ => 0,
+                },
             ),
             Some("same-output")
         );
     }
 
     #[test]
-    fn focus_successor_falls_back_to_topmost_managed_window() {
+    fn focus_successor_falls_back_to_most_recent_managed_window() {
         let outputs = HashMap::from([
             ("closing", Some("DP-1")),
             ("global-top", Some("DP-2")),
@@ -190,8 +256,13 @@ mod tests {
                 &"closing",
                 Some("DP-1"),
                 |candidate| output_lookup(&outputs, candidate),
+                |candidate| match *candidate {
+                    "global-bottom" => 200,
+                    "global-top" => 100,
+                    _ => 0,
+                },
             ),
-            Some("global-top")
+            Some("global-bottom")
         );
     }
 
@@ -213,6 +284,7 @@ mod tests {
                         .get(candidate)
                         .and_then(|output| output.map(|output| Some(output.to_owned())))
                 },
+                |_| 0,
             ),
             Some("remaining")
         );
@@ -221,9 +293,13 @@ mod tests {
     #[test]
     fn focus_successor_is_none_after_the_last_managed_window_closes() {
         assert_eq!(
-            select_ordered_successor(["closing"], &"closing", Some("DP-1"), |_| Some(Some(
-                "DP-1".to_owned()
-            )),),
+            select_ordered_successor(
+                ["closing"],
+                &"closing",
+                Some("DP-1"),
+                |_| Some(Some("DP-1".to_owned())),
+                |_| 0
+            ),
             None
         );
     }

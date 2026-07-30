@@ -1241,6 +1241,28 @@ pub fn restore<D: crate::session::SessionDriver>(
     id: NodeId,
     serial: smithay::utils::Serial,
 ) -> bool {
+    restore_with_centering(session, id, serial, None)
+}
+
+pub fn restore_for_close<D: crate::session::SessionDriver>(
+    session: &mut crate::session::Session<D>,
+    id: NodeId,
+    serial: smithay::utils::Serial,
+) -> bool {
+    restore_with_centering(
+        session,
+        id,
+        serial,
+        Some(halley_config::RestoreCentering::Never),
+    )
+}
+
+fn restore_with_centering<D: crate::session::SessionDriver>(
+    session: &mut crate::session::Session<D>,
+    id: NodeId,
+    serial: smithay::utils::Serial,
+    centering: Option<halley_config::RestoreCentering>,
+) -> bool {
     let Some(record) = session.nodes.record(id).cloned() else {
         return false;
     };
@@ -1286,7 +1308,7 @@ pub fn restore<D: crate::session::SessionDriver>(
     };
     if let Some(output) = output {
         let _ = crate::session::opening::start(session, record.surface.clone(), &output, now);
-        let should_center = match session.nodes.config.restore_centering {
+        let should_center = match centering.unwrap_or(session.nodes.config.restore_centering) {
             halley_config::RestoreCentering::Never => false,
             halley_config::RestoreCentering::Always => true,
             halley_config::RestoreCentering::IfOffscreen => {
@@ -1314,6 +1336,67 @@ pub fn restore<D: crate::session::SessionDriver>(
     crate::session::reconcile_pointer_constraints(session);
     session.request_redraw();
     true
+}
+
+pub fn pan_after_close_restore<D: crate::session::SessionDriver>(
+    session: &mut crate::session::Session<D>,
+    id: NodeId,
+    policy: halley_config::CloseRestorePan,
+) {
+    if policy == halley_config::CloseRestorePan::Never {
+        return;
+    }
+    let Some(record) = session.nodes.record(id).cloned() else {
+        return;
+    };
+    if session.fullscreen.is_fullscreen_or_pending(&record.surface)
+        || session.maximize.contains(&record.surface)
+    {
+        return;
+    }
+    let Some(output) = session
+        .wayland
+        .space
+        .outputs()
+        .find(|output| output.name() == record.output)
+        .cloned()
+    else {
+        return;
+    };
+    let Some(output_geometry) = session.wayland.space.output_geometry(&output) else {
+        return;
+    };
+    let Some(view) = session.cameras.view(&record.output) else {
+        return;
+    };
+    let geometry = session
+        .wayland
+        .space
+        .element_geometry(&record.window)
+        .unwrap_or(record.geometry);
+    let viewport = crate::camera::world_viewport(view, output_geometry);
+    let delta = match policy {
+        halley_config::CloseRestorePan::Never => return,
+        halley_config::CloseRestorePan::IfOffscreen => {
+            if viewport.intersection(geometry).is_some() {
+                return;
+            }
+            minimal_reveal_delta(viewport, geometry, 24)
+        }
+        halley_config::CloseRestorePan::Always => Vec2 {
+            x: geometry.loc.x as f32 + geometry.size.w as f32 * 0.5
+                - (viewport.loc.x as f32 + viewport.size.w as f32 * 0.5),
+            y: geometry.loc.y as f32 + geometry.size.h as f32 * 0.5
+                - (viewport.loc.y as f32 + viewport.size.h as f32 * 0.5),
+        },
+    };
+    if let Some(camera) = session.cameras.get_mut(&record.output) {
+        camera.pan_vel = Vec2 { x: 0.0, y: 0.0 };
+        camera.target_center = Vec2 {
+            x: camera.center.x + delta.x,
+            y: camera.center.y + delta.y,
+        };
+    }
 }
 
 /// Activate a Bearings target in one operation. Collapsed nodes follow the
