@@ -383,6 +383,16 @@ impl<D: SessionDriver> XdgShellHandler for Session<D> {
         }
     }
 
+    fn minimize_request(&mut self, surface: ToplevelSurface) {
+        if let Some(id) = self.nodes.id_for_surface(surface.wl_surface()) {
+            let _ = crate::nodes::collapse(self, id, SERIAL_COUNTER.next_serial());
+        }
+        // xdg-shell has no minimized state to configure. Sending the current
+        // configure still acknowledges the client's state-changing request,
+        // including the intentional no-op when the window is already a node.
+        surface.send_configure();
+    }
+
     fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
         wayland::popup::track(&mut self.wayland, &self.cameras, surface);
         self.request_redraw();

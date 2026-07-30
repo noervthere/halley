@@ -900,6 +900,39 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
         self.request_redraw();
     }
 
+    fn minimize_request(&mut self, _xwm: XwmId, surface: X11Surface) {
+        let changed = window_for_surface(self, &surface)
+            .and_then(|window| {
+                window
+                    .wl_surface()
+                    .map(|wl_surface| wl_surface.into_owned())
+            })
+            .and_then(|wl_surface| self.nodes.id_for_surface(&wl_surface))
+            .is_some_and(|id| crate::nodes::collapse(self, id, SERIAL_COUNTER.next_serial()));
+        if !changed {
+            // Keep EWMH state truthful when a minimize cannot be honored
+            // (for example, while another fullscreen transition owns it).
+            if let Err(err) = surface.set_hidden(false) {
+                eventline::warn!("xwayland: failed to reject minimize request: {err}");
+            }
+        }
+        self.request_redraw();
+    }
+
+    fn unminimize_request(&mut self, _xwm: XwmId, surface: X11Surface) {
+        if let Some(id) = window_for_surface(self, &surface)
+            .and_then(|window| {
+                window
+                    .wl_surface()
+                    .map(|wl_surface| wl_surface.into_owned())
+            })
+            .and_then(|wl_surface| self.nodes.id_for_surface(&wl_surface))
+        {
+            let _ = crate::nodes::restore(self, id, SERIAL_COUNTER.next_serial());
+        }
+        self.request_redraw();
+    }
+
     fn fullscreen_request(&mut self, _xwm: XwmId, surface: X11Surface) {
         enter_fullscreen(self, &surface, FullscreenRequestOrigin::Client);
         self.request_redraw();

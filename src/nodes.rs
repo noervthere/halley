@@ -1183,6 +1183,10 @@ pub fn collapse<D: crate::session::SessionDriver>(
             .wayland
             .collapsed
             .insert(record.surface.clone(), record.window.clone());
+    } else if let Some(surface) = record.window.x11_surface()
+        && let Err(err) = surface.set_hidden(true)
+    {
+        eventline::warn!("xwayland: failed to mark collapsed window hidden: {err}");
     }
     let collapse_origin = rect_center(geometry);
     let scale = session
@@ -1248,6 +1252,11 @@ pub fn restore<D: crate::session::SessionDriver>(
         .wayland
         .space
         .map_element(record.window.clone(), location, true);
+    if let Some(surface) = record.window.x11_surface()
+        && let Err(err) = surface.set_hidden(false)
+    {
+        eventline::warn!("xwayland: failed to clear restored window hidden state: {err}");
+    }
     session.wayland.collapsed.remove(&record.surface);
     let now = crate::frame_clock::monotonic_now();
     let now_ms = session.start_time.elapsed().as_millis() as u64;

@@ -17,6 +17,12 @@ atomic action: Halley does not first center the camera, leave the marker
 collapsed, and require a second click. `$var.mod+n` runs the same state toggle
 for the focused window.
 
+A client's minimize request is the one-way form of that action: it collapses
+the window into its existing node and never restores an already-collapsed
+node. Clicking the node (or using `toggle-state`) restores it. XWayland's
+`_NET_WM_STATE_HIDDEN` is kept in sync so X11 clients can suspend while
+collapsed and resume when restored.
+
 Collapsing the focused window preserves that node as Halley's logical focus,
 so node-aware commands such as `close-focused` still target it. The hidden
 client's Wayland keyboard focus is cleared before unmapping, so it cannot keep
