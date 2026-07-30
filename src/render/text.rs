@@ -123,7 +123,6 @@ impl UiTextRenderer {
         );
         Ok(Some(PreparedUiText {
             element: UiTextElement { base },
-            size: entry.size,
         }))
     }
 
@@ -183,7 +182,6 @@ impl UiTextRenderer {
 
 pub struct PreparedUiText {
     pub element: UiTextElement,
-    pub size: smithay::utils::Size<i32, Buffer>,
 }
 
 #[derive(Debug)]

@@ -107,10 +107,10 @@ where
         {
             global = Some((candidate.clone(), recency));
         }
-        if closing_output.is_some_and(|closing_output| output.as_deref() == Some(closing_output)) {
-            if local.as_ref().is_none_or(|(_, current)| recency > *current) {
-                local = Some((candidate, recency));
-            }
+        if closing_output.is_some_and(|closing_output| output.as_deref() == Some(closing_output))
+            && local.as_ref().is_none_or(|(_, current)| recency > *current)
+        {
+            local = Some((candidate, recency));
         }
     }
     local.or(global).map(|(candidate, _)| candidate)

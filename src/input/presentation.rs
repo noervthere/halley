@@ -49,6 +49,9 @@ fn inherited_visual_rects(
     (camera, presentation, animated)
 }
 
+// Keep this behavior-frozen adapter explicit: render, pointer hit-testing, and
+// pointer constraints must all receive the exact same presentation inputs.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn window_visual_state(
     space: &Space<Window>,
     cameras: &OutputCameras,
@@ -174,6 +177,9 @@ pub struct WindowPresentation {
 }
 
 impl WindowPresentation {
+    // This adapter intentionally mirrors `window_visual_state`; grouping it
+    // would churn the pointer-constraint boundary without reducing policy.
+    #[allow(clippy::too_many_arguments)]
     pub fn for_window(
         space: &Space<Window>,
         cameras: &OutputCameras,
@@ -235,6 +241,7 @@ impl WindowPresentation {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn for_surface(
         space: &Space<Window>,
         cameras: &OutputCameras,

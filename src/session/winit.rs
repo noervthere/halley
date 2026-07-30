@@ -74,6 +74,7 @@ type App = Session<WinitDriver>;
 fn apply_runtime_config(app: &mut App, reload: crate::config::ConfigReload) {
     match reload {
         crate::config::ConfigReload::Loaded(config) => {
+            let config = *config;
             app.apply_common_config(&config);
             app.clear_config_reload_error();
         }

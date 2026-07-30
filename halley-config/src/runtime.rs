@@ -167,6 +167,10 @@ pub fn load_runtime_config_at(path: &Path) -> Result<RuntimeConfig, RuntimeConfi
 
 /// Strict, read-only load used by both the compositor watcher and
 /// `halleyctl config verify`.
+///
+/// The structured diagnostic intentionally stays inline in the public API so
+/// callers retain the existing error type and source-location behavior.
+#[allow(clippy::result_large_err)]
 pub fn load_runtime_config_diagnostic_at(
     path: &Path,
 ) -> Result<RuntimeConfig, crate::ConfigDiagnostic> {

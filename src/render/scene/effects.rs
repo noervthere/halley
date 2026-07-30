@@ -1,17 +1,22 @@
 use super::*;
 
+#[derive(Clone, Copy)]
+pub(super) struct OverlayEffectStyle<'a> {
+    pub output_size: smithay::utils::Size<i32, Logical>,
+    pub identity: &'a str,
+    pub blur: halley_config::Blur,
+    pub shadow: halley_config::ShadowLayer,
+}
+
 pub(super) fn append_compositor_overlay_blur(
     renderer: &mut GlesRenderer,
     output: &Output,
-    output_size: smithay::utils::Size<i32, Logical>,
-    identity: &str,
-    blur_config: halley_config::Blur,
-    shadow_config: halley_config::ShadowLayer,
+    style: OverlayEffectStyle<'_>,
     backdrop_blur_renderer: &mut crate::render::effects::backdrop_blur::BackdropBlurRenderer,
     shadow_renderer: &mut crate::render::effects::shadow::ShadowRenderer,
     elements: &mut Vec<SceneElement>,
 ) -> Result<(), Box<dyn Error>> {
-    if blur_config.enabled && blur_config.overlays {
+    if style.blur.enabled && style.blur.overlays {
         let patches = elements
             .iter()
             .filter_map(|element| match element {
@@ -29,10 +34,10 @@ pub(super) fn append_compositor_overlay_blur(
         if let Some(blur) = backdrop_blur_renderer.blur_element(
             renderer,
             &output.name(),
-            identity,
-            output_size,
+            style.identity,
+            style.output_size,
             patches,
-            blur_config,
+            style.blur,
         )? {
             elements.push(SceneElement::BackdropBlur(blur));
         }
@@ -40,8 +45,8 @@ pub(super) fn append_compositor_overlay_blur(
     append_overlay_shadows(
         renderer,
         output,
-        identity,
-        shadow_config,
+        style.identity,
+        style.shadow,
         shadow_renderer,
         elements,
     )?;

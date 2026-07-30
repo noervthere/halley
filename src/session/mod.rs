@@ -319,7 +319,7 @@ fn toggle_focused_field_maximize<D: SessionDriver>(session: &mut Session<D>, out
     };
     let usable = smithay::desktop::layer_map_for_output(&target_output).non_exclusive_zone();
     let inset = (session.field_config.gap.ceil() as i32)
-        .saturating_add(session.decorations.border_width_px as i32);
+        .saturating_add(session.decorations.border_width_px);
     let target = Rectangle::new(
         output_geometry.loc
             + usable.loc

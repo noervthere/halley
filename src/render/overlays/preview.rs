@@ -36,29 +36,10 @@ impl OverlayPreviewCache {
         self.dirty.remove(&id);
     }
 
-    pub fn clear(&mut self) {
-        self.entries.clear();
-        self.dirty.clear();
-    }
-
     pub fn retain(&mut self, ids: impl IntoIterator<Item = NodeId>) {
         let ids = ids.into_iter().collect::<HashSet<_>>();
         self.entries.retain(|id, _| ids.contains(id));
         self.dirty.retain(|id| ids.contains(id));
-    }
-
-    pub fn element(
-        &mut self,
-        renderer: &mut GlesRenderer,
-        id: NodeId,
-        window: &Window,
-        destination: Rectangle<i32, Physical>,
-        alpha: f32,
-        live: bool,
-    ) -> Result<TextureRenderElement<smithay::backend::renderer::gles::GlesTexture>, Box<dyn Error>>
-    {
-        self.element_with_texture(renderer, id, window, destination, alpha, live)
-            .map(|(element, _)| element)
     }
 
     pub fn element_with_texture(

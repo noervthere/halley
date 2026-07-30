@@ -23,10 +23,13 @@ mod windows;
 
 use capture_ui::capture_overlay_elements;
 use effects::{
-    append_compositor_overlay_blur, append_overlay_shadows, layer_surface_scene_elements,
+    OverlayEffectStyle, append_compositor_overlay_blur, append_overlay_shadows,
+    layer_surface_scene_elements,
 };
 use nodes::{NodeElementContext, node_elements};
-use overview::{apogee_elements, focus_cycle_elements, hover_preview_elements};
+use overview::{
+    FocusCycleRenderContext, apogee_elements, focus_cycle_elements, hover_preview_elements,
+};
 use windows::{LiveWindowContext, StackGroup, live_window_elements, sort_stack_groups};
 
 #[cfg(test)]
@@ -186,10 +189,12 @@ pub fn build(
         append_compositor_overlay_blur(
             renderer,
             output,
-            output_geometry.size,
-            "shell-overlay",
-            request.visuals.blur,
-            request.visuals.shadows.overlay,
+            OverlayEffectStyle {
+                output_size: output_geometry.size,
+                identity: "shell-overlay",
+                blur: request.visuals.blur,
+                shadow: request.visuals.shadows.overlay,
+            },
             request.resources.backdrop_blur_renderer,
             request.resources.shadow_renderer,
             &mut overlay_elements,
@@ -253,23 +258,27 @@ pub fn build(
     let mut focus_cycle = focus_cycle_elements(
         renderer,
         output_geometry,
-        request.overlays.focus_cycle,
-        request.desktop.nodes,
+        FocusCycleRenderContext {
+            state: request.overlays.focus_cycle,
+            nodes: request.desktop.nodes,
+            overlay_config: request.overlays.overlay_config,
+            decorations: request.visuals.decorations,
+            now: request.frame.target_presentation_time,
+        },
         request.resources.overlay_previews,
         request.resources.node_renderer,
         request.resources.window_decoration_renderer,
         request.resources.ui_text,
-        request.overlays.overlay_config,
-        request.visuals.decorations,
-        request.frame.target_presentation_time,
     )?;
     append_compositor_overlay_blur(
         renderer,
         output,
-        output_geometry.size,
-        "focus-cycle",
-        request.visuals.blur,
-        request.visuals.shadows.overlay,
+        OverlayEffectStyle {
+            output_size: output_geometry.size,
+            identity: "focus-cycle",
+            blur: request.visuals.blur,
+            shadow: request.visuals.shadows.overlay,
+        },
         request.resources.backdrop_blur_renderer,
         request.resources.shadow_renderer,
         &mut focus_cycle,
@@ -307,10 +316,12 @@ pub fn build(
     append_compositor_overlay_blur(
         renderer,
         output,
-        output_geometry.size,
-        "node-hover-preview",
-        request.visuals.blur,
-        request.visuals.shadows.overlay,
+        OverlayEffectStyle {
+            output_size: output_geometry.size,
+            identity: "node-hover-preview",
+            blur: request.visuals.blur,
+            shadow: request.visuals.shadows.overlay,
+        },
         request.resources.backdrop_blur_renderer,
         request.resources.shadow_renderer,
         &mut hover_preview,
@@ -493,10 +504,12 @@ pub fn build(
     append_compositor_overlay_blur(
         renderer,
         output,
-        output_geometry.size,
-        "shell-overlay",
-        request.visuals.blur,
-        request.visuals.shadows.overlay,
+        OverlayEffectStyle {
+            output_size: output_geometry.size,
+            identity: "shell-overlay",
+            blur: request.visuals.blur,
+            shadow: request.visuals.shadows.overlay,
+        },
         request.resources.backdrop_blur_renderer,
         request.resources.shadow_renderer,
         &mut overlay_elements,

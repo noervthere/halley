@@ -74,7 +74,7 @@ pub struct InitialConfig {
 
 #[derive(Clone, Debug)]
 pub enum ConfigReload {
-    Loaded(halley_config::RuntimeConfig),
+    Loaded(Box<halley_config::RuntimeConfig>),
     Rejected(halley_config::ConfigDiagnostic),
 }
 
@@ -193,7 +193,7 @@ fn classify_reload(
     loaded: Result<halley_config::RuntimeConfig, halley_config::ConfigDiagnostic>,
 ) -> ConfigReload {
     match loaded {
-        Ok(config) => ConfigReload::Loaded(config),
+        Ok(config) => ConfigReload::Loaded(Box::new(config)),
         Err(diagnostic) => {
             eventline::warn!(
                 "config: reload rejected, keeping last valid config: {}",

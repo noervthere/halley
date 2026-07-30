@@ -7,7 +7,7 @@ use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::renderer::utils::CommitCounter;
 use smithay::utils::{Buffer, Logical, Physical, Rectangle};
 
-use crate::render::node::{LabelRenderElement, NodeRenderer};
+use crate::render::node::{LabelRenderElement, NodeRenderer, OverlayCardStyle};
 use crate::render::scene::SceneElement;
 use crate::render::text::UiTextRenderer;
 
@@ -171,11 +171,13 @@ pub fn card_element(
     node_renderer.overlay_card_element(
         renderer,
         destination,
-        visuals.radius,
-        fill.tuple(),
-        visuals.border.tuple(),
-        visuals.border_px,
-        alpha,
+        OverlayCardStyle {
+            content_radius: visuals.radius,
+            fill: fill.tuple(),
+            border: visuals.border.tuple(),
+            border_px: visuals.border_px,
+            alpha,
+        },
     )
 }
 

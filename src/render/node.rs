@@ -46,6 +46,15 @@ pub struct NodeRenderer {
     icons: super::app_icon::AppIconCache,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct OverlayCardStyle {
+    pub content_radius: f32,
+    pub fill: (f32, f32, f32, f32),
+    pub border: (f32, f32, f32, f32),
+    pub border_px: f32,
+    pub alpha: f32,
+}
+
 #[derive(Debug)]
 pub struct NodeRenderElement {
     base: TextureRenderElement<GlesTexture>,
@@ -199,15 +208,11 @@ impl NodeRenderer {
         &mut self,
         renderer: &mut GlesRenderer,
         destination: Rectangle<i32, Physical>,
-        content_radius: f32,
-        fill: (f32, f32, f32, f32),
-        border: (f32, f32, f32, f32),
-        border_px: f32,
-        alpha: f32,
+        style: OverlayCardStyle,
     ) -> Result<LabelRenderElement, Box<dyn Error>> {
         self.ensure_resources(renderer)?;
         let resources = self.resources.as_ref().expect("ensured above");
-        let metrics = overlay_card_metrics(destination.size, content_radius, border_px);
+        let metrics = overlay_card_metrics(destination.size, style.content_radius, style.border_px);
         let program = if metrics.content_radius > 0.0 {
             resources.label_rounded.clone()
         } else {
@@ -228,7 +233,7 @@ impl NodeRenderer {
             resources.texture.clone(),
             1,
             Transform::Normal,
-            Some(alpha.clamp(0.0, 1.0)),
+            Some(style.alpha.clamp(0.0, 1.0)),
             Some(source),
             Some(destination.size.to_logical(1)),
             None,
@@ -238,8 +243,8 @@ impl NodeRenderer {
             base,
             texture: resources.texture.clone(),
             program,
-            fill,
-            border,
+            fill: style.fill,
+            border: style.border,
             size: (destination.size.w as f32, destination.size.h as f32),
             corner_radius: metrics.outer_radius,
             inner_offset: metrics.inner_offset,

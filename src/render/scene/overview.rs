@@ -295,44 +295,50 @@ pub(super) fn apogee_caption_rect(
     ))
 }
 
+pub(super) struct FocusCycleRenderContext<'a> {
+    pub state: &'a crate::focus_cycle::FocusCycleState,
+    pub nodes: &'a crate::nodes::NodesState,
+    pub overlay_config: &'a halley_config::Overlays,
+    pub decorations: &'a halley_config::Decorations,
+    pub now: std::time::Duration,
+}
+
 pub(super) fn focus_cycle_elements(
     renderer: &mut GlesRenderer,
     output_geometry: Rectangle<i32, Logical>,
-    state: &crate::focus_cycle::FocusCycleState,
-    nodes: &crate::nodes::NodesState,
+    context: FocusCycleRenderContext<'_>,
     overlay_previews: &mut crate::render::overlays::preview::OverlayPreviewCache,
     node_renderer: &mut crate::render::node::NodeRenderer,
     window_decoration_renderer: &mut crate::render::window_decoration::WindowDecorationRenderer,
     ui_text: &mut crate::render::text::UiTextRenderer,
-    overlay_config: &halley_config::Overlays,
-    decorations: &halley_config::Decorations,
-    now: std::time::Duration,
 ) -> Result<Vec<SceneElement>, Box<dyn Error>> {
-    let Some(session) = state.session() else {
+    let Some(session) = context.state.session() else {
         return Ok(Vec::new());
     };
-    let open = session.open_progress(now);
-    let close = session.close_progress(now);
+    let open = session.open_progress(context.now);
+    let close = session.close_progress(context.now);
     let alpha = (open * (1.0 - close)).clamp(0.0, 1.0);
     if alpha <= 0.001 {
         return Ok(Vec::new());
     }
 
     let screen = output_geometry.size.to_physical(1);
-    let overlay_visuals =
-        crate::render::overlays::shell::resolve_visuals(overlay_config, decorations);
+    let overlay_visuals = crate::render::overlays::shell::resolve_visuals(
+        context.overlay_config,
+        context.decorations,
+    );
     let rail_step = (screen.w as f32 * 0.28).clamp(260.0, 440.0) + 9.0;
     let center_y = screen.h as f32 * 0.5;
     let mut cards = session
         .visible_slots(crate::focus_cycle::VISIBLE_RADIUS)
         .into_iter()
         .filter_map(|(_, id)| {
-            let record = nodes.record(id)?;
+            let record = context.nodes.record(id)?;
             let index = session
                 .candidates
                 .iter()
                 .position(|candidate| *candidate == id)?;
-            let offset = session.visual_offset(index, now);
+            let offset = session.visual_offset(index, context.now);
             let distance = offset.abs().min(2.0);
             let base_h = (screen.h as f32 * 0.46).clamp(240.0, 480.0);
             let scale = if distance <= 1.0 {
@@ -369,7 +375,7 @@ pub(super) fn focus_cycle_elements(
     let mut elements = Vec::new();
     overlay_previews.retain(session.candidates.iter().copied());
     for (distance, id, card) in cards {
-        let Some(record) = nodes.record(id) else {
+        let Some(record) = context.nodes.record(id) else {
             continue;
         };
         let selected = distance < 0.45;
@@ -513,7 +519,7 @@ pub(super) fn focus_cycle_elements(
             )?,
         ));
 
-        let preview_radius = preview_content_radius(decorations);
+        let preview_radius = preview_content_radius(context.decorations);
         match overlay_previews.element_with_texture(
             renderer,
             id,

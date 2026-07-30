@@ -626,6 +626,7 @@ fn queue_output_redraw(app: &mut TtyApp, output: &Output) {
 fn apply_runtime_config(app: &mut TtyApp, reload: crate::config::ConfigReload) {
     match reload {
         crate::config::ConfigReload::Loaded(config) => {
+            let config = *config;
             let reload_commands = config.autostart.on_reload.clone();
             app.apply_common_config(&config);
             app.driver.physical_input.reload(&app.input);
