@@ -237,7 +237,7 @@ mod tests {
         let keybinds = Keybinds::default();
         let resolved = resolve_binds(&keybinds, BackendKind::Winit);
 
-        assert_eq!(resolved.len(), 17);
+        assert_eq!(resolved.len(), 18);
         let quit = resolved
             .iter()
             .find(|bind| bind.action == Action::Quit)
@@ -256,7 +256,7 @@ mod tests {
         let keybinds = Keybinds::default();
         let resolved = resolve_binds(&keybinds, BackendKind::Tty);
 
-        assert_eq!(resolved.len(), 17);
+        assert_eq!(resolved.len(), 18);
         let quit = resolved
             .iter()
             .find(|bind| bind.action == Action::Quit)
@@ -311,6 +311,11 @@ mod tests {
             resolved
                 .iter()
                 .any(|bind| bind.action == Action::ToggleFullscreen)
+        );
+        assert!(
+            resolved
+                .iter()
+                .any(|bind| bind.action == Action::ToggleFieldMaximize)
         );
         assert!(resolved.iter().any(|bind| bind.action == Action::Apogee));
         assert!(resolved.iter().any(|bind| {

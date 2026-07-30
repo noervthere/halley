@@ -157,6 +157,9 @@ fn dispatch_action<D: SessionDriver>(
         super::SessionControl::ToggleFullscreen => {
             super::toggle_focused_fullscreen(session, action_output.as_deref())
         }
+        super::SessionControl::ToggleFieldMaximize => {
+            super::toggle_focused_field_maximize(session, action_output.as_deref())
+        }
         super::SessionControl::ToggleState => crate::nodes::toggle_focused_on_output(
             session,
             action_output.as_deref(),
@@ -859,6 +862,14 @@ where
                                 }) =>
                         {
                             let route = route.as_ref().expect("matched above");
+                            let was_maximized = window
+                                .wl_surface()
+                                .is_some_and(|surface| session.maximize.remove(surface.as_ref()));
+                            if was_maximized {
+                                let _ = session
+                                    .cameras
+                                    .apply_field_maximize(&route.output.name(), None);
+                            }
                             let world = halley_core::field::Vec2 {
                                 x: route.location.x as f32,
                                 y: route.location.y as f32,
@@ -872,9 +883,36 @@ where
                                 return;
                             };
                             let scale = crate::input::zoom::scale(camera);
-                            let screen_offset = halley_core::field::Vec2 {
-                                x: (window_location.x as f32 - world.x) * scale,
-                                y: (window_location.y as f32 - world.y) * scale,
+                            let screen_offset = if was_maximized {
+                                let visual = route.visual_geometry.unwrap_or_else(|| {
+                                    session
+                                        .wayland
+                                        .space
+                                        .element_geometry(window)
+                                        .unwrap_or_else(|| window.geometry())
+                                });
+                                let source = session
+                                    .wayland
+                                    .space
+                                    .element_geometry(window)
+                                    .unwrap_or_else(|| window.geometry());
+                                let ratio_x = ((session.pointer.position().0
+                                    - f64::from(visual.loc.x))
+                                    / f64::from(visual.size.w.max(1)))
+                                .clamp(0.0, 1.0);
+                                let ratio_y = ((session.pointer.position().1
+                                    - f64::from(visual.loc.y))
+                                    / f64::from(visual.size.h.max(1)))
+                                .clamp(0.0, 1.0);
+                                halley_core::field::Vec2 {
+                                    x: -(source.size.w as f32 * ratio_x as f32) * scale,
+                                    y: -(source.size.h as f32 * ratio_y as f32) * scale,
+                                }
+                            } else {
+                                halley_core::field::Vec2 {
+                                    x: (window_location.x as f32 - world.x) * scale,
+                                    y: (window_location.y as f32 - world.y) * scale,
+                                }
                             };
                             super::focus::focus_window_from_pointer(session, window, serial);
                             let id = window

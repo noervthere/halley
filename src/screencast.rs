@@ -277,6 +277,7 @@ fn cursor_position<D: SessionDriver>(
                     window_open_animations: &session.window_open_animations,
                     primary: session.driver.primary_output(),
                     fullscreen: &session.fullscreen,
+                    maximize: &session.maximize,
                     focused: session.wayland.focused_window.as_ref(),
                     now: crate::frame_clock::monotonic_now(),
                 },

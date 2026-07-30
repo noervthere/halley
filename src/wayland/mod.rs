@@ -5,6 +5,7 @@ pub mod dmabuf;
 pub mod focus;
 pub mod fullscreen;
 pub mod layer_shell;
+pub mod maximize;
 pub mod popup;
 pub mod selection;
 pub mod wlr_output_management;

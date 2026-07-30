@@ -6,6 +6,7 @@ pub mod chord;
 pub mod cursor;
 pub mod decorations;
 pub mod diagnostic;
+pub mod field;
 pub mod font;
 pub mod input;
 pub mod keybinds;
@@ -21,9 +22,9 @@ pub mod terminal;
 pub mod zoom;
 
 pub use animations::{
-    AnimationCurve, AnimationMotion, Animations, EasingMotion, FullscreenAnimation, NodeAnimation,
-    SpringMotion, WindowCloseAnimation, WindowCloseAnimationType, WindowOpenAnimation,
-    WindowOpenAnimationType, load_animations, parse_animations,
+    AnimationCurve, AnimationMotion, Animations, EasingMotion, FullscreenAnimation,
+    MaximizeAnimation, NodeAnimation, SpringMotion, WindowCloseAnimation, WindowCloseAnimationType,
+    WindowOpenAnimation, WindowOpenAnimationType, load_animations, parse_animations,
 };
 pub use apogee::{Apogee, parse_apogee};
 pub use bearings::{Bearings, parse_bearings};
@@ -34,6 +35,7 @@ pub use chord::parse_chord;
 pub use cursor::{Cursor, parse_cursor};
 pub use decorations::{BorderColor, Decorations, load_decorations, parse_decorations};
 pub use diagnostic::ConfigDiagnostic;
+pub use field::{CloseRestorePan, Field, FieldParseError, parse_field, parse_field_checked};
 pub use font::{Font, parse_font};
 pub use input::{
     AccelProfile, ClickMethod, DeviceKind, DeviceOverride, DeviceSettings, FocusMode,

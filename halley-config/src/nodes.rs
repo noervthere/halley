@@ -213,7 +213,7 @@ pub fn parse_landmark_placement(config: &RuneConfig) -> LandmarkPlacement {
     let defaults = LandmarkPlacement::default();
     LandmarkPlacement {
         gap_px: finite_clamp(
-            config.get_or("field.gap-px", config.get_or("field.gap", defaults.gap_px)),
+            config.get_or("field.gap", config.get_or("field.gap-px", defaults.gap_px)),
             0.0,
             256.0,
             defaults.gap_px,

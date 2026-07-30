@@ -84,6 +84,7 @@ pub struct Session<D: SessionDriver> {
     pub input: halley_config::Input,
     pub decorations: halley_config::Decorations,
     pub cameras: OutputCameras,
+    pub field_config: halley_config::Field,
     pub zoom: halley_config::Zoom,
     pub screenshot: halley_config::Screenshot,
     pub capture: crate::capture::CaptureState,
@@ -101,6 +102,7 @@ pub struct Session<D: SessionDriver> {
     pub window_open_animations: crate::animation::WindowOpenAnimations,
     pub window_close_animations: crate::backend::close::WindowCloseAnimations,
     pub fullscreen: crate::wayland::fullscreen::FullscreenManager,
+    pub maximize: crate::wayland::maximize::FieldMaximizeManager,
     pub fullscreen_textures: crate::backend::fullscreen_texture::FullscreenTextureTransitions,
     pub overlay_previews: crate::backend::overlay_preview::OverlayPreviewCache,
     pub node_renderer: crate::backend::node::NodeRenderer,
@@ -289,7 +291,7 @@ impl<D: SessionDriver> Session<D> {
             super::environment::publish_cursor(&config.cursor);
         }
         let redraw = self.decorations != config.decorations
-            || self.zoom != config.zoom
+            || self.zoom != config.field.zoom
             || self.overlay_config != config.overlays
             || cursor_changed
             || cursor_visibility_changed;
@@ -300,14 +302,16 @@ impl<D: SessionDriver> Session<D> {
         let font_redraw = self.ui_text.reload_font(&config.font);
         self.apogee_config = config.apogee;
         self.decorations = config.decorations;
+        self.field_config = config.field;
         self.overlay_config = config.overlays;
-        self.zoom = config.zoom;
+        self.zoom = config.field.zoom;
         self.screenshot = config.screenshot.clone();
         self.window_open_animations.reload(config.animations);
         self.window_close_animations.reload(config.animations);
         if self.fullscreen.reload(config.animations) {
             self.fullscreen_textures.clear();
         }
+        self.maximize.reload(config.field, config.animations);
         if nodes_redraw {
             crate::nodes::reconcile_landmarks(self, None);
         }
@@ -318,6 +322,7 @@ impl<D: SessionDriver> Session<D> {
 
     pub fn cleanup_fullscreen(&mut self, now: std::time::Duration) -> bool {
         let cleanup = self.fullscreen.cleanup(now);
+        let maximize_finished = self.maximize.cleanup(now);
         for surface in cleanup.finished_surfaces {
             self.fullscreen_textures.remove(&surface);
         }
@@ -325,7 +330,7 @@ impl<D: SessionDriver> Session<D> {
         for output in outputs {
             self.sync_fullscreen_camera(&output, now);
         }
-        cleanup.visual_finished
+        cleanup.visual_finished || maximize_finished
     }
 
     pub fn sync_fullscreen_camera(
@@ -338,7 +343,17 @@ impl<D: SessionDriver> Session<D> {
             .space
             .output_geometry(output)
             .and_then(|geometry| self.fullscreen.camera_frame(output, geometry, now));
-        self.cameras.apply_fullscreen(&output.name(), frame)
+        if let Some(frame) = frame {
+            let field_changed = self.cameras.apply_field_maximize(&output.name(), None);
+            field_changed | self.cameras.apply_fullscreen(&output.name(), Some(frame))
+        } else {
+            let fullscreen_changed = self.cameras.apply_fullscreen(&output.name(), None);
+            let maximize_progress = self.maximize.camera_progress(output, now);
+            fullscreen_changed
+                | self
+                    .cameras
+                    .apply_field_maximize(&output.name(), maximize_progress)
+        }
     }
 
     pub fn finish_x11_fullscreen_presentation(&mut self, surface: &WlSurface) -> bool {

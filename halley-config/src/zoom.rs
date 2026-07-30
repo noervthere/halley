@@ -32,14 +32,7 @@ impl Default for Zoom {
 /// individual keys (each just falls back to `Zoom`'s default), matching
 /// `parse_decorations`'s style.
 pub fn parse_zoom(config: &RuneConfig) -> Zoom {
-    let defaults = Zoom::default();
-
-    Zoom {
-        enabled: config.get_or("zoom.enabled", defaults.enabled),
-        min: config.get_or("zoom.min", defaults.min),
-        step: config.get_or("zoom.step", defaults.step),
-        smooth_rate: config.get_or("zoom.smooth-rate", defaults.smooth_rate),
-    }
+    crate::parse_field(config).zoom
 }
 
 /// Loads `Zoom` from the user's config file, falling back to `Zoom::default()`

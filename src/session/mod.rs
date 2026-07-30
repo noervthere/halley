@@ -6,6 +6,7 @@ use calloop::LoopHandle;
 use calloop::timer::{TimeoutAction, Timer};
 use halley_config::Action;
 use halley_core::camera::Camera;
+use smithay::utils::Rectangle;
 use smithay::wayland::seat::WaylandFocus;
 
 use crate::wayland;
@@ -39,6 +40,7 @@ enum SessionControl {
     CloseFocusedWindow,
     Screenshot,
     ToggleFullscreen,
+    ToggleFieldMaximize,
     ToggleState,
     Apogee,
     FocusCycle(halley_config::FocusCycleDirection),
@@ -69,6 +71,7 @@ fn dispatch_action(
         Action::Quit => return SessionControl::Quit,
         Action::CloseFocusedWindow => return SessionControl::CloseFocusedWindow,
         Action::ToggleFullscreen => return SessionControl::ToggleFullscreen,
+        Action::ToggleFieldMaximize => return SessionControl::ToggleFieldMaximize,
         Action::ToggleState => return SessionControl::ToggleState,
         Action::Apogee => return SessionControl::Apogee,
         Action::FocusCycle(direction) => return SessionControl::FocusCycle(direction),
@@ -211,6 +214,9 @@ fn toggle_focused_fullscreen<D: SessionDriver>(session: &mut Session<D>, output:
 
     cancel_grab_for_surface(session, &focused);
     let entering = !session.fullscreen.is_fullscreen_or_pending(&focused);
+    if entering {
+        session.maximize.remove(&focused);
+    }
     if let Some(toplevel) = window.toplevel() {
         if entering {
             session
@@ -222,6 +228,64 @@ fn toggle_focused_fullscreen<D: SessionDriver>(session: &mut Session<D>, output:
     } else {
         crate::xwayland::set_window_fullscreen(session, &window, entering);
     }
+    pointer::reconcile_state(session);
+    session.request_redraw();
+}
+
+fn toggle_focused_field_maximize<D: SessionDriver>(session: &mut Session<D>, output: Option<&str>) {
+    let id = match output {
+        Some(output) => session.nodes.focused_on_output(output),
+        None => session.nodes.focused(),
+    };
+    let Some(record) = id
+        .and_then(|id| session.nodes.record(id))
+        .filter(|record| !record.collapsed)
+        .cloned()
+    else {
+        return;
+    };
+    let output_name =
+        crate::wayland::window_output_name(&record.window).unwrap_or_else(|| record.output.clone());
+    let Some(target_output) = session
+        .wayland
+        .space
+        .outputs()
+        .find(|candidate| candidate.name() == output_name)
+        .cloned()
+    else {
+        return;
+    };
+    let Some(output_geometry) = session.wayland.space.output_geometry(&target_output) else {
+        return;
+    };
+    let usable = smithay::desktop::layer_map_for_output(&target_output).non_exclusive_zone();
+    let inset = (session.field_config.gap.ceil() as i32)
+        .saturating_add(session.decorations.border_width_px as i32);
+    let target = Rectangle::new(
+        output_geometry.loc
+            + usable.loc
+            + smithay::utils::Point::<i32, smithay::utils::Logical>::from((inset, inset)),
+        (
+            usable.size.w.saturating_sub(inset.saturating_mul(2)).max(1),
+            usable.size.h.saturating_sub(inset.saturating_mul(2)).max(1),
+        )
+            .into(),
+    );
+
+    cancel_grab_for_surface(session, &record.surface);
+    if session.fullscreen.is_fullscreen_or_pending(&record.surface) {
+        if let Some(toplevel) = record.window.toplevel() {
+            session.fullscreen.unrequest(&session.wayland, toplevel);
+        } else {
+            crate::xwayland::set_window_fullscreen(session, &record.window, false);
+        }
+    }
+    session.maximize.toggle(
+        &target_output,
+        record.surface,
+        target,
+        crate::frame_clock::monotonic_now(),
+    );
     pointer::reconcile_state(session);
     session.request_redraw();
 }
@@ -284,6 +348,12 @@ pub(crate) fn begin_window_resize<D: SessionDriver>(
     cursor: halley_core::field::Vec2,
     serial: smithay::utils::Serial,
 ) -> bool {
+    if window
+        .wl_surface()
+        .is_some_and(|surface| session.maximize.contains(surface.as_ref()))
+    {
+        return false;
+    }
     let Some(start_rect) = session.wayland.space.element_geometry(window) else {
         return false;
     };

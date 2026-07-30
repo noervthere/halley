@@ -52,6 +52,9 @@ fn parse_action(s: &str) -> Action {
             Action::CloseFocusedWindow
         }
         "toggle-fullscreen" | "toggle_fullscreen" | "fullscreen" => Action::ToggleFullscreen,
+        "maximize-focused" | "maximize_focused" | "toggle-maximize" | "toggle_maximize" => {
+            Action::ToggleFieldMaximize
+        }
         "toggle-state" | "toggle_state" => Action::ToggleState,
         "apogee" | "overview" => Action::Apogee,
         "bearings-show" | "bearings_show" => Action::BearingsShow,
@@ -200,6 +203,25 @@ end
                 bind.key == "f"
                     && bind.modifiers.super_key
                     && bind.action == Action::ToggleFullscreen
+            }));
+        }
+    }
+
+    #[test]
+    fn accepts_field_maximize_action_aliases() {
+        for action in [
+            "maximize-focused",
+            "maximize_focused",
+            "toggle-maximize",
+            "toggle_maximize",
+        ] {
+            let kb = parse(&format!(
+                "keybinds:\n  mod \"super\"\n  \"$var.mod+m\" \"{action}\"\nend\n"
+            ));
+            assert!(kb.binds.iter().any(|bind| {
+                bind.key == "m"
+                    && bind.modifiers.super_key
+                    && bind.action == Action::ToggleFieldMaximize
             }));
         }
     }

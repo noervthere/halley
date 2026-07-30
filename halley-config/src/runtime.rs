@@ -5,14 +5,13 @@ use std::path::Path;
 use rune_cfg::RuneConfig;
 
 use crate::{
-    Animations, Apogee, Autostart, Bearings, Cursor, Debug, Decay, Decorations,
-    FocusRingParseError, FocusRings, Font, Input, InputParseError, Keybinds, LandmarkPlacement,
+    Animations, Apogee, Autostart, Bearings, Cursor, Debug, Decay, Decorations, Field,
+    FieldParseError, FocusRingParseError, FocusRings, Font, Input, InputParseError, Keybinds,
     LaunchConfigError, NodeParseError, Nodes, OutputConfig, OutputParseError, OverlayParseError,
-    Overlays, Physics, Screenshot, Zoom, parse_animations, parse_apogee, parse_autostart,
-    parse_bearings, parse_cursor, parse_debug, parse_decay, parse_decorations, parse_env,
-    parse_focus_rings_checked, parse_font, parse_input, parse_keybinds, parse_landmark_placement,
-    parse_nodes_checked, parse_outputs_checked, parse_overlays_checked, parse_physics,
-    parse_screenshot, parse_zoom,
+    Overlays, Physics, Screenshot, parse_animations, parse_apogee, parse_autostart, parse_bearings,
+    parse_cursor, parse_debug, parse_decay, parse_decorations, parse_env, parse_field_checked,
+    parse_focus_rings_checked, parse_font, parse_input, parse_keybinds, parse_nodes_checked,
+    parse_outputs_checked, parse_overlays_checked, parse_physics, parse_screenshot,
 };
 
 /// One validated snapshot of every setting the running compositor currently
@@ -24,7 +23,7 @@ pub struct RuntimeConfig {
     pub autostart: Autostart,
     pub keybinds: Keybinds,
     pub decorations: Decorations,
-    pub zoom: Zoom,
+    pub field: Field,
     pub screenshot: Screenshot,
     pub cursor: Cursor,
     pub input: Input,
@@ -33,7 +32,6 @@ pub struct RuntimeConfig {
     pub bearings: Bearings,
     pub focus_rings: FocusRings,
     pub font: Font,
-    pub landmarks: LandmarkPlacement,
     pub physics: Physics,
     pub decay: Decay,
     pub nodes: Nodes,
@@ -52,6 +50,7 @@ pub enum RuntimeConfigError {
     FocusRing(FocusRingParseError),
     Node(NodeParseError),
     Overlay(OverlayParseError),
+    Field(FieldParseError),
 }
 
 impl fmt::Display for RuntimeConfigError {
@@ -65,6 +64,7 @@ impl fmt::Display for RuntimeConfigError {
             Self::FocusRing(err) => write!(f, "{err}"),
             Self::Node(err) => write!(f, "{err}"),
             Self::Overlay(err) => write!(f, "{err}"),
+            Self::Field(err) => write!(f, "{err}"),
         }
     }
 }
@@ -119,13 +119,19 @@ impl From<OverlayParseError> for RuntimeConfigError {
     }
 }
 
+impl From<FieldParseError> for RuntimeConfigError {
+    fn from(value: FieldParseError) -> Self {
+        Self::Field(value)
+    }
+}
+
 pub fn parse_runtime_config(config: &RuneConfig) -> Result<RuntimeConfig, RuntimeConfigError> {
     Ok(RuntimeConfig {
         env: parse_env(config)?,
         autostart: parse_autostart(config)?,
         keybinds: parse_keybinds(config)?,
         decorations: parse_decorations(config),
-        zoom: parse_zoom(config),
+        field: parse_field_checked(config)?,
         screenshot: parse_screenshot(config),
         cursor: parse_cursor(config),
         input: parse_input(config)?,
@@ -134,7 +140,6 @@ pub fn parse_runtime_config(config: &RuneConfig) -> Result<RuntimeConfig, Runtim
         bearings: parse_bearings(config),
         focus_rings: parse_focus_rings_checked(config)?,
         font: parse_font(config),
-        landmarks: parse_landmark_placement(config),
         physics: parse_physics(config),
         decay: parse_decay(config),
         nodes: parse_nodes_checked(config)?,
@@ -228,7 +233,7 @@ end
         assert_eq!(runtime.autostart.once, ["waybar", "mako"]);
         assert_eq!(runtime.autostart.on_reload, ["notify-send reloaded"]);
         assert_eq!(runtime.outputs.len(), 1);
-        assert!(!runtime.zoom.enabled);
+        assert!(!runtime.field.zoom.enabled);
         assert_eq!(runtime.screenshot.directory, "/tmp/screenshots");
         assert_eq!(runtime.cursor.theme, "Breeze");
         assert_eq!(runtime.cursor.size, 32);

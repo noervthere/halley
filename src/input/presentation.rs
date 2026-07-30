@@ -21,6 +21,7 @@ pub(crate) struct WindowVisualState {
     pub(crate) opening_alpha: f32,
     pub(crate) opening_is_animating: bool,
     pub(crate) fullscreen: Option<crate::wayland::fullscreen::FullscreenPresentation>,
+    pub(crate) maximize: Option<crate::wayland::maximize::FieldMaximizePresentation>,
     pub(crate) camera_center: Point<f32, Physical>,
     pub(crate) zoom_scale: f32,
 }
@@ -32,6 +33,7 @@ pub(crate) fn window_visual_state(
     output: &Output,
     window_open_animations: &crate::animation::WindowOpenAnimations,
     fullscreen: &crate::wayland::fullscreen::FullscreenManager,
+    maximize: &crate::wayland::maximize::FieldMaximizeManager,
     now: std::time::Duration,
 ) -> Option<WindowVisualState> {
     let output_geometry = space.output_geometry(output)?;
@@ -51,6 +53,10 @@ pub(crate) fn window_visual_state(
         .visual(window_surface.as_ref(), now, camera_rect)
         .unwrap_or_default();
     let fullscreen = fullscreen.presentation(window_surface.as_ref(), output, now);
+    let maximize = fullscreen
+        .is_none()
+        .then(|| maximize.presentation(window_surface.as_ref(), output, output_geometry, now))
+        .flatten();
     let presentation_rect = fullscreen
         .map(|presentation| {
             let windowed = presentation
@@ -66,6 +72,7 @@ pub(crate) fn window_visual_state(
                 .unwrap_or_else(|| presentation.fullscreen_rect(output_size));
             presentation.client_rect(windowed, output_size)
         })
+        .or_else(|| maximize.map(|presentation| presentation.client_rect(camera_rect)))
         .unwrap_or(camera_rect);
     let animated_rect = opening_visual.transform_rect(presentation_rect, presentation_rect);
 
@@ -77,6 +84,7 @@ pub(crate) fn window_visual_state(
         opening_alpha: opening_visual.alpha(),
         opening_is_animating,
         fullscreen,
+        maximize,
         camera_center,
         zoom_scale: view.scale,
     })
@@ -103,6 +111,7 @@ impl WindowPresentation {
         cameras: &OutputCameras,
         window_open_animations: &crate::animation::WindowOpenAnimations,
         fullscreen: &crate::wayland::fullscreen::FullscreenManager,
+        maximize: &crate::wayland::maximize::FieldMaximizeManager,
         window: &Window,
         output: &Output,
         now: std::time::Duration,
@@ -116,6 +125,7 @@ impl WindowPresentation {
             output,
             window_open_animations,
             fullscreen,
+            maximize,
             now,
         )?;
         let source_geometry = visual.source_geometry;
@@ -129,7 +139,7 @@ impl WindowPresentation {
                 local.size.to_logical(1),
             )
         };
-        let hit_rect = if visual.fullscreen.is_some() {
+        let hit_rect = if visual.fullscreen.is_some() || visual.maximize.is_some() {
             let presented = crate::animation::map_rect(
                 source_bbox.to_physical(1),
                 source_geometry.to_physical(1),
@@ -163,6 +173,7 @@ impl WindowPresentation {
         primary: &Output,
         window_open_animations: &crate::animation::WindowOpenAnimations,
         fullscreen: &crate::wayland::fullscreen::FullscreenManager,
+        maximize: &crate::wayland::maximize::FieldMaximizeManager,
         surface: &WlSurface,
         now: std::time::Duration,
     ) -> Option<Self> {
@@ -180,6 +191,7 @@ impl WindowPresentation {
             cameras,
             window_open_animations,
             fullscreen,
+            maximize,
             window,
             output,
             now,

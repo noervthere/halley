@@ -73,6 +73,7 @@ pub fn build(
             request.ui_text,
             request.window_open_animations,
             request.fullscreen,
+            request.maximize,
             request.overlay_previews,
             request.target_presentation_time,
         )?;
@@ -210,6 +211,7 @@ pub fn build(
         decorations: request.decorations,
         window_open_animations: request.window_open_animations,
         fullscreen: request.fullscreen,
+        maximize: request.maximize,
     };
     for (stack_index, window) in request.space.elements().enumerate() {
         if !crate::wayland::window_is_on_output(window, output, primary_output) {
@@ -405,6 +407,7 @@ fn apogee_elements(
     ui_text: &mut super::text::UiTextRenderer,
     window_open_animations: &crate::animation::WindowOpenAnimations,
     fullscreen: &crate::wayland::fullscreen::FullscreenManager,
+    maximize: &crate::wayland::maximize::FieldMaximizeManager,
     overlay_previews: &mut super::overlay_preview::OverlayPreviewCache,
     now: std::time::Duration,
 ) -> Result<Vec<SceneElement>, Box<dyn Error>> {
@@ -461,6 +464,7 @@ fn apogee_elements(
                 output,
                 window_open_animations,
                 fullscreen,
+                maximize,
                 now,
             )
             .map(|visual| visual.animated_rect)
@@ -1341,6 +1345,7 @@ struct LiveWindowContext<'a> {
     decorations: &'a halley_config::Decorations,
     window_open_animations: &'a crate::animation::WindowOpenAnimations,
     fullscreen: &'a crate::wayland::fullscreen::FullscreenManager,
+    maximize: &'a crate::wayland::maximize::FieldMaximizeManager,
 }
 
 fn live_window_elements(
@@ -1363,6 +1368,7 @@ fn live_window_elements(
         context.output,
         context.window_open_animations,
         context.fullscreen,
+        context.maximize,
         context.target_presentation_time,
     ) else {
         return Ok(Vec::new());
@@ -1377,7 +1383,7 @@ fn live_window_elements(
         super::window_surface_elements(renderer, window, surface_location, visual.opening_alpha);
     elements.extend(popup_elements.into_iter().map(|surface_element| {
         let native_geometry = surface_element.geometry(Scale::from(1.0));
-        let destination = if visual.fullscreen.is_some() {
+        let destination = if visual.fullscreen.is_some() || visual.maximize.is_some() {
             let destination = crate::animation::map_rect(
                 native_geometry,
                 visual.source_geometry.to_physical(1),
@@ -1420,7 +1426,7 @@ fn live_window_elements(
     } else {
         elements.extend(surface_elements.into_iter().filter_map(|surface_element| {
             let native_geometry = surface_element.geometry(Scale::from(1.0));
-            let destination = if visual.fullscreen.is_some() {
+            let destination = if visual.fullscreen.is_some() || visual.maximize.is_some() {
                 let destination = crate::animation::map_rect(
                     native_geometry,
                     visual.source_geometry.to_physical(1),
@@ -1464,7 +1470,7 @@ fn live_window_elements(
                         surface_location + rect.loc.to_physical(1),
                         rect.size.to_physical(1),
                     );
-                    let destination = if visual.fullscreen.is_some() {
+                    let destination = if visual.fullscreen.is_some() || visual.maximize.is_some() {
                         let destination = crate::animation::map_rect(
                             native,
                             visual.source_geometry.to_physical(1),

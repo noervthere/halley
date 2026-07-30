@@ -46,6 +46,7 @@ pub struct PointerRoutingContext<'a> {
     pub window_open_animations: &'a crate::animation::WindowOpenAnimations,
     pub primary: &'a Output,
     pub fullscreen: &'a crate::wayland::fullscreen::FullscreenManager,
+    pub maximize: &'a crate::wayland::maximize::FieldMaximizeManager,
     pub focused: Option<&'a WlSurface>,
     pub now: std::time::Duration,
 }
@@ -362,6 +363,7 @@ fn window_under(
             context.cameras,
             context.window_open_animations,
             context.fullscreen,
+            context.maximize,
             window,
             output,
             context.now,

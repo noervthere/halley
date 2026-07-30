@@ -162,7 +162,8 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
         input: applied_input,
         decorations: runtime_config.decorations,
         cameras,
-        zoom: runtime_config.zoom,
+        field_config: runtime_config.field,
+        zoom: runtime_config.field.zoom,
         screenshot: runtime_config.screenshot,
         capture: crate::capture::CaptureState::default(),
         screencast: crate::screencast::ScreencastState::default(),
@@ -183,6 +184,10 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
             runtime_config.animations,
         ),
         fullscreen: crate::wayland::fullscreen::FullscreenManager::new(runtime_config.animations),
+        maximize: crate::wayland::maximize::FieldMaximizeManager::new(
+            runtime_config.field,
+            runtime_config.animations,
+        ),
         fullscreen_textures:
             crate::backend::fullscreen_texture::FullscreenTextureTransitions::default(),
         overlay_previews: crate::backend::overlay_preview::OverlayPreviewCache::default(),
@@ -267,6 +272,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                 let fullscreen_animating = app
                     .fullscreen
                     .is_animating_on_output(&output, target_presentation_time);
+                let maximize_animating = app.maximize.is_animating(target_presentation_time);
                 let closing_animating = app
                     .window_close_animations
                     .is_animating_on_output(&output, target_presentation_time);
@@ -277,7 +283,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                     app.bearings.tick(&output.name(), target_presentation_time);
                 let focus_cycle_animating = app.focus_cycle.tick(target_presentation_time);
                 let apogee_animating = crate::apogee::tick(app, target_presentation_time);
-                if fullscreen_animating {
+                if fullscreen_animating || maximize_animating {
                     super::pointer::update_client_state(
                         app,
                         app.start_time.elapsed().as_millis() as u32,
@@ -306,6 +312,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                         window_open_animations: &app.window_open_animations,
                         window_close_animations: &mut app.window_close_animations,
                         fullscreen: &app.fullscreen,
+                        maximize: &app.maximize,
                         fullscreen_textures: &mut app.fullscreen_textures,
                         overlay_previews: &mut app.overlay_previews,
                         nodes: &app.nodes,
@@ -374,6 +381,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                     || window_animating
                     || closing_animating
                     || fullscreen_animating
+                    || maximize_animating
                     || node_animating
                     || bearings_animating
                     || focus_cycle_animating

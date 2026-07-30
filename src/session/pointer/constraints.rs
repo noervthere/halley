@@ -150,6 +150,7 @@ fn owner_context<D: SessionDriver>(
         session.driver.primary_output(),
         &session.window_open_animations,
         &session.fullscreen,
+        &session.maximize,
         surface,
         crate::frame_clock::monotonic_now(),
     )?;

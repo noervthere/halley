@@ -106,6 +106,7 @@ pub(crate) fn finish_window_unmap<D: SessionDriver>(
     session.opening_origins.forget(&surface);
     session.window_open_animations.remove(&surface);
     session.fullscreen.remove(&surface);
+    session.maximize.remove(&surface);
     session.fullscreen_textures.remove(&surface);
     super::cancel_grab_for_surface(session, &surface);
     crate::input::grab::forget_resize_anchor(&mut session.resize_anchor, &surface);

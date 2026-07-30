@@ -49,6 +49,7 @@ pub(crate) fn capture_window<D: SessionDriver>(session: &mut Session<D>, window:
         &output,
         &session.window_open_animations,
         &session.fullscreen,
+        &session.maximize,
         now,
     ) else {
         return false;

@@ -44,6 +44,7 @@ pub enum Action {
     Quit,
     CloseFocusedWindow,
     ToggleFullscreen,
+    ToggleFieldMaximize,
     ToggleState,
     Apogee,
     BearingsShow,
@@ -113,7 +114,7 @@ mod tests {
                 )
             }
         }
-        assert_eq!(kb.binds.len(), 17);
+        assert_eq!(kb.binds.len(), 18);
 
         let quit = kb.binds.iter().find(|b| b.action == Action::Quit).unwrap();
         assert!(quit.modifiers.super_key);
@@ -136,6 +137,14 @@ mod tests {
             .unwrap();
         assert!(fullscreen.modifiers.super_key);
         assert_eq!(fullscreen.key, "f");
+
+        let maximize = kb
+            .binds
+            .iter()
+            .find(|b| b.action == Action::ToggleFieldMaximize)
+            .unwrap();
+        assert!(maximize.modifiers.super_key);
+        assert_eq!(maximize.key, "m");
 
         let toggle_state = kb
             .binds

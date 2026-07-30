@@ -253,26 +253,6 @@ screenshot:
   directory "$env.HOME/Pictures/Screenshots/"
 end
 
-# Camera zoom changes both presentation and input coordinates. Halley only
-# zooms outward: 1.0 is native size, and zooming in walks back toward 1.0
-# without magnifying beyond it.
-zoom:
-  # Master switch for zoom input and any in-flight zoom motion.
-  enabled true
-
-  # Smallest permitted presentation scale. 0.35 means 35% of native size.
-  # Runtime safety clamps this value to the range 0.05 through 1.0.
-  min 0.35
-
-  # Multiplicative change injected by each zoom action. Values must be above
-  # 1.0 to produce a visible step.
-  step 1.10
-
-  # Response and settling rate. Higher values feel faster and more abrupt;
-  # lower values feel softer. Runtime safety clamps it from 0.1 through 120.
-  smooth-rate 12.5
-end
-
 # Global font for compositor-owned UI. The size is the base (scale 2) size;
 # smaller text uses size - 2 and larger marker glyphs use size + 4.
 font:
@@ -337,10 +317,29 @@ decay:
   inside-delay-seconds 1800
 end
 
-# Active windows may overlap one another. Only collapsed node landmarks reserve
-# readable space against other nodes and active windows.
+# Field behavior shared by active windows, collapsed landmarks, and camera
+# movement. Active windows may overlap one another; only collapsed landmarks
+# reserve readable space against nodes and active windows.
 field:
-  gap-px 20.0
+  # Maximized windows are inset from the usable output area by this amount.
+  # The same value is the clearance between landmarks and active windows.
+  gap 20.0
+
+  # After a focused window closes, restore the most recently used window on
+  # that output (then fall back globally). "if-offscreen" minimally reveals a
+  # successor only when it is completely outside the current camera view.
+  close-restore-focus true
+  close-restore-pan "if-offscreen"
+
+  # Camera zoom changes both presentation and input coordinates. Halley only
+  # zooms outward: 1.0 is native size, and zooming in walks back toward 1.0
+  # without magnifying beyond it.
+  zoom:
+    enabled true
+    min 0.35
+    step 1.10
+    smooth-rate 12.5
+  end
 end
 
 # Old-Halley contact motion for nodes and node/window displacement. Disable
@@ -395,7 +394,7 @@ end
 # Animation settings are reloaded for future motion. Existing window-open and
 # window-close animations keep the parameters with which they started.
 animations:
-  # Master switch for window-open, window-close, fullscreen, and node animations.
+  # Master switch for window-open, window-close, fullscreen, maximize, and node animations.
   enabled true
 
   window-open:
@@ -471,6 +470,11 @@ animations:
     # curve "ease-out-cubic"
   end
 
+  maximize:
+    enabled true
+    duration-ms 240
+  end
+
   node:
     enabled true
     duration-ms 280
@@ -491,6 +495,7 @@ keybinds:
   "$var.mod+shift+e" "quit"
   "$var.mod+q" "close-focused"
   "$var.mod+f" "toggle-fullscreen"
+  "$var.mod+m" "maximize-focused"
   "$var.mod+n" "toggle-state"
   "$var.mod+o" "apogee"
   "$var.mod+z" "bearings-show"

@@ -197,6 +197,7 @@ pub struct RenderRequest<'a> {
     pub window_open_animations: &'a crate::animation::WindowOpenAnimations,
     pub window_close_animations: &'a mut crate::backend::close::WindowCloseAnimations,
     pub fullscreen: &'a crate::wayland::fullscreen::FullscreenManager,
+    pub maximize: &'a crate::wayland::maximize::FieldMaximizeManager,
     pub fullscreen_textures:
         &'a mut crate::backend::fullscreen_texture::FullscreenTextureTransitions,
     pub overlay_previews: &'a mut crate::backend::overlay_preview::OverlayPreviewCache,

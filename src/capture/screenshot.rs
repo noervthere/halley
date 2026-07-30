@@ -55,6 +55,7 @@ pub fn save_region<D: SessionDriver>(
     let window_open_animations = &session.window_open_animations;
     let window_close_animations = &mut session.window_close_animations;
     let fullscreen = &session.fullscreen;
+    let maximize = &session.maximize;
     let fullscreen_textures = &mut session.fullscreen_textures;
     let overlay_previews = &mut session.overlay_previews;
     let nodes = &session.nodes;
@@ -87,6 +88,7 @@ pub fn save_region<D: SessionDriver>(
                         window_open_animations,
                         window_close_animations: &mut *window_close_animations,
                         fullscreen,
+                        maximize,
                         fullscreen_textures: &mut *fullscreen_textures,
                         overlay_previews: &mut *overlay_previews,
                         nodes,
@@ -277,6 +279,7 @@ where
     let window_open_animations = &session.window_open_animations;
     let window_close_animations = &mut session.window_close_animations;
     let fullscreen = &session.fullscreen;
+    let maximize = &session.maximize;
     let fullscreen_textures = &mut session.fullscreen_textures;
     let overlay_previews = &mut session.overlay_previews;
     let nodes = &session.nodes;
@@ -306,6 +309,7 @@ where
                 window_open_animations,
                 window_close_animations,
                 fullscreen,
+                maximize,
                 fullscreen_textures,
                 overlay_previews,
                 nodes,

@@ -36,11 +36,13 @@ struct FullscreenCameraRestore {
 pub struct OutputCameras {
     cameras: HashMap<String, Camera>,
     fullscreen: HashMap<String, FullscreenCameraRestore>,
+    field_maximize: HashMap<String, FullscreenCameraRestore>,
 }
 
 impl OutputCameras {
     pub fn insert(&mut self, output_name: String, output_size: Size<i32, Physical>) {
         self.fullscreen.remove(&output_name);
+        self.field_maximize.remove(&output_name);
         self.cameras
             .insert(output_name, camera_at_rest(output_size));
     }
@@ -54,7 +56,9 @@ impl OutputCameras {
     }
 
     pub fn get_mut(&mut self, output_name: &str) -> Option<&mut Camera> {
-        if self.fullscreen.contains_key(output_name) {
+        if self.fullscreen.contains_key(output_name)
+            || self.field_maximize.contains_key(output_name)
+        {
             return None;
         }
         self.cameras.get_mut(output_name)
@@ -64,10 +68,11 @@ impl OutputCameras {
         let Self {
             cameras,
             fullscreen,
+            field_maximize,
         } = self;
-        cameras
-            .iter_mut()
-            .filter_map(move |(name, camera)| (!fullscreen.contains_key(name)).then_some(camera))
+        cameras.iter_mut().filter_map(move |(name, camera)| {
+            (!fullscreen.contains_key(name) && !field_maximize.contains_key(name)).then_some(camera)
+        })
     }
 
     pub fn view(&self, output_name: &str) -> Option<OutputView> {
@@ -120,6 +125,47 @@ impl OutputCameras {
             }
             None => {
                 let Some(restore) = self.fullscreen.remove(output_name) else {
+                    return false;
+                };
+                camera.center = restore.center;
+                camera.view_size = restore.view_size;
+                camera.target_center = restore.center;
+                camera.target_view_size = restore.view_size;
+                camera.pan_vel = Vec2 { x: 0.0, y: 0.0 };
+                camera.zoom_log_vel = 0.0;
+            }
+        }
+        *camera != before
+    }
+
+    /// Owns one output camera for field maximize while keeping its center
+    /// fixed and easing its scale to native 1.0. Releasing restores the exact
+    /// pre-maximize camera snapshot.
+    pub fn apply_field_maximize(&mut self, output_name: &str, progress: Option<f32>) -> bool {
+        let Some(camera) = self.cameras.get_mut(output_name) else {
+            self.field_maximize.remove(output_name);
+            return false;
+        };
+        let before = *camera;
+        match progress {
+            Some(progress) => {
+                let restore = self
+                    .field_maximize
+                    .entry(output_name.to_string())
+                    .or_insert(FullscreenCameraRestore {
+                        center: camera.center,
+                        view_size: camera.view_size,
+                    });
+                let progress = progress.clamp(0.0, 1.0);
+                camera.center = restore.center;
+                camera.view_size = lerp_vec2(restore.view_size, camera.base_size, progress);
+                camera.target_center = camera.center;
+                camera.target_view_size = camera.view_size;
+                camera.pan_vel = Vec2 { x: 0.0, y: 0.0 };
+                camera.zoom_log_vel = 0.0;
+            }
+            None => {
+                let Some(restore) = self.field_maximize.remove(output_name) else {
                     return false;
                 };
                 camera.center = restore.center;

@@ -98,7 +98,9 @@ impl NodesState {
             config: config.nodes,
             decay_config: config.decay,
             focus_rings: config.focus_rings.clone(),
-            landmarks: config.landmarks,
+            landmarks: halley_config::LandmarkPlacement {
+                gap_px: config.field.gap,
+            },
             physics: config.physics,
             debug: config.debug,
             animation: config.animations.node,
@@ -141,7 +143,10 @@ impl NodesState {
                 self.ring_preview_until.insert(output.clone(), until);
             }
         }
-        let landmarks_changed = self.landmarks != config.landmarks;
+        let next_landmarks = halley_config::LandmarkPlacement {
+            gap_px: config.field.gap,
+        };
+        let landmarks_changed = self.landmarks != next_landmarks;
         let physics_changed = self.physics != config.physics;
         if physics_changed {
             self.physics_velocity.clear();
@@ -164,7 +169,7 @@ impl NodesState {
         self.config = config.nodes;
         self.decay_config = config.decay;
         self.focus_rings = config.focus_rings.clone();
-        self.landmarks = config.landmarks;
+        self.landmarks = next_landmarks;
         self.physics = config.physics;
         self.debug = config.debug;
         self.animation = config.animations.node;
@@ -885,7 +890,8 @@ fn dynamics_bodies<D: crate::session::SessionDriver>(
         .filter(|record| {
             record.attached
                 && (record.collapsed
-                    || !session.fullscreen.is_fullscreen_or_pending(&record.surface))
+                    || (!session.fullscreen.is_fullscreen_or_pending(&record.surface)
+                        && !session.maximize.contains(&record.surface)))
         })
         .filter_map(|record| {
             let node = session.nodes.field.node(record.id)?;
@@ -1171,6 +1177,7 @@ pub fn collapse<D: crate::session::SessionDriver>(
         logical_focus_after_collapse(session.nodes.focused(), id, client_was_focused);
 
     let _ = crate::session::closing::capture_window(session, &record.window);
+    session.maximize.remove(&record.surface);
     crate::session::cancel_grab_for_surface(session, &record.surface);
     if client_was_focused {
         // A collapsed surface must not keep receiving keyboard input, but the
@@ -1453,6 +1460,7 @@ pub fn tick_decay<D: crate::session::SessionDriver>(
         .records()
         .filter(|record| {
             session.fullscreen.is_fullscreen_or_pending(&record.surface)
+                || session.maximize.contains(&record.surface)
                 || crate::input::grab::belongs_to_surface(&session.grab, &record.surface)
         })
         .map(|record| record.surface.clone())

@@ -194,7 +194,8 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
         input: applied_input,
         decorations: runtime_config.decorations,
         cameras: crate::camera::OutputCameras::default(),
-        zoom: runtime_config.zoom,
+        field_config: runtime_config.field,
+        zoom: runtime_config.field.zoom,
         screenshot: runtime_config.screenshot,
         capture: crate::capture::CaptureState::default(),
         screencast: crate::screencast::ScreencastState::default(),
@@ -215,6 +216,10 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
             runtime_config.animations,
         ),
         fullscreen: crate::wayland::fullscreen::FullscreenManager::new(runtime_config.animations),
+        maximize: crate::wayland::maximize::FieldMaximizeManager::new(
+            runtime_config.field,
+            runtime_config.animations,
+        ),
         fullscreen_textures:
             crate::backend::fullscreen_texture::FullscreenTextureTransitions::default(),
         overlay_previews: crate::backend::overlay_preview::OverlayPreviewCache::default(),
@@ -562,6 +567,7 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
     let fullscreen_animating = app
         .fullscreen
         .is_animating_on_output(output, target_presentation_time);
+    let maximize_animating = app.maximize.is_animating(target_presentation_time);
     let closing_animating = app
         .window_close_animations
         .is_animating_on_output(output, target_presentation_time);
@@ -592,8 +598,9 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
         || apogee_animating
         || overlay_animating
         || fullscreen_animating
+        || maximize_animating
         || cursor_animating;
-    if fullscreen_animating && pointer_is_on_output {
+    if (fullscreen_animating || maximize_animating) && pointer_is_on_output {
         super::pointer::update_client_state(app, app.start_time.elapsed().as_millis() as u32);
     }
     let view_after = pointer_is_on_output
@@ -619,6 +626,7 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
             window_open_animations: &app.window_open_animations,
             window_close_animations: &mut app.window_close_animations,
             fullscreen: &app.fullscreen,
+            maximize: &app.maximize,
             fullscreen_textures: &mut app.fullscreen_textures,
             overlay_previews: &mut app.overlay_previews,
             nodes: &app.nodes,

@@ -21,7 +21,7 @@ fn example_config_parses_end_to_end() {
             )
         }
     }
-    assert_eq!(keybinds.binds.len(), 17);
+    assert_eq!(keybinds.binds.len(), 18);
 
     let quit = keybinds
         .binds
@@ -49,6 +49,14 @@ fn example_config_parses_end_to_end() {
     assert_eq!(fullscreen.key, "f");
     assert!(fullscreen.modifiers.super_key);
     assert!(!fullscreen.modifiers.shift);
+
+    let maximize = keybinds
+        .binds
+        .iter()
+        .find(|b| b.action == Action::ToggleFieldMaximize)
+        .expect("maximize-focused bind present");
+    assert_eq!(maximize.key, "m");
+    assert!(maximize.modifiers.super_key);
 
     let toggle_state = keybinds
         .binds
@@ -150,13 +158,12 @@ fn example_config_keeps_environment_and_autostart_inactive() {
     assert!(runtime.autostart.on_reload.is_empty());
 }
 
-/// Confirms the shipped example's `zoom:` section parses to non-default
-/// values matching the file's own documented settings - a lighter version of
-/// `example_config_parses_end_to_end` for the zoom section specifically.
+/// Confirms the shipped example's nested field zoom parses to the documented
+/// values.
 #[test]
 fn example_config_zoom_section_parses() {
     let config = RuneConfig::from_file(EXAMPLE_PATH).expect("example config parses");
-    let zoom = halley_config::parse_zoom(&config);
+    let zoom = halley_config::parse_field_checked(&config).unwrap().zoom;
 
     assert!(zoom.enabled);
     assert_eq!(zoom.min, 0.35);
@@ -208,7 +215,12 @@ fn example_config_has_per_output_rings_font_and_landmarks() {
     assert_eq!(runtime.bearings, halley_config::Bearings::default());
     assert_eq!(runtime.focus_rings.for_output("DP-1").radius_x, 820.0);
     assert_eq!(runtime.focus_rings.for_output("DP-2").radius_y, 420.0);
-    assert_eq!(runtime.landmarks.gap_px, 20.0);
+    assert_eq!(runtime.field.gap, 20.0);
+    assert!(runtime.field.close_restore_focus);
+    assert_eq!(
+        runtime.field.close_restore_pan,
+        halley_config::CloseRestorePan::IfOffscreen
+    );
     assert!(runtime.physics.enabled);
     assert_eq!(runtime.physics.damping, 0.45);
     assert_eq!(

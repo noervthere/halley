@@ -667,6 +667,7 @@ fn opening_presentation_bounds<D: SessionDriver>(
         &session.cameras,
         &session.window_open_animations,
         &session.fullscreen,
+        &session.maximize,
         window,
         &output,
         now,
