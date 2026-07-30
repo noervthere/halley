@@ -12,6 +12,8 @@ its tiles is the wallpaper/background layer: normal windows, nodes, panels,
 and other desktop layers never poke through the dimming backdrop.
 Its tile title bands and Alt+Tab's cards use the shared
 [`overlays:`](overlays.md) shape, palette, and border settings.
+Apogee window titles use the configured base [`font:`](fonts.md) size; they do
+not drop to the smaller metadata tier used by badges and secondary labels.
 
 Arrow keys navigate spatially across monitor geometry. Enter or a tile click
 selects a window, Escape or an outside click cancels, and `Mod+O` toggles the

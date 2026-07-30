@@ -477,7 +477,7 @@ fn apogee_elements(
                 renderer,
                 ui_text,
                 &record.title,
-                1,
+                2,
                 overlay_visuals.text.bytes(),
                 caption.size.w - 16,
             )?;
@@ -490,7 +490,7 @@ fn apogee_elements(
                     )
                         .into(),
                     &title,
-                    1,
+                    2,
                     overlay_visuals.text.bytes(),
                     chrome_alpha,
                 )?

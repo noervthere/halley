@@ -23,10 +23,12 @@ UI scales derive from it:
 - Scale 3 uses `size + 4`.
 - Larger scales add another 4 pixels per step.
 
-Node labels, Bearings titles, and Bearings distance labels use scale 2. Node
-markers reserve their center for real application icons and remain blank while
-an icon is loading or unavailable. Text is measured and rasterized at its
-final physical size, then composed without stretching.
+Node labels, Bearings titles, Bearings distance labels, and Apogee window
+titles use scale 2. Alt+Tab uses scale 3 for the selected title, scale 2 for
+its immediate neighbors, and scale 1 only for the outermost cards. Node markers
+reserve their center for real application icons and remain blank while an icon
+is loading or unavailable. Text is measured and rasterized at its final
+physical size, then composed without stretching.
 
 The section live-reloads with the rest of `halley.rune`. A successful font
 change clears the text cache and redraws immediately; it does not require a
