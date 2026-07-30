@@ -8,11 +8,14 @@ state do not share implementation files.
 
 - `session` owns compositor policy and coordinates subsystems.
 - `backend` owns only TTY/winit, output, DMA-BUF, frame submission, DPMS, and
-  VRR mechanics.
+  VRR mechanics. TTY output and DMA-BUF policy live below `backend::tty`.
+- `presentation` owns camera transforms plus shared window and field-maximize
+  presentation state used by rendering and input mapping.
 - `render` owns scene composition, persistent GPU resources, effects,
   decorations, textures, text, nodes, and shell UI rendering.
-- `overlay`, `capture`, `bearings`, `focus_cycle`, and `apogee` own
-  renderer-independent state. Their GLES presentation lives below `render`.
+- `shell` owns renderer-independent overlay, bearings, focus-cycle, and Apogee
+  state. Their GLES presentation lives below `render`.
+- `capture` owns screenshot selection, pixel capture, and screencast buffers.
 - `wayland` and `xwayland` own protocol transactions. XWayland managed-window
   lifecycle, override-redirect policy, and presentation policy are separate.
 - `animation` owns pure timelines. Rendering consumes animation output but
@@ -34,12 +37,12 @@ dependency direction, interface size, strict linting, and regression coverage.
 
 | Category | Weight | Score | Evidence |
 | --- | ---: | ---: | --- |
-| Ownership and cohesion | 30% | 9.0 | Backend/render split; overlays and XWayland policies have dedicated modules |
-| Dependency direction | 20% | 8.8 | Renderer-independent state points toward presentation, never GLES implementation |
+| Ownership and cohesion | 30% | 9.2 | Shell, presentation, capture, backend TTY, and XWayland policies have dedicated modules |
+| Dependency direction | 20% | 9.0 | Renderer-independent state points toward presentation, never GLES implementation |
 | Interface coupling | 20% | 8.5 | Six frame contexts and one persistent render-resource aggregate |
 | Local complexity | 15% | 8.0 | Central scene is under 300 production lines; nodes and XWM are decomposed |
 | Regression safety | 15% | 9.2 | Workspace tests, strict clippy, formatting, build, and nested smoke gate |
-| **Weighted total** | **100%** | **8.7** | No category is below 8 |
+| **Weighted total** | **100%** | **8.8** | No category is below 8 |
 
 The remaining large orchestration files are `session/input.rs`,
 `wayland/fullscreen.rs`, and the TTY session/backend drivers. They are cohesive
