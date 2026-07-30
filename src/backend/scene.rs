@@ -409,9 +409,7 @@ fn apogee_elements(
         return Ok(Vec::new());
     };
     let progress = session.progress(now).clamp(0.0, 1.0);
-    if progress <= 0.001 {
-        return Ok(Vec::new());
-    }
+    let visuals = apogee_transition_visuals(progress);
     let output_local = Rectangle::<i32, Physical>::from_size(output_geometry.size.to_physical(1));
     let overlay_visuals = super::overlay::resolve_visuals(overlay_config, decorations);
     let mut tiles = session
@@ -419,8 +417,7 @@ fn apogee_elements(
         .iter()
         .filter(|tile| tile.output == output.name())
         .collect::<Vec<_>>();
-    tiles.sort_by_key(|tile| usize::from(session.selected == Some(tile.id)));
-    tiles.reverse();
+    sort_apogee_tiles(&mut tiles, session.selected);
 
     let mut elements = Vec::new();
     overlay_previews.retain(session.tiles.iter().map(|tile| tile.id));
@@ -469,7 +466,7 @@ fn apogee_elements(
         let body = lerp_rect(source, target, progress);
         let selected = session.selected == Some(tile.id);
         let hovered = session.hovered == Some(tile.id);
-        let chrome_alpha = ((progress - 0.18) / 0.62).clamp(0.0, 1.0);
+        let chrome_alpha = visuals.chrome_alpha;
         // Old Halley kept the caption inside the preview. Growing the card by
         // a fixed footer made its backing look like an enlarged second window,
         // especially for short and wide Apogee tiles.
@@ -539,14 +536,18 @@ fn apogee_elements(
             tile.id,
             &record.window,
             body,
-            progress,
+            visuals.preview_alpha,
             config.live_previews,
         ) {
             Ok(preview) => elements.push(SceneElement::Closing(preview)),
             Err(_) => {
                 if let Some(app_id) = record.app_id.as_deref()
-                    && let Some(icon) =
-                        node_renderer.app_icon_element(renderer, app_id, body, progress)
+                    && let Some(icon) = node_renderer.app_icon_element(
+                        renderer,
+                        app_id,
+                        body,
+                        visuals.preview_alpha,
+                    )
                 {
                     elements.push(SceneElement::NodeTexture(icon));
                 }
@@ -557,9 +558,19 @@ fn apogee_elements(
                 body,
                 if selected || hovered { 3 } else { 1 },
                 if selected || hovered {
-                    smithay::backend::renderer::Color32F::new(0.45, 0.72, 1.0, progress)
+                    smithay::backend::renderer::Color32F::new(
+                        0.45,
+                        0.72,
+                        1.0,
+                        visuals.overlay_alpha,
+                    )
                 } else {
-                    smithay::backend::renderer::Color32F::new(0.25, 0.31, 0.40, progress)
+                    smithay::backend::renderer::Color32F::new(
+                        0.25,
+                        0.31,
+                        0.40,
+                        visuals.overlay_alpha,
+                    )
                 },
             )
             .into_iter()
@@ -576,7 +587,7 @@ fn apogee_elements(
             card,
             overlay_visuals,
             card_fill,
-            0.96 * progress,
+            0.96 * visuals.overlay_alpha,
         )?));
     }
     elements.push(SceneElement::Border(SolidColorRenderElement::new(
@@ -587,11 +598,45 @@ fn apogee_elements(
             0.01,
             0.018,
             0.03,
-            config.background_dim * progress,
+            config.background_dim * visuals.overlay_alpha,
         ),
         Kind::Unspecified,
     )));
     Ok(elements)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ApogeeTransitionVisuals {
+    preview_alpha: f32,
+    overlay_alpha: f32,
+    chrome_alpha: f32,
+}
+
+fn apogee_transition_visuals(progress: f32) -> ApogeeTransitionVisuals {
+    let overlay_alpha = progress.clamp(0.0, 1.0);
+    ApogeeTransitionVisuals {
+        // The preview is the handoff surface: at progress zero it occupies the
+        // live window's exact rect, so fading it would expose a wallpaper-only
+        // frame on both entry and exit.
+        preview_alpha: 1.0,
+        overlay_alpha,
+        chrome_alpha: ((overlay_alpha - 0.18) / 0.62).clamp(0.0, 1.0),
+    }
+}
+
+fn sort_apogee_tiles(
+    tiles: &mut [&crate::apogee::Tile],
+    selected: Option<halley_core::field::NodeId>,
+) {
+    tiles.sort_by_key(|tile| {
+        (
+            usize::from(selected == Some(tile.id)),
+            tile.source_stack_index,
+            tile.source_stack_order,
+        )
+    });
+    // Smithay render-element lists are front-to-back.
+    tiles.reverse();
 }
 
 fn lerp_rect(
@@ -1901,6 +1946,55 @@ mod tests {
     fn apogee_caption_waits_until_node_transition_is_large_enough() {
         let node_sized = Rectangle::<i32, Physical>::new((100, 80).into(), (64, 64).into());
         assert_eq!(apogee_caption_rect(node_sized), None);
+    }
+
+    #[test]
+    fn apogee_transition_never_fades_the_handoff_preview() {
+        for progress in [0.0, 0.0005, 0.5, 1.0] {
+            let visuals = apogee_transition_visuals(progress);
+            assert_eq!(visuals.preview_alpha, 1.0);
+            assert_eq!(visuals.overlay_alpha, progress);
+        }
+        assert_eq!(apogee_transition_visuals(0.0).chrome_alpha, 0.0);
+        assert_eq!(apogee_transition_visuals(1.0).chrome_alpha, 1.0);
+    }
+
+    #[test]
+    fn apogee_transition_preserves_source_stack_and_promotes_selection() {
+        let back = crate::apogee::Tile {
+            id: halley_core::field::NodeId::new(1),
+            output: "DP-1".into(),
+            target: Rectangle::new((0, 0).into(), (100, 100).into()),
+            source_stack_index: 0,
+            source_stack_order: u64::MAX,
+        };
+        let middle = crate::apogee::Tile {
+            id: halley_core::field::NodeId::new(2),
+            output: "DP-1".into(),
+            target: Rectangle::new((100, 0).into(), (100, 100).into()),
+            source_stack_index: 1,
+            source_stack_order: 0,
+        };
+        let front = crate::apogee::Tile {
+            id: halley_core::field::NodeId::new(3),
+            output: "DP-1".into(),
+            target: Rectangle::new((200, 0).into(), (100, 100).into()),
+            source_stack_index: 2,
+            source_stack_order: u64::MAX,
+        };
+        let mut tiles = vec![&middle, &front, &back];
+
+        sort_apogee_tiles(&mut tiles, None);
+        assert_eq!(
+            tiles.iter().map(|tile| tile.id).collect::<Vec<_>>(),
+            vec![front.id, middle.id, back.id]
+        );
+
+        sort_apogee_tiles(&mut tiles, Some(middle.id));
+        assert_eq!(
+            tiles.iter().map(|tile| tile.id).collect::<Vec<_>>(),
+            vec![middle.id, front.id, back.id]
+        );
     }
 
     #[test]

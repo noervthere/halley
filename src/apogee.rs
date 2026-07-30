@@ -20,6 +20,8 @@ pub struct Tile {
     pub id: NodeId,
     pub output: String,
     pub target: Rectangle<i32, Logical>,
+    pub source_stack_index: usize,
+    pub source_stack_order: u64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -389,12 +391,18 @@ fn build_layout(
     nodes: &crate::nodes::NodesState,
     config: halley_config::Apogee,
 ) -> Vec<Tile> {
-    let mut by_output = HashMap::<String, Vec<NodeId>>::new();
+    let mut by_output = HashMap::<String, Vec<(NodeId, usize, u64)>>::new();
     for record in nodes.records().filter(|record| record.attached) {
-        by_output
-            .entry(record.output.clone())
-            .or_default()
-            .push(record.id);
+        let source_stack_index = record.collapsed_stack_index.or_else(|| {
+            space
+                .elements()
+                .position(|candidate| candidate == &record.window)
+        });
+        by_output.entry(record.output.clone()).or_default().push((
+            record.id,
+            source_stack_index.unwrap_or(usize::MAX),
+            if record.collapsed { 0 } else { u64::MAX },
+        ));
     }
     let mut tiles = Vec::new();
     let mut outputs = space
@@ -422,7 +430,7 @@ fn build_layout(
 }
 
 fn layout_output(
-    ids: &[NodeId],
+    ids: &[(NodeId, usize, u64)],
     output: String,
     bounds: Rectangle<i32, Logical>,
     nodes: &crate::nodes::NodesState,
@@ -433,13 +441,15 @@ fn layout_output(
     }
     let entries = ids
         .iter()
-        .filter_map(|id| {
+        .filter_map(|(id, source_stack_index, source_stack_order)| {
             let record = nodes.record(*id)?;
             let node = nodes.field.node(*id)?;
             let width = record.geometry.size.w.max(1) as f32;
             let height = record.geometry.size.h.max(1) as f32;
             Some((
                 *id,
+                *source_stack_index,
+                *source_stack_order,
                 layout::Item {
                     x: node.pos.x,
                     y: node.pos.y,
@@ -455,7 +465,10 @@ fn layout_output(
     let upper_band = (bounds.size.h.max(1) as f32 * 0.215).clamp(140.0, 236.0);
     let mosaic_height = (bounds.size.h as f32 - upper_band).round().max(64.0) as i32;
     let slots = layout::mosaic(
-        &entries.iter().map(|(_, item)| *item).collect::<Vec<_>>(),
+        &entries
+            .iter()
+            .map(|(_, _, _, item)| *item)
+            .collect::<Vec<_>>(),
         bounds.size.w,
         mosaic_height,
         config.gap.max(0.0),
@@ -464,7 +477,7 @@ fn layout_output(
     entries
         .into_iter()
         .zip(slots)
-        .map(|((id, _), slot)| {
+        .map(|((id, source_stack_index, source_stack_order, _), slot)| {
             let width = slot.w.round().max(1.0) as i32;
             let height = slot.h.round().max(1.0) as i32;
             Tile {
@@ -480,6 +493,8 @@ fn layout_output(
                         .into(),
                     (width, height).into(),
                 ),
+                source_stack_index,
+                source_stack_order,
             }
         })
         .collect()
@@ -673,6 +688,8 @@ mod tests {
                 id: NodeId::new(1),
                 output: "DP-1".into(),
                 target: Rectangle::new((0, 0).into(), (100, 100).into()),
+                source_stack_index: 0,
+                source_stack_order: u64::MAX,
             }],
             hovered: None,
             selected: Some(NodeId::new(1)),
