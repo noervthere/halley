@@ -6,7 +6,8 @@ use rune_cfg::ast::{ObjectItem, Value};
 
 /// Variable refresh rate mode for one output. `On` keeps hardware VRR enabled;
 /// `Auto` enables it only for a committed, settled fullscreen window while no
-/// compositor or layer-shell overlay is visible.
+/// compositor or layer-shell overlay is visible. Backends may leave `Auto`
+/// disabled when changing VRR would require a modeset.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Vrr {
     #[default]

@@ -71,6 +71,8 @@ end
 #   # Variable refresh rate: "off", "on", or "auto". "on" enables VRR
 #   # whenever the connector supports it. "auto" enables VRR for a settled
 #   # fullscreen window and disables it while transitions or overlays are visible.
+#   # If the driver cannot switch VRR without a modeset, "auto" stays disabled;
+#   # use "on" to keep VRR enabled on that output instead.
 #   vrr "auto"
 # end
 #

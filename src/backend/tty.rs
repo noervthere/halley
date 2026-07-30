@@ -76,7 +76,7 @@ struct DrmOutputEntry {
     connector: connector::Info,
     current_mode: Mode,
     configured_vrr: halley_config::Vrr,
-    vrr_supported: bool,
+    vrr_support: VrrSupport,
     vrr_active: bool,
     output: Output,
     drm_output: TtyDrmOutput,
@@ -286,17 +286,9 @@ impl TtyBackend {
                             None
                         }
                     };
-                    let vrr_supported = match drm_output
-                        .with_compositor(|compositor| compositor.vrr_supported(connector.handle()))
-                    {
-                        Ok(VrrSupport::Supported | VrrSupport::RequiresModeset) => true,
-                        Ok(VrrSupport::NotSupported) => false,
-                        Err(err) => {
-                            eventline::warn!("output {name:?}: failed to query VRR support: {err}");
-                            false
-                        }
-                    };
-                    let requested_vrr = vrr == halley_config::Vrr::On && vrr_supported;
+                    let vrr_support = query_vrr_support(&drm_output, connector.handle(), &name);
+                    let vrr_supported = vrr_is_supported(vrr_support);
+                    let requested_vrr = configured_vrr_target(vrr, false, vrr_support);
                     if let Err(err) =
                         drm_output.with_compositor(|compositor| compositor.use_vrr(requested_vrr))
                     {
@@ -306,11 +298,7 @@ impl TtyBackend {
                     }
                     let vrr_active =
                         drm_output.with_compositor(|compositor| compositor.vrr_enabled());
-                    if !vrr_supported && vrr != halley_config::Vrr::Off {
-                        eventline::warn!(
-                            "output {name:?}: VRR is configured but the connector does not support it"
-                        );
-                    }
+                    warn_vrr_configuration(&name, vrr, vrr_support);
 
                     primary_output.get_or_insert_with(|| output.clone());
                     outputs.push(output.clone());
@@ -328,7 +316,7 @@ impl TtyBackend {
                         connector,
                         current_mode: mode,
                         configured_vrr: vrr,
-                        vrr_supported,
+                        vrr_support,
                         vrr_active,
                         output,
                         drm_output,
@@ -624,14 +612,25 @@ impl TtyBackend {
                 );
                 entry.current_mode = target.mode;
                 entry.configured_vrr = target.vrr;
-                set_entry_vrr(entry, target.vrr == halley_config::Vrr::On);
+                if diff.mode_changed {
+                    entry.vrr_support = query_vrr_support(
+                        &entry.drm_output,
+                        entry.connector.handle(),
+                        &entry.output.name(),
+                    );
+                }
+                let requested_vrr = configured_vrr_target(target.vrr, false, entry.vrr_support);
+                set_entry_vrr(entry, requested_vrr);
+                if diff.mode_changed || diff.vrr_changed {
+                    warn_vrr_configuration(&entry.output.name(), target.vrr, entry.vrr_support);
+                }
                 (
                     entry.output.name(),
                     entry.output.clone(),
                     entry.connector.clone(),
                     entry.current_mode,
                     entry.configured_vrr,
-                    entry.vrr_supported,
+                    vrr_is_supported(entry.vrr_support),
                     entry.vrr_active,
                 )
             };
@@ -695,7 +694,7 @@ impl TtyBackend {
             entry.pending = false;
             set_entry_vrr(
                 entry,
-                entry.dpms_enabled && entry.configured_vrr == halley_config::Vrr::On,
+                configured_vrr_target(entry.configured_vrr, false, entry.vrr_support),
             );
             if !entry.dpms_enabled
                 && let Err(err) = entry
@@ -755,7 +754,7 @@ impl crate::ipc::OutputInfoSource for TtyBackend {
                 .iter_mut()
                 .find(|info| info.name == entry.output.name())
             {
-                info.vrr_supported = entry.vrr_supported;
+                info.vrr_supported = vrr_is_supported(entry.vrr_support);
                 info.vrr_active = entry.vrr_active && entry.dpms_enabled;
                 if !entry.dpms_enabled {
                     info.current_mode = None;
@@ -787,7 +786,11 @@ impl Renderable for TtyBackend {
         if entry.pending {
             return Ok(RenderOutcome::new(RenderStatus::Skipped, None));
         }
-        let requested_vrr = configured_vrr_target(entry.configured_vrr, request.vrr_auto_eligible);
+        let requested_vrr = configured_vrr_target(
+            entry.configured_vrr,
+            request.vrr_auto_eligible,
+            entry.vrr_support,
+        );
         set_entry_vrr(entry, requested_vrr);
         let output_geometry = request
             .space
@@ -856,7 +859,7 @@ impl Renderable for TtyBackend {
 }
 
 fn set_entry_vrr(entry: &mut DrmOutputEntry, requested: bool) {
-    let requested = requested && entry.dpms_enabled && entry.vrr_supported;
+    let requested = requested && entry.dpms_enabled && vrr_is_supported(entry.vrr_support);
     if requested == entry.vrr_active {
         return;
     }
@@ -875,11 +878,51 @@ fn set_entry_vrr(entry: &mut DrmOutputEntry, requested: bool) {
         .with_compositor(|compositor| compositor.vrr_enabled());
 }
 
-fn configured_vrr_target(configured: halley_config::Vrr, auto_eligible: bool) -> bool {
+fn query_vrr_support(
+    drm_output: &TtyDrmOutput,
+    connector: connector::Handle,
+    name: &str,
+) -> VrrSupport {
+    match drm_output.with_compositor(|compositor| compositor.vrr_supported(connector)) {
+        Ok(support) => support,
+        Err(err) => {
+            eventline::warn!("output {name:?}: failed to query VRR support: {err}");
+            VrrSupport::NotSupported
+        }
+    }
+}
+
+fn vrr_is_supported(support: VrrSupport) -> bool {
+    !matches!(support, VrrSupport::NotSupported)
+}
+
+fn warn_vrr_configuration(name: &str, configured: halley_config::Vrr, support: VrrSupport) {
+    match (configured, support) {
+        (halley_config::Vrr::Off, _) | (_, VrrSupport::Supported) => {}
+        (_, VrrSupport::NotSupported) => {
+            eventline::warn!(
+                "output {name:?}: VRR is configured but the connector does not support it"
+            );
+        }
+        (halley_config::Vrr::Auto, VrrSupport::RequiresModeset) => {
+            eventline::warn!(
+                "output {name:?}: automatic VRR switching would require modesets, \
+                 so VRR remains disabled; use vrr \"on\" to enable it persistently"
+            );
+        }
+        (halley_config::Vrr::On, VrrSupport::RequiresModeset) => {}
+    }
+}
+
+fn configured_vrr_target(
+    configured: halley_config::Vrr,
+    auto_eligible: bool,
+    support: VrrSupport,
+) -> bool {
     match configured {
         halley_config::Vrr::Off => false,
-        halley_config::Vrr::On => true,
-        halley_config::Vrr::Auto => auto_eligible,
+        halley_config::Vrr::On => vrr_is_supported(support),
+        halley_config::Vrr::Auto => auto_eligible && matches!(support, VrrSupport::Supported),
     }
 }
 
@@ -899,6 +942,8 @@ fn dpms_target_enabled(
 
 #[cfg(test)]
 mod dpms_tests {
+    use smithay::backend::drm::VrrSupport;
+
     use super::{configured_vrr_target, dpms_target_enabled};
 
     #[test]
@@ -923,11 +968,55 @@ mod dpms_tests {
 
     #[test]
     fn vrr_policy_keeps_on_and_off_absolute_and_gates_auto() {
-        assert!(!configured_vrr_target(halley_config::Vrr::Off, true));
-        assert!(!configured_vrr_target(halley_config::Vrr::Off, false));
-        assert!(configured_vrr_target(halley_config::Vrr::On, true));
-        assert!(configured_vrr_target(halley_config::Vrr::On, false));
-        assert!(configured_vrr_target(halley_config::Vrr::Auto, true));
-        assert!(!configured_vrr_target(halley_config::Vrr::Auto, false));
+        let supported = VrrSupport::Supported;
+        assert!(!configured_vrr_target(
+            halley_config::Vrr::Off,
+            true,
+            supported
+        ));
+        assert!(!configured_vrr_target(
+            halley_config::Vrr::Off,
+            false,
+            supported
+        ));
+        assert!(configured_vrr_target(
+            halley_config::Vrr::On,
+            true,
+            supported
+        ));
+        assert!(configured_vrr_target(
+            halley_config::Vrr::On,
+            false,
+            supported
+        ));
+        assert!(configured_vrr_target(
+            halley_config::Vrr::Auto,
+            true,
+            supported
+        ));
+        assert!(!configured_vrr_target(
+            halley_config::Vrr::Auto,
+            false,
+            supported
+        ));
+    }
+
+    #[test]
+    fn vrr_policy_does_not_dynamically_modeset_for_auto() {
+        assert!(!configured_vrr_target(
+            halley_config::Vrr::Auto,
+            true,
+            VrrSupport::RequiresModeset
+        ));
+        assert!(configured_vrr_target(
+            halley_config::Vrr::On,
+            false,
+            VrrSupport::RequiresModeset
+        ));
+        assert!(!configured_vrr_target(
+            halley_config::Vrr::On,
+            true,
+            VrrSupport::NotSupported
+        ));
     }
 }
