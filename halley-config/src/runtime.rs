@@ -5,13 +5,14 @@ use std::path::Path;
 use rune_cfg::RuneConfig;
 
 use crate::{
-    Animations, Apogee, Autostart, Bearings, Cursor, Debug, Decay, Decorations, Field,
-    FieldParseError, FocusRingParseError, FocusRings, Font, Input, InputParseError, Keybinds,
-    LaunchConfigError, NodeParseError, Nodes, OutputConfig, OutputParseError, OverlayParseError,
-    Overlays, Physics, Screenshot, parse_animations, parse_apogee, parse_autostart, parse_bearings,
-    parse_cursor, parse_debug, parse_decay, parse_decorations, parse_env, parse_field_checked,
-    parse_focus_rings_checked, parse_font, parse_input, parse_keybinds, parse_nodes_checked,
-    parse_outputs_checked, parse_overlays_checked, parse_physics, parse_screenshot,
+    Animations, Apogee, Autostart, Bearings, Cursor, Debug, Decay, Decorations, Effects,
+    EffectsParseError, Field, FieldParseError, FocusRingParseError, FocusRings, Font, Input,
+    InputParseError, Keybinds, LaunchConfigError, NodeParseError, Nodes, OutputConfig,
+    OutputParseError, OverlayParseError, Overlays, Physics, Screenshot, parse_animations,
+    parse_apogee, parse_autostart, parse_bearings, parse_cursor, parse_debug, parse_decay,
+    parse_decorations, parse_effects, parse_env, parse_field_checked, parse_focus_rings_checked,
+    parse_font, parse_input, parse_keybinds, parse_nodes_checked, parse_outputs_checked,
+    parse_overlays_checked, parse_physics, parse_screenshot,
 };
 
 /// One validated snapshot of every setting the running compositor currently
@@ -36,6 +37,7 @@ pub struct RuntimeConfig {
     pub decay: Decay,
     pub nodes: Nodes,
     pub overlays: Overlays,
+    pub effects: Effects,
     pub debug: Debug,
     pub outputs: Vec<OutputConfig>,
 }
@@ -50,6 +52,7 @@ pub enum RuntimeConfigError {
     FocusRing(FocusRingParseError),
     Node(NodeParseError),
     Overlay(OverlayParseError),
+    Effects(EffectsParseError),
     Field(FieldParseError),
 }
 
@@ -64,6 +67,7 @@ impl fmt::Display for RuntimeConfigError {
             Self::FocusRing(err) => write!(f, "{err}"),
             Self::Node(err) => write!(f, "{err}"),
             Self::Overlay(err) => write!(f, "{err}"),
+            Self::Effects(err) => write!(f, "{err}"),
             Self::Field(err) => write!(f, "{err}"),
         }
     }
@@ -119,6 +123,12 @@ impl From<OverlayParseError> for RuntimeConfigError {
     }
 }
 
+impl From<EffectsParseError> for RuntimeConfigError {
+    fn from(value: EffectsParseError) -> Self {
+        Self::Effects(value)
+    }
+}
+
 impl From<FieldParseError> for RuntimeConfigError {
     fn from(value: FieldParseError) -> Self {
         Self::Field(value)
@@ -144,6 +154,7 @@ pub fn parse_runtime_config(config: &RuneConfig) -> Result<RuntimeConfig, Runtim
         decay: parse_decay(config),
         nodes: parse_nodes_checked(config)?,
         overlays: parse_overlays_checked(config)?,
+        effects: parse_effects(config)?,
         debug: parse_debug(config),
         outputs: parse_outputs_checked(config)?,
     })

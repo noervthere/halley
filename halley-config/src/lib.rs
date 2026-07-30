@@ -6,6 +6,7 @@ pub mod chord;
 pub mod cursor;
 pub mod decorations;
 pub mod diagnostic;
+pub mod effects;
 pub mod field;
 pub mod font;
 pub mod input;
@@ -35,6 +36,7 @@ pub use chord::parse_chord;
 pub use cursor::{Cursor, parse_cursor};
 pub use decorations::{BorderColor, Decorations, load_decorations, parse_decorations};
 pub use diagnostic::ConfigDiagnostic;
+pub use effects::{Blur, BlurMethod, ClientBlurMode, Effects, EffectsParseError, parse_effects};
 pub use field::{CloseRestorePan, Field, FieldParseError, parse_field, parse_field_checked};
 pub use font::{Font, parse_font};
 pub use input::{

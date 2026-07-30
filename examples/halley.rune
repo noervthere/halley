@@ -273,11 +273,43 @@ overlays:
   shape "square"
   borders true
   border-source "primary"
+  blur true
 
   notifications:
     position "top-center"
     success-duration-ms 4000
     error-duration-ms 9000
+  end
+end
+
+# Renderer-level backdrop blur. The capture occurs at each surface's exact
+# scene-stack position, so translucent windows blur only content behind them.
+effects:
+  blur:
+    # Master switch. When false, no blur pipeline work is performed.
+    enabled false
+
+    # Let compositor-owned overlays use blur when their local `blur` knob is
+    # also enabled.
+    overlays true
+
+    # Client windows:
+    #   "off"    = only explicit client protocol requests are honored
+    #   "auto"   = explicit client protocol requests are honored
+    #   "always" = every eligible managed window is blurred
+    windows "auto"
+
+    # Layer-shell surfaces:
+    #   "off"    = only explicit client protocol requests are honored
+    #   "auto"   = blur explicit requests plus top/overlay surfaces
+    #   "always" = blur all layer-shell surfaces
+    layer-shell "off"
+
+    method "dual-kawase"
+    radius 24
+    passes 3
+    saturation 1.10
+    noise 0.012
   end
 end
 
