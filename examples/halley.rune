@@ -295,7 +295,8 @@ effects:
     # Client window blur behaviour:
     #   "off"    = no global client-window blur
     #   "auto"   = blur only when requested by a translucent client
-    #   "always" = blur every eligible managed window
+    #   "always" = blur managed windows, including compositor fullscreen;
+    #              client-requested fullscreen keeps its immersive fast path
     windows "auto"
 
     # Layer-shell blur behaviour for bars, launchers, notifications, etc.:

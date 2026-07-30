@@ -241,6 +241,10 @@ keyboard focus on another monitor. Fullscreen also owns that output's complete
 camera: zoom and pan ease to the window center and native 1.0 scale on the same
 transition, every window stacked above it uses that camera, and camera input
 remains locked until the pre-fullscreen monitor view has been restored.
+Global window blur configured as `effects.blur.windows "always"` remains active
+for `Mod+F` and decoration-maximize presentations. Client-requested fullscreen
+does not gain global blur, preserving its immersive composition fast path;
+an explicit client background-effect request is still honored.
 For X11 windows, entering or leaving fullscreen preserves the window's current
 stack slot; a window already above the fullscreen target stays above until the
 user explicitly raises the fullscreen window.

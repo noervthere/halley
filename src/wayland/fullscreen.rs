@@ -300,10 +300,11 @@ impl FullscreenManager {
         }
     }
 
-    pub fn request_external(
+    pub(crate) fn request_external(
         &mut self,
         wayland: &mut WaylandState,
         window: &Window,
+        origin: FullscreenOrigin,
     ) -> Option<Rectangle<i32, Logical>> {
         let wl_surface = window.wl_surface().map(|surface| surface.into_owned())?;
         let window = find_window(wayland, &wl_surface).cloned()?;
@@ -316,6 +317,7 @@ impl FullscreenManager {
         self.windows
             .entry(wl_surface)
             .and_modify(|entry| {
+                entry.origin = origin;
                 settle_external_fullscreen(entry, &target_name, output_geometry.size);
             })
             .or_insert_with(|| FullscreenWindow {
@@ -339,7 +341,7 @@ impl FullscreenManager {
                 transition: None,
                 external_pending: None,
                 snapshot_serials: Vec::new(),
-                origin: FullscreenOrigin::Client,
+                origin,
             });
         super::set_window_output(&window, &target);
         // X11 fullscreen changes presentation geometry, not stacking. Using
@@ -375,8 +377,15 @@ impl FullscreenManager {
         &mut self,
         wayland: &mut WaylandState,
         window: &Window,
+        origin: FullscreenOrigin,
     ) -> Option<ExternalTransactionRequest> {
-        self.request_external_transaction(wayland, window, ExternalPresentationKind::Animated, None)
+        self.request_external_transaction(
+            wayland,
+            window,
+            ExternalPresentationKind::Animated,
+            None,
+            origin,
+        )
     }
 
     pub(crate) fn request_external_opening(
@@ -384,12 +393,14 @@ impl FullscreenManager {
         wayland: &mut WaylandState,
         window: &Window,
         restore_geometry: Option<Rectangle<i32, Logical>>,
+        origin: FullscreenOrigin,
     ) -> Option<ExternalTransactionRequest> {
         self.request_external_transaction(
             wayland,
             window,
             ExternalPresentationKind::Opening,
             restore_geometry,
+            origin,
         )
     }
 
@@ -399,6 +410,7 @@ impl FullscreenManager {
         window: &Window,
         presentation: ExternalPresentationKind,
         restore_geometry: Option<Rectangle<i32, Logical>>,
+        origin: FullscreenOrigin,
     ) -> Option<ExternalTransactionRequest> {
         let wl_surface = window.wl_surface().map(|surface| surface.into_owned())?;
         let window = find_window(wayland, &wl_surface).cloned()?;
@@ -442,8 +454,9 @@ impl FullscreenManager {
                 transition: None,
                 external_pending: None,
                 snapshot_serials: Vec::new(),
-                origin: FullscreenOrigin::Client,
+                origin,
             });
+        entry.origin = origin;
         entry.target_output = target_name;
         entry.fullscreen_size = output_geometry.size;
         if entry.restore.is_none() {
@@ -793,6 +806,18 @@ impl FullscreenManager {
         })
     }
 
+    /// Whether compositor policy may add blur behind this surface.
+    ///
+    /// A client-owned fullscreen is an immersive presentation request and
+    /// keeps the composition-saving fast path. Compositor-owned fullscreen
+    /// (`Mod+F`) and maximize presentations remain ordinary managed-window
+    /// views, so configured window effects continue through their transition.
+    pub(crate) fn allows_global_blur(&self, surface: &WlSurface) -> bool {
+        self.windows
+            .get(surface)
+            .is_none_or(|entry| fullscreen_origin_allows_global_blur(entry.origin))
+    }
+
     pub fn is_fullscreen_or_pending(&self, surface: &WlSurface) -> bool {
         self.windows
             .get(surface)
@@ -934,6 +959,10 @@ fn fullscreen_presentation_is_visible(progress: f64, transition_active: bool) ->
     // one frame before the captured texture blend takes over (and once again
     // on exit immediately before cleanup), which reads as a fullscreen flash.
     transition_active || progress > 0.0
+}
+
+fn fullscreen_origin_allows_global_blur(origin: FullscreenOrigin) -> bool {
+    origin != FullscreenOrigin::Client
 }
 
 fn entry_covers_top(entry: &FullscreenWindow, output: &str, now: Duration) -> bool {
@@ -1190,6 +1219,19 @@ mod tests {
             center_in_rect((1280, 720).into(), (1920, 0).into(), (2560, 1440).into()),
             (2560, 360).into()
         );
+    }
+
+    #[test]
+    fn global_blur_distinguishes_managed_and_client_fullscreen() {
+        assert!(fullscreen_origin_allows_global_blur(
+            FullscreenOrigin::Compositor
+        ));
+        assert!(fullscreen_origin_allows_global_blur(
+            FullscreenOrigin::Maximize
+        ));
+        assert!(!fullscreen_origin_allows_global_blur(
+            FullscreenOrigin::Client
+        ));
     }
 
     #[test]

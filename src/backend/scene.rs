@@ -1990,7 +1990,9 @@ fn live_window_elements(
         let mut requested =
             crate::wayland::background_effect::blur_rects(window_surface.as_ref(), surface_size);
         let policy_blur = managed
-            && visual.fullscreen.is_none()
+            && context
+                .fullscreen
+                .allows_global_blur(window_surface.as_ref())
             && matches!(context.blur.windows, halley_config::ClientBlurMode::Always);
         if requested.is_empty() && policy_blur {
             requested.push(Rectangle::from_size(surface_size));
