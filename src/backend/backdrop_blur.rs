@@ -343,11 +343,18 @@ impl RenderElement<GlesRenderer> for BackdropBlurElement {
         let size = textures.size;
         frame.with_context(|gl| unsafe {
             while gl.GetError() != ffi::NO_ERROR {}
-            let mut current_fbo = 0_i32;
-            gl.GetIntegerv(ffi::DRAW_FRAMEBUFFER_BINDING, &mut current_fbo);
+            let mut current_draw_fbo = 0_i32;
+            let mut current_read_fbo = 0_i32;
+            gl.GetIntegerv(ffi::DRAW_FRAMEBUFFER_BINDING, &mut current_draw_fbo);
+            gl.GetIntegerv(ffi::READ_FRAMEBUFFER_BINDING, &mut current_read_fbo);
+            let scissor_was_enabled = gl.IsEnabled(ffi::SCISSOR_TEST) == ffi::TRUE;
             gl.Disable(ffi::SCISSOR_TEST);
             let mut fbo = 0;
             gl.GenFramebuffers(1, &mut fbo);
+            // Smithay leaves the output framebuffer bound for drawing. Bind it
+            // explicitly for reading as well: blur passes use offscreen FBOs,
+            // so relying on a stale READ binding can capture the wrong texture.
+            gl.BindFramebuffer(ffi::READ_FRAMEBUFFER, current_draw_fbo as u32);
             gl.BindFramebuffer(ffi::DRAW_FRAMEBUFFER, fbo);
             gl.FramebufferTexture2D(
                 ffi::DRAW_FRAMEBUFFER,
@@ -368,8 +375,13 @@ impl RenderElement<GlesRenderer> for BackdropBlurElement {
                 ffi::COLOR_BUFFER_BIT,
                 ffi::NEAREST,
             );
-            gl.BindFramebuffer(ffi::DRAW_FRAMEBUFFER, current_fbo as u32);
-            gl.Enable(ffi::SCISSOR_TEST);
+            gl.BindFramebuffer(ffi::READ_FRAMEBUFFER, current_read_fbo as u32);
+            gl.BindFramebuffer(ffi::DRAW_FRAMEBUFFER, current_draw_fbo as u32);
+            if scissor_was_enabled {
+                gl.Enable(ffi::SCISSOR_TEST);
+            } else {
+                gl.Disable(ffi::SCISSOR_TEST);
+            }
             gl.DeleteFramebuffers(1, &fbo);
             if gl.GetError() == ffi::NO_ERROR {
                 Ok(())

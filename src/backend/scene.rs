@@ -136,7 +136,7 @@ pub fn build(
                 .into_iter()
                 .map(SceneElement::Layer),
         );
-        let overlay_elements = super::overlay::elements(
+        let mut overlay_elements = super::overlay::elements(
             renderer,
             output_geometry,
             overlay_snapshot,
@@ -144,6 +144,16 @@ pub fn build(
             request.decorations,
             request.node_renderer,
             request.ui_text,
+        )?;
+        append_compositor_overlay_blur(
+            renderer,
+            output,
+            output_geometry.size,
+            "shell-overlay",
+            request.blur,
+            request.overlay_config,
+            request.backdrop_blur_renderer,
+            &mut overlay_elements,
         )?;
         elements.splice(0..0, overlay_elements);
         if request.show_cursor {
@@ -190,7 +200,7 @@ pub fn build(
         request.blur,
         request.backdrop_blur_renderer,
     )?);
-    elements.extend(focus_cycle_elements(
+    let mut focus_cycle = focus_cycle_elements(
         renderer,
         output_geometry,
         request.focus_cycle,
@@ -201,7 +211,18 @@ pub fn build(
         request.overlay_config,
         request.decorations,
         request.target_presentation_time,
-    )?);
+    )?;
+    append_compositor_overlay_blur(
+        renderer,
+        output,
+        output_geometry.size,
+        "focus-cycle",
+        request.blur,
+        request.overlay_config,
+        request.backdrop_blur_renderer,
+        &mut focus_cycle,
+    )?;
+    elements.extend(focus_cycle);
     if !request
         .fullscreen
         .covers_top(request.focused, output, request.target_presentation_time)
@@ -341,7 +362,7 @@ pub fn build(
         request.backdrop_blur_renderer,
     )?);
 
-    let overlay_elements = super::overlay::elements(
+    let mut overlay_elements = super::overlay::elements(
         renderer,
         output_geometry,
         overlay_snapshot,
@@ -349,6 +370,16 @@ pub fn build(
         request.decorations,
         request.node_renderer,
         request.ui_text,
+    )?;
+    append_compositor_overlay_blur(
+        renderer,
+        output,
+        output_geometry.size,
+        "shell-overlay",
+        request.blur,
+        request.overlay_config,
+        request.backdrop_blur_renderer,
+        &mut overlay_elements,
     )?;
     elements.splice(0..0, overlay_elements);
 
@@ -368,6 +399,52 @@ pub fn build(
     }
 
     Ok(elements)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_compositor_overlay_blur(
+    renderer: &mut GlesRenderer,
+    output: &Output,
+    output_size: smithay::utils::Size<i32, Logical>,
+    identity: &str,
+    blur_config: halley_config::Blur,
+    overlay_config: &halley_config::Overlays,
+    backdrop_blur_renderer: &mut super::backdrop_blur::BackdropBlurRenderer,
+    elements: &mut Vec<SceneElement>,
+) -> Result<(), Box<dyn Error>> {
+    if !blur_config.enabled || !blur_config.overlays || !overlay_config.blur {
+        return Ok(());
+    }
+    let radius = match overlay_config.shape {
+        halley_config::OverlayShape::Square => 0.0,
+        halley_config::OverlayShape::Rounded => 11.0,
+    };
+    let patches = elements
+        .iter()
+        .filter_map(|element| match element {
+            SceneElement::NodeLabel(card) => Some(super::backdrop_blur::BlurPatch {
+                rect: card.geometry(Scale::from(1.0)),
+                radius,
+                alpha: 1.0,
+                clip: None,
+            }),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if let Some(blur) = backdrop_blur_renderer.blur_element(
+        renderer,
+        &output.name(),
+        identity,
+        output_size,
+        patches,
+        blur_config,
+    )? {
+        // Scene lists are front-to-back. Placing the framebuffer effect at
+        // the back of this atomic overlay group captures the already-drawn
+        // desktop, then every card and its text render above that capture.
+        elements.push(SceneElement::BackdropBlur(blur));
+    }
+    Ok(())
 }
 
 fn layer_surface_scene_elements(
