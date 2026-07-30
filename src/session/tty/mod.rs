@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
+mod frame;
+
 use calloop::timer::{TimeoutAction, Timer};
 use calloop::{EventLoop, LoopHandle, LoopSignal};
 use smithay::backend::drm::{DrmEvent, DrmEventMetadata, DrmEventTime};
@@ -30,8 +32,8 @@ use crate::render::{
 };
 use crate::wayland;
 
+use self::frame::{EstimatedVblankTimer, OutputFrameState};
 use super::SessionDriver;
-use super::tty_frame::{EstimatedVblankTimer, OutputFrameState};
 
 struct TtyDriver {
     backend: TtyBackend,

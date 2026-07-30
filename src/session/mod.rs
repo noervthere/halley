@@ -24,7 +24,6 @@ mod protocol;
 mod spawn;
 mod state;
 pub(crate) mod touch;
-mod tty_frame;
 
 pub mod environment;
 pub mod tty;
