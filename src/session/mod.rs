@@ -15,15 +15,15 @@ mod autostart;
 pub(crate) mod closing;
 mod cursor;
 mod focus;
-mod gesture;
+pub(crate) mod gesture;
 mod input;
 mod lifecycle;
 pub(crate) mod opening;
-mod pointer;
+pub(crate) mod pointer;
 mod protocol;
 mod spawn;
 mod state;
-mod touch;
+pub(crate) mod touch;
 mod tty_frame;
 
 pub mod environment;
@@ -262,6 +262,7 @@ fn toggle_focused_fullscreen<D: SessionDriver>(session: &mut Session<D>, output:
         .as_ref()
         .and_then(|_| session.wayland.space.element_geometry(&window));
     if let Some(restore) = field_restore.as_ref() {
+        session.fullscreen_textures.remove(&restore.surface);
         let _ = session.cameras.apply_field_maximize(&record_output, None);
         session
             .wayland
@@ -342,6 +343,19 @@ fn toggle_focused_field_maximize<D: SessionDriver>(session: &mut Session<D>, out
         .and_then(|(_, output)| output)
         .unwrap_or_else(|| output_name.clone());
 
+    if session.maximize.animations_enabled() {
+        let textures = &mut session.fullscreen_textures;
+        let capture = session.driver.with_renderer(|renderer| {
+            textures.capture_previous(
+                renderer,
+                &record.window,
+                crate::backend::fullscreen_texture::TextureTransitionOwner::Maximize,
+            )
+        });
+        if let Err(err) = capture {
+            eventline::warn!("maximize: failed to capture previous window texture: {err}");
+        }
+    }
     cancel_grab_for_surface(session, &record.surface);
     if session.fullscreen.is_fullscreen_or_pending(&record.surface) {
         if let Some(toplevel) = record.window.toplevel() {
@@ -359,6 +373,7 @@ fn toggle_focused_field_maximize<D: SessionDriver>(session: &mut Session<D>, out
         crate::frame_clock::monotonic_now(),
     );
     if let Some(displaced) = change.displaced.as_ref() {
+        session.fullscreen_textures.remove(&displaced.surface);
         configure_field_geometry(session, displaced);
     }
     configure_field_geometry(
@@ -415,6 +430,19 @@ pub(crate) fn sync_keyboard_focus<D: SessionDriver>(
     session: &mut Session<D>,
     serial: smithay::utils::Serial,
 ) {
+    if session.session_lock.active() {
+        let focused = session
+            .session_lock
+            .focused_surface()
+            .map(crate::xwayland::KeyboardFocusTarget::from);
+        let keyboard = session
+            .seat
+            .get_keyboard()
+            .expect("keyboard capability added at seat setup");
+        pointer::prepare_keyboard_focus_change(session, None);
+        keyboard.set_focus(session, focused, serial);
+        return;
+    }
     wayland::focus::refresh_selected_layer(&mut session.wayland);
     if let Some(surface) = session.wayland.focused_window.clone() {
         session

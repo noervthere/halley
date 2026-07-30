@@ -66,4 +66,4 @@ halleyctl bearings status
 ```
 
 `status` prints `visible` or `hidden`. These commands and node controls use IPC
-protocol version 8; keep `halleyctl` and the compositor from the same build.
+protocol version 9; keep `halleyctl` and the compositor from the same build.

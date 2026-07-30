@@ -29,6 +29,9 @@ pub fn save_region<D: SessionDriver>(
     session: &mut Session<D>,
     region: Rectangle<i32, Logical>,
 ) -> Result<PathBuf, Box<dyn Error>> {
+    if session.session_lock.active() {
+        return Err(io::Error::other("session is locked").into());
+    }
     if region.size.w <= 0 || region.size.h <= 0 {
         return Err(io::Error::other("selected screenshot region is empty").into());
     }
@@ -64,7 +67,9 @@ pub fn save_region<D: SessionDriver>(
     let overlays = &session.overlays;
     let overlay_config = &session.overlay_config;
     let node_renderer = &mut session.node_renderer;
+    let window_decoration_renderer = &mut session.window_decoration_renderer;
     let ui_text = &mut session.ui_text;
+    let session_lock = &session.session_lock;
     let images = driver.with_renderer(|renderer| -> Result<Vec<OutputImage>, Box<dyn Error>> {
         outputs
             .iter()
@@ -77,9 +82,11 @@ pub fn save_region<D: SessionDriver>(
                     RenderRequest {
                         target_presentation_time: target_time,
                         clear: backend::CLEAR_COLOR,
+                        session_lock,
                         cursor,
                         cursor_position: pointer_position,
                         show_cursor: false,
+                        cursor_override: None,
                         capture_overlay: crate::capture::CaptureOverlay::None,
                         space: &wayland.space,
                         focused: wayland.focused_window.as_ref(),
@@ -100,6 +107,7 @@ pub fn save_region<D: SessionDriver>(
                         overlays,
                         overlay_config,
                         node_renderer: &mut *node_renderer,
+                        window_decoration_renderer: &mut *window_decoration_renderer,
                         ui_text: &mut *ui_text,
                     },
                 )?;
@@ -124,6 +132,9 @@ pub fn save_window<D: SessionDriver>(
     session: &mut Session<D>,
     surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
 ) -> Result<PathBuf, Box<dyn Error>> {
+    if session.session_lock.active() {
+        return Err(io::Error::other("session is locked").into());
+    }
     let window = session
         .wayland
         .space
@@ -158,6 +169,9 @@ pub(crate) fn capture_source_pixels<D: SessionDriver>(
     source: &halley_ipc::CaptureSource,
     show_cursor: bool,
 ) -> Result<Vec<u8>, Box<dyn Error>> {
+    if session.session_lock.active() {
+        return Err(io::Error::other("session is locked").into());
+    }
     match source {
         halley_ipc::CaptureSource::Monitor {
             name,
@@ -200,6 +214,9 @@ pub(crate) fn render_source_dmabuf<D: SessionDriver>(
     show_cursor: bool,
     dmabuf: &mut Dmabuf,
 ) -> Result<(), Box<dyn Error>> {
+    if session.session_lock.active() {
+        return Err(io::Error::other("session is locked").into());
+    }
     session.driver.import_dmabuf(dmabuf);
     match source {
         halley_ipc::CaptureSource::Monitor {
@@ -288,7 +305,9 @@ where
     let overlays = &session.overlays;
     let overlay_config = &session.overlay_config;
     let node_renderer = &mut session.node_renderer;
+    let window_decoration_renderer = &mut session.window_decoration_renderer;
     let ui_text = &mut session.ui_text;
+    let session_lock = &session.session_lock;
     driver.with_renderer(|renderer| {
         let elements = backend::scene::build(
             renderer,
@@ -298,9 +317,11 @@ where
             RenderRequest {
                 target_presentation_time: target_time,
                 clear: backend::CLEAR_COLOR,
+                session_lock,
                 cursor,
                 cursor_position: pointer_position,
                 show_cursor,
+                cursor_override: None,
                 capture_overlay: crate::capture::CaptureOverlay::None,
                 space: &wayland.space,
                 focused: wayland.focused_window.as_ref(),
@@ -321,6 +342,7 @@ where
                 overlays,
                 overlay_config,
                 node_renderer,
+                window_decoration_renderer,
                 ui_text,
             },
         )?;

@@ -109,7 +109,16 @@ impl CursorManager {
     }
 
     pub(crate) fn render_cursor(&self, output_scale: i32, time: Duration) -> RenderCursor {
-        if let Some(icon) = self.override_icon {
+        self.render_cursor_with_override(output_scale, time, None)
+    }
+
+    pub(crate) fn render_cursor_with_override(
+        &self,
+        output_scale: i32,
+        time: Duration,
+        presentation_override: Option<CursorIcon>,
+    ) -> RenderCursor {
+        if let Some(icon) = presentation_override.or(self.override_icon) {
             return RenderCursor::Named(self.frame(icon, output_scale, time));
         }
         match &self.image {
@@ -127,7 +136,15 @@ impl CursorManager {
     }
 
     pub fn current_is_animated(&self, output_scale: i32) -> bool {
-        if let Some(icon) = self.override_icon {
+        self.current_is_animated_with_override(output_scale, None)
+    }
+
+    pub fn current_is_animated_with_override(
+        &self,
+        output_scale: i32,
+        presentation_override: Option<CursorIcon>,
+    ) -> bool {
+        if let Some(icon) = presentation_override.or(self.override_icon) {
             return self.is_animated(icon, output_scale);
         }
         match &self.image {
@@ -198,6 +215,26 @@ mod tests {
         assert!(matches!(
             manager.image,
             CursorImageStatus::Named(CursorIcon::Text)
+        ));
+    }
+
+    #[test]
+    fn presentation_override_replaces_hidden_client_cursor_without_mutating_it() {
+        let config = halley_config::Cursor::default();
+        let mut manager = CursorManager::new(&config);
+        manager.set_image(CursorImageStatus::Hidden);
+
+        assert!(matches!(
+            manager.render_cursor(1, Duration::ZERO),
+            RenderCursor::Hidden
+        ));
+        assert!(matches!(
+            manager.render_cursor_with_override(1, Duration::ZERO, Some(CursorIcon::Default)),
+            RenderCursor::Named(_)
+        ));
+        assert!(matches!(
+            manager.render_cursor(1, Duration::ZERO),
+            RenderCursor::Hidden
         ));
     }
 }

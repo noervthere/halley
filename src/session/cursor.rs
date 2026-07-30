@@ -8,7 +8,7 @@ use crate::cursor::{TimerDirective, Visibility};
 ///
 /// Timer ownership stays here so neither raw input dispatch nor the cursor
 /// theme manager needs to know about calloop registration tokens.
-pub(super) struct Policy<D: SessionDriver> {
+pub(crate) struct Policy<D: SessionDriver> {
     visibility: Visibility,
     loop_handle: LoopHandle<'static, Session<D>>,
     timer: Option<RegistrationToken>,

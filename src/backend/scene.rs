@@ -25,7 +25,10 @@ render_elements! {
     Cursor=crate::cursor::render::CursorRenderElement,
     Rescaled=super::rescale::RescaledElement,
     Cropped=CropRenderElement<super::rescale::RescaledElement>,
+    RoundedCropped=CropRenderElement<super::window_decoration::RoundedSurfaceElement>,
     FullscreenBlend=super::fullscreen_texture::FullscreenBlendElement,
+    WindowBorder=super::window_decoration::RoundedBorderElement,
+    RoundedClosing=super::window_decoration::RoundedTextureElement,
     Node=super::node::NodeRenderElement,
     NodeLabel=super::node::LabelRenderElement,
     NodeTexture=super::node::NodeTextureElement,
@@ -46,6 +49,50 @@ pub fn build(
     output_geometry: Rectangle<i32, Logical>,
     request: RenderRequest<'_>,
 ) -> Result<Vec<SceneElement>, Box<dyn Error>> {
+    if request.session_lock.active() {
+        let scale = Scale::from(output.current_scale().fractional_scale());
+        let mut elements = request
+            .session_lock
+            .surfaces_for_output(output)
+            .flat_map(|surface| {
+                smithay::backend::renderer::element::surface::render_elements_from_surface_tree(
+                    renderer,
+                    surface.wl_surface(),
+                    (0, 0),
+                    scale,
+                    1.0,
+                    Kind::ScanoutCandidate,
+                )
+            })
+            .map(SceneElement::Layer)
+            .collect::<Vec<_>>();
+        let backdrop_size = output_geometry
+            .size
+            .to_f64()
+            .to_physical(scale)
+            .to_i32_round();
+        elements.push(SceneElement::Border(SolidColorRenderElement::new(
+            Id::new(),
+            Rectangle::from_size(backdrop_size),
+            CommitCounter::default(),
+            super::SESSION_LOCK_COLOR,
+            Kind::Unspecified,
+        )));
+        if request.show_cursor {
+            let cursor = crate::cursor::render::elements(
+                renderer,
+                request.cursor,
+                output,
+                output_geometry,
+                request.cursor_position,
+                request.target_presentation_time,
+                request.cursor_override,
+            )?;
+            elements.splice(0..0, cursor.into_iter().map(SceneElement::Cursor));
+        }
+        return Ok(elements);
+    }
+
     request
         .cameras
         .view(&output.name())
@@ -100,6 +147,7 @@ pub fn build(
                 output_geometry,
                 request.cursor_position,
                 request.target_presentation_time,
+                request.cursor_override,
             )?;
             elements.splice(0..0, cursor.into_iter().map(SceneElement::Cursor));
         }
@@ -185,14 +233,43 @@ pub fn build(
         .into_iter()
         .map(|closing| {
             let mut elements = Vec::new();
+            let rounded = closing.content_radius > 0.0
+                && request.window_decoration_renderer.available(renderer);
             if let Some(border) = closing.border {
-                elements.extend(
-                    super::border_strips(closing.destination, border.width, border.color)
-                        .into_iter()
-                        .map(SceneElement::Border),
-                );
+                if rounded
+                    && let Some(border) = request.window_decoration_renderer.border_element(
+                        renderer,
+                        closing.destination,
+                        border.width,
+                        closing.content_radius,
+                        border.color,
+                        1.0,
+                    )
+                {
+                    elements.push(SceneElement::WindowBorder(border));
+                } else {
+                    elements.extend(
+                        super::border_strips(closing.destination, border.width, border.color)
+                            .into_iter()
+                            .map(SceneElement::Border),
+                    );
+                }
             }
-            elements.push(SceneElement::Closing(closing.texture));
+            if rounded {
+                let texture = request
+                    .window_decoration_renderer
+                    .texture_element(
+                        renderer,
+                        closing.texture,
+                        closing.source_texture,
+                        closing.destination,
+                        closing.content_radius,
+                    )
+                    .expect("rounded resources were checked above");
+                elements.push(SceneElement::RoundedClosing(texture));
+            } else {
+                elements.push(SceneElement::Closing(closing.texture));
+            }
             StackGroup {
                 stack_index: closing.stack_index,
                 order: closing.order,
@@ -223,6 +300,7 @@ pub fn build(
             context,
             request.fullscreen_textures,
             request.backdrop_blur_renderer,
+            request.window_decoration_renderer,
         )?;
         if !window_elements.is_empty() {
             stack.push(StackGroup {
@@ -269,6 +347,7 @@ pub fn build(
             output_geometry,
             request.cursor_position,
             request.target_presentation_time,
+            request.cursor_override,
         )?;
         // Element lists are front-to-back, so cursor surface trees belong
         // before every compositor and client element.
@@ -380,6 +459,7 @@ fn append_surface_backdrop_blur(
                     rect,
                     radius: 0.0,
                     alpha: 1.0,
+                    clip: None,
                 })
         })
         .collect::<Vec<_>>();
@@ -1354,6 +1434,7 @@ fn live_window_elements(
     context: LiveWindowContext<'_>,
     fullscreen_textures: &mut super::fullscreen_texture::FullscreenTextureTransitions,
     backdrop_blur_renderer: &mut super::backdrop_blur::BackdropBlurRenderer,
+    window_decoration_renderer: &mut super::window_decoration::WindowDecorationRenderer,
 ) -> Result<Vec<SceneElement>, Box<dyn Error>> {
     let Some(location) = context.space.element_location(window) else {
         return Ok(Vec::new());
@@ -1378,6 +1459,18 @@ fn live_window_elements(
     }
 
     let mut elements = Vec::new();
+    let managed = !crate::xwayland::is_override_redirect(window);
+    let fullscreen_rounding = visual
+        .fullscreen
+        .map(|presentation| 1.0 - presentation.progress.clamp(0.0, 1.0))
+        .unwrap_or(1.0);
+    let content_radius = super::window_decoration::scaled_metric(
+        context.decorations.border_radius_px,
+        visual.zoom_scale,
+    ) as f32
+        * fullscreen_rounding as f32;
+    let rounded = managed && content_radius > 0.0;
+    let rounded_available = rounded && window_decoration_renderer.available(renderer);
     let surface_location = super::window_surface_location(location, window.geometry());
     let (popup_elements, surface_elements) =
         super::window_surface_elements(renderer, window, surface_location, visual.opening_alpha);
@@ -1404,27 +1497,40 @@ fn live_window_elements(
             destination,
         ))
     }));
-    let fullscreen_blend = if let Some(presentation) = visual.fullscreen {
+    let texture_transition_completion = visual
+        .fullscreen
+        .map(|presentation| presentation.transition_completion)
+        .or_else(|| {
+            visual
+                .maximize
+                .map(|presentation| presentation.transition_completion)
+        });
+    let texture_blend = if let Some(completion) = texture_transition_completion {
         match fullscreen_textures.blend_element(
             renderer,
             window,
             visual.animated_rect,
-            presentation.transition_completion,
+            completion,
             visual.opening_alpha,
+            if rounded_available {
+                content_radius
+            } else {
+                0.0
+            },
         ) {
             Ok(blend) => blend,
             Err(err) => {
-                eventline::warn!("fullscreen: failed to blend window textures: {err}");
+                eventline::warn!("window transition: failed to blend textures: {err}");
                 None
             }
         }
     } else {
         None
     };
-    if let Some(blend) = fullscreen_blend {
+    if let Some(blend) = texture_blend {
         elements.push(SceneElement::FullscreenBlend(blend));
     } else {
-        elements.extend(surface_elements.into_iter().filter_map(|surface_element| {
+        for surface_element in surface_elements {
             let native_geometry = surface_element.geometry(Scale::from(1.0));
             let destination = if visual.maps_from_source() {
                 let destination = crate::animation::map_rect(
@@ -1450,10 +1556,30 @@ fn live_window_elements(
                     visual.animated_rect,
                 )
             };
+            if rounded_available {
+                let element = window_decoration_renderer
+                    .surface_element(
+                        renderer,
+                        surface_element,
+                        destination,
+                        visual.animated_rect,
+                        content_radius,
+                    )
+                    .expect("rounded resources were checked above");
+                if let Some(element) =
+                    CropRenderElement::from_element(element, 1.0, visual.animated_rect)
+                {
+                    elements.push(SceneElement::RoundedCropped(element));
+                }
+                continue;
+            }
             let element = super::rescale::RescaledElement::new(surface_element, destination);
-            CropRenderElement::from_element(element, 1.0, visual.animated_rect)
-                .map(SceneElement::Cropped)
-        }));
+            if let Some(element) =
+                CropRenderElement::from_element(element, 1.0, visual.animated_rect)
+            {
+                elements.push(SceneElement::Cropped(element));
+            }
+        }
     }
 
     let surface_size =
@@ -1494,13 +1620,16 @@ fn live_window_elements(
                             visual.animated_rect,
                         )
                     };
-                    destination.intersection(output_bounds).map(|rect| {
-                        super::backdrop_blur::BlurPatch {
+                    destination
+                        .intersection(output_bounds)
+                        .and_then(|rect| rect.intersection(visual.animated_rect))
+                        .map(|rect| super::backdrop_blur::BlurPatch {
                             rect,
                             radius: 0.0,
                             alpha: visual.opening_alpha,
-                        }
-                    })
+                            clip: rounded_available
+                                .then_some((visual.animated_rect, content_radius)),
+                        })
                 })
                 .collect::<Vec<_>>();
         if let Some(blur) = backdrop_blur_renderer.blur_element(
@@ -1514,21 +1643,35 @@ fn live_window_elements(
     }
 
     let is_focused = Some(window_surface.as_ref()) == context.focused;
-    let border_color = super::window_border_color(context.decorations, is_focused)
-        * visual.opening_alpha
-        * visual
-            .fullscreen
-            .map(|presentation| (1.0 - presentation.progress) as f32)
-            .unwrap_or(1.0);
-    let border_width = ((context.decorations.border_width_px as f64 * visual.zoom_scale as f64)
-        .round() as i32)
-        .max(1);
-    if !crate::xwayland::is_override_redirect(window) {
-        elements.extend(
-            super::border_strips(visual.animated_rect, border_width, border_color)
+    let border_alpha = visual.opening_alpha * fullscreen_rounding as f32;
+    let border_color = super::window_border_color(context.decorations, is_focused);
+    let border_width = super::window_decoration::scaled_metric(
+        context.decorations.border_width_px,
+        visual.zoom_scale,
+    );
+    if managed && border_width > 0 && border_alpha > 0.0 {
+        if rounded_available
+            && let Some(border) = window_decoration_renderer.border_element(
+                renderer,
+                visual.animated_rect,
+                border_width,
+                content_radius,
+                border_color,
+                border_alpha,
+            )
+        {
+            elements.push(SceneElement::WindowBorder(border));
+        } else {
+            elements.extend(
+                super::border_strips(
+                    visual.animated_rect,
+                    border_width,
+                    border_color * border_alpha,
+                )
                 .into_iter()
                 .map(SceneElement::Border),
-        );
+            );
+        }
     }
     if let Some(backdrop_alpha) =
         fullscreen_backdrop_alpha(visual.fullscreen, visual.opening_is_animating)

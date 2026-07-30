@@ -5,17 +5,21 @@ use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::input::{Seat, SeatState};
 use smithay::output::Output;
+use smithay::reexports::wayland_server::Client;
 use smithay::reexports::wayland_server::DisplayHandle;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::wayland::background_effect::BackgroundEffectState;
 use smithay::wayland::compositor::CompositorState;
 use smithay::wayland::cursor_shape::CursorShapeManagerState;
 use smithay::wayland::dmabuf::DmabufState;
+use smithay::wayland::drm_syncobj::{DrmSyncPointSource, DrmSyncobjState};
 use smithay::wayland::fractional_scale::FractionalScaleManagerState;
+use smithay::wayland::idle_notify::IdleNotifierState;
 use smithay::wayland::keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitState;
 use smithay::wayland::output::OutputManagerState;
 use smithay::wayland::pointer_constraints::PointerConstraintsState;
 use smithay::wayland::pointer_gestures::PointerGesturesState;
+use smithay::wayland::presentation::PresentationState;
 use smithay::wayland::relative_pointer::RelativePointerManagerState;
 use smithay::wayland::seat::WaylandFocus;
 use smithay::wayland::selection::data_device::DataDeviceState;
@@ -51,6 +55,23 @@ pub trait SessionDriver: crate::ipc::OutputInfoSource + 'static {
     ) -> Option<&crate::backend::dmabuf::SurfaceDmabufFeedback>;
     fn request_redraw(&mut self, output: Option<&Output>);
     fn with_renderer<T>(&mut self, f: impl FnOnce(&mut GlesRenderer) -> T) -> T;
+    fn register_drm_syncobj_source(
+        &mut self,
+        _client: Client,
+        _source: DrmSyncPointSource,
+    ) -> bool {
+        false
+    }
+    fn apply_dpms(
+        &mut self,
+        _command: halley_ipc::DpmsCommand,
+        _output: Option<&str>,
+    ) -> Result<(), String> {
+        Err("dpms is only supported on the tty backend".to_string())
+    }
+    fn output_requires_lock_frame(&self, _output: &Output) -> bool {
+        true
+    }
     fn stop(&mut self);
 }
 
@@ -66,11 +87,15 @@ pub struct Session<D: SessionDriver> {
     pub(super) autostart: super::autostart::Autostart,
     pub pointer: Pointer,
     pub cursor: CursorManager,
-    pub(super) cursor_policy: super::cursor::Policy<D>,
+    pub(crate) cursor_policy: super::cursor::Policy<D>,
     pub(super) publish_session_environment: bool,
     pub wayland: WaylandState,
     pub seat_state: SeatState<Self>,
     pub seat: Seat<Self>,
+    pub idle_notifier_state: IdleNotifierState<Self>,
+    pub presentation_state: PresentationState,
+    pub drm_syncobj_state: Option<DrmSyncobjState>,
+    pub session_lock: crate::wayland::session_lock::State,
     pub start_time: std::time::Instant,
     pub config_path: Option<PathBuf>,
     pub startup_config_diagnostic: Option<halley_config::ConfigDiagnostic>,
@@ -107,6 +132,7 @@ pub struct Session<D: SessionDriver> {
     pub fullscreen_textures: crate::backend::fullscreen_texture::FullscreenTextureTransitions,
     pub overlay_previews: crate::backend::overlay_preview::OverlayPreviewCache,
     pub node_renderer: crate::backend::node::NodeRenderer,
+    pub window_decoration_renderer: crate::backend::window_decoration::WindowDecorationRenderer,
     pub backdrop_blur_renderer: crate::backend::backdrop_blur::BackdropBlurRenderer,
     pub ui_text: crate::backend::text::UiTextRenderer,
     pub xwayland: crate::xwayland::State<D>,
@@ -309,29 +335,45 @@ impl<D: SessionDriver> Session<D> {
         self.screenshot = config.screenshot.clone();
         self.window_open_animations.reload(config.animations);
         self.window_close_animations.reload(config.animations);
-        if self.fullscreen.reload(config.animations) {
-            self.fullscreen_textures.clear();
+        let fullscreen_redraw = self.fullscreen.reload(config.animations);
+        if fullscreen_redraw {
+            self.fullscreen_textures.remove_owner(
+                crate::backend::fullscreen_texture::TextureTransitionOwner::Fullscreen,
+            );
         }
-        self.maximize.reload(config.field, config.animations);
+        let maximize_redraw = self.maximize.reload(config.field, config.animations);
+        if maximize_redraw {
+            self.fullscreen_textures
+                .remove_owner(crate::backend::fullscreen_texture::TextureTransitionOwner::Maximize);
+        }
         if nodes_redraw {
             crate::nodes::reconcile_landmarks(self, None);
         }
-        if redraw || nodes_redraw || bearings_redraw || font_redraw {
+        if redraw
+            || nodes_redraw
+            || bearings_redraw
+            || font_redraw
+            || fullscreen_redraw
+            || maximize_redraw
+        {
             self.request_redraw();
         }
     }
 
     pub fn cleanup_fullscreen(&mut self, now: std::time::Duration) -> bool {
         let cleanup = self.fullscreen.cleanup(now);
-        let maximize_finished = self.maximize.cleanup(now);
+        let maximize_cleanup = self.maximize.cleanup(now);
         for surface in cleanup.finished_surfaces {
+            self.fullscreen_textures.remove(&surface);
+        }
+        for surface in maximize_cleanup.finished_surfaces {
             self.fullscreen_textures.remove(&surface);
         }
         let outputs = self.wayland.space.outputs().cloned().collect::<Vec<_>>();
         for output in outputs {
             self.sync_fullscreen_camera(&output, now);
         }
-        cleanup.visual_finished || maximize_finished
+        cleanup.visual_finished || maximize_cleanup.visual_finished
     }
 
     pub fn sync_fullscreen_camera(

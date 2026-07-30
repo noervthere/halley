@@ -444,6 +444,7 @@ mod tests {
     fn easing_curves_preserve_endpoints() {
         for curve in [
             AnimationCurve::Linear,
+            AnimationCurve::EaseInOutCubic,
             AnimationCurve::EaseOutQuad,
             AnimationCurve::EaseOutCubic,
             AnimationCurve::EaseOutExpo,

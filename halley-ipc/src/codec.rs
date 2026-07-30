@@ -322,6 +322,10 @@ mod tests {
             Request::Bearings(crate::BearingsRequest::Toggle),
             Request::Quit,
             Request::ConfigPath,
+            Request::Dpms {
+                command: crate::DpmsCommand::Toggle,
+                output: Some("DP-1".to_string()),
+            },
         ] {
             let bytes = encode_request(&req).unwrap();
             let decoded = decode_request(&bytes).unwrap();

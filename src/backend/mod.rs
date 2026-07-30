@@ -14,6 +14,7 @@ pub mod text;
 pub mod tty;
 mod tty_dmabuf;
 mod tty_output;
+pub mod window_decoration;
 pub mod window_texture;
 pub mod winit;
 
@@ -28,6 +29,7 @@ use smithay::backend::renderer::element::{Id, Kind};
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::renderer::utils::CommitCounter;
 use smithay::desktop::{PopupManager, Space, Window, layer_map_for_output};
+use smithay::input::pointer::CursorIcon;
 use smithay::output::Output;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Physical, Point, Rectangle, Scale, Size};
@@ -40,6 +42,9 @@ use crate::cursor::CursorManager;
 /// Shared by both backends' drivers (session::tty, session::winit) so there's one
 /// definition instead of two independently-maintained literals.
 pub const CLEAR_COLOR: Color32F = Color32F::new(0.58, 0.64, 0.72, 1.0);
+/// Fail-closed backdrop used for every output while ext-session-lock-v1 owns
+/// the session, including outputs whose locker surface is not ready yet.
+pub const SESSION_LOCK_COLOR: Color32F = Color32F::new(0.0, 0.0, 0.0, 1.0);
 
 pub fn window_surface_location(
     mapped_geometry_location: Point<i32, Logical>,
@@ -177,18 +182,22 @@ impl RenderOutcome {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug)]
 pub struct FrameSubmission {
     pub target_presentation_time: std::time::Duration,
+    pub presentation_feedback: smithay::desktop::utils::OutputPresentationFeedback,
+    pub session_lock_generation: Option<u64>,
 }
 
 /// Immutable scene data needed to construct one output frame.
 pub struct RenderRequest<'a> {
     pub target_presentation_time: std::time::Duration,
     pub clear: Color32F,
+    pub session_lock: &'a crate::wayland::session_lock::State,
     pub cursor: &'a CursorManager,
     pub cursor_position: (f64, f64),
     pub show_cursor: bool,
+    pub cursor_override: Option<CursorIcon>,
     pub capture_overlay: crate::capture::CaptureOverlay<'a>,
     pub space: &'a Space<Window>,
     pub focused: Option<&'a WlSurface>,
@@ -210,6 +219,8 @@ pub struct RenderRequest<'a> {
     pub overlays: &'a crate::overlay::OverlayManager,
     pub overlay_config: &'a halley_config::Overlays,
     pub node_renderer: &'a mut crate::backend::node::NodeRenderer,
+    pub window_decoration_renderer:
+        &'a mut crate::backend::window_decoration::WindowDecorationRenderer,
     pub ui_text: &'a mut crate::backend::text::UiTextRenderer,
 }
 

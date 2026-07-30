@@ -1183,6 +1183,7 @@ pub fn collapse<D: crate::session::SessionDriver>(
 
     let _ = crate::session::closing::capture_window(session, &record.window);
     if let Some(restore) = session.maximize.take_restore(&record.surface) {
+        session.fullscreen_textures.remove(&restore.surface);
         crate::session::configure_field_geometry(session, &restore);
         let _ = session.cameras.apply_field_maximize(&record.output, None);
         if let Some(record) = session.nodes.record_mut(id) {

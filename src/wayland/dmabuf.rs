@@ -1,6 +1,7 @@
 use smithay::backend::renderer::element::RenderElementStates;
 use smithay::backend::renderer::element::utils::select_dmabuf_feedback;
 use smithay::desktop::layer_map_for_output;
+use smithay::desktop::utils::send_dmabuf_feedback_surface_tree;
 use smithay::output::Output;
 use smithay::reexports::wayland_protocols::wp::linux_dmabuf::zv1::server::zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1;
 use smithay::reexports::wayland_server::{DisplayHandle, GlobalDispatch};
@@ -79,9 +80,29 @@ pub fn send_output_feedback(
     wayland: &WaylandState,
     output: &Output,
     primary_output: &Output,
+    session_lock: &crate::wayland::session_lock::State,
     feedback: &SurfaceDmabufFeedback,
     element_states: &RenderElementStates,
 ) {
+    if session_lock.active() {
+        for surface in session_lock.surfaces_for_output(output) {
+            send_dmabuf_feedback_surface_tree(
+                surface.wl_surface(),
+                output,
+                |_, _| Some(output.clone()),
+                |surface, _| {
+                    select_dmabuf_feedback(
+                        surface,
+                        element_states,
+                        &feedback.render,
+                        &feedback.scanout,
+                    )
+                },
+            );
+        }
+        return;
+    }
+
     wayland
         .space
         .elements()

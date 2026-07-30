@@ -128,6 +128,13 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
         last_camera_tick: Instant::now(),
     };
     let wayland = App::create_wayland_state(dh.clone(), &mut driver);
+    let idle_notifier_state =
+        smithay::wayland::idle_notify::IdleNotifierState::new(&dh, event_loop.handle());
+    let presentation_state = smithay::wayland::presentation::PresentationState::new::<App>(
+        &dh,
+        smithay::utils::Clock::<smithay::utils::Monotonic>::new().id() as u32,
+    );
+    let session_lock = crate::wayland::session_lock::State::new::<WinitDriver>(&dh);
     let xwayland = crate::xwayland::State::<WinitDriver>::new(&dh, event_loop.handle());
     let mut applied_input = runtime_config.input.clone();
     applied_input.keyboard = applied_keyboard;
@@ -149,6 +156,10 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
         wayland,
         seat_state,
         seat,
+        idle_notifier_state,
+        presentation_state,
+        drm_syncobj_state: None,
+        session_lock,
         start_time: Instant::now(),
         config_path: config_path.clone(),
         startup_config_diagnostic: initial.diagnostic,
@@ -193,6 +204,8 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
             crate::backend::fullscreen_texture::FullscreenTextureTransitions::default(),
         overlay_previews: crate::backend::overlay_preview::OverlayPreviewCache::default(),
         node_renderer: crate::backend::node::NodeRenderer::default(),
+        window_decoration_renderer:
+            crate::backend::window_decoration::WindowDecorationRenderer::default(),
         backdrop_blur_renderer: crate::backend::backdrop_blur::BackdropBlurRenderer::default(),
         ui_text: crate::backend::text::UiTextRenderer::new(&runtime_config.font),
         xwayland,
@@ -293,19 +306,26 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                 }
                 let position = app.pointer.position();
                 let show_cursor = super::pointer::cursor_visible(app);
+                let cursor_override = app
+                    .capture
+                    .is_active()
+                    .then_some(smithay::input::pointer::CursorIcon::Default);
                 crate::cursor::surface::refresh_outputs(&app.cursor, &app.wayland.space, position);
                 let cursor_animating = show_cursor
-                    && app
-                        .cursor
-                        .current_is_animated(output.current_scale().integer_scale());
-                if let Err(err) = app.driver.backend.render(
+                    && app.cursor.current_is_animated_with_override(
+                        output.current_scale().integer_scale(),
+                        cursor_override,
+                    );
+                let outcome = app.driver.backend.render(
                     &output,
                     RenderRequest {
                         target_presentation_time,
                         clear: backend::CLEAR_COLOR,
+                        session_lock: &app.session_lock,
                         cursor: &app.cursor,
                         cursor_position: position,
                         show_cursor,
+                        cursor_override,
                         capture_overlay: app.capture.overlay(),
                         space: &app.wayland.space,
                         focused: app.wayland.focused_window.as_ref(),
@@ -326,18 +346,38 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                         overlays: &app.overlays,
                         overlay_config: &app.overlay_config,
                         node_renderer: &mut app.node_renderer,
+                        window_decoration_renderer: &mut app.window_decoration_renderer,
                         ui_text: &mut app.ui_text,
                     },
-                ) {
-                    eventline::error!("render failed: {err}");
-                }
+                );
+                let submitted = match outcome {
+                    Ok(outcome) if outcome.status() == backend::RenderStatus::Submitted => {
+                        if let Some(generation) = app.session_lock.frame_generation() {
+                            app.session_lock.presented(&output, generation);
+                        }
+                        true
+                    }
+                    Ok(_) => false,
+                    Err(err) => {
+                        eventline::error!("render failed: {err}");
+                        false
+                    }
+                };
 
                 // Lets clients know their last commit was actually
                 // presented, so they schedule their next frame - without
                 // this a client's redraw loop just stalls forever.
                 let output = app.driver.backend.output().clone();
                 let elapsed = app.start_time.elapsed();
-                if app.apogee.is_active() {
+                if app.session_lock.active() {
+                    if submitted {
+                        crate::wayland::session_lock::send_frames(
+                            &app.session_lock,
+                            &output,
+                            elapsed,
+                        );
+                    }
+                } else if app.apogee.is_active() {
                     if app.apogee.take_callback_due(
                         &output.name(),
                         target_presentation_time,
@@ -402,6 +442,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                 // differs from the last bound size. Just need a new frame,
                 // plus the advertised wl_output mode kept in sync.
                 app.driver.backend.update_output_mode();
+                crate::wayland::session_lock::configure_surfaces(app);
                 smithay::desktop::layer_map_for_output(app.driver.backend.output()).arrange();
                 // Simplification: snap zoom and pan back to rest at the new
                 // size rather than preserving the current state across a

@@ -42,6 +42,7 @@ pub struct CloseSnapshotMetadata {
     pub start_alpha: f32,
     pub retract_origin: Option<smithay::utils::Point<f64, Physical>>,
     pub border: Option<CloseBorder>,
+    pub content_radius: f32,
     pub collapse_target: Option<Vec2>,
 }
 
@@ -59,8 +60,10 @@ struct ActiveClose {
 
 pub struct ClosingWindowRender {
     pub texture: TextureRenderElement<GlesTexture>,
+    pub source_texture: GlesTexture,
     pub destination: Rectangle<i32, Physical>,
     pub border: Option<CloseBorder>,
+    pub content_radius: f32,
     pub stack_index: usize,
     pub order: u64,
 }
@@ -192,19 +195,24 @@ impl WindowCloseAnimations {
                     return None;
                 }
                 let border = metadata.border.map(|mut border| {
-                    let scale = f64::from(destination.size.w) / f64::from(start.size.w.max(1));
+                    let scale = (f64::from(destination.size.w) / f64::from(start.size.w.max(1)))
+                        .min(f64::from(destination.size.h) / f64::from(start.size.h.max(1)));
                     border.width = (f64::from(border.width) * scale).round().max(1.0) as i32;
                     border.color = border.color * visual.alpha;
                     border
                 });
+                let scale = (destination.size.w as f32 / start.size.w.max(1) as f32)
+                    .min(destination.size.h as f32 / start.size.h.max(1) as f32);
                 Some(ClosingWindowRender {
                     texture: active.captured.texture.render_element(
                         active.captured.id.clone(),
                         destination,
                         visual.alpha,
                     ),
+                    source_texture: active.captured.texture.texture.clone(),
                     destination,
                     border,
+                    content_radius: metadata.content_radius * scale.max(0.0),
                     stack_index: metadata.stack_index,
                     order: active.order,
                 })

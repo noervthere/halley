@@ -11,7 +11,10 @@ use smithay::input::{Seat, SeatState};
 use smithay::output::Output;
 use smithay::reexports::drm::control::crtc;
 use smithay::reexports::input::Libinput;
+use smithay::reexports::wayland_server::Client;
 use smithay::reexports::wayland_server::Display;
+use smithay::wayland::compositor::CompositorHandler;
+use smithay::wayland::drm_syncobj::DrmSyncPointSource;
 use smithay::wayland::seat::WaylandFocus;
 
 use crate::backend::tty::TtyBackend;
@@ -28,6 +31,7 @@ use super::tty_frame::{EstimatedVblankTimer, OutputFrameState};
 struct TtyDriver {
     backend: TtyBackend,
     physical_input: crate::input::devices::PhysicalInputDevices,
+    loop_handle: LoopHandle<'static, TtyApp>,
     loop_signal: LoopSignal,
     output_frames: HashMap<Output, OutputFrameState>,
     paused: bool,
@@ -64,13 +68,17 @@ impl super::SessionDriver for TtyDriver {
 
     fn request_redraw(&mut self, output: Option<&Output>) {
         if let Some(output) = output {
-            if let Some(state) = self.output_frames.get_mut(output) {
+            if self.backend.output_dpms_enabled(output)
+                && let Some(state) = self.output_frames.get_mut(output)
+            {
                 state.queue_redraw();
             }
             return;
         }
-        for state in self.output_frames.values_mut() {
-            state.queue_redraw();
+        for (output, state) in &mut self.output_frames {
+            if self.backend.output_dpms_enabled(output) {
+                state.queue_redraw();
+            }
         }
     }
 
@@ -81,12 +89,81 @@ impl super::SessionDriver for TtyDriver {
         f(self.backend.renderer())
     }
 
+    fn register_drm_syncobj_source(&mut self, client: Client, source: DrmSyncPointSource) -> bool {
+        self.loop_handle
+            .insert_source(source, move |_, _, app| {
+                let dh = app.wayland.display_handle.clone();
+                app.client_compositor_state(&client)
+                    .blocker_cleared(app, &dh);
+                Ok(())
+            })
+            .map(|_| true)
+            .unwrap_or_else(|err| {
+                eventline::warn!("explicit sync: failed to register acquire-point source: {err}");
+                false
+            })
+    }
+
+    fn apply_dpms(
+        &mut self,
+        command: halley_ipc::DpmsCommand,
+        output: Option<&str>,
+    ) -> Result<(), String> {
+        self.apply_dpms_command(command, output)
+    }
+
+    fn output_requires_lock_frame(&self, output: &Output) -> bool {
+        self.backend.output_dpms_enabled(output)
+    }
+
     fn stop(&mut self) {
         self.loop_signal.stop();
     }
 }
 
 type TtyApp = super::Session<TtyDriver>;
+
+impl TtyDriver {
+    fn apply_dpms_command(
+        &mut self,
+        command: halley_ipc::DpmsCommand,
+        output: Option<&str>,
+    ) -> Result<(), String> {
+        let applied = self.backend.apply_dpms(command, output)?;
+        let now = crate::frame_clock::monotonic_now();
+        for change in applied.changes {
+            let Some(state) = self.output_frames.get_mut(&change.output) else {
+                continue;
+            };
+            if change.enabled {
+                state.resume(now);
+            } else if let Some(token) = state.suspend(now) {
+                self.loop_handle.remove(token);
+            }
+        }
+        match applied.error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+
+    fn wake_dpms_on_input(&mut self, target: Option<&Output>) {
+        let output = if !self.backend.any_output_dpms_enabled() {
+            None
+        } else {
+            let Some(target) = target else {
+                return;
+            };
+            if self.backend.output_dpms_enabled(target) {
+                return;
+            }
+            Some(target.name())
+        };
+        if let Err(err) = self.apply_dpms_command(halley_ipc::DpmsCommand::On, output.as_deref()) {
+            eventline::warn!("tty dpms: failed to wake on input: {err}");
+        }
+    }
+}
 
 /// Runs the real-hardware (DRM/KMS) session - takes over the seat and a
 /// free VT. Returns (rather than panicking) if `TtyBackend::new()` fails,
@@ -147,12 +224,36 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
     let mut driver = TtyDriver {
         backend,
         physical_input: crate::input::devices::PhysicalInputDevices::default(),
+        loop_handle: loop_handle.clone(),
         loop_signal,
         output_frames,
         paused: false,
         pending_output_config: None,
     };
     let wayland = TtyApp::create_wayland_state(dh.clone(), &mut driver);
+    let idle_notifier_state =
+        smithay::wayland::idle_notify::IdleNotifierState::new(&dh, loop_handle.clone());
+    let presentation_state = smithay::wayland::presentation::PresentationState::new::<TtyApp>(
+        &dh,
+        smithay::utils::Clock::<smithay::utils::Monotonic>::new().id() as u32,
+    );
+    let session_lock = crate::wayland::session_lock::State::new::<TtyDriver>(&dh);
+    let drm_syncobj_state = if smithay::wayland::drm_syncobj::supports_syncobj_eventfd(
+        driver.backend.drm_device_fd(),
+    ) {
+        eventline::info!("explicit sync: linux-drm-syncobj-v1 available on the primary DRM device");
+        Some(
+            smithay::wayland::drm_syncobj::DrmSyncobjState::new::<TtyApp>(
+                &dh,
+                driver.backend.drm_device_fd().clone(),
+            ),
+        )
+    } else {
+        eventline::info!(
+            "explicit sync: primary DRM device lacks syncobj eventfd support; protocol disabled"
+        );
+        None
+    };
     let xwayland = crate::xwayland::State::<TtyDriver>::new(&dh, loop_handle.clone());
     let keyboard_monitor = match crate::accessibility::KeyboardMonitorService::start() {
         Ok(service) => Some(service),
@@ -181,6 +282,10 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
         wayland,
         seat_state,
         seat,
+        idle_notifier_state,
+        presentation_state,
+        drm_syncobj_state,
+        session_lock,
         start_time: Instant::now(),
         config_path: config_path.clone(),
         startup_config_diagnostic: initial.diagnostic,
@@ -225,6 +330,8 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
             crate::backend::fullscreen_texture::FullscreenTextureTransitions::default(),
         overlay_previews: crate::backend::overlay_preview::OverlayPreviewCache::default(),
         node_renderer: crate::backend::node::NodeRenderer::default(),
+        window_decoration_renderer:
+            crate::backend::window_decoration::WindowDecorationRenderer::default(),
         backdrop_blur_renderer: crate::backend::backdrop_blur::BackdropBlurRenderer::default(),
         ui_text: crate::backend::text::UiTextRenderer::new(&runtime_config.font),
         xwayland,
@@ -282,6 +389,22 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
     event_loop
         .handle()
         .insert_source(libinput_backend, move |event, _, app| {
+            let wake_before = match &event {
+                smithay::backend::input::InputEvent::Keyboard { .. } => {
+                    crate::wayland::focus::selected_output(&app.wayland).cloned()
+                }
+                smithay::backend::input::InputEvent::PointerButton { .. }
+                | smithay::backend::input::InputEvent::PointerAxis { .. } => output_at_pointer(app),
+                _ => None,
+            };
+            if matches!(
+                &event,
+                smithay::backend::input::InputEvent::Keyboard { .. }
+                    | smithay::backend::input::InputEvent::PointerButton { .. }
+                    | smithay::backend::input::InputEvent::PointerAxis { .. }
+            ) {
+                app.driver.wake_dpms_on_input(wake_before.as_ref());
+            }
             match &event {
                 smithay::backend::input::InputEvent::DeviceAdded { device } => {
                     let first_touch = app.driver.physical_input.added(device.clone(), &app.input);
@@ -299,6 +422,14 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                 _ => {}
             }
             super::input::handle(app, &event, &socket_name);
+            if matches!(
+                &event,
+                smithay::backend::input::InputEvent::PointerMotion { .. }
+                    | smithay::backend::input::InputEvent::PointerMotionAbsolute { .. }
+            ) {
+                let target = output_at_pointer(app);
+                app.driver.wake_dpms_on_input(target.as_ref());
+            }
         })
         .expect("failed to insert libinput source");
 
@@ -378,12 +509,6 @@ fn on_vblank(app: &mut TtyApp, crtc: crtc::Handle, metadata: Option<&DrmEventMet
             None
         }
     };
-    // Keep the prediction attached to its submitted frame. It is useful for
-    // presentation diagnostics, while the clock itself is deliberately
-    // corrected only by the kernel's monotonic timestamp below.
-    let _target_presentation_time =
-        submission.map(|submission| submission.target_presentation_time);
-
     let presented = presentation_time(metadata);
     let Some(state) = app.driver.output_frames.get_mut(&output) else {
         return;
@@ -394,10 +519,51 @@ fn on_vblank(app: &mut TtyApp, crtc: crtc::Handle, metadata: Option<&DrmEventMet
             output.name()
         );
     }
+    if !app.driver.backend.output_dpms_enabled(&output) {
+        return;
+    }
+
+    if let Some(mut submission) = submission {
+        if let Some(generation) = submission.session_lock_generation {
+            app.session_lock.presented(&output, generation);
+        }
+        // Keep the prediction attached to its submitted frame for
+        // diagnostics, while reporting the kernel page-flip timestamp to
+        // clients whenever it is available.
+        let _target_presentation_time = submission.target_presentation_time;
+        let refresh = output
+            .current_mode()
+            .map(|mode| {
+                smithay::wayland::presentation::Refresh::fixed(Duration::from_secs_f64(
+                    1_000.0 / mode.refresh as f64,
+                ))
+            })
+            .unwrap_or(smithay::wayland::presentation::Refresh::Unknown);
+        let sequence = metadata
+            .map(|metadata| u64::from(metadata.sequence))
+            .unwrap_or(0);
+        let (time, flags) = match presented {
+            Some(time) => (
+                smithay::utils::Time::<smithay::utils::Monotonic>::from(time),
+                smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind::Vsync
+                    | smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind::HwClock
+                    | smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind::HwCompletion,
+            ),
+            None => (
+                smithay::utils::Clock::<smithay::utils::Monotonic>::new().now(),
+                smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind::Vsync,
+            ),
+        };
+        submission
+            .presentation_feedback
+            .presented(time, refresh, sequence, flags);
+    }
 
     let elapsed = app.start_time.elapsed();
     let primary = app.driver.backend.primary_output();
-    if app.apogee.is_active() {
+    if app.session_lock.active() {
+        crate::wayland::session_lock::send_frames(&app.session_lock, &output, elapsed);
+    } else if app.apogee.is_active() {
         if app.apogee.take_callback_due(
             &output.name(),
             crate::frame_clock::monotonic_now(),
@@ -434,6 +600,14 @@ fn on_vblank(app: &mut TtyApp, crtc: crtc::Handle, metadata: Option<&DrmEventMet
 /// `Queued`.
 fn queue_redraw(app: &mut TtyApp) {
     app.request_redraw();
+}
+
+fn output_at_pointer(app: &TtyApp) -> Option<Output> {
+    app.wayland
+        .space
+        .output_under(app.pointer.position())
+        .next()
+        .cloned()
 }
 
 fn queue_output_redraw(app: &mut TtyApp, output: &Output) {
@@ -508,6 +682,7 @@ fn apply_tty_output_config(app: &mut TtyApp, outputs_config: &[halley_config::Ou
         app.capture.update_layout(&app.wayland.space);
     }
     if output_changed {
+        crate::wayland::session_lock::configure_surfaces(app);
         super::pointer::update_client_state(app, app.start_time.elapsed().as_millis() as u32);
     }
 }
@@ -581,15 +756,20 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
     let apogee_animating = crate::apogee::tick(app, target_presentation_time);
     let overlay_animating = app.overlays.animating(target_presentation_time);
     let show_cursor = super::pointer::cursor_visible(app);
+    let cursor_override = app
+        .capture
+        .is_active()
+        .then_some(smithay::input::pointer::CursorIcon::Default);
     crate::cursor::surface::refresh_outputs(
         &app.cursor,
         &app.wayland.space,
         app.pointer.position(),
     );
     let cursor_animating = show_cursor
-        && app
-            .cursor
-            .current_is_animated(output.current_scale().integer_scale());
+        && app.cursor.current_is_animated_with_override(
+            output.current_scale().integer_scale(),
+            cursor_override,
+        );
     let mut animating = camera_animating
         || fullscreen_camera_changed
         || window_animating
@@ -617,9 +797,11 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
         RenderRequest {
             target_presentation_time,
             clear: CLEAR_COLOR,
+            session_lock: &app.session_lock,
             cursor: &app.cursor,
             cursor_position: app.pointer.position(),
             show_cursor,
+            cursor_override,
             capture_overlay: app.capture.overlay(),
             space: &app.wayland.space,
             focused: app.wayland.focused_window.as_ref(),
@@ -640,6 +822,7 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
             overlays: &app.overlays,
             overlay_config: &app.overlay_config,
             node_renderer: &mut app.node_renderer,
+            window_decoration_renderer: &mut app.window_decoration_renderer,
             ui_text: &mut app.ui_text,
         },
     ) {
@@ -665,6 +848,7 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
             &app.wayland,
             output,
             &primary_output,
+            &app.session_lock,
             feedback,
             element_states,
         );

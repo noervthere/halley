@@ -297,6 +297,21 @@ fn example_config_fullscreen_animation_parses() {
     );
 }
 
+#[test]
+fn example_config_maximize_animation_parses() {
+    let config = RuneConfig::from_file(EXAMPLE_PATH).expect("example config parses");
+    let maximize = halley_config::parse_animations(&config).maximize;
+
+    assert!(maximize.enabled);
+    assert_eq!(
+        maximize.motion,
+        halley_config::AnimationMotion::Easing(halley_config::EasingMotion {
+            duration_ms: 240,
+            curve: halley_config::AnimationCurve::EaseInOutCubic,
+        })
+    );
+}
+
 /// The shipped example's `output:` block is commented out on purpose (an
 /// active block whose `name` happened to match a real connector would force
 /// a mode onto hardware this file wasn't written for) - confirm it really

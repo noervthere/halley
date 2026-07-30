@@ -194,18 +194,7 @@ fn dispatch_action<D: SessionDriver>(
                                 .is_some_and(|name| name == session.driver.primary_output().name())
                         })
             });
-            if session
-                .capture
-                .begin_menu(&session.wayland.space, output_name, window_available)
-            {
-                session.grab = crate::input::grab::Grab::None;
-                let keyboard = session
-                    .seat
-                    .get_keyboard()
-                    .expect("keyboard capability added at seat setup");
-                keyboard.set_focus(session, None, SERIAL_COUNTER.next_serial());
-                session.request_redraw();
-            }
+            crate::capture::begin_local(session, output_name, window_available);
         }
     }
     if zoom_action && let Some(output_name) = output_name {
@@ -265,6 +254,14 @@ where
     D: SessionDriver,
     B: InputBackend,
 {
+    if is_user_activity(event) {
+        let seat = session.seat.clone();
+        session.idle_notifier_state.notify_activity(&seat);
+    }
+    if session.session_lock.active() {
+        crate::wayland::session_lock::handle_input(session, event);
+        return;
+    }
     if session.overlays.exit_modal_active() && !matches!(event, InputEvent::Keyboard { .. }) {
         match event {
             InputEvent::PointerMotion { .. } | InputEvent::PointerMotionAbsolute { .. } => {
@@ -346,12 +343,7 @@ where
                                     }
                                 }
                                 Some(crate::capture::CapturePress::Accept) => {
-                                    if crate::capture::accept_selected(session) {
-                                        super::sync_keyboard_focus(
-                                            session,
-                                            SERIAL_COUNTER.next_serial(),
-                                        );
-                                    }
+                                    crate::capture::accept_selected(session);
                                 }
                                 Some(crate::capture::CapturePress::Consumed) | None => {}
                             }
@@ -867,6 +859,7 @@ where
                             });
                             let was_maximized = restore.is_some();
                             if let Some(restore) = restore.as_ref() {
+                                session.fullscreen_textures.remove(&restore.surface);
                                 super::configure_field_geometry(session, restore);
                                 let _ = session
                                     .cameras
@@ -1281,8 +1274,6 @@ where
                     }
                 } else if crate::capture::accept_selected(session) {
                     session.suppressed_keys.suppress(keycode);
-                    super::sync_keyboard_focus(session, SERIAL_COUNTER.next_serial());
-                    session.request_redraw();
                 }
             }
             Some(KeyboardOutcome::CaptureCancel) => {
@@ -1290,8 +1281,6 @@ where
                     session.request_redraw();
                 } else if crate::capture::cancel_selected(session) {
                     session.suppressed_keys.suppress(keycode);
-                    super::sync_keyboard_focus(session, SERIAL_COUNTER.next_serial());
-                    session.request_redraw();
                 }
             }
             Some(KeyboardOutcome::CapturePrevious) => {
@@ -1314,6 +1303,16 @@ where
             crate::focus_cycle::commit(session, SERIAL_COUNTER.next_serial());
         }
     }
+}
+
+fn is_user_activity<B: InputBackend>(event: &InputEvent<B>) -> bool {
+    !matches!(
+        event,
+        InputEvent::DeviceAdded { .. }
+            | InputEvent::DeviceRemoved { .. }
+            | InputEvent::SwitchToggle { .. }
+            | InputEvent::Special(_)
+    )
 }
 
 fn update_capture_pointer<D: SessionDriver>(session: &mut Session<D>, position: (f64, f64)) {

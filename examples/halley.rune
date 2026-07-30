@@ -233,12 +233,15 @@ cursor:
   hide-after-ms 2000
 end
 
-# Window decoration settings. At present Halley draws one flat, fully opaque
-# border around each managed window.
+# Window decoration settings for managed top-level windows.
 decorations:
   border:
     # Border width in output pixels. It follows camera zoom visually.
     size 3
+
+    # Client-content corner radius in output pixels. The compositor grows the
+    # outer border radius concentrically. Set to 0 for square corners.
+    radius 8
 
     # Focused and unfocused colors accept "#rrggbb" or shorthand "#rgb".
     colour-focused "#38d1eb"
@@ -483,8 +486,12 @@ animations:
   end
 
   maximize:
+    # Maximize accepts the same spring/easing motion knobs as fullscreen.
+    # Its default preserves the original 240 ms ease-in-out cubic feel.
     enabled true
+    motion "easing"
     duration-ms 240
+    curve "ease-in-out-cubic"
   end
 
   node:

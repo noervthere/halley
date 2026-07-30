@@ -58,16 +58,23 @@ Mod+left drag ends field maximize and continues with the same cursor-relative
 grab point. Resize is blocked while maximized. Collapsing, minimizing, closing,
 unmapping, or entering fullscreen ends field maximize cleanly.
 
-The transition uses the original ease-in-out cubic motion:
+The transition crossfades the outgoing and incoming window textures, using
+the same configurable spring/easing controls as fullscreen. Its default keeps
+the original ease-in-out cubic feel:
 
 ```rune
 animations:
   maximize:
     enabled true
+    motion "easing"
     duration-ms 240
+    curve "ease-in-out-cubic"
   end
 end
 ```
+
+For spring motion, set `motion "spring"` with `damping-ratio` and `stiffness`.
+See [Animations](animations.md) for every curve and motion knob.
 
 ## Focus after close
 

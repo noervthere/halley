@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use halley_ipc::{
-    BearingsRequest, ModeInfo, NodeInfo, NodeMoveDirection, NodeRequest, NodeSelector, OutputInfo,
-    Request, Response,
+    BearingsRequest, DpmsCommand, ModeInfo, NodeInfo, NodeMoveDirection, NodeRequest, NodeSelector,
+    OutputInfo, Request, Response,
 };
 
 /// Hand-rolled arg parsing, no `clap` - matches old halley's own
@@ -15,6 +15,7 @@ Usage: halleyctl <command>
 
 Commands:
   outputs        List connected monitors and their current mode/position
+  dpms           Control tty output power state
   node           List, inspect, focus, move, collapse, restore, toggle, or close nodes
   bearings       Show, hide, toggle, or inspect Bearings
   config         Verify the configuration selected by the compositor
@@ -55,9 +56,19 @@ Usage:
   halleyctl bearings status
 ";
 
+const DPMS_HELP: &str = "\
+Usage:
+  halleyctl dpms off|on|toggle [-o OUTPUT]
+";
+
 #[derive(Clone, Debug, PartialEq)]
 enum Action {
     Outputs,
+    Dpms {
+        command: DpmsCommand,
+        output: Option<String>,
+    },
+    DpmsHelp,
     Node {
         request: NodeRequest,
         output: NodeOutput,
@@ -83,6 +94,11 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match parse_args(&args) {
         Ok(Action::Outputs) => query(Request::Outputs, print_outputs),
+        Ok(Action::Dpms { command, output }) => query(Request::Dpms { command, output }, print_ack),
+        Ok(Action::DpmsHelp) => {
+            print!("{DPMS_HELP}");
+            ExitCode::SUCCESS
+        }
         Ok(Action::Node { request, output }) => query(Request::Node(request), |response| {
             print_node(response, output)
         }),
@@ -123,6 +139,7 @@ fn parse_args(args: &[String]) -> Result<Action, String> {
             }
             Action::Outputs
         }
+        Some("dpms") => return parse_dpms(&args[1..]),
         Some("node") => return parse_node(&args[1..]),
         Some("bearings") => return parse_bearings(&args[1..]),
         Some("config") => return parse_config(&args[1..]),
@@ -135,6 +152,44 @@ fn parse_args(args: &[String]) -> Result<Action, String> {
     }
 
     Ok(action)
+}
+
+fn parse_dpms(args: &[String]) -> Result<Action, String> {
+    if args.is_empty() || args.iter().any(|arg| arg == "-h" || arg == "--help") {
+        return Ok(Action::DpmsHelp);
+    }
+
+    let mut command = None;
+    let mut output = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "-o" | "--output" => {
+                index += 1;
+                let value = args
+                    .get(index)
+                    .ok_or_else(|| "dpms output option requires a connector name".to_string())?;
+                if output.replace(value.clone()).is_some() {
+                    return Err("dpms output option was specified more than once".to_string());
+                }
+            }
+            value if value.starts_with('-') => {
+                return Err(format!("unknown dpms option {value:?}"));
+            }
+            value if command.is_none() => command = Some(value),
+            value => return Err(format!("unexpected dpms argument {value:?}")),
+        }
+        index += 1;
+    }
+
+    let command = match command {
+        Some("off") => DpmsCommand::Off,
+        Some("on") => DpmsCommand::On,
+        Some("toggle") => DpmsCommand::Toggle,
+        Some(other) => return Err(format!("unknown dpms command {other:?}")),
+        None => return Ok(Action::DpmsHelp),
+    };
+    Ok(Action::Dpms { command, output })
 }
 
 fn parse_config(args: &[String]) -> Result<Action, String> {
@@ -665,6 +720,7 @@ mod tests {
             .expect("help has Commands followed by Options");
 
         assert!(commands.contains("outputs"));
+        assert!(commands.contains("dpms"));
         assert!(commands.contains("bearings"));
         assert!(commands.contains("config"));
         assert!(commands.contains("quit"));
@@ -710,6 +766,37 @@ mod tests {
         assert_eq!(parse_args(&args(&["--version"])), Ok(Action::Version));
         assert_eq!(parse_args(&args(&["-V"])), Ok(Action::Version));
         assert_eq!(parse_args(&args(&["quit"])), Ok(Action::Quit));
+    }
+
+    #[test]
+    fn parser_covers_dpms_commands_and_output_selection() {
+        assert_eq!(parse_args(&args(&["dpms"])), Ok(Action::DpmsHelp));
+        assert_eq!(parse_args(&args(&["dpms", "--help"])), Ok(Action::DpmsHelp));
+        assert_eq!(
+            parse_args(&args(&["dpms", "off"])),
+            Ok(Action::Dpms {
+                command: DpmsCommand::Off,
+                output: None,
+            })
+        );
+        assert_eq!(
+            parse_args(&args(&["dpms", "-o", "DP-1", "on"])),
+            Ok(Action::Dpms {
+                command: DpmsCommand::On,
+                output: Some("DP-1".to_string()),
+            })
+        );
+        assert_eq!(
+            parse_args(&args(&["dpms", "toggle", "--output", "HDMI-A-1"])),
+            Ok(Action::Dpms {
+                command: DpmsCommand::Toggle,
+                output: Some("HDMI-A-1".to_string()),
+            })
+        );
+        assert!(parse_args(&args(&["dpms", "sleep"])).is_err());
+        assert!(parse_args(&args(&["dpms", "off", "on"])).is_err());
+        assert!(parse_args(&args(&["dpms", "off", "-o"])).is_err());
+        assert!(parse_args(&args(&["dpms", "off", "-o", "DP-1", "--output", "DP-2"])).is_err());
     }
 
     #[test]

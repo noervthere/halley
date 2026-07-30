@@ -34,12 +34,13 @@ animations:
 end
 ```
 
-Available curves are `linear`, `ease-out-quad`, `ease-out-cubic`,
-`ease-out-expo`, and `elastic`. The elastic curve overshoots before settling.
-`duration-ms` is always the complete timeline from the first animated frame
-through the settled final frame. Curves redistribute progress inside that
-time: ease-out curves cover more distance near the beginning, while `linear`
-advances at a constant rate.
+Available curves are `linear`, `ease-in-out-cubic`, `ease-out-quad`,
+`ease-out-cubic`, `ease-out-expo`, and `elastic`. The elastic curve overshoots
+before settling. `duration-ms` is always the complete timeline from the first
+animated frame through the settled final frame. Curves redistribute progress
+inside that time: ease-out curves cover more distance near the beginning,
+`ease-in-out-cubic` accelerates and then decelerates symmetrically, and
+`linear` advances at a constant rate.
 
 Window opening separates visual style from motion:
 
@@ -126,18 +127,25 @@ animation. Landmark collision relocation uses the old 520ms damped slide;
 labels independently use the old back-loaded hover slide/grow/fade and request
 frames until settled.
 
-Field maximize uses its own duration and the original ease-in-out cubic
-curve:
+Field maximize uses the same motion controls and live texture crossfade as
+fullscreen. Its default remains the original 240 ms ease-in-out cubic motion:
 
 ```rune
 animations:
   maximize:
     enabled true
+    motion "easing"
     duration-ms 240
+    curve "ease-in-out-cubic"
   end
 end
 ```
 
+Set `motion "spring"` to use `damping-ratio` and `stiffness`, exactly as for
+fullscreen. Reversing a transition keeps the current visual position and
+velocity instead of restarting it.
+
 `animations.enabled` and `animations.maximize.enabled` both gate the motion.
 Disabling it keeps the maximize state and camera ownership but applies the
-endpoints immediately.
+endpoints immediately. A zero easing duration also snaps directly to the
+endpoint.

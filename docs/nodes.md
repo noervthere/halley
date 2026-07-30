@@ -232,7 +232,7 @@ set the selected node state and are idempotent; `toggle` inverts it. `close`
 sends the appropriate XDG or X11 close request without restoring first.
 `--json` is available for `list` and `info`.
 
-This interface uses IPC protocol version 8. Keep `halleyctl` and the compositor
+This interface uses IPC protocol version 9. Keep `halleyctl` and the compositor
 from the same build because postcard enum variants are positional on the wire.
 
 Offscreen active windows and collapsed nodes are also available through

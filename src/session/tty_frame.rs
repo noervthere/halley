@@ -11,6 +11,7 @@ use crate::frame_clock::FrameClock;
 enum RedrawState {
     #[default]
     Idle,
+    Suspended,
     Queued,
     WaitingForVBlank {
         redraw_needed: bool,
@@ -44,6 +45,7 @@ impl OutputFrameState {
 
     pub fn queue_redraw(&mut self) {
         self.redraw = match std::mem::take(&mut self.redraw) {
+            RedrawState::Suspended => RedrawState::Suspended,
             RedrawState::Idle => RedrawState::Queued,
             RedrawState::WaitingForEstimatedVBlank(token) => {
                 RedrawState::WaitingForEstimatedVBlankAndQueued(token)
@@ -80,6 +82,10 @@ impl OutputFrameState {
     pub fn on_vblank(&mut self, presented: Option<Duration>) -> Option<String> {
         self.clock.presented(presented);
         let (redraw_needed, unexpected_state) = match std::mem::take(&mut self.redraw) {
+            RedrawState::Suspended => {
+                self.redraw = RedrawState::Suspended;
+                return None;
+            }
             RedrawState::WaitingForVBlank { redraw_needed } => {
                 (redraw_needed || self.unfinished_animations, None)
             }
@@ -120,7 +126,7 @@ impl OutputFrameState {
                 self.redraw = RedrawState::WaitingForEstimatedVBlank(token);
                 return EstimatedVblankTimer::AlreadyArmed;
             }
-            RedrawState::Idle | RedrawState::WaitingForVBlank { .. } => {
+            RedrawState::Suspended | RedrawState::Idle | RedrawState::WaitingForVBlank { .. } => {
                 unreachable!("frame_skipped called from an unexpected redraw state")
             }
         }
@@ -135,6 +141,10 @@ impl OutputFrameState {
 
     pub fn estimated_vblank_fired(&mut self) -> Option<String> {
         match std::mem::take(&mut self.redraw) {
+            RedrawState::Suspended => {
+                self.redraw = RedrawState::Suspended;
+                None
+            }
             RedrawState::WaitingForEstimatedVBlank(_) if self.unfinished_animations => {
                 self.redraw = RedrawState::Queued;
                 None
@@ -151,6 +161,12 @@ impl OutputFrameState {
     /// Resets presentation history after a VT resume and returns any timer
     /// registration that the event loop must remove.
     pub fn reset(&mut self, now: Duration) -> Option<RegistrationToken> {
+        if matches!(self.redraw, RedrawState::Suspended) {
+            self.clock.reset();
+            self.last_camera_sample = now;
+            self.unfinished_animations = false;
+            return None;
+        }
         let timer = match std::mem::take(&mut self.redraw) {
             RedrawState::WaitingForEstimatedVBlank(token)
             | RedrawState::WaitingForEstimatedVBlankAndQueued(token) => Some(token),
@@ -161,6 +177,27 @@ impl OutputFrameState {
         self.unfinished_animations = false;
         self.redraw = RedrawState::Queued;
         timer
+    }
+
+    pub fn suspend(&mut self, now: Duration) -> Option<RegistrationToken> {
+        let timer = match std::mem::take(&mut self.redraw) {
+            RedrawState::WaitingForEstimatedVBlank(token)
+            | RedrawState::WaitingForEstimatedVBlankAndQueued(token) => Some(token),
+            _ => None,
+        };
+        self.clock.reset();
+        self.last_camera_sample = now;
+        self.unfinished_animations = false;
+        self.redraw = RedrawState::Suspended;
+        timer
+    }
+
+    pub fn resume(&mut self, now: Duration) {
+        debug_assert!(matches!(self.redraw, RedrawState::Suspended));
+        self.clock.reset();
+        self.last_camera_sample = now;
+        self.unfinished_animations = false;
+        self.redraw = RedrawState::Queued;
     }
 }
 
@@ -223,5 +260,21 @@ mod tests {
             state.frame_skipped(false, Duration::from_secs(5)),
             EstimatedVblankTimer::ArmAfter(Duration::from_millis(1))
         );
+    }
+
+    #[test]
+    fn suspended_output_ignores_redraws_and_late_vblanks_until_resume() {
+        let mut state = state();
+        state.queue_redraw();
+        state.frame_submitted(false);
+        state.suspend(Duration::from_secs(1));
+
+        state.queue_redraw();
+        assert!(!state.is_redraw_queued());
+        assert_eq!(state.on_vblank(None), None);
+        assert!(!state.is_redraw_queued());
+
+        state.resume(Duration::from_secs(2));
+        assert!(state.is_redraw_queued());
     }
 }

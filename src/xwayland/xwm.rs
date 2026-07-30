@@ -1189,10 +1189,13 @@ fn capture_fullscreen_snapshot<D: SessionDriver>(
         return false;
     }
     let textures = &mut session.fullscreen_textures;
-    match session
-        .driver
-        .with_renderer(|renderer| textures.capture_previous(renderer, window))
-    {
+    match session.driver.with_renderer(|renderer| {
+        textures.capture_previous(
+            renderer,
+            window,
+            crate::backend::fullscreen_texture::TextureTransitionOwner::Fullscreen,
+        )
+    }) {
         Ok(()) => true,
         Err(err) => {
             eventline::warn!("fullscreen: failed to capture X11 window texture: {err}");

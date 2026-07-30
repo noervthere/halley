@@ -6,6 +6,7 @@ use smithay::backend::renderer::element::surface::{
     WaylandSurfaceRenderElement, render_elements_from_surface_tree,
 };
 use smithay::backend::renderer::gles::GlesRenderer;
+use smithay::input::pointer::CursorIcon;
 use smithay::output::Output;
 use smithay::utils::{Logical, Physical, Point, Rectangle, Scale};
 
@@ -24,8 +25,13 @@ pub fn elements(
     output_geometry: Rectangle<i32, Logical>,
     pointer_position: (f64, f64),
     time: std::time::Duration,
+    presentation_override: Option<CursorIcon>,
 ) -> Result<Vec<CursorRenderElement>, Box<dyn Error>> {
-    match manager.render_cursor(output.current_scale().integer_scale(), time) {
+    match manager.render_cursor_with_override(
+        output.current_scale().integer_scale(),
+        time,
+        presentation_override,
+    ) {
         RenderCursor::Hidden => Ok(Vec::new()),
         RenderCursor::Named(frame) => {
             let Some(position) =
@@ -193,6 +199,37 @@ mod tests {
                 }
             ),
             None
+        );
+    }
+
+    #[test]
+    fn secondary_output_localizes_global_pointer_coordinates() {
+        let output = output(1);
+        let geometry = Rectangle::new((2560, 0).into(), (1920, 1200).into());
+
+        assert_eq!(
+            named_cursor_origin(
+                &output,
+                geometry,
+                (3000.0, 500.0),
+                &CursorFrame {
+                    buffer: MemoryRenderBuffer::from_slice(
+                        &[0, 0, 0, 0],
+                        smithay::backend::allocator::Fourcc::Abgr8888,
+                        (1, 1),
+                        1,
+                        Transform::Normal,
+                        None,
+                    ),
+                    metadata_bgra: vec![0, 0, 0, 0].into(),
+                    width: 1,
+                    height: 1,
+                    hotspot_x: 0,
+                    hotspot_y: 0,
+                    scale: 1,
+                }
+            ),
+            Some(Point::from((440.0, 500.0)))
         );
     }
 }

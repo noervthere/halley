@@ -66,6 +66,87 @@ where
     true
 }
 
+pub(crate) fn handle_session_lock<D, B>(session: &mut Session<D>, event: &InputEvent<B>) -> bool
+where
+    D: SessionDriver,
+    B: InputBackend,
+{
+    match event {
+        InputEvent::TouchDown { event } => {
+            let Some(handle) = session.seat.get_touch() else {
+                return true;
+            };
+            let Some(screen) = screen_position(session, event) else {
+                return true;
+            };
+            let Some((surface, origin, _)) = session
+                .session_lock
+                .focus_at(&session.wayland.space, screen.into())
+            else {
+                return true;
+            };
+            session.session_lock.set_focus(&surface);
+            super::sync_keyboard_focus(session, SERIAL_COUNTER.next_serial());
+            session.touch.begin(
+                event.slot(),
+                TouchTarget {
+                    surface: surface.clone(),
+                    coordinates: CoordinateSpace::Screen,
+                },
+            );
+            handle.down(
+                session,
+                Some((surface, origin)),
+                &DownEvent {
+                    slot: event.slot(),
+                    location: screen,
+                    serial: SERIAL_COUNTER.next_serial(),
+                    time: event.time_msec(),
+                },
+            );
+        }
+        InputEvent::TouchMotion { event } => {
+            let Some(handle) = session.seat.get_touch() else {
+                return true;
+            };
+            if !session.touch.targets.contains_key(&event.slot()) {
+                return true;
+            }
+            let Some(screen) = screen_position(session, event) else {
+                return true;
+            };
+            handle.motion(
+                session,
+                None,
+                &MotionEvent {
+                    slot: event.slot(),
+                    location: screen,
+                    time: event.time_msec(),
+                },
+            );
+        }
+        InputEvent::TouchUp { event } => {
+            let Some(handle) = session.seat.get_touch() else {
+                return true;
+            };
+            if session.touch.finish(event.slot()) {
+                handle.up(
+                    session,
+                    &UpEvent {
+                        slot: event.slot(),
+                        serial: SERIAL_COUNTER.next_serial(),
+                        time: event.time_msec(),
+                    },
+                );
+            }
+        }
+        InputEvent::TouchFrame { .. } => frame(session),
+        InputEvent::TouchCancel { .. } => cancel_all(session),
+        _ => return false,
+    }
+    true
+}
+
 fn down<D, B>(session: &mut Session<D>, event: &B::TouchDownEvent)
 where
     D: SessionDriver,
@@ -200,7 +281,7 @@ fn frame<D: SessionDriver>(session: &mut Session<D>) {
     }
 }
 
-pub(super) fn cancel_all<D: SessionDriver>(session: &mut Session<D>) {
+pub(crate) fn cancel_all<D: SessionDriver>(session: &mut Session<D>) {
     if !session.touch.clear() {
         return;
     }

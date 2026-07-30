@@ -3,13 +3,16 @@ use std::error::Error;
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::egl::EGLDevice;
 use smithay::backend::renderer::ImportDma;
-use smithay::backend::renderer::element::{Element, RenderElement};
+use smithay::backend::renderer::element::{
+    Element, RenderElement, RenderElementPresentationState, RenderElementState, RenderElementStates,
+};
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::renderer::{Frame, Renderer};
 use smithay::backend::winit::WinitGraphicsBackend;
 use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
 use smithay::utils::user_data::UserDataMap;
 use smithay::utils::{Physical, Rectangle, Size, Transform};
+use smithay::wayland::presentation::Refresh;
 
 use super::{RenderOutcome, RenderRequest, RenderStatus, Renderable};
 
@@ -152,11 +155,18 @@ impl Renderable for WinitBackend {
             .space
             .output_geometry(output)
             .ok_or_else(|| format!("winit output {:?} is not mapped", output.name()))?;
-        let clear = request.clear;
+        let space = request.space;
+        let session_lock = request.session_lock;
+        let clear = if request.session_lock.active() {
+            super::SESSION_LOCK_COLOR
+        } else {
+            request.clear
+        };
 
         // Scoped so `renderer`/`framebuffer` (both borrowed from
         // `self.backend`) are dropped before `submit()` needs its own
         // mutable borrow.
+        let mut element_states = RenderElementStates::default();
         {
             let (renderer, mut framebuffer) = self.backend.bind()?;
             let elements =
@@ -194,12 +204,48 @@ impl Renderable for WinitBackend {
                     &[],
                     cache,
                 )?;
+                element_states.states.insert(
+                    element.id().clone(),
+                    RenderElementState {
+                        visible_area: (visible.size.w as usize)
+                            .saturating_mul(visible.size.h as usize),
+                        presentation_state: RenderElementPresentationState::Rendering {
+                            reason: None,
+                        },
+                        needs_capture: false,
+                    },
+                );
             }
             let _ = frame.finish()?;
         }
 
         self.backend.submit(Some(&[damage]))?;
 
-        Ok(RenderOutcome::new(RenderStatus::Submitted, None))
+        let mut presentation_feedback = crate::wayland::presentation::take_output_feedback(
+            output,
+            &self.output,
+            space,
+            session_lock,
+            &element_states,
+        );
+        let refresh = output
+            .current_mode()
+            .map(|mode| {
+                Refresh::fixed(std::time::Duration::from_secs_f64(
+                    1_000.0 / mode.refresh as f64,
+                ))
+            })
+            .unwrap_or(Refresh::Unknown);
+        presentation_feedback.presented(
+            smithay::utils::Clock::<smithay::utils::Monotonic>::new().now(),
+            refresh,
+            0,
+            smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind::Vsync,
+        );
+
+        Ok(RenderOutcome::new(
+            RenderStatus::Submitted,
+            Some(element_states),
+        ))
     }
 }

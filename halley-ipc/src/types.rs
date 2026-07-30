@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 /// the end of `Request`/`Response` silently breaks wire-compatibility with
 /// a differently-versioned build - worth remembering as this grows, not
 /// solved here (this first pass has nothing to negotiate against yet).
-pub const HALLEY_IPC_VERSION: u32 = 8;
+pub const HALLEY_IPC_VERSION: u32 = 9;
 
 /// A request from `halleyctl`, the portal backend, or another local client.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -31,6 +31,10 @@ pub enum Request {
     Bearings(BearingsRequest),
     Quit,
     ConfigPath,
+    Dpms {
+        command: DpmsCommand,
+        output: Option<String>,
+    },
 }
 
 /// The compositor's reply to a `Request`.
@@ -55,6 +59,13 @@ pub enum BearingsRequest {
     Hide,
     Toggle,
     Status,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DpmsCommand {
+    Off,
+    On,
+    Toggle,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

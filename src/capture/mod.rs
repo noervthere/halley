@@ -449,11 +449,38 @@ impl CaptureState {
     }
 }
 
+pub fn begin_local<D: SessionDriver>(
+    session: &mut Session<D>,
+    preferred_output: Option<&str>,
+    window_available: bool,
+) -> bool {
+    if session.session_lock.active() {
+        return false;
+    }
+    if !session
+        .capture
+        .begin_menu(&session.wayland.space, preferred_output, window_available)
+    {
+        return false;
+    }
+    begin_modal_capture(session);
+    true
+}
+
 pub fn request_screenshot<D: SessionDriver>(
     session: &mut Session<D>,
     request: halley_ipc::ScreenshotRequest,
     reply: crate::ipc::ReplySender,
 ) {
+    if session.session_lock.active() {
+        let _ = reply.send(
+            halley_ipc::Response::Screenshot(halley_ipc::ScreenshotResponse::Failed {
+                message: "session is locked".to_string(),
+            }),
+            Vec::new(),
+        );
+        return;
+    }
     match request.target {
         halley_ipc::ScreenshotTarget::Area => {
             let preferred = crate::wayland::focus::selected_output(&session.wayland)
@@ -515,6 +542,15 @@ pub fn request_source<D: SessionDriver>(
     request: halley_ipc::SourceChooserRequest,
     reply: crate::ipc::ReplySender,
 ) {
+    if session.session_lock.active() {
+        let _ = reply.send(
+            halley_ipc::Response::Source(halley_ipc::SourceChooserResponse::Failed {
+                message: "session is locked".to_string(),
+            }),
+            Vec::new(),
+        );
+        return;
+    }
     let supported = request.source_types & (halley_ipc::SOURCE_MONITOR | halley_ipc::SOURCE_WINDOW);
     if supported == 0 {
         let _ = reply.send(
@@ -568,7 +604,7 @@ pub fn cancel_portal<D: SessionDriver>(session: &mut Session<D>, request_handle:
         }
         _ => {}
     }
-    session.request_redraw();
+    finish_modal_capture(session);
     true
 }
 
@@ -583,6 +619,7 @@ pub fn accept_selected<D: SessionDriver>(session: &mut Session<D>) -> bool {
                 Vec::new(),
             );
         }
+        finish_modal_capture(session);
         return true;
     }
     let result = match accepted.target {
@@ -602,6 +639,7 @@ pub fn accept_selected<D: SessionDriver>(session: &mut Session<D>) -> bool {
             unreachable!("source selection returned a screenshot target")
         }
     }
+    finish_modal_capture(session);
     true
 }
 
@@ -624,6 +662,7 @@ pub fn cancel_selected<D: SessionDriver>(session: &mut Session<D>) -> bool {
         }
         PendingCapture::Local { .. } => {}
     }
+    finish_modal_capture(session);
     true
 }
 
@@ -650,11 +689,44 @@ fn desktop_bounds(space: &Space<Window>) -> Option<Rectangle<i32, Logical>> {
 }
 
 fn begin_modal_capture<D: SessionDriver>(session: &mut Session<D>) {
+    let moving_node = match &session.grab {
+        crate::input::grab::Grab::MoveNode { id, .. } => Some(*id),
+        _ => None,
+    };
+    let moving_window = match &session.grab {
+        crate::input::grab::Grab::MoveWindow { id, .. } => *id,
+        _ => None,
+    };
+    if (moving_node.is_some() || moving_window.is_some()) && session.nodes.physics.enabled {
+        let _ = crate::nodes::tick_physics(session, crate::frame_clock::monotonic_now());
+    }
+    if let Some(id) = moving_node {
+        session.nodes.clear_direct_motion(id);
+    }
+    if let Some(id) = moving_window
+        && session.nodes.physics.enabled
+    {
+        session
+            .nodes
+            .lock_released_window(id, crate::frame_clock::monotonic_now());
+    }
+    if matches!(&session.grab, crate::input::grab::Grab::ResizeWindow(_)) {
+        crate::input::grab::release_resize_anchor(&mut session.resize_anchor);
+    }
+    session.grab = crate::input::grab::Grab::None;
+    session.cursor.set_override(None);
+    crate::session::note_pointer_activity(session);
     let keyboard = session
         .seat
         .get_keyboard()
         .expect("keyboard capability added at seat setup");
     keyboard.set_focus(session, None, smithay::utils::SERIAL_COUNTER.next_serial());
+    session.request_redraw();
+}
+
+fn finish_modal_capture<D: SessionDriver>(session: &mut Session<D>) {
+    crate::session::note_pointer_activity(session);
+    crate::session::sync_keyboard_focus(session, smithay::utils::SERIAL_COUNTER.next_serial());
     session.request_redraw();
 }
 

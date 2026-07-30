@@ -14,7 +14,7 @@ pub use codec::{
 };
 pub use types::{
     BearingsRequest, BearingsStatusResponse, CaptureBuffer, CaptureFrameRequest,
-    CaptureFrameResponse, CaptureSource, CursorMetadata, CursorMode, DmabufPlane,
+    CaptureFrameResponse, CaptureSource, CursorMetadata, CursorMode, DmabufPlane, DpmsCommand,
     HALLEY_IPC_VERSION, ModeInfo, NodeInfo, NodeKind, NodeListResponse, NodeMoveDirection,
     NodeOutputGroup, NodeProtocolFamily, NodeRelationInfo, NodeRequest, NodeRole, NodeSelector,
     NodeState, OutputInfo, OutputsResponse, RegisterDmabufRequest, Request, Response,

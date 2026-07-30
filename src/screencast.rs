@@ -63,6 +63,9 @@ pub fn capture_frame<D: SessionDriver>(
     request: halley_ipc::CaptureFrameRequest,
     fds: Vec<OwnedFd>,
 ) -> Result<halley_ipc::CaptureFrameResponse, String> {
+    if session.session_lock.active() {
+        return Err("session is locked".to_string());
+    }
     let embedded = request.cursor_mode == halley_ipc::CursorMode::Embedded
         && crate::session::cursor_visible(session);
     let width = request.source.width();

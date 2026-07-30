@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::cell::RefCell;
 use std::ffi::OsString;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -10,10 +11,11 @@ use smithay::input::pointer::PointerHandle;
 use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::output::Output;
 use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode;
+use smithay::reexports::wayland_protocols::wp::linux_drm_syncobj::v1::server::wp_linux_drm_syncobj_surface_v1::WpLinuxDrmSyncobjSurfaceV1;
 use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
 use smithay::reexports::wayland_server::protocol::wl_seat::WlSeat;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::reexports::wayland_server::{Client, Display};
+use smithay::reexports::wayland_server::{Client, Display, Resource};
 use smithay::utils::{Logical, Point, SERIAL_COUNTER, Serial};
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::tablet_manager::TabletSeatHandler;
@@ -22,7 +24,11 @@ use smithay::wayland::compositor::{
     add_pre_commit_hook, with_states,
 };
 use smithay::wayland::dmabuf::{DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier};
+use smithay::wayland::drm_syncobj::{
+    DrmSyncobjCachedState, DrmSyncobjHandler, DrmSyncobjState,
+};
 use smithay::wayland::fractional_scale::{FractionalScaleHandler, with_fractional_scale};
+use smithay::wayland::idle_notify::{IdleNotifierHandler, IdleNotifierState};
 use smithay::wayland::keyboard_shortcuts_inhibit::{
     KeyboardShortcutsInhibitHandler, KeyboardShortcutsInhibitState, KeyboardShortcutsInhibitor,
 };
@@ -54,11 +60,12 @@ use smithay::wayland::xdg_activation::{
 };
 use smithay::{
     delegate_background_effect, delegate_compositor, delegate_cursor_shape, delegate_data_device,
-    delegate_dmabuf, delegate_ext_data_control,
+    delegate_dmabuf, delegate_drm_syncobj, delegate_ext_data_control,
     delegate_fractional_scale,
+    delegate_idle_notify,
     delegate_keyboard_shortcuts_inhibit, delegate_layer_shell, delegate_output,
     delegate_pointer_constraints, delegate_primary_selection, delegate_relative_pointer,
-    delegate_pointer_gestures, delegate_seat, delegate_shm, delegate_viewporter,
+    delegate_pointer_gestures, delegate_presentation, delegate_seat, delegate_shm, delegate_viewporter,
     delegate_virtual_keyboard_manager,
     delegate_xdg_activation, delegate_xdg_decoration, delegate_xdg_shell,
 };
@@ -124,6 +131,51 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
             crate::xwayland::compositor_client_state(client)
                 .expect("compositor client has no recognized client data")
         }
+    }
+
+    fn new_surface(&mut self, surface: &WlSurface) {
+        add_pre_commit_hook::<Self, _>(surface, |session, _dh, surface| {
+            if session.drm_syncobj_state.is_none() {
+                return;
+            }
+            let acquire_point = with_states(surface, |states| {
+                let opted_in = states
+                    .data_map
+                    .get::<RefCell<Option<WpLinuxDrmSyncobjSurfaceV1>>>()
+                    .is_some_and(|surface| surface.borrow().is_some());
+                if !opted_in {
+                    return None;
+                }
+                states
+                    .cached_state
+                    .get::<DrmSyncobjCachedState>()
+                    .pending()
+                    .acquire_point
+                    .clone()
+            });
+            let Some(acquire_point) = acquire_point else {
+                return;
+            };
+            let Some(client) = surface.client() else {
+                return;
+            };
+            match acquire_point.generate_blocker() {
+                Ok((blocker, source)) => {
+                    let registered = session.driver.register_drm_syncobj_source(client, source);
+                    smithay::wayland::compositor::add_blocker(surface, blocker);
+                    if !registered {
+                        eventline::warn!(
+                            "explicit sync: acquire-point source was not registered; keeping the affected surface commit blocked"
+                        );
+                    }
+                }
+                Err(err) => {
+                    eventline::warn!(
+                        "explicit sync: failed to create acquire-point blocker: {err}"
+                    );
+                }
+            }
+        });
     }
 
     fn commit(&mut self, surface: &WlSurface) {
@@ -195,6 +247,7 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
             wayland::xdg_shell::ToplevelCommit::None => {}
         }
         crate::cursor::surface::handle_commit(&self.cursor, surface, &root);
+        crate::wayland::session_lock::surface_committed(self, surface);
         crate::xwayland::handle_commit(self, &root);
         self.fullscreen.handle_commit(
             &mut self.wayland,
@@ -221,6 +274,7 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
     }
 
     fn destroyed(&mut self, surface: &WlSurface) {
+        crate::wayland::session_lock::surface_destroyed(self, surface);
         super::touch::cancel_surface(self, surface);
         super::gesture::cancel_surface(self, surface);
         let root = wayland::compositor::root_surface(surface);
@@ -249,6 +303,12 @@ impl<D: SessionDriver> DmabufHandler for Session<D> {
         }
 
         let _ = notifier.successful::<Self>();
+    }
+}
+
+impl<D: SessionDriver> DrmSyncobjHandler for Session<D> {
+    fn drm_syncobj_state(&mut self) -> Option<&mut DrmSyncobjState> {
+        self.drm_syncobj_state.as_mut()
     }
 }
 
@@ -313,9 +373,13 @@ impl<D: SessionDriver> XdgShellHandler for Session<D> {
                 return;
             };
             let textures = &mut session.fullscreen_textures;
-            let capture = session
-                .driver
-                .with_renderer(|renderer| textures.capture_previous(renderer, &window));
+            let capture = session.driver.with_renderer(|renderer| {
+                textures.capture_previous(
+                    renderer,
+                    &window,
+                    crate::backend::fullscreen_texture::TextureTransitionOwner::Fullscreen,
+                )
+            });
             if let Err(err) = capture {
                 eventline::warn!("fullscreen: failed to capture previous window texture: {err}");
             }
@@ -588,6 +652,12 @@ impl<D: SessionDriver> SeatHandler for Session<D> {
 
 impl<D: SessionDriver> TabletSeatHandler for Session<D> {}
 
+impl<D: SessionDriver> IdleNotifierHandler for Session<D> {
+    fn idle_notifier_state(&mut self) -> &mut IdleNotifierState<Self> {
+        &mut self.idle_notifier_state
+    }
+}
+
 impl<D: SessionDriver> OutputHandler for Session<D> {}
 
 impl<D: SessionDriver> FractionalScaleHandler for Session<D> {
@@ -699,6 +769,7 @@ impl<D: SessionDriver> smithay::wayland::background_effect::ExtBackgroundEffectH
 delegate_compositor!(@<D: SessionDriver> Session<D>);
 delegate_background_effect!(@<D: SessionDriver> Session<D>);
 delegate_dmabuf!(@<D: SessionDriver> Session<D>);
+delegate_drm_syncobj!(@<D: SessionDriver> Session<D>);
 delegate_shm!(@<D: SessionDriver> Session<D>);
 delegate_xdg_shell!(@<D: SessionDriver> Session<D>);
 delegate_xdg_activation!(@<D: SessionDriver> Session<D>);
@@ -709,6 +780,8 @@ delegate_cursor_shape!(@<D: SessionDriver> Session<D>);
 delegate_output!(@<D: SessionDriver> Session<D>);
 delegate_viewporter!(@<D: SessionDriver> Session<D>);
 delegate_fractional_scale!(@<D: SessionDriver> Session<D>);
+delegate_idle_notify!(@<D: SessionDriver> Session<D>);
+delegate_presentation!(@<D: SessionDriver> Session<D>);
 delegate_relative_pointer!(@<D: SessionDriver> Session<D>);
 delegate_pointer_constraints!(@<D: SessionDriver> Session<D>);
 delegate_pointer_gestures!(@<D: SessionDriver> Session<D>);

@@ -36,10 +36,21 @@ uniform sampler2D tex;
 uniform sampler2D halley_next_tex;
 uniform float halley_progress;
 uniform float alpha;
+uniform vec2 halley_rect_size;
+uniform float halley_corner_radius;
 
 #if defined(DEBUG_FLAGS)
 uniform float tint;
 #endif
+
+float rounded_alpha(vec2 coords, vec2 size, float radius) {
+    radius = min(max(radius, 0.0), min(size.x, size.y) * 0.5);
+    if (radius <= 0.0)
+        return 1.0;
+    vec2 nearest = clamp(coords, vec2(radius), size - vec2(radius));
+    float distance_to_edge = length(coords - nearest) - radius;
+    return 1.0 - smoothstep(-0.75, 0.75, distance_to_edge);
+}
 
 void main() {
     vec4 previous = texture2D(tex, v_coords);
@@ -47,7 +58,9 @@ void main() {
     previous.a = 1.0;
 #endif
     vec4 next = texture2D(halley_next_tex, v_coords);
-    vec4 color = mix(previous, next, halley_progress) * alpha;
+    vec2 size = max(halley_rect_size, vec2(1.0));
+    float mask = rounded_alpha(v_coords * size, size, halley_corner_radius);
+    vec4 color = mix(previous, next, halley_progress) * (alpha * mask);
 
 #if defined(DEBUG_FLAGS)
     if (tint == 1.0)
@@ -63,6 +76,13 @@ struct TransitionTextures {
     id: Id,
     previous: WindowTexture,
     current: Option<GlesTexture>,
+    owner: TextureTransitionOwner,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TextureTransitionOwner {
+    Fullscreen,
+    Maximize,
 }
 
 #[derive(Default)]
@@ -78,6 +98,8 @@ pub struct FullscreenBlendElement {
     next: GlesTexture,
     program: GlesTexProgram,
     progress: f32,
+    size: (f32, f32),
+    radius: f32,
 }
 
 impl FullscreenTextureTransitions {
@@ -85,6 +107,7 @@ impl FullscreenTextureTransitions {
         &mut self,
         renderer: &mut GlesRenderer,
         window: &Window,
+        owner: TextureTransitionOwner,
     ) -> Result<(), Box<dyn Error>> {
         let surface = window
             .wl_surface()
@@ -98,6 +121,7 @@ impl FullscreenTextureTransitions {
                 id: Id::new(),
                 previous,
                 current: None,
+                owner,
             },
         );
         Ok(())
@@ -107,8 +131,8 @@ impl FullscreenTextureTransitions {
         self.windows.remove(surface);
     }
 
-    pub fn clear(&mut self) {
-        self.windows.clear();
+    pub fn remove_owner(&mut self, owner: TextureTransitionOwner) {
+        self.windows.retain(|_, entry| entry.owner != owner);
     }
 
     pub fn blend_element(
@@ -118,6 +142,7 @@ impl FullscreenTextureTransitions {
         destination: Rectangle<i32, Physical>,
         progress: f64,
         alpha: f32,
+        radius: f32,
     ) -> Result<Option<FullscreenBlendElement>, Box<dyn Error>> {
         let surface = window
             .wl_surface()
@@ -151,6 +176,8 @@ impl FullscreenTextureTransitions {
                     &[
                         UniformName::new("halley_next_tex", UniformType::_1i),
                         UniformName::new("halley_progress", UniformType::_1f),
+                        UniformName::new("halley_rect_size", UniformType::_2f),
+                        UniformName::new("halley_corner_radius", UniformType::_1f),
                     ],
                 )?;
                 self.program = Some((context.clone(), program.clone()));
@@ -165,6 +192,10 @@ impl FullscreenTextureTransitions {
             next: current.texture,
             program,
             progress: progress.clamp(0.0, 1.0) as f32,
+            size: (destination.size.w as f32, destination.size.h as f32),
+            radius: radius
+                .max(0.0)
+                .min(destination.size.w.min(destination.size.h).max(0) as f32 * 0.5),
         }))
     }
 }
@@ -251,6 +282,8 @@ impl RenderElement<GlesRenderer> for FullscreenBlendElement {
             &[
                 Uniform::new("halley_next_tex", 1_i32),
                 Uniform::new("halley_progress", self.progress),
+                Uniform::new("halley_rect_size", self.size),
+                Uniform::new("halley_corner_radius", self.radius),
             ],
         );
 

@@ -4,6 +4,7 @@ use rune_cfg::RuneConfig;
 pub enum AnimationCurve {
     #[default]
     Linear,
+    EaseInOutCubic,
     EaseOutQuad,
     EaseOutCubic,
     EaseOutExpo,
@@ -14,6 +15,7 @@ impl AnimationCurve {
     fn parse(value: &str) -> Option<Self> {
         match value {
             "linear" => Some(Self::Linear),
+            "ease-in-out-cubic" => Some(Self::EaseInOutCubic),
             "ease-out-quad" => Some(Self::EaseOutQuad),
             "ease-out-cubic" => Some(Self::EaseOutCubic),
             "ease-out-expo" => Some(Self::EaseOutExpo),
@@ -197,17 +199,20 @@ pub struct NodeAnimation {
     pub duration_ms: u32,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MaximizeAnimation {
     pub enabled: bool,
-    pub duration_ms: u32,
+    pub motion: AnimationMotion,
 }
 
 impl Default for MaximizeAnimation {
     fn default() -> Self {
         Self {
             enabled: true,
-            duration_ms: 240,
+            motion: AnimationMotion::Easing(EasingMotion {
+                duration_ms: 240,
+                curve: AnimationCurve::EaseInOutCubic,
+            }),
         }
     }
 }
@@ -315,12 +320,27 @@ pub fn parse_animations(config: &RuneConfig) -> Animations {
                 defaults.fullscreen.motion,
             ),
         },
-        maximize: MaximizeAnimation {
-            enabled: config.get_or("animations.maximize.enabled", defaults.maximize.enabled),
-            duration_ms: config.get_or(
-                "animations.maximize.duration-ms",
-                defaults.maximize.duration_ms,
-            ),
+        maximize: {
+            let default_easing = match defaults.maximize.motion {
+                AnimationMotion::Easing(easing) => easing,
+                AnimationMotion::Spring(_) => unreachable!("maximize defaults use easing motion"),
+            };
+            let configured_easing = AnimationMotion::Easing(EasingMotion {
+                duration_ms: config.get_or(
+                    "animations.maximize.duration-ms",
+                    default_easing.duration_ms,
+                ),
+                curve: config
+                    .get_optional::<String>("animations.maximize.curve")
+                    .ok()
+                    .flatten()
+                    .and_then(|curve| AnimationCurve::parse(&curve))
+                    .unwrap_or(default_easing.curve),
+            });
+            MaximizeAnimation {
+                enabled: config.get_or("animations.maximize.enabled", defaults.maximize.enabled),
+                motion: AnimationMotion::parse(config, "animations.maximize", configured_easing),
+            }
         },
         node: NodeAnimation {
             enabled: config.get_or("animations.node.enabled", defaults.node.enabled),
@@ -508,6 +528,10 @@ end
             AnimationCurve::parse("elastic"),
             Some(AnimationCurve::Elastic)
         );
+        assert_eq!(
+            AnimationCurve::parse("ease-in-out-cubic"),
+            Some(AnimationCurve::EaseInOutCubic)
+        );
     }
 
     #[test]
@@ -594,6 +618,71 @@ end
 
         assert_eq!(
             parse_animations(&config).fullscreen.motion,
+            AnimationMotion::Easing(EasingMotion {
+                duration_ms: 180,
+                curve: AnimationCurve::EaseOutExpo,
+            })
+        );
+    }
+
+    #[test]
+    fn maximize_keeps_legacy_duration_and_ease_in_out_default() {
+        let config = RuneConfig::from_str(
+            r#"
+animations:
+  maximize:
+    duration-ms 360
+  end
+end
+"#,
+        )
+        .expect("valid rune-cfg source");
+
+        assert_eq!(
+            parse_animations(&config).maximize.motion,
+            AnimationMotion::Easing(EasingMotion {
+                duration_ms: 360,
+                curve: AnimationCurve::EaseInOutCubic,
+            })
+        );
+    }
+
+    #[test]
+    fn maximize_supports_fullscreen_motion_knobs() {
+        let spring = RuneConfig::from_str(
+            r#"
+animations:
+  maximize:
+    motion "spring"
+    damping-ratio 0.7
+    stiffness 650.0
+  end
+end
+"#,
+        )
+        .expect("valid rune-cfg source");
+        assert_eq!(
+            parse_animations(&spring).maximize.motion,
+            AnimationMotion::Spring(SpringMotion {
+                damping_ratio: 0.7,
+                stiffness: 650.0,
+            })
+        );
+
+        let easing = RuneConfig::from_str(
+            r#"
+animations:
+  maximize:
+    motion "easing"
+    duration-ms 180
+    curve "ease-out-expo"
+  end
+end
+"#,
+        )
+        .expect("valid rune-cfg source");
+        assert_eq!(
+            parse_animations(&easing).maximize.motion,
             AnimationMotion::Easing(EasingMotion {
                 duration_ms: 180,
                 curve: AnimationCurve::EaseOutExpo,

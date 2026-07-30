@@ -9,14 +9,14 @@ pub struct BorderColor {
     pub b: f32,
 }
 
-/// Border width + focused/unfocused color - the "very basic" slice of old
-/// halley's much larger `decorations` config (which also had a rounded
-/// radius, a secondary inner border, and a resize-using-border toggle).
-/// None of that is ported - just what's actually drawn right now: a
-/// flat-color highlight around whichever window has focus.
+/// Primary compositor border styling.
+///
+/// The radius describes the client-content corner. The renderer grows the
+/// outer border radius concentrically by the configured border width.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Decorations {
     pub border_width_px: i32,
+    pub border_radius_px: i32,
     pub border_color_focused: BorderColor,
     pub border_color_unfocused: BorderColor,
 }
@@ -26,6 +26,7 @@ impl Default for Decorations {
     fn default() -> Self {
         Self {
             border_width_px: 3,
+            border_radius_px: 8,
             border_color_focused: BorderColor {
                 r: 0.22,
                 g: 0.82,
@@ -51,7 +52,15 @@ impl Default for Decorations {
 pub fn parse_decorations(config: &RuneConfig) -> Decorations {
     let defaults = Decorations::default();
 
-    let border_width_px = config.get_or("decorations.border.size", defaults.border_width_px);
+    let border_width_px = config
+        .get_or("decorations.border.size", defaults.border_width_px)
+        .clamp(0, 64);
+    let border_radius_px = config
+        .get_or(
+            "decorations.border.radius",
+            config.get_or("decorations.border-radius", defaults.border_radius_px),
+        )
+        .clamp(0, 256);
     let border_color_focused = parse_color(
         config,
         &[
@@ -71,6 +80,7 @@ pub fn parse_decorations(config: &RuneConfig) -> Decorations {
 
     Decorations {
         border_width_px,
+        border_radius_px,
         border_color_focused,
         border_color_unfocused,
     }
@@ -147,6 +157,7 @@ mod tests {
 decorations:
   border:
     size 4
+    radius 9
     colour-focused "#d65d26"
     color-unfocused "#333333"
   end
@@ -158,6 +169,7 @@ end
         let decorations = parse_decorations(&config);
 
         assert_eq!(decorations.border_width_px, 4);
+        assert_eq!(decorations.border_radius_px, 9);
         assert_eq!(
             decorations.border_color_focused,
             BorderColor {
@@ -188,6 +200,7 @@ end
     fn defaults_match_old_halley() {
         let defaults = Decorations::default();
         assert_eq!(defaults.border_width_px, 3);
+        assert_eq!(defaults.border_radius_px, 8);
         assert_eq!(
             defaults.border_color_focused,
             BorderColor {
@@ -204,5 +217,16 @@ end
                 b: 0.35
             }
         );
+    }
+
+    #[test]
+    fn clamps_border_metrics_and_accepts_the_old_flat_radius_key() {
+        let config = RuneConfig::from_str(
+            "decorations:\n  border:\n    size 99\n  end\n  border-radius 999\nend\n",
+        )
+        .expect("valid rune-cfg source");
+        let decorations = parse_decorations(&config);
+        assert_eq!(decorations.border_width_px, 64);
+        assert_eq!(decorations.border_radius_px, 256);
     }
 }

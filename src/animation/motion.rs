@@ -143,6 +143,8 @@ pub fn apply_curve(curve: AnimationCurve, progress: f64) -> f64 {
     let progress = progress.clamp(0.0, 1.0);
     match curve {
         AnimationCurve::Linear => progress,
+        AnimationCurve::EaseInOutCubic if progress < 0.5 => 4.0 * progress * progress * progress,
+        AnimationCurve::EaseInOutCubic => 1.0 - (-2.0 * progress + 2.0).powi(3) / 2.0,
         AnimationCurve::EaseOutQuad => 1.0 - (1.0 - progress).powi(2),
         AnimationCurve::EaseOutCubic => 1.0 - (1.0 - progress).powi(3),
         AnimationCurve::EaseOutExpo if progress == 1.0 => 1.0,
@@ -242,6 +244,7 @@ mod tests {
     fn easing_preserves_endpoints() {
         for curve in [
             AnimationCurve::Linear,
+            AnimationCurve::EaseInOutCubic,
             AnimationCurve::EaseOutQuad,
             AnimationCurve::EaseOutCubic,
             AnimationCurve::EaseOutExpo,
@@ -259,6 +262,7 @@ mod tests {
 
         for curve in [
             AnimationCurve::Linear,
+            AnimationCurve::EaseInOutCubic,
             AnimationCurve::EaseOutQuad,
             AnimationCurve::EaseOutCubic,
             AnimationCurve::EaseOutExpo,

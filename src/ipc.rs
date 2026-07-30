@@ -303,6 +303,15 @@ pub fn handle_request<D: crate::session::SessionDriver>(
                 .as_ref()
                 .map(|path| path.to_string_lossy().into_owned()),
         ),
+        halley_ipc::Request::Dpms { command, output } => {
+            match app.driver.apply_dpms(command, output.as_deref()) {
+                Ok(()) => {
+                    crate::wayland::session_lock::confirm_unlit_outputs(app);
+                    halley_ipc::Response::Ack
+                }
+                Err(message) => halley_ipc::Response::Error(message),
+            }
+        }
     };
     let _ = reply.send(response, Vec::new());
 }

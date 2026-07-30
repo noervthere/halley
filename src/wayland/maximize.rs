@@ -7,9 +7,12 @@ use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Physical, Rectangle};
 use smithay::wayland::seat::WaylandFocus;
 
+use crate::animation::MotionTimeline;
+
 #[derive(Clone, Copy, Debug)]
 pub struct FieldMaximizePresentation {
     pub progress: f64,
+    pub transition_completion: f64,
     pub windowed_rect: Rectangle<i32, Logical>,
     pub target_rect: Rectangle<i32, Physical>,
 }
@@ -41,31 +44,8 @@ struct Entry {
     restore_output: String,
     target_rect: Rectangle<i32, Logical>,
     active: bool,
-    window_timeline: Option<FieldTimeline>,
-    camera_timeline: Option<FieldTimeline>,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct FieldTimeline {
-    started: Duration,
-    duration: Duration,
-    from: f64,
-    to: f64,
-}
-
-impl FieldTimeline {
-    fn value_at(self, now: Duration) -> f64 {
-        if self.duration.is_zero() {
-            return self.to;
-        }
-        let linear = (now.saturating_sub(self.started).as_secs_f64() / self.duration.as_secs_f64())
-            .clamp(0.0, 1.0);
-        self.from + (self.to - self.from) * ease_in_out_cubic(linear)
-    }
-
-    fn is_finished_at(self, now: Duration) -> bool {
-        now.saturating_sub(self.started) >= self.duration
-    }
+    window_timeline: Option<MotionTimeline>,
+    camera_timeline: Option<MotionTimeline>,
 }
 
 pub struct FieldMaximizeManager {
@@ -83,7 +63,7 @@ impl FieldMaximizeManager {
         }
     }
 
-    pub fn reload(&mut self, field: Field, animations: Animations) {
+    pub fn reload(&mut self, field: Field, animations: Animations) -> bool {
         self.field = field;
         self.animations = animations;
         if !animations_enabled(animations) {
@@ -91,11 +71,17 @@ impl FieldMaximizeManager {
                 entry.window_timeline = None;
                 entry.camera_timeline = None;
             }
+            return true;
         }
+        false
     }
 
     pub fn gap(&self) -> f32 {
         self.field.gap
+    }
+
+    pub fn animations_enabled(&self) -> bool {
+        animations_enabled(self.animations)
     }
 
     pub fn toggle(
@@ -110,11 +96,15 @@ impl FieldMaximizeManager {
         let output_name = output.name();
         match self.outputs.get_mut(&output_name) {
             Some(entry) if entry.surface == surface && entry.active => {
-                let window_progress = progress(entry.window_timeline, entry.active, now);
-                let camera_progress = progress(entry.camera_timeline, entry.active, now);
+                let (window_progress, window_velocity) =
+                    motion_state(entry.window_timeline, entry.active, now);
+                let (camera_progress, camera_velocity) =
+                    motion_state(entry.camera_timeline, entry.active, now);
                 entry.active = false;
-                entry.window_timeline = timeline(self.animations, now, window_progress, 0.0);
-                entry.camera_timeline = timeline(self.animations, now, camera_progress, 0.0);
+                entry.window_timeline =
+                    timeline(self.animations, now, window_progress, 0.0, window_velocity);
+                entry.camera_timeline =
+                    timeline(self.animations, now, camera_progress, 0.0, camera_velocity);
                 FieldMaximizeChange {
                     geometry: entry.restore_geometry,
                     output: entry.restore_output.clone(),
@@ -122,12 +112,16 @@ impl FieldMaximizeManager {
                 }
             }
             Some(entry) if entry.surface == surface => {
-                let window_progress = progress(entry.window_timeline, entry.active, now);
-                let camera_progress = progress(entry.camera_timeline, entry.active, now);
+                let (window_progress, window_velocity) =
+                    motion_state(entry.window_timeline, entry.active, now);
+                let (camera_progress, camera_velocity) =
+                    motion_state(entry.camera_timeline, entry.active, now);
                 entry.active = true;
                 entry.target_rect = target_rect;
-                entry.window_timeline = timeline(self.animations, now, window_progress, 1.0);
-                entry.camera_timeline = timeline(self.animations, now, camera_progress, 1.0);
+                entry.window_timeline =
+                    timeline(self.animations, now, window_progress, 1.0, window_velocity);
+                entry.camera_timeline =
+                    timeline(self.animations, now, camera_progress, 1.0, camera_velocity);
                 FieldMaximizeChange {
                     geometry: target_rect,
                     output: output_name,
@@ -135,7 +129,8 @@ impl FieldMaximizeManager {
                 }
             }
             Some(entry) => {
-                let camera_progress = progress(entry.camera_timeline, entry.active, now);
+                let (camera_progress, camera_velocity) =
+                    motion_state(entry.camera_timeline, entry.active, now);
                 let displaced = FieldRestore {
                     surface: entry.surface.clone(),
                     geometry: entry.restore_geometry,
@@ -147,8 +142,14 @@ impl FieldMaximizeManager {
                     restore_output,
                     target_rect,
                     active: true,
-                    window_timeline: timeline(self.animations, now, 0.0, 1.0),
-                    camera_timeline: timeline(self.animations, now, camera_progress, 1.0),
+                    window_timeline: timeline(self.animations, now, 0.0, 1.0, 0.0),
+                    camera_timeline: timeline(
+                        self.animations,
+                        now,
+                        camera_progress,
+                        1.0,
+                        camera_velocity,
+                    ),
                 };
                 FieldMaximizeChange {
                     geometry: target_rect,
@@ -165,8 +166,8 @@ impl FieldMaximizeManager {
                         restore_output,
                         target_rect,
                         active: true,
-                        window_timeline: timeline(self.animations, now, 0.0, 1.0),
-                        camera_timeline: timeline(self.animations, now, 0.0, 1.0),
+                        window_timeline: timeline(self.animations, now, 0.0, 1.0, 0.0),
+                        camera_timeline: timeline(self.animations, now, 0.0, 1.0, 0.0),
                     },
                 );
                 FieldMaximizeChange {
@@ -190,8 +191,13 @@ impl FieldMaximizeManager {
             return None;
         }
         let progress = progress(entry.window_timeline, entry.active, now).clamp(0.0, 1.0);
+        let transition_completion = entry
+            .window_timeline
+            .map(|timeline| timeline.completion_at(now))
+            .unwrap_or(1.0);
         (progress > 0.0).then(|| FieldMaximizePresentation {
             progress,
+            transition_completion,
             windowed_rect: entry.restore_geometry,
             target_rect: Rectangle::new(
                 (entry.target_rect.loc - output_geometry.loc).to_physical(1),
@@ -252,14 +258,16 @@ impl FieldMaximizeManager {
         self.outputs.remove(output).is_some()
     }
 
-    pub fn cleanup(&mut self, now: Duration) -> bool {
+    pub fn cleanup(&mut self, now: Duration) -> FieldMaximizeCleanup {
         let mut changed = false;
+        let mut finished_surfaces = Vec::new();
         self.outputs.retain(|_, entry| {
             if entry
                 .window_timeline
                 .is_some_and(|timeline| timeline.is_finished_at(now))
             {
                 entry.window_timeline = None;
+                finished_surfaces.push(entry.surface.clone());
                 changed = true;
             }
             if entry
@@ -271,7 +279,10 @@ impl FieldMaximizeManager {
             }
             entry.active || entry.window_timeline.is_some() || entry.camera_timeline.is_some()
         });
-        changed
+        FieldMaximizeCleanup {
+            visual_finished: changed,
+            finished_surfaces,
+        }
     }
 
     pub fn is_animating(&self, now: Duration) -> bool {
@@ -343,32 +354,36 @@ impl FieldMaximizeManager {
     }
 }
 
+pub struct FieldMaximizeCleanup {
+    pub visual_finished: bool,
+    pub finished_surfaces: Vec<WlSurface>,
+}
+
 fn animations_enabled(animations: Animations) -> bool {
-    animations.enabled && animations.maximize.enabled && animations.maximize.duration_ms > 0
+    animations.enabled && animations.maximize.enabled
 }
 
-fn timeline(animations: Animations, now: Duration, from: f64, to: f64) -> Option<FieldTimeline> {
-    animations_enabled(animations).then(|| FieldTimeline {
-        started: now,
-        duration: Duration::from_millis(u64::from(animations.maximize.duration_ms)),
-        from,
-        to,
-    })
+fn timeline(
+    animations: Animations,
+    now: Duration,
+    from: f64,
+    to: f64,
+    velocity: f64,
+) -> Option<MotionTimeline> {
+    animations_enabled(animations)
+        .then(|| MotionTimeline::between(animations.maximize.motion, now, from, to, velocity))
 }
 
-fn progress(timeline: Option<FieldTimeline>, active: bool, now: Duration) -> f64 {
+fn progress(timeline: Option<MotionTimeline>, active: bool, now: Duration) -> f64 {
     timeline
         .map(|timeline| timeline.value_at(now))
         .unwrap_or_else(|| if active { 1.0 } else { 0.0 })
 }
 
-fn ease_in_out_cubic(value: f64) -> f64 {
-    let value = value.clamp(0.0, 1.0);
-    if value < 0.5 {
-        4.0 * value * value * value
-    } else {
-        1.0 - (-2.0 * value + 2.0).powi(3) / 2.0
-    }
+fn motion_state(timeline: Option<MotionTimeline>, active: bool, now: Duration) -> (f64, f64) {
+    timeline
+        .map(|timeline| (timeline.value_at(now), timeline.velocity_at(now)))
+        .unwrap_or_else(|| (if active { 1.0 } else { 0.0 }, 0.0))
 }
 
 fn interpolate_rect(
@@ -391,12 +406,27 @@ fn interpolate_rect(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use halley_config::{AnimationCurve, AnimationMotion, EasingMotion};
 
     #[test]
-    fn maximize_easing_preserves_endpoints() {
-        assert_eq!(ease_in_out_cubic(0.0), 0.0);
-        assert_eq!(ease_in_out_cubic(1.0), 1.0);
-        assert_eq!(ease_in_out_cubic(0.5), 0.5);
+    fn maximize_motion_retargets_without_discontinuity() {
+        let mut animations = Animations::default();
+        animations.maximize.motion = AnimationMotion::Easing(EasingMotion {
+            duration_ms: 400,
+            curve: AnimationCurve::Linear,
+        });
+        let started = Duration::from_secs(1);
+        let forward = timeline(animations, started, 0.0, 1.0, 0.0).unwrap();
+        let reversed_at = started + Duration::from_millis(100);
+        let value = forward.value_at(reversed_at);
+        let velocity = forward.velocity_at(reversed_at);
+        let reverse = timeline(animations, reversed_at, value, 0.0, velocity).unwrap();
+
+        assert!((reverse.value_at(reversed_at) - value).abs() < f64::EPSILON);
+        assert_eq!(
+            reverse.value_at(reversed_at + Duration::from_millis(400)),
+            0.0
+        );
     }
 
     #[test]

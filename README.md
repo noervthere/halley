@@ -29,8 +29,14 @@ cargo build --release --workspace
 Run `target/release/halley --winit` for a nested development session or
 `target/release/halley --session` for a real TTY session. Pass `-c PATH` (or
 `--config PATH`) to select a configuration explicitly. `halleyctl` exposes
-output, node, Bearings, configuration verification, and quit controls;
+output, DPMS, node, Bearings, configuration verification, and quit controls;
 `halleyctl --help` lists the current surface.
+
+On the TTY backend, `halleyctl dpms off|on|toggle [-o OUTPUT]` controls
+connector power. Omitting `--output` applies the command to every active
+output. Keyboard and pointer input wake the selected sleeping output, or every
+output when the whole layout is asleep. The nested winit backend rejects DPMS
+commands.
 
 References:
 
@@ -43,3 +49,4 @@ References:
 - [Wayland protocol support](docs/wayland-protocols.md)
 - [Fonts](docs/fonts.md)
 - [Animations](docs/animations.md)
+- [Window decorations](docs/decorations.md)

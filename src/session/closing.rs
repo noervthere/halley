@@ -76,6 +76,11 @@ pub(crate) fn capture_window<D: SessionDriver>(session: &mut Session<D>, window:
                 * fullscreen_border_alpha,
         }
     });
+    let content_radius = crate::backend::window_decoration::scaled_metric(
+        session.decorations.border_radius_px,
+        visual.zoom_scale,
+    ) as f32
+        * fullscreen_border_alpha;
     let anchor = if visual.fullscreen.is_some() {
         crate::backend::close::CloseAnchor::OutputLocal
     } else {
@@ -105,6 +110,7 @@ pub(crate) fn capture_window<D: SessionDriver>(session: &mut Session<D>, window:
         start_alpha: visual.opening_alpha,
         retract_origin,
         border,
+        content_radius,
         collapse_target: None,
     };
     let animations = &mut session.window_close_animations;

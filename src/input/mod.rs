@@ -138,6 +138,10 @@ impl<T: Eq + Hash> SuppressedReleases<T> {
     pub fn release_is_suppressed(&mut self, input: T) -> bool {
         self.inputs.remove(&input)
     }
+
+    pub fn clear(&mut self) {
+        self.inputs.clear();
+    }
 }
 
 pub type SuppressedButtons = SuppressedReleases<u32>;

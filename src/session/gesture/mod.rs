@@ -643,7 +643,7 @@ where
     true
 }
 
-pub(super) fn cancel_all<D: SessionDriver>(session: &mut Session<D>) {
+pub(crate) fn cancel_all<D: SessionDriver>(session: &mut Session<D>) {
     let time = session.start_time.elapsed().as_millis() as u32;
     let pointer = session
         .seat

@@ -59,6 +59,19 @@ struct DrmOutputEntry {
     drm_output: TtyDrmOutput,
     dmabuf_feedback: Option<super::dmabuf::SurfaceDmabufFeedback>,
     pending: bool,
+    dpms_enabled: bool,
+}
+
+#[derive(Debug)]
+pub struct AppliedDpmsChange {
+    pub output: Output,
+    pub enabled: bool,
+}
+
+#[derive(Debug)]
+pub struct AppliedDpms {
+    pub changes: Vec<AppliedDpmsChange>,
+    pub error: Option<String>,
 }
 
 pub struct AppliedOutputChange {
@@ -81,6 +94,7 @@ pub struct AppliedOutputChange {
 /// `render()` never reaches into it, matching `Renderable`'s narrow contract.
 pub struct TtyBackend {
     session: LibSeatSession,
+    drm_fd: DrmDeviceFd,
     renderer: GlesRenderer,
     drm_output_manager: TtyDrmOutputManager,
     drm_outputs: Vec<DrmOutputEntry>,
@@ -142,7 +156,7 @@ impl TtyBackend {
             return Err("no connected connector found".into());
         }
 
-        let gbm = GbmDevice::new(drm_fd)?;
+        let gbm = GbmDevice::new(drm_fd.clone())?;
         let allocator = GbmAllocator::new(
             gbm.clone(),
             GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT,
@@ -270,6 +284,7 @@ impl TtyBackend {
                         drm_output,
                         dmabuf_feedback,
                         pending: false,
+                        dpms_enabled: true,
                     });
                 }
                 Err(err) => {
@@ -286,6 +301,7 @@ impl TtyBackend {
 
         let backend = TtyBackend {
             session,
+            drm_fd,
             renderer,
             drm_output_manager,
             drm_outputs,
@@ -304,6 +320,11 @@ impl TtyBackend {
         &self.primary_output
     }
 
+    /// Primary DRM device used for demand-driven explicit synchronization.
+    pub fn drm_device_fd(&self) -> &DrmDeviceFd {
+        &self.drm_fd
+    }
+
     /// Every initialized `wl_output`, for registering globals and mapping
     /// the configured layout into Smithay's `Space`.
     pub fn outputs(&self) -> impl Iterator<Item = &Output> {
@@ -315,6 +336,116 @@ impl TtyBackend {
             .iter()
             .find(|entry| entry.crtc == crtc)
             .map(|entry| &entry.output)
+    }
+
+    pub fn output_dpms_enabled(&self, output: &Output) -> bool {
+        self.drm_outputs
+            .iter()
+            .find(|entry| &entry.output == output)
+            .is_none_or(|entry| entry.dpms_enabled)
+    }
+
+    pub fn any_output_dpms_enabled(&self) -> bool {
+        self.drm_outputs.iter().any(|entry| entry.dpms_enabled)
+    }
+
+    pub fn apply_dpms(
+        &mut self,
+        command: halley_ipc::DpmsCommand,
+        output_name: Option<&str>,
+    ) -> Result<AppliedDpms, String> {
+        let targets = match output_name {
+            Some(name) => {
+                let index = self
+                    .drm_outputs
+                    .iter()
+                    .position(|entry| entry.output.name() == name)
+                    .ok_or_else(|| format!("unknown active output {name:?}"))?;
+                vec![index]
+            }
+            None => (0..self.drm_outputs.len()).collect(),
+        };
+        let target_enabled = dpms_target_enabled(
+            command,
+            targets
+                .iter()
+                .map(|index| self.drm_outputs[*index].dpms_enabled),
+        )
+        .ok_or_else(|| "dpms request has no active output targets".to_string())?;
+        if targets
+            .iter()
+            .all(|index| self.drm_outputs[*index].dpms_enabled == target_enabled)
+        {
+            return Err("dpms request made no change".to_string());
+        }
+
+        let mut changes = Vec::new();
+        let mut failures = Vec::new();
+        for index in targets {
+            let entry = &mut self.drm_outputs[index];
+            if entry.dpms_enabled == target_enabled {
+                continue;
+            }
+            if target_enabled {
+                // `clear()` powers the CRTC off but intentionally leaves the
+                // compositor's damage history intact. Without resetting it,
+                // a static scene can produce an empty first frame and never
+                // queue the atomic modeset that actually wakes this output.
+                // This is especially visible on a secondary output without
+                // the software cursor or an active animation.
+                let reset = entry.drm_output.with_compositor(|compositor| {
+                    let result = compositor.reset_state();
+                    if result.is_ok() {
+                        compositor.reset_buffer_ages();
+                    }
+                    result
+                });
+                if let Err(err) = reset {
+                    failures.push(format!("{}: {err}", entry.output.name()));
+                    continue;
+                }
+            } else {
+                let clear = entry
+                    .drm_output
+                    .with_compositor(|compositor| compositor.clear());
+                if let Err(err) = clear {
+                    failures.push(format!("{}: {err}", entry.output.name()));
+                    continue;
+                }
+            }
+            entry.dpms_enabled = target_enabled;
+            entry.pending = false;
+            changes.push(AppliedDpmsChange {
+                output: entry.output.clone(),
+                enabled: target_enabled,
+            });
+        }
+
+        if !changes.is_empty() {
+            let names = changes
+                .iter()
+                .map(|change| change.output.name())
+                .collect::<Vec<_>>()
+                .join(", ");
+            eventline::debug!(
+                "tty dpms: {} outputs {names}",
+                if target_enabled {
+                    "powering on"
+                } else {
+                    "powered off"
+                }
+            );
+        }
+        Ok(AppliedDpms {
+            changes,
+            error: (!failures.is_empty()).then(|| {
+                format!(
+                    "failed to power {} outputs: {}",
+                    if target_enabled { "on" } else { "off" },
+                    failures.join(", ")
+                )
+            }),
+        })
     }
 
     pub fn dmabuf_capabilities(&self) -> super::dmabuf::DmabufCapabilities {
@@ -449,6 +580,19 @@ impl TtyBackend {
                 )
             };
 
+            if !self.drm_outputs[index].dpms_enabled {
+                let entry = &mut self.drm_outputs[index];
+                if let Err(err) = entry
+                    .drm_output
+                    .with_compositor(|compositor| compositor.clear())
+                {
+                    eventline::error!(
+                        "output {name:?}: failed to restore DPMS-off state after configuration: {err}"
+                    );
+                }
+                entry.pending = false;
+            }
+
             let info = connector_output_info(
                 name.clone(),
                 &connector,
@@ -491,6 +635,16 @@ impl TtyBackend {
         // output from rendering again (its VBlank is never coming).
         for entry in &mut self.drm_outputs {
             entry.pending = false;
+            if !entry.dpms_enabled
+                && let Err(err) = entry
+                    .drm_output
+                    .with_compositor(|compositor| compositor.clear())
+            {
+                eventline::error!(
+                    "output {:?}: failed to restore DPMS-off state after VT activation: {err}",
+                    entry.output.name()
+                );
+            }
         }
         Ok(())
     }
@@ -533,7 +687,16 @@ impl TtyBackend {
 
 impl crate::ipc::OutputInfoSource for TtyBackend {
     fn output_info(&self) -> Vec<halley_ipc::OutputInfo> {
-        self.ipc_output_info.clone()
+        let mut outputs = self.ipc_output_info.clone();
+        for entry in self.drm_outputs.iter().filter(|entry| !entry.dpms_enabled) {
+            if let Some(info) = outputs
+                .iter_mut()
+                .find(|info| info.name == entry.output.name())
+            {
+                info.current_mode = None;
+            }
+        }
+        outputs
     }
 }
 
@@ -549,6 +712,9 @@ impl Renderable for TtyBackend {
             .iter_mut()
             .find(|entry| &entry.output == output)
             .ok_or_else(|| format!("unknown tty output {:?}", output.name()))?;
+        if !entry.dpms_enabled {
+            return Ok(RenderOutcome::new(RenderStatus::Skipped, None));
+        }
         // DRM rejects a second commit while the previous page flip is still
         // pending. The next VBlank clears this flag and schedules another
         // render, so skipping here does not lose scene changes.
@@ -559,8 +725,15 @@ impl Renderable for TtyBackend {
             .space
             .output_geometry(&entry.output)
             .ok_or_else(|| format!("tty output {:?} is not mapped", entry.output.name()))?;
-        let clear = request.clear;
+        let space = request.space;
+        let session_lock = request.session_lock;
+        let clear = if request.session_lock.active() {
+            super::SESSION_LOCK_COLOR
+        } else {
+            request.clear
+        };
         let target_presentation_time = request.target_presentation_time;
+        let session_lock_generation = request.session_lock.frame_generation();
         let elements = super::scene::build(
             &mut self.renderer,
             &entry.output,
@@ -593,13 +766,61 @@ impl Renderable for TtyBackend {
             ));
         }
 
+        let presentation_feedback = crate::wayland::presentation::take_output_feedback(
+            &entry.output,
+            &primary_output,
+            space,
+            session_lock,
+            &element_states,
+        );
         entry.drm_output.queue_frame(FrameSubmission {
             target_presentation_time,
+            presentation_feedback,
+            session_lock_generation,
         })?;
         entry.pending = true;
         Ok(RenderOutcome::new(
             RenderStatus::Submitted,
             Some(element_states),
         ))
+    }
+}
+
+fn dpms_target_enabled(
+    command: halley_ipc::DpmsCommand,
+    current: impl IntoIterator<Item = bool>,
+) -> Option<bool> {
+    match command {
+        halley_ipc::DpmsCommand::Off => Some(false),
+        halley_ipc::DpmsCommand::On => Some(true),
+        halley_ipc::DpmsCommand::Toggle => {
+            let current = current.into_iter().collect::<Vec<_>>();
+            (!current.is_empty()).then(|| !current.iter().all(|enabled| *enabled))
+        }
+    }
+}
+
+#[cfg(test)]
+mod dpms_tests {
+    use super::dpms_target_enabled;
+
+    #[test]
+    fn toggle_turns_all_off_only_when_every_target_is_on() {
+        assert_eq!(
+            dpms_target_enabled(halley_ipc::DpmsCommand::Toggle, [true, true]),
+            Some(false)
+        );
+        assert_eq!(
+            dpms_target_enabled(halley_ipc::DpmsCommand::Toggle, [true, false]),
+            Some(true)
+        );
+        assert_eq!(
+            dpms_target_enabled(halley_ipc::DpmsCommand::Toggle, [false, false]),
+            Some(true)
+        );
+        assert_eq!(
+            dpms_target_enabled(halley_ipc::DpmsCommand::Toggle, []),
+            None
+        );
     }
 }

@@ -205,6 +205,7 @@ pub fn elements(
                     halley_config::OverlayShape::Rounded => 11.0,
                 },
                 alpha: layout.alpha,
+                clip: None,
             })
             .collect::<Vec<_>>()
     } else {

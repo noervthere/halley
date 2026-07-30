@@ -1158,6 +1158,7 @@ name = "halley"
 version = "0.1.0"
 dependencies = [
  "calloop 0.14.4",
+ "cgmath",
  "cosmic-text",
  "eventline",
  "futures-util",

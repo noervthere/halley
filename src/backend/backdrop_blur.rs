@@ -29,6 +29,7 @@ pub struct BlurPatch {
     pub rect: Rectangle<i32, Physical>,
     pub radius: f32,
     pub alpha: f32,
+    pub clip: Option<(Rectangle<i32, Physical>, f32)>,
 }
 
 struct Programs {
@@ -130,6 +131,10 @@ impl BackdropBlurRenderer {
             UniformName::new("patch_origin_uv", UniformType::_2f),
             UniformName::new("patch_size_uv", UniformType::_2f),
             UniformName::new("corner_radius", UniformType::_1f),
+            UniformName::new("clip_origin", UniformType::_2f),
+            UniformName::new("clip_size", UniformType::_2f),
+            UniformName::new("clip_radius", UniformType::_1f),
+            UniformName::new("use_clip", UniformType::_1f),
             UniformName::new("saturation", UniformType::_1f),
             UniformName::new("noise", UniformType::_1f),
         ];
@@ -394,6 +399,17 @@ fn composite_patch(
         return Ok(());
     }
     let texture_size = texture.size();
+    let (clip_origin, clip_size, clip_radius, use_clip) = patch
+        .clip
+        .map(|(clip, radius)| {
+            (
+                (clip.loc.x as f32, clip.loc.y as f32),
+                (clip.size.w as f32, clip.size.h as f32),
+                radius.max(0.0),
+                1.0,
+            )
+        })
+        .unwrap_or(((0.0, 0.0), (1.0, 1.0), 0.0, 0.0));
     frame.render_texture_from_to(
         texture,
         Rectangle::<f64, Buffer>::new(
@@ -426,6 +442,10 @@ fn composite_patch(
                 ),
             ),
             Uniform::new("corner_radius", patch.radius.max(0.0)),
+            Uniform::new("clip_origin", clip_origin),
+            Uniform::new("clip_size", clip_size),
+            Uniform::new("clip_radius", clip_radius),
+            Uniform::new("use_clip", use_clip),
             Uniform::new("saturation", SATURATION),
             Uniform::new("noise", NOISE),
         ],

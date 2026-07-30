@@ -8,6 +8,10 @@ uniform vec2 rect_size;
 uniform vec2 patch_origin_uv;
 uniform vec2 patch_size_uv;
 uniform float corner_radius;
+uniform vec2 clip_origin;
+uniform vec2 clip_size;
+uniform float clip_radius;
+uniform float use_clip;
 uniform float saturation;
 uniform float noise;
 
@@ -37,6 +41,19 @@ void main() {
     float radius = min(max(corner_radius, 0.0), min(size.x, size.y) * 0.5);
     float dist = rounded_rect_sdf(px - size * 0.5, size, radius);
     float mask = sdf_alpha(dist);
+    if (use_clip > 0.5) {
+        // v_coords samples the output-sized blur texture, so recover output
+        // pixels directly rather than deriving them from the patch-local quad.
+        vec2 output_px = v_coords * (rect_size / max(patch_size_uv, vec2(0.000001)));
+        vec2 clip_local = output_px - clip_origin;
+        float clip_r = min(max(clip_radius, 0.0), min(clip_size.x, clip_size.y) * 0.5);
+        float clip_dist = rounded_rect_sdf(
+            clip_local - clip_size * 0.5,
+            max(clip_size, vec2(1.0)),
+            clip_r
+        );
+        mask *= sdf_alpha(clip_dist);
+    }
     if (mask <= 0.0) {
         discard;
     }
