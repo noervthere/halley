@@ -248,24 +248,33 @@ fn toggle_focused_fullscreen<D: SessionDriver>(session: &mut Session<D>, output:
     else {
         return;
     };
-    let record_output = record.output.clone();
     let focused = record.surface;
     let window = record.window;
+    let output_name =
+        crate::wayland::window_output_name(&window).unwrap_or_else(|| record.output.clone());
     cancel_grab_for_surface(session, &focused);
     let entering = !session.fullscreen.is_fullscreen_or_pending(&focused);
+    if entering {
+        displace_fullscreen_on_output(session, &output_name, &focused);
+    }
     let field_restore = entering
-        .then(|| session.maximize.take_restore(&focused))
+        .then(|| session.maximize.take_output_restore(&output_name))
         .flatten();
     let field_geometry = field_restore
         .as_ref()
+        .filter(|restore| restore.surface == focused)
         .and_then(|_| session.wayland.space.element_geometry(&window));
     if let Some(restore) = field_restore.as_ref() {
         session.render.fullscreen_textures.remove(&restore.surface);
-        let _ = session.cameras.apply_field_maximize(&record_output, None);
-        session
-            .wayland
-            .space
-            .relocate_element(&window, restore.geometry.loc);
+        let _ = session.cameras.apply_field_maximize(&output_name, None);
+        if restore.surface == focused {
+            session
+                .wayland
+                .space
+                .relocate_element(&window, restore.geometry.loc);
+        } else {
+            configure_field_geometry(session, restore);
+        }
     }
     if let Some(toplevel) = window.toplevel() {
         if entering {
@@ -288,6 +297,58 @@ fn toggle_focused_fullscreen<D: SessionDriver>(session: &mut Session<D>, output:
     }
     pointer::reconcile_state(session);
     session.request_redraw();
+}
+
+fn displace_fullscreen_on_output<D: SessionDriver>(
+    session: &mut Session<D>,
+    output: &str,
+    except: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+) {
+    let occupants = session.fullscreen.occupants_on_output(output, except);
+    for (surface, origin) in occupants {
+        let restore = session.fullscreen.restore_location(&surface);
+        let window = session
+            .nodes
+            .id_for_surface(&surface)
+            .and_then(|id| session.nodes.record(id))
+            .map(|record| record.window.clone())
+            .or_else(|| {
+                session
+                    .wayland
+                    .space
+                    .elements()
+                    .find(|window| {
+                        window
+                            .wl_surface()
+                            .is_some_and(|candidate| candidate.as_ref() == &surface)
+                    })
+                    .cloned()
+            });
+        if let Some(window) = window {
+            if let Some(toplevel) = window.toplevel() {
+                session.fullscreen.unrequest(&session.wayland, toplevel);
+            } else if origin == crate::wayland::fullscreen::FullscreenOrigin::Maximize {
+                crate::xwayland::restore_maximized_window(session, &window);
+            } else {
+                crate::xwayland::set_window_fullscreen(session, &window, false);
+            }
+            if let Some((location, restore_output)) = restore {
+                if let Some(restore_output) = restore_output.as_deref().and_then(|name| {
+                    session
+                        .wayland
+                        .space
+                        .outputs()
+                        .find(|candidate| candidate.name() == name)
+                        .cloned()
+                }) {
+                    crate::wayland::set_window_output(&window, &restore_output);
+                }
+                session.wayland.space.relocate_element(&window, location);
+            }
+        }
+        session.fullscreen.remove(&surface);
+        session.render.fullscreen_textures.remove(&surface);
+    }
 }
 
 fn toggle_focused_field_maximize<D: SessionDriver>(session: &mut Session<D>, output: Option<&str>) {
@@ -356,6 +417,10 @@ fn toggle_focused_field_maximize<D: SessionDriver>(session: &mut Session<D>, out
     }
     cancel_grab_for_surface(session, &record.surface);
     let now = crate::frame_clock::monotonic_now();
+    let entering = !session.maximize.contains(&record.surface);
+    if entering {
+        displace_fullscreen_on_output(session, &output_name, &record.surface);
+    }
     // Maximizing straight out of fullscreen hands the whole travel to the
     // maximize animation: it eases from the rect the window occupies right now
     // down to the maximized rect. Letting fullscreen arm its own exit

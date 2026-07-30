@@ -223,6 +223,13 @@ pub fn set_window_fullscreen<D: SessionDriver>(
     xwm::set_window_fullscreen(session, window, fullscreen);
 }
 
+pub fn restore_maximized_window<D: SessionDriver>(
+    session: &mut Session<D>,
+    window: &smithay::desktop::Window,
+) {
+    xwm::restore_maximized_window(session, window);
+}
+
 pub fn handle_commit<D: SessionDriver>(
     session: &mut Session<D>,
     surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,

@@ -26,6 +26,7 @@ mod override_redirect;
 mod presentation;
 
 use override_redirect::*;
+pub(super) use presentation::restore_maximized_window;
 use presentation::*;
 pub(super) use presentation::{configure_window, reconfigure_fullscreen, set_window_fullscreen};
 

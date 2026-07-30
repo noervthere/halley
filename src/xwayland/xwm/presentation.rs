@@ -359,6 +359,15 @@ pub(crate) fn set_window_fullscreen<D: SessionDriver>(
     }
 }
 
+pub(crate) fn restore_maximized_window<D: SessionDriver>(
+    session: &mut Session<D>,
+    window: &Window,
+) {
+    if let Some(surface) = window.x11_surface().cloned() {
+        restore_window(session, &surface);
+    }
+}
+
 pub(super) fn maximize_window<D: SessionDriver>(session: &mut Session<D>, surface: &X11Surface) {
     if session
         .xwayland

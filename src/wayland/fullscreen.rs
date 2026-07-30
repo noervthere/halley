@@ -847,12 +847,32 @@ impl FullscreenManager {
             .is_some_and(|entry| entry.active || entry.desired)
     }
 
+    pub(crate) fn occupants_on_output(
+        &self,
+        output: &str,
+        except: &WlSurface,
+    ) -> Vec<(WlSurface, FullscreenOrigin)> {
+        self.windows
+            .iter()
+            .filter(|(surface, entry)| *surface != except && entry_occupies_output(entry, output))
+            .map(|(surface, entry)| (surface.clone(), entry.origin))
+            .collect()
+    }
+
     pub(crate) fn restore_placement(
         &self,
         surface: &WlSurface,
     ) -> Option<(Rectangle<i32, Logical>, Option<String>)> {
         let restore = self.windows.get(surface)?.restore.as_ref()?;
         Some((restore.geometry, restore.output.clone()))
+    }
+
+    pub(crate) fn restore_location(
+        &self,
+        surface: &WlSurface,
+    ) -> Option<(Point<i32, Logical>, Option<String>)> {
+        let restore = self.windows.get(surface)?.restore.as_ref()?;
+        Some((restore.location, restore.output.clone()))
     }
 
     pub(crate) fn override_restore_from_field(
@@ -1041,6 +1061,15 @@ fn prefer_seeded_restore(
 
 fn can_update_external_restore(entry: &FullscreenWindow) -> bool {
     !entry.desired && entry.external_pending.is_none()
+}
+
+fn entry_occupies_output(entry: &FullscreenWindow, output: &str) -> bool {
+    entry.target_output == output
+        && (entry.active
+            || entry.desired
+            || entry.presented
+            || entry.transition.is_some()
+            || entry.external_pending.is_some())
 }
 
 fn settle_external_fullscreen(
@@ -1301,6 +1330,28 @@ mod tests {
         let entry = test_entry(true);
         assert!(entry_covers_top(&entry, "DP-1", Duration::ZERO));
         assert!(!entry_covers_top(&entry, "DP-2", Duration::ZERO));
+    }
+
+    #[test]
+    fn output_occupancy_includes_transitional_fullscreen_windows() {
+        let motion = AnimationMotion::Easing(EasingMotion {
+            duration_ms: 400,
+            curve: AnimationCurve::Linear,
+        });
+        let mut entry = test_entry(false);
+        entry.transition = Some(MotionTimeline::between(
+            motion,
+            Duration::ZERO,
+            1.0,
+            0.0,
+            0.0,
+        ));
+
+        assert!(entry_occupies_output(&entry, "DP-1"));
+        assert!(!entry_occupies_output(&entry, "DP-2"));
+
+        entry.transition = None;
+        assert!(!entry_occupies_output(&entry, "DP-1"));
     }
 
     #[test]

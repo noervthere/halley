@@ -270,7 +270,11 @@ impl FieldMaximizeManager {
             .outputs
             .iter()
             .find_map(|(output, entry)| (&entry.surface == surface).then(|| output.clone()))?;
-        let entry = self.outputs.remove(&output)?;
+        self.take_output_restore(&output)
+    }
+
+    pub fn take_output_restore(&mut self, output: &str) -> Option<FieldRestore> {
+        let entry = self.outputs.remove(output)?;
         Some(FieldRestore {
             surface: entry.surface,
             geometry: entry.restore_geometry,
