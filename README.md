@@ -8,6 +8,8 @@ Current compositor-owned navigation includes:
 - nodes, decay, focus rings, landmarks, and old-Halley contact physics;
 - [Bearings](docs/bearings.md) for offscreen node navigation;
 - [Apogee and Alt+Tab](docs/apogee.md) with live compositor previews;
+- [field maximize and close succession](docs/field.md), independently per
+  monitor;
 - shared [compositor overlays](docs/overlays.md), including configuration
   notices and exit confirmation;
 - output-local fullscreen, including decoration maximize buttons;
@@ -33,6 +35,7 @@ output, node, Bearings, configuration verification, and quit controls;
 References:
 
 - [Keybind triggers and actions](docs/keybinds.md)
+- [Field behavior, maximize, zoom, and close succession](docs/field.md)
 - [Nodes, decay, focus rings, landmarks, and physics](docs/nodes.md)
 - [Bearings](docs/bearings.md)
 - [Apogee and Alt+Tab](docs/apogee.md)

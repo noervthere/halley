@@ -194,10 +194,14 @@ resolving `keycode-N`.
 ## Actions
 
 The built-in action strings are `quit`, `close-focused`, `toggle-fullscreen`,
-`toggle-state`, `apogee`, `bearings-show`, `bearings-toggle`, `cycle-focus`,
-`cycle-focus-backward`, `open-terminal`, `zoom-in`, `zoom-out`, `zoom-reset`,
-and `screenshot`. `Alt+Tab` and `Alt+Shift+Tab` open and navigate the focus
-carousel; releasing Alt commits and Escape cancels. `Mod+O` opens or closes
+`maximize-focused`, `toggle-state`, `apogee`, `bearings-show`,
+`bearings-toggle`, `cycle-focus`, `cycle-focus-backward`, `open-terminal`,
+`zoom-in`, `zoom-out`, `zoom-reset`, and `screenshot`. `Alt+Tab` and
+`Alt+Shift+Tab` open and navigate the focus carousel; releasing Alt commits,
+focuses and raises the selected window, and moves the pointer to its final
+presentation center. A collapsed target restores first and receives one
+pointer warp after its opening transition. Escape cancels without changing
+focus or pointer position. `Mod+O` opens or closes
 the multi-monitor Apogee overview. Apogee stops trapping keys as soon as its
 close transition begins.
 The interactive screenshot menu and its area, screen, and window selectors
@@ -219,6 +223,12 @@ it in one action; its default binding is `$var.mod+n`. Optional
 `node.click-collapsed-pan` camera movement begins in that same action and never
 creates a center-first second-click interaction. Any other action string is
 launched as a command line.
+
+The default `$var.mod+m` binding runs `maximize-focused`. It is the reversible
+field maximize state documented in [Field behavior and maximize](field.md);
+it keeps panels and the existing stack visible. The compatibility action
+names `maximize_focused`, `toggle-maximize`, and `toggle_maximize` are
+equivalent.
 
 `toggle-fullscreen` and a client decoration's maximize button both enter the
 same Halley fullscreen presentation. The maximize button toggles that

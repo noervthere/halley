@@ -5,8 +5,8 @@ capability. A committed `set_blur_region` is clipped to the requesting
 surface, preserves ordered `wl_region` additions and subtractions, and is
 drawn immediately behind that surface at its current layer or window stack
 depth. Layer-shell roots and their popups use output-local coordinates;
-ordinary toplevel roots follow the same camera, opening, and fullscreen
-presentation as their window.
+ordinary toplevel roots follow the same camera, opening, fullscreen, and field
+maximize presentation as their window.
 
 All blur effects on one output share one persistent output-sized texture pool.
 Each stack depth still performs its own framebuffer capture, so an upper

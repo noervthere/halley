@@ -62,6 +62,11 @@ end
 
 `Alt+Tab` and `Alt+Shift+Tab` use the same MRU window set, including collapsed
 nodes. The center card is selected, releasing Alt commits, and Escape cancels.
+Commit focuses and raises the selected window, minimally reveals it when
+needed, then moves the pointer once to the center of its actual window,
+fullscreen, or field-maximized presentation. A collapsed selection waits for
+its restore animation before that final pointer handoff; cancellation does not
+move the pointer.
 The old five-card rail is restored: preview-hugging chip chrome, an overlaid
 app-icon/title band, monitor badge, and `NODE` pill. The selected preview is
 refreshed live while neighboring cards keep frozen GPU stills, avoiding a

@@ -69,10 +69,10 @@ end
 ```
 
 There is no active-window count cap. Focused windows, fullscreen or
-fullscreen-pending windows, and windows in an interactive move/resize grab are
-hard-protected from decay. Changing between protected, inside-ring, and
-outside-ring status starts a fresh timer; stale time from an earlier status is
-never reused.
+fullscreen-pending windows, field-maximized windows, and windows in an
+interactive move/resize grab are hard-protected from decay. Changing between
+protected, inside-ring, and outside-ring status starts a fresh timer; stale
+time from an earlier status is never reused.
 
 Each output has its own camera-centered ellipse. Keep these as repeatable,
 standalone top-level blocks; they are not nested inside the hardware `output:`
@@ -154,7 +154,7 @@ windows:
 
 ```rune
 field:
-  gap-px 20.0
+  gap 20.0
 end
 
 placement:
@@ -171,6 +171,9 @@ nodes. An interactively dragged window is authoritative and pushes unpinned
 nodes; `halleyctl node move` remains a discrete legal-placement operation.
 Marker collision is screen-constant across camera zoom; transient labels and
 shadows never reserve space.
+
+The same `field.gap` insets field-maximized windows from the usable output
+work area. See [Field behavior and maximize](field.md).
 
 ## Rigid and physics movement
 

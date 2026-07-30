@@ -125,3 +125,19 @@ appear immediately. Window restoration still uses the configured window-open
 animation. Landmark collision relocation uses the old 520ms damped slide;
 labels independently use the old back-loaded hover slide/grow/fade and request
 frames until settled.
+
+Field maximize uses its own duration and the original ease-in-out cubic
+curve:
+
+```rune
+animations:
+  maximize:
+    enabled true
+    duration-ms 240
+  end
+end
+```
+
+`animations.enabled` and `animations.maximize.enabled` both gate the motion.
+Disabling it keeps the maximize state and camera ownership but applies the
+endpoints immediately.
