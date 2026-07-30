@@ -959,10 +959,11 @@ fn set_external_fullscreen<D: SessionDriver>(
         crate::session::reconcile_pointer_constraints(session);
         return;
     }
+    let now = crate::frame_clock::monotonic_now();
     let opening = window.wl_surface().is_some_and(|wl_surface| {
         session
             .window_open_animations
-            .is_animating(wl_surface.as_ref(), crate::frame_clock::monotonic_now())
+            .is_animating(wl_surface.as_ref(), now)
     });
     let policy = external_presentation_policy(
         origin,
@@ -1148,7 +1149,7 @@ fn presentation_policy_name(policy: ExternalPresentationPolicy) -> &'static str 
         ExternalPresentationPolicy::Initial => "initial",
         ExternalPresentationPolicy::Opening => "opening",
         ExternalPresentationPolicy::Confined => "confined",
-        ExternalPresentationPolicy::Animated => "snapshot-fallback",
+        ExternalPresentationPolicy::Animated => "animated",
     }
 }
 
@@ -1415,7 +1416,9 @@ fn forget_window<D: SessionDriver>(session: &mut Session<D>, surface: &X11Surfac
         let preparation = crate::session::prepare_window_unmap(session, &wl_surface);
         session.wayland.space.unmap_elem(&window);
         crate::session::finish_window_unmap(session, preparation);
-        session.nodes.remove_surface(&wl_surface);
+        if let Some(record) = session.nodes.remove_surface(&wl_surface) {
+            session.overlay_previews.remove(record.id);
+        }
     } else {
         session.wayland.space.unmap_elem(&window);
     }
@@ -1672,11 +1675,11 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
                     "xwayland: fullscreen configure settled xid={} fullscreen={fullscreen} animated={animated}",
                     surface.window_id()
                 );
-                if !animated {
-                    remove_fullscreen_snapshot(self, &window);
-                }
                 if !fullscreen {
                     remember_normal_size(self, &surface, geometry.size);
+                }
+                if !animated {
+                    remove_fullscreen_snapshot(self, &window);
                 }
             }
         }

@@ -11,6 +11,7 @@ use smithay::utils::{Clock, Monotonic};
 pub struct FrameClock {
     refresh_interval: Option<Duration>,
     last_presentation_time: Option<Duration>,
+    vrr: bool,
 }
 
 impl FrameClock {
@@ -18,6 +19,7 @@ impl FrameClock {
         Self {
             refresh_interval: refresh_interval.filter(|interval| !interval.is_zero()),
             last_presentation_time: None,
+            vrr: false,
         }
     }
 
@@ -29,6 +31,13 @@ impl FrameClock {
 
     pub fn reset(&mut self) {
         self.last_presentation_time = None;
+    }
+
+    pub fn set_vrr(&mut self, vrr: bool) {
+        if self.vrr != vrr {
+            self.vrr = vrr;
+            self.reset();
+        }
     }
 
     pub fn next_presentation_time(&self, now: Duration) -> Duration {
@@ -46,6 +55,9 @@ impl FrameClock {
         let elapsed_ns = (now - last).as_nanos();
         let interval_ns = interval.as_nanos();
         let periods = elapsed_ns / interval_ns + 1;
+        if self.vrr && periods > 1 {
+            return now;
+        }
         last + interval.mul_f64(periods as f64)
     }
 }
@@ -121,5 +133,18 @@ mod tests {
 
         let now = presented + Duration::from_millis(1);
         assert!(fast.next_presentation_time(now) < slow.next_presentation_time(now));
+    }
+
+    #[test]
+    fn vrr_can_present_immediately_after_missing_a_refresh_period() {
+        let mut clock = FrameClock::new(Some(Duration::from_millis(10)));
+        clock.set_vrr(true);
+        clock.presented(Some(Duration::from_millis(100)));
+
+        assert_eq!(
+            clock.next_presentation_time(Duration::from_millis(125)),
+            Duration::from_millis(125)
+        );
+        assert!(clock.vrr);
     }
 }

@@ -4,7 +4,7 @@ use std::error::Error;
 use halley_core::field::NodeId;
 use smithay::backend::renderer::element::Id;
 use smithay::backend::renderer::element::texture::TextureRenderElement;
-use smithay::backend::renderer::gles::GlesRenderer;
+use smithay::backend::renderer::gles::{GlesRenderer, GlesTexture};
 use smithay::desktop::Window;
 use smithay::utils::{Physical, Rectangle};
 
@@ -57,6 +57,19 @@ impl OverlayPreviewCache {
         live: bool,
     ) -> Result<TextureRenderElement<smithay::backend::renderer::gles::GlesTexture>, Box<dyn Error>>
     {
+        self.element_with_texture(renderer, id, window, destination, alpha, live)
+            .map(|(element, _)| element)
+    }
+
+    pub fn element_with_texture(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        id: NodeId,
+        window: &Window,
+        destination: Rectangle<i32, Physical>,
+        alpha: f32,
+        live: bool,
+    ) -> Result<(TextureRenderElement<GlesTexture>, GlesTexture), Box<dyn Error>> {
         let refresh = !self.entries.contains_key(&id) || live && self.dirty.remove(&id);
         if refresh {
             let previous = self.entries.remove(&id);
@@ -86,8 +99,11 @@ impl OverlayPreviewCache {
             .entries
             .get(&id)
             .ok_or("overview preview capture did not produce a texture")?;
-        Ok(entry
-            .texture
-            .render_element(entry.id.clone(), destination, alpha))
+        Ok((
+            entry
+                .texture
+                .render_element(entry.id.clone(), destination, alpha),
+            entry.texture.texture.clone(),
+        ))
     }
 }

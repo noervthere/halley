@@ -48,6 +48,10 @@ pub fn save_region<D: SessionDriver>(
         .collect::<Vec<_>>();
     let primary = session.driver.primary_output().clone();
     let target_time = crate::frame_clock::monotonic_now();
+    let node_grab_active = matches!(
+        &session.grab,
+        crate::input::grab::Grab::PendingNode { .. } | crate::input::grab::Grab::MoveNode { .. }
+    );
 
     let driver = &mut session.driver;
     let cursor = &session.cursor;
@@ -84,6 +88,7 @@ pub fn save_region<D: SessionDriver>(
                     *geometry,
                     RenderRequest {
                         target_presentation_time: target_time,
+                        vrr_auto_eligible: false,
                         clear: backend::CLEAR_COLOR,
                         session_lock,
                         cursor,
@@ -104,6 +109,7 @@ pub fn save_region<D: SessionDriver>(
                         fullscreen_textures: &mut *fullscreen_textures,
                         overlay_previews: &mut *overlay_previews,
                         nodes,
+                        node_grab_active,
                         bearings,
                         backdrop_blur_renderer: &mut *backdrop_blur_renderer,
                         shadow_renderer: &mut *shadow_renderer,
@@ -293,6 +299,10 @@ where
     }
     let primary = session.driver.primary_output().clone();
     let target_time = crate::frame_clock::monotonic_now();
+    let node_grab_active = matches!(
+        &session.grab,
+        crate::input::grab::Grab::PendingNode { .. } | crate::input::grab::Grab::MoveNode { .. }
+    );
     let driver = &mut session.driver;
     let cursor = &session.cursor;
     let pointer_position = session.pointer.position();
@@ -325,6 +335,7 @@ where
             geometry,
             RenderRequest {
                 target_presentation_time: target_time,
+                vrr_auto_eligible: false,
                 clear: backend::CLEAR_COLOR,
                 session_lock,
                 cursor,
@@ -345,6 +356,7 @@ where
                 fullscreen_textures,
                 overlay_previews,
                 nodes,
+                node_grab_active,
                 bearings,
                 backdrop_blur_renderer,
                 shadow_renderer,

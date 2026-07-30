@@ -146,6 +146,15 @@ are resolved from desktop entries and icon themes in a background worker.
 The marker stays blank while an icon is loading or unavailable, so a cold
 first collapse never flashes a temporary letter before the real icon appears.
 
+With `show-labels "hover"`, only an explicit pointer hover reveals the label;
+logical or keyboard focus still highlights the marker but does not open its
+label. The old-Halley back-loaded slide/grow/fade appears first, then 1500 ms
+of uninterrupted hover replaces it with a live, aspect-fitted window preview.
+Leaving the marker, changing hover targets, pressing it, or beginning a node
+grab cancels the dwell and closes the hover UI. A grab keeps labels and
+previews suppressed until later pointer motion deliberately targets a node
+again.
+
 ## Landmark non-overlap
 
 Collapsed nodes are the only landmarks. Active windows may overlap other

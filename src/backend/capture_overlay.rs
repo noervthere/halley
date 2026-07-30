@@ -1,17 +1,15 @@
+use std::collections::HashMap;
 use std::error::Error;
 use std::io;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use resvg::{tiny_skia, usvg};
 use smithay::backend::allocator::Fourcc;
-use smithay::backend::renderer::Color32F;
 use smithay::backend::renderer::element::memory::{
     MemoryRenderBuffer, MemoryRenderBufferRenderElement,
 };
-use smithay::backend::renderer::element::solid::SolidColorRenderElement;
-use smithay::backend::renderer::element::{Id, Kind, render_elements};
+use smithay::backend::renderer::element::{Kind, render_elements};
 use smithay::backend::renderer::gles::GlesRenderer;
-use smithay::backend::renderer::utils::CommitCounter;
 use smithay::utils::{Logical, Physical, Rectangle, Transform};
 
 const ICON_RASTER_SIZE: u32 = 48;
@@ -20,21 +18,25 @@ const REGION_SVG: &[u8] = include_bytes!("../../assets/screenshot/region.svg");
 const SCREEN_SVG: &[u8] = include_bytes!("../../assets/screenshot/screen.svg");
 const WINDOW_SVG: &[u8] = include_bytes!("../../assets/screenshot/window.svg");
 
-static ICONS: OnceLock<Result<[MemoryRenderBuffer; 3], String>> = OnceLock::new();
+type IconSet = Result<[MemoryRenderBuffer; 3], String>;
+type IconCache = Mutex<HashMap<[u8; 3], IconSet>>;
+
+static ICONS: OnceLock<IconCache> = OnceLock::new();
 
 render_elements! {
     pub CaptureOverlayElement<=GlesRenderer>;
     Icon=MemoryRenderBufferRenderElement<GlesRenderer>,
-    Solid=SolidColorRenderElement,
+    Card=super::node::LabelRenderElement,
 }
 
 pub fn menu_elements(
     renderer: &mut GlesRenderer,
+    node_renderer: &mut super::node::NodeRenderer,
     output: Rectangle<i32, Logical>,
     selected: usize,
     hovered: Option<usize>,
     window_available: bool,
-    highlight: Color32F,
+    visuals: super::overlay::OverlayVisuals,
 ) -> Result<Vec<CaptureOverlayElement>, Box<dyn Error>> {
     let layout = crate::capture::menu::layout(output);
     let localize = |rectangle: Rectangle<i32, Logical>| {
@@ -43,52 +45,52 @@ pub fn menu_elements(
             rectangle.size.to_physical(1),
         )
     };
-    let make = |geometry, color| {
-        SolidColorRenderElement::new(
-            Id::new(),
-            geometry,
-            CommitCounter::default(),
-            color,
-            Kind::Unspecified,
-        )
-    };
     let mut elements = Vec::new();
     let bar = localize(layout.bar);
-    elements.push(CaptureOverlayElement::Solid(make(
+    elements.push(CaptureOverlayElement::Card(super::overlay::card_element(
+        renderer,
+        node_renderer,
         bar,
-        Color32F::new(0.055, 0.065, 0.075, 0.96),
-    )));
-    elements.extend(
-        super::border_strips(bar, 2, highlight)
-            .into_iter()
-            .map(CaptureOverlayElement::Solid),
-    );
+        visuals,
+        visuals.fill,
+        0.96,
+    )?));
 
-    let icons = icon_buffers()?;
     for (index, item) in layout.items.into_iter().enumerate() {
         let disabled = index == 2 && !window_available;
         let active = !disabled && (selected == index || hovered == Some(index));
         let item = localize(item);
         let fill = if disabled {
-            Color32F::new(0.10, 0.11, 0.12, 0.50)
+            visuals.key_fill.mix(visuals.fill, 0.55)
         } else if active {
-            Color32F::new(0.14, 0.16, 0.18, 0.98)
+            visuals.fill.mix(visuals.border, 0.12)
         } else {
-            Color32F::new(0.09, 0.105, 0.12, 0.94)
+            visuals.key_fill
         };
         let accent = if disabled {
-            Color32F::new(0.35, 0.37, 0.39, 0.42)
+            visuals.subtext.mix(visuals.fill, 0.45)
         } else if active {
-            highlight
+            visuals.border
         } else {
-            Color32F::new(0.60, 0.63, 0.66, 0.72)
+            visuals.subtext
         };
-        elements.push(CaptureOverlayElement::Solid(make(item, fill)));
-        elements.extend(
-            super::border_strips(item, 2, accent)
-                .into_iter()
-                .map(CaptureOverlayElement::Solid),
-        );
+        let mut item_visuals = visuals;
+        item_visuals.border = accent;
+        item_visuals.border_px = if visuals.border_px > 0.0 { 2.0 } else { 0.0 };
+        elements.push(CaptureOverlayElement::Card(super::overlay::card_element(
+            renderer,
+            node_renderer,
+            item,
+            item_visuals,
+            fill,
+            if disabled {
+                0.50
+            } else if active {
+                0.98
+            } else {
+                0.94
+            },
+        )?));
         let icon_size = ICON_DISPLAY_SIZE
             .min(item.size.w - 12)
             .min(item.size.h - 12)
@@ -104,6 +106,12 @@ pub fn menu_elements(
         } else {
             0.72
         };
+        let icon_rgb = if active {
+            visuals.text.bytes()
+        } else {
+            visuals.subtext.bytes()
+        };
+        let icons = icon_buffers(icon_rgb)?;
         let icon = MemoryRenderBufferRenderElement::from_buffer(
             renderer,
             location,
@@ -118,21 +126,24 @@ pub fn menu_elements(
     Ok(elements)
 }
 
-fn icon_buffers() -> Result<&'static [MemoryRenderBuffer; 3], Box<dyn Error>> {
-    match ICONS.get_or_init(|| {
-        let region = rasterize_svg(REGION_SVG)
+fn icon_buffers(rgb: [u8; 3]) -> Result<[MemoryRenderBuffer; 3], Box<dyn Error>> {
+    let cache = ICONS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut cache = cache.lock().expect("screenshot icon cache poisoned");
+    let result = cache.entry(rgb).or_insert_with(|| {
+        let region = rasterize_svg(REGION_SVG, rgb)
             .ok_or_else(|| "could not rasterize Region screenshot icon".to_string())?;
-        let screen = rasterize_svg(SCREEN_SVG)
+        let screen = rasterize_svg(SCREEN_SVG, rgb)
             .ok_or_else(|| "could not rasterize Screen screenshot icon".to_string())?;
-        let window = rasterize_svg(WINDOW_SVG)
+        let window = rasterize_svg(WINDOW_SVG, rgb)
             .ok_or_else(|| "could not rasterize Window screenshot icon".to_string())?;
         Ok([
             memory_buffer(&region),
             memory_buffer(&screen),
             memory_buffer(&window),
         ])
-    }) {
-        Ok(icons) => Ok(icons),
+    });
+    match result {
+        Ok(icons) => Ok(icons.clone()),
         Err(message) => Err(io::Error::other(message.clone()).into()),
     }
 }
@@ -148,7 +159,7 @@ fn memory_buffer(pixels: &[u8]) -> MemoryRenderBuffer {
     )
 }
 
-fn rasterize_svg(svg: &[u8]) -> Option<Vec<u8>> {
+fn rasterize_svg(svg: &[u8], rgb: [u8; 3]) -> Option<Vec<u8>> {
     let tree = usvg::Tree::from_data(svg, &usvg::Options::default()).ok()?;
     let svg_size = tree.size().to_int_size();
     let mut pixmap = tiny_skia::Pixmap::new(ICON_RASTER_SIZE, ICON_RASTER_SIZE)?;
@@ -162,9 +173,9 @@ fn rasterize_svg(svg: &[u8]) -> Option<Vec<u8>> {
     let mut pixels = pixmap.take();
     for pixel in pixels.chunks_exact_mut(4) {
         let alpha = pixel[3];
-        pixel[0] = alpha;
-        pixel[1] = alpha;
-        pixel[2] = alpha;
+        pixel[0] = ((u16::from(rgb[0]) * u16::from(alpha)) / 255) as u8;
+        pixel[1] = ((u16::from(rgb[1]) * u16::from(alpha)) / 255) as u8;
+        pixel[2] = ((u16::from(rgb[2]) * u16::from(alpha)) / 255) as u8;
     }
     Some(pixels)
 }
@@ -176,7 +187,7 @@ mod tests {
     #[test]
     fn all_original_screenshot_icons_rasterize() {
         for svg in [REGION_SVG, SCREEN_SVG, WINDOW_SVG] {
-            let pixels = rasterize_svg(svg).expect("bundled SVG should rasterize");
+            let pixels = rasterize_svg(svg, [32, 64, 96]).expect("bundled SVG should rasterize");
             assert_eq!(
                 pixels.len(),
                 ICON_RASTER_SIZE as usize * ICON_RASTER_SIZE as usize * 4

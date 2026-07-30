@@ -401,6 +401,8 @@ mod tests {
                 offset_x: 0,
                 offset_y: 0,
                 vrr: "auto".to_string(),
+                vrr_supported: true,
+                vrr_active: true,
             }],
         });
         let bytes = encode_response(&resp).unwrap();

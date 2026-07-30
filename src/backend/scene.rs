@@ -125,6 +125,7 @@ pub fn build(
             request.cameras,
             request.nodes,
             request.node_renderer,
+            request.window_decoration_renderer,
             request.ui_text,
             request.window_open_animations,
             request.fullscreen,
@@ -137,7 +138,6 @@ pub fn build(
             output,
             "apogee",
             request.shadows.overlay,
-            request.overlay_config,
             request.shadow_renderer,
             &mut elements,
         )?;
@@ -162,7 +162,6 @@ pub fn build(
             "shell-overlay",
             request.blur,
             request.shadows.overlay,
-            request.overlay_config,
             request.backdrop_blur_renderer,
             request.shadow_renderer,
             &mut overlay_elements,
@@ -188,6 +187,8 @@ pub fn build(
         output,
         output_geometry,
         request.capture_overlay,
+        request.node_renderer,
+        request.overlay_config,
         request.decorations,
     )?;
     let mut bearings = super::bearings::elements(
@@ -209,7 +210,6 @@ pub fn build(
         output,
         "bearings",
         request.shadows.overlay,
-        request.overlay_config,
         request.shadow_renderer,
         &mut bearings,
     )?;
@@ -229,6 +229,7 @@ pub fn build(
         request.nodes,
         request.overlay_previews,
         request.node_renderer,
+        request.window_decoration_renderer,
         request.ui_text,
         request.overlay_config,
         request.decorations,
@@ -241,7 +242,6 @@ pub fn build(
         "focus-cycle",
         request.blur,
         request.shadows.overlay,
-        request.overlay_config,
         request.backdrop_blur_renderer,
         request.shadow_renderer,
         &mut focus_cycle,
@@ -261,6 +261,33 @@ pub fn build(
         )?);
     }
 
+    let mut hover_preview = hover_preview_elements(
+        renderer,
+        output,
+        output_geometry,
+        request.nodes,
+        request.cameras,
+        request.overlay_previews,
+        request.node_renderer,
+        request.ui_text,
+        request.window_decoration_renderer,
+        request.overlay_config,
+        request.decorations,
+        request.target_presentation_time,
+    )?;
+    append_compositor_overlay_blur(
+        renderer,
+        output,
+        output_geometry.size,
+        "node-hover-preview",
+        request.blur,
+        request.shadows.overlay,
+        request.backdrop_blur_renderer,
+        request.shadow_renderer,
+        &mut hover_preview,
+    )?;
+    elements.extend(hover_preview);
+
     let node_scene = node_elements(
         renderer,
         request.node_renderer,
@@ -269,6 +296,7 @@ pub fn build(
             output,
             output_geometry,
             nodes: request.nodes,
+            node_grab_active: request.node_grab_active,
             cameras: request.cameras,
             decorations: request.decorations,
             shadow_config: request.shadows.node,
@@ -434,7 +462,6 @@ pub fn build(
         "shell-overlay",
         request.blur,
         request.shadows.overlay,
-        request.overlay_config,
         request.backdrop_blur_renderer,
         request.shadow_renderer,
         &mut overlay_elements,
@@ -467,22 +494,17 @@ fn append_compositor_overlay_blur(
     identity: &str,
     blur_config: halley_config::Blur,
     shadow_config: halley_config::ShadowLayer,
-    overlay_config: &halley_config::Overlays,
     backdrop_blur_renderer: &mut super::backdrop_blur::BackdropBlurRenderer,
     shadow_renderer: &mut super::shadow::ShadowRenderer,
     elements: &mut Vec<SceneElement>,
 ) -> Result<(), Box<dyn Error>> {
     if blur_config.enabled && blur_config.overlays {
-        let radius = match overlay_config.shape {
-            halley_config::OverlayShape::Square => 0.0,
-            halley_config::OverlayShape::Rounded => 11.0,
-        };
         let patches = elements
             .iter()
             .filter_map(|element| match element {
                 SceneElement::NodeLabel(card) => Some(super::backdrop_blur::BlurPatch {
                     rect: card.geometry(Scale::from(1.0)),
-                    radius,
+                    radius: card.corner_radius(),
                     alpha: card.alpha(),
                     clip: None,
                 }),
@@ -505,7 +527,6 @@ fn append_compositor_overlay_blur(
         output,
         identity,
         shadow_config,
-        overlay_config,
         shadow_renderer,
         elements,
     )?;
@@ -517,22 +538,21 @@ fn append_overlay_shadows(
     output: &Output,
     identity: &str,
     shadow_config: halley_config::ShadowLayer,
-    overlay_config: &halley_config::Overlays,
     shadow_renderer: &mut super::shadow::ShadowRenderer,
     elements: &mut Vec<SceneElement>,
 ) -> Result<(), Box<dyn Error>> {
-    let radius = match overlay_config.shape {
-        halley_config::OverlayShape::Square => 0.0,
-        halley_config::OverlayShape::Rounded => 11.0,
-    };
     let casters = elements
         .iter()
         .filter_map(|element| match element {
-            SceneElement::NodeLabel(card) => Some((card.geometry(Scale::from(1.0)), card.alpha())),
+            SceneElement::NodeLabel(card) => Some((
+                card.geometry(Scale::from(1.0)),
+                card.corner_radius(),
+                card.alpha(),
+            )),
             _ => None,
         })
         .collect::<Vec<_>>();
-    for (index, (caster, alpha)) in casters.into_iter().enumerate() {
+    for (index, (caster, radius, alpha)) in casters.into_iter().enumerate() {
         if let Some(shadow) = shadow_renderer.element(
             renderer,
             format!("{}:overlay:{identity}:{index}", output.name()),
@@ -682,6 +702,10 @@ fn append_surface_backdrop_blur(
     Ok(())
 }
 
+fn preview_content_radius(decorations: &halley_config::Decorations) -> f32 {
+    decorations.border_radius_px.max(0) as f32
+}
+
 #[allow(clippy::too_many_arguments)]
 fn apogee_elements(
     renderer: &mut GlesRenderer,
@@ -695,6 +719,7 @@ fn apogee_elements(
     cameras: &crate::camera::OutputCameras,
     nodes: &crate::nodes::NodesState,
     node_renderer: &mut super::node::NodeRenderer,
+    window_decoration_renderer: &mut super::window_decoration::WindowDecorationRenderer,
     ui_text: &mut super::text::UiTextRenderer,
     window_open_animations: &crate::animation::WindowOpenAnimations,
     fullscreen: &crate::wayland::fullscreen::FullscreenManager,
@@ -768,7 +793,11 @@ fn apogee_elements(
         // Old Halley kept the caption inside the preview. Growing the card by
         // a fixed footer made its backing look like an enlarged second window,
         // especially for short and wide Apogee tiles.
-        let card = outset_physical(body, 4);
+        // Keep a real color gutter between the overlay border and the preview.
+        // The old fixed four-pixel outset was entirely consumed by common
+        // three/four-pixel borders, making the border and white preview appear
+        // stacked on top of each other.
+        let card = outset_physical(body, overlay_visuals.border_px.ceil() as i32 + 4);
         let caption = apogee_caption_rect(body);
         if let Some(caption) = caption {
             let (title, size) = fit_ui_text(
@@ -829,7 +858,8 @@ fn apogee_elements(
             }
         }
 
-        match overlay_previews.element(
+        let preview_radius = preview_content_radius(decorations);
+        match overlay_previews.element_with_texture(
             renderer,
             tile.id,
             &record.window,
@@ -837,7 +867,15 @@ fn apogee_elements(
             visuals.preview_alpha,
             config.live_previews,
         ) {
-            Ok(preview) => elements.push(SceneElement::Closing(preview)),
+            Ok((preview, texture))
+                if preview_radius > 0.0 && window_decoration_renderer.available(renderer) =>
+            {
+                let preview = window_decoration_renderer
+                    .texture_element(renderer, preview, texture, body, preview_radius)
+                    .expect("rounded resources were checked above");
+                elements.push(SceneElement::RoundedClosing(preview));
+            }
+            Ok((preview, _)) => elements.push(SceneElement::Closing(preview)),
             Err(_) => {
                 if let Some(app_id) = record.app_id.as_deref()
                     && let Some(icon) = node_renderer.app_icon_element(
@@ -851,29 +889,6 @@ fn apogee_elements(
                 }
             }
         }
-        elements.extend(
-            super::border_strips(
-                body,
-                if selected || hovered { 3 } else { 1 },
-                if selected || hovered {
-                    smithay::backend::renderer::Color32F::new(
-                        0.45,
-                        0.72,
-                        1.0,
-                        visuals.overlay_alpha,
-                    )
-                } else {
-                    smithay::backend::renderer::Color32F::new(
-                        0.25,
-                        0.31,
-                        0.40,
-                        visuals.overlay_alpha,
-                    )
-                },
-            )
-            .into_iter()
-            .map(SceneElement::Border),
-        );
         let card_fill = if selected || hovered {
             overlay_visuals.fill.mix(overlay_visuals.border, 0.12)
         } else {
@@ -978,6 +993,7 @@ fn focus_cycle_elements(
     nodes: &crate::nodes::NodesState,
     overlay_previews: &mut super::overlay_preview::OverlayPreviewCache,
     node_renderer: &mut super::node::NodeRenderer,
+    window_decoration_renderer: &mut super::window_decoration::WindowDecorationRenderer,
     ui_text: &mut super::text::UiTextRenderer,
     overlay_config: &halley_config::Overlays,
     decorations: &halley_config::Decorations,
@@ -1181,8 +1197,24 @@ fn focus_cycle_elements(
             if selected { 0.96 * alpha } else { 0.88 * alpha },
         )?));
 
-        match overlay_previews.element(renderer, id, &record.window, body, alpha, selected) {
-            Ok(preview) => elements.push(SceneElement::Closing(preview)),
+        let preview_radius = preview_content_radius(decorations);
+        match overlay_previews.element_with_texture(
+            renderer,
+            id,
+            &record.window,
+            body,
+            alpha,
+            selected,
+        ) {
+            Ok((preview, texture))
+                if preview_radius > 0.0 && window_decoration_renderer.available(renderer) =>
+            {
+                let preview = window_decoration_renderer
+                    .texture_element(renderer, preview, texture, body, preview_radius)
+                    .expect("rounded resources were checked above");
+                elements.push(SceneElement::RoundedClosing(preview));
+            }
+            Ok((preview, _)) => elements.push(SceneElement::Closing(preview)),
             Err(_) => {
                 if let Some(app_id) = record.app_id.as_deref()
                     && let Some(icon) =
@@ -1192,19 +1224,6 @@ fn focus_cycle_elements(
                 }
             }
         }
-        elements.extend(
-            super::border_strips(
-                body,
-                if selected { 3 } else { 1 },
-                if selected {
-                    smithay::backend::renderer::Color32F::new(0.48, 0.72, 1.0, alpha)
-                } else {
-                    smithay::backend::renderer::Color32F::new(0.28, 0.34, 0.43, alpha)
-                },
-            )
-            .into_iter()
-            .map(SceneElement::Border),
-        );
         elements.push(SceneElement::NodeLabel(super::overlay::card_element(
             renderer,
             node_renderer,
@@ -1242,6 +1261,149 @@ fn focus_cycle_elements(
     Ok(elements)
 }
 
+#[allow(clippy::too_many_arguments)]
+fn hover_preview_elements(
+    renderer: &mut GlesRenderer,
+    output: &Output,
+    output_geometry: Rectangle<i32, Logical>,
+    nodes: &crate::nodes::NodesState,
+    cameras: &crate::camera::OutputCameras,
+    overlay_previews: &mut super::overlay_preview::OverlayPreviewCache,
+    node_renderer: &mut super::node::NodeRenderer,
+    ui_text: &mut super::text::UiTextRenderer,
+    window_decoration_renderer: &mut super::window_decoration::WindowDecorationRenderer,
+    overlay_config: &halley_config::Overlays,
+    decorations: &halley_config::Decorations,
+    now: std::time::Duration,
+) -> Result<Vec<SceneElement>, Box<dyn Error>> {
+    let Some((id, raw_mix)) = nodes.preview_hover_mix(&output.name(), now) else {
+        return Ok(Vec::new());
+    };
+    let Some(record) = nodes
+        .record(id)
+        .filter(|record| record.collapsed && record.attached && record.output == output.name())
+    else {
+        return Ok(Vec::new());
+    };
+    let Some(node) = nodes.field.node(id) else {
+        return Ok(Vec::new());
+    };
+    let Some(camera) = cameras.get(&output.name()) else {
+        return Ok(Vec::new());
+    };
+
+    let preview_mix = ease_in_out_cubic(raw_mix.clamp(0.0, 1.0));
+    let alpha = (preview_mix * preview_mix).clamp(0.0, 1.0);
+    if alpha <= 0.01 {
+        return Ok(Vec::new());
+    }
+
+    let screen = output_geometry.size.to_physical(1);
+    let preview_size_base = ((screen.w.min(screen.h) as f32) * 0.30)
+        .round()
+        .clamp(220.0, 360.0) as i32;
+    let source = record.geometry.size.to_physical(1);
+    let source_side = source.w.max(source.h).max(1);
+    let base_side = (source_side + 24).clamp(120, preview_size_base);
+    let preview_size = ((base_side as f32) * (0.94 + 0.06 * preview_mix))
+        .round()
+        .max(120.0) as i32;
+
+    let landmark = nodes.landmark_position(id, node.pos, now);
+    let center =
+        crate::nodes::screen_from_world(landmark, camera, output_geometry) - output_geometry.loc;
+    let card = Rectangle::<i32, Physical>::new(
+        (
+            (center.x - preview_size / 2).clamp(10, (screen.w - preview_size - 10).max(10)),
+            (center.y - preview_size / 2).clamp(10, (screen.h - preview_size - 10).max(10)),
+        )
+            .into(),
+        (preview_size, preview_size).into(),
+    );
+    let pad = ((preview_size as f32) * 0.045).round() as i32;
+    let label_h = 30.min((preview_size / 5).max(22));
+    let body_bounds = Rectangle::<i32, Physical>::new(
+        (card.loc.x + pad, card.loc.y + pad).into(),
+        (
+            (card.size.w - pad * 2).max(1),
+            (card.size.h - pad * 2 - label_h).max(1),
+        )
+            .into(),
+    );
+    let body = aspect_fit_rect(body_bounds, record.geometry.size.w, record.geometry.size.h);
+    let visuals = super::overlay::resolve_visuals(overlay_config, decorations);
+    let preview_radius = preview_content_radius(decorations);
+    let mut elements = Vec::new();
+
+    let title = truncate_chars(&record.title, 24);
+    if !title.is_empty()
+        && let Some(text_size) = ui_text.measure(renderer, &title, 2, visuals.text.bytes())?
+        && let Some(text) = ui_text.element(
+            renderer,
+            (
+                card.loc.x + (card.size.w - text_size.w).max(0) / 2,
+                card.loc.y + card.size.h - pad - label_h + (label_h - text_size.h).max(0) / 2,
+            )
+                .into(),
+            &title,
+            2,
+            visuals.text.bytes(),
+            0.94 * alpha,
+        )?
+    {
+        elements.push(SceneElement::UiText(text.element));
+    }
+
+    match overlay_previews.element_with_texture(renderer, id, &record.window, body, alpha, true) {
+        Ok((preview, texture))
+            if preview_radius > 0.0 && window_decoration_renderer.available(renderer) =>
+        {
+            let preview = window_decoration_renderer
+                .texture_element(renderer, preview, texture, body, preview_radius)
+                .expect("rounded resources were checked above");
+            elements.push(SceneElement::RoundedClosing(preview));
+        }
+        Ok((preview, _)) => elements.push(SceneElement::Closing(preview)),
+        Err(_) => elements.push(SceneElement::Border(SolidColorRenderElement::new(
+            Id::new(),
+            body,
+            CommitCounter::default(),
+            smithay::backend::renderer::Color32F::new(0.02, 0.03, 0.05, 0.76 * alpha),
+            Kind::Unspecified,
+        ))),
+    }
+
+    elements.push(SceneElement::NodeLabel(super::overlay::card_element(
+        renderer,
+        node_renderer,
+        card,
+        visuals,
+        visuals.fill,
+        0.86 * alpha,
+    )?));
+    Ok(elements)
+}
+
+fn aspect_fit_rect(
+    bounds: Rectangle<i32, Physical>,
+    source_width: i32,
+    source_height: i32,
+) -> Rectangle<i32, Physical> {
+    let source_width = source_width.max(1) as f32;
+    let source_height = source_height.max(1) as f32;
+    let scale = (bounds.size.w as f32 / source_width).min(bounds.size.h as f32 / source_height);
+    let width = (source_width * scale).round().max(1.0) as i32;
+    let height = (source_height * scale).round().max(1.0) as i32;
+    Rectangle::new(
+        (
+            bounds.loc.x + (bounds.size.w - width) / 2,
+            bounds.loc.y + (bounds.size.h - height) / 2,
+        )
+            .into(),
+        (width, height).into(),
+    )
+}
+
 fn truncate_chars(text: &str, max: usize) -> String {
     let mut chars = text.trim().chars();
     let prefix = chars.by_ref().take(max).collect::<String>();
@@ -1256,6 +1418,7 @@ struct NodeElementContext<'a> {
     output: &'a Output,
     output_geometry: Rectangle<i32, Logical>,
     nodes: &'a crate::nodes::NodesState,
+    node_grab_active: bool,
     cameras: &'a crate::camera::OutputCameras,
     decorations: &'a halley_config::Decorations,
     shadow_config: halley_config::ShadowLayer,
@@ -1273,6 +1436,7 @@ fn node_elements(
         output,
         output_geometry,
         nodes,
+        node_grab_active,
         cameras,
         decorations,
         shadow_config,
@@ -1323,6 +1487,7 @@ fn node_elements(
         .collapsed_on_output(&output.name())
         .collect::<Vec<_>>();
     records.sort_by_key(|record| std::cmp::Reverse(record.id.as_u64()));
+    let label_hovered = nodes.label_hovered_on_output(&output.name(), now);
     let mut groups = Vec::new();
 
     for record in records {
@@ -1418,12 +1583,15 @@ fn node_elements(
             }
         }
 
-        let hover_mix = match nodes.config.show_labels {
-            halley_config::NodeDisplayPolicy::Off => 0.0,
-            halley_config::NodeDisplayPolicy::Hover => {
-                nodes.label_hover_mix(record.id, highlighted)
+        let hover_mix = match (node_grab_active, nodes.config.show_labels) {
+            (true, halley_config::NodeDisplayPolicy::Hover) => {
+                nodes.label_hover_mix(record.id, false)
             }
-            halley_config::NodeDisplayPolicy::Always => 1.0,
+            (true, _) | (_, halley_config::NodeDisplayPolicy::Off) => 0.0,
+            (false, halley_config::NodeDisplayPolicy::Hover) => {
+                nodes.label_hover_mix(record.id, label_hovered == Some(record.id))
+            }
+            (false, halley_config::NodeDisplayPolicy::Always) => 1.0,
         };
         let reveal = ease_in_out_cubic(hover_mix * hover_mix * hover_mix);
         let fade = ((reveal - 0.30) / 0.55).clamp(0.0, 1.0);
@@ -1942,30 +2110,7 @@ fn live_window_elements(
             elements.push(SceneElement::Shadow(shadow));
         }
     }
-    if let Some(backdrop_alpha) =
-        fullscreen_backdrop_alpha(visual.fullscreen, visual.opening_is_animating)
-    {
-        elements.push(SceneElement::Border(SolidColorRenderElement::new(
-            Id::new(),
-            Rectangle::new((0, 0).into(), context.output_geometry.size.to_physical(1)),
-            CommitCounter::default(),
-            smithay::backend::renderer::Color32F::new(0.0, 0.0, 0.0, backdrop_alpha),
-            Kind::Unspecified,
-        )));
-    }
     Ok(elements)
-}
-
-fn fullscreen_backdrop_alpha(
-    fullscreen: Option<crate::wayland::fullscreen::FullscreenPresentation>,
-    opening_is_animating: bool,
-) -> Option<f32> {
-    // Opening geometry owns the initial presentation. A separate fullscreen
-    // plane would expose transient client request churn as an output-wide flash.
-    if opening_is_animating {
-        return None;
-    }
-    fullscreen.map(|presentation| presentation.progress.clamp(0.0, 1.0) as f32)
 }
 
 fn capture_overlay_elements(
@@ -1973,23 +2118,30 @@ fn capture_overlay_elements(
     output: &Output,
     output_geometry: Rectangle<i32, Logical>,
     overlay: crate::capture::CaptureOverlay<'_>,
+    node_renderer: &mut super::node::NodeRenderer,
+    overlay_config: &halley_config::Overlays,
     decorations: &halley_config::Decorations,
 ) -> Result<Vec<SceneElement>, Box<dyn Error>> {
+    let visuals = super::overlay::resolve_visuals(overlay_config, decorations);
     match overlay {
         crate::capture::CaptureOverlay::None => Ok(Vec::new()),
         crate::capture::CaptureOverlay::Region(region) => {
-            Ok(capture_picker_elements(output_geometry, region, true)
-                .into_iter()
-                .rev()
-                .map(SceneElement::Border)
-                .collect())
+            Ok(
+                capture_picker_elements(output_geometry, region, true, visuals)
+                    .into_iter()
+                    .rev()
+                    .map(SceneElement::Border)
+                    .collect(),
+            )
         }
         crate::capture::CaptureOverlay::Highlight(region) => {
-            Ok(capture_picker_elements(output_geometry, region, false)
-                .into_iter()
-                .rev()
-                .map(SceneElement::Border)
-                .collect())
+            Ok(
+                capture_picker_elements(output_geometry, region, false, visuals)
+                    .into_iter()
+                    .rev()
+                    .map(SceneElement::Border)
+                    .collect(),
+            )
         }
         crate::capture::CaptureOverlay::Menu {
             output_name,
@@ -1998,11 +2150,12 @@ fn capture_overlay_elements(
             window_available,
         } if output.name() == output_name => Ok(super::capture_overlay::menu_elements(
             renderer,
+            node_renderer,
             output_geometry,
             selected,
             hovered,
             window_available,
-            super::window_border_color(decorations, true),
+            visuals,
         )?
         .into_iter()
         .rev()
@@ -2016,6 +2169,7 @@ fn capture_picker_elements(
     output: Rectangle<i32, Logical>,
     selection: Rectangle<i32, Logical>,
     region_style: bool,
+    visuals: super::overlay::OverlayVisuals,
 ) -> Vec<SolidColorRenderElement> {
     let output_local = Rectangle::<i32, Physical>::from_size(output.size.to_physical(1));
     let selected = output.intersection(selection).map(|intersection| {
@@ -2024,8 +2178,18 @@ fn capture_picker_elements(
             intersection.size.to_physical(1),
         )
     });
-    let dim = smithay::backend::renderer::Color32F::new(0.0, 0.0, 0.0, 0.48);
-    let white = smithay::backend::renderer::Color32F::new(1.0, 1.0, 1.0, 1.0);
+    let dim = smithay::backend::renderer::Color32F::new(
+        visuals.fill.r,
+        visuals.fill.g,
+        visuals.fill.b,
+        0.38 * visuals.fill.a,
+    );
+    let accent = smithay::backend::renderer::Color32F::new(
+        visuals.border.r,
+        visuals.border.g,
+        visuals.border.b,
+        visuals.border.a,
+    );
     let make = |geometry, color| {
         SolidColorRenderElement::new(
             Id::new(),
@@ -2068,7 +2232,7 @@ fn capture_picker_elements(
         elements.extend(
             dashed_border_rects(selected)
                 .into_iter()
-                .map(|rect| make(rect, white)),
+                .map(|rect| make(rect, accent)),
         );
         let handle_size = 12;
         for point in [
@@ -2082,14 +2246,14 @@ fn capture_picker_elements(
                     (point.x - handle_size / 2, point.y - handle_size / 2).into(),
                     (handle_size, handle_size).into(),
                 ),
-                white,
+                accent,
             ));
         }
     } else {
         elements.extend(
             inner_border_rects(selected, 2)
                 .into_iter()
-                .map(|rect| make(rect, white)),
+                .map(|rect| make(rect, accent)),
         );
     }
     elements
@@ -2159,12 +2323,40 @@ mod tests {
     use smithay::utils::{Physical, Rectangle};
 
     #[test]
+    fn hover_preview_aspect_fit_centers_wide_and_tall_windows() {
+        let bounds = Rectangle::<i32, Physical>::new((10, 20).into(), (200, 160).into());
+        assert_eq!(
+            aspect_fit_rect(bounds, 1_600, 900),
+            Rectangle::new((10, 43).into(), (200, 113).into())
+        );
+        assert_eq!(
+            aspect_fit_rect(bounds, 900, 1_600),
+            Rectangle::new((65, 20).into(), (90, 160).into())
+        );
+    }
+
+    #[test]
+    fn preview_rounding_uses_the_exact_configured_window_border_radius() {
+        let mut decorations = halley_config::Decorations {
+            border_radius_px: 7,
+            ..halley_config::Decorations::default()
+        };
+        assert_eq!(preview_content_radius(&decorations), 7.0);
+        decorations.border_radius_px = 0;
+        assert_eq!(preview_content_radius(&decorations), 0.0);
+    }
+
+    #[test]
     fn resize_handles_are_reserved_for_region_selection() {
         let output = Rectangle::<i32, Logical>::new((0, 0).into(), (1920, 1080).into());
         let selection = Rectangle::<i32, Logical>::new((320, 180).into(), (1280, 720).into());
 
-        let region = capture_picker_elements(output, selection, true);
-        let highlight = capture_picker_elements(output, selection, false);
+        let visuals = super::super::overlay::resolve_visuals(
+            &halley_config::Overlays::default(),
+            &halley_config::Decorations::default(),
+        );
+        let region = capture_picker_elements(output, selection, true, visuals);
+        let highlight = capture_picker_elements(output, selection, false, visuals);
 
         let handles = |elements: &[SolidColorRenderElement]| {
             elements
@@ -2370,44 +2562,5 @@ mod tests {
             presented(0, &[(0, u64::MAX), (1, u64::MAX)])[..4],
             [(1, u64::MAX), (0, u64::MAX), (0, 1), (0, 0)]
         );
-    }
-
-    fn fullscreen_presentation(
-        progress: f64,
-    ) -> crate::wayland::fullscreen::FullscreenPresentation {
-        crate::wayland::fullscreen::FullscreenPresentation {
-            progress,
-            transition_completion: progress,
-            windowed_geometry: None,
-            fullscreen_size: (1920, 1080).into(),
-        }
-    }
-
-    #[test]
-    fn opening_fullscreen_does_not_create_an_independent_backdrop() {
-        let startup_churn = [
-            Some(fullscreen_presentation(1.0)),
-            None,
-            Some(fullscreen_presentation(1.0)),
-        ];
-
-        assert!(
-            startup_churn
-                .into_iter()
-                .all(|fullscreen| fullscreen_backdrop_alpha(fullscreen, true).is_none())
-        );
-    }
-
-    #[test]
-    fn fullscreen_without_an_active_opening_keeps_normal_backdrop_policy() {
-        assert_eq!(
-            fullscreen_backdrop_alpha(Some(fullscreen_presentation(1.0)), false),
-            Some(1.0)
-        );
-        assert_eq!(
-            fullscreen_backdrop_alpha(Some(fullscreen_presentation(0.4)), false),
-            Some(0.4)
-        );
-        assert_eq!(fullscreen_backdrop_alpha(None, false), None);
     }
 }

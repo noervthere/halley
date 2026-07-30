@@ -78,6 +78,8 @@ pub(super) fn connector_output_info(
     current_mode: Option<Mode>,
     offset: (i32, i32),
     vrr: halley_config::Vrr,
+    vrr_supported: bool,
+    vrr_active: bool,
 ) -> halley_ipc::OutputInfo {
     let modes = connector
         .modes()
@@ -99,6 +101,8 @@ pub(super) fn connector_output_info(
         offset_x: offset.0,
         offset_y: offset.1,
         vrr: crate::ipc::vrr_str(vrr).to_string(),
+        vrr_supported,
+        vrr_active,
     }
 }
 

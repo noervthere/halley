@@ -136,6 +136,8 @@ impl crate::ipc::OutputInfoSource for WinitBackend {
             // at all - config-driven output selection doesn't apply to it
             // either (see `WinitBackend`'s own doc comment).
             vrr: "off".to_string(),
+            vrr_supported: false,
+            vrr_active: false,
         }]
     }
 }

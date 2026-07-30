@@ -7,7 +7,9 @@ use smithay::backend::allocator::{Format, Fourcc};
 use smithay::backend::drm::compositor::PrimaryPlaneElement;
 use smithay::backend::drm::exporter::gbm::{GbmFramebufferExporter, NodeFilter};
 use smithay::backend::drm::output::{DrmOutput, DrmOutputManager, DrmOutputRenderElements};
-use smithay::backend::drm::{DrmDevice, DrmDeviceFd, DrmDeviceNotifier, DrmNode, NodeType};
+use smithay::backend::drm::{
+    DrmDevice, DrmDeviceFd, DrmDeviceNotifier, DrmNode, NodeType, VrrSupport,
+};
 use smithay::backend::egl::{EGLContext, EGLDisplay};
 use smithay::backend::renderer::ImportDma;
 use smithay::backend::renderer::element::solid::SolidColorRenderElement;
@@ -27,6 +29,25 @@ use super::tty_output::{
     output_target,
 };
 use super::{FrameSubmission, RenderOutcome, RenderRequest, RenderStatus, Renderable};
+
+/// Candidate scan-out formats for the primary plane, most preferred first -
+/// Smithay walks this list when it builds each surface's swapchain.
+///
+/// Opaque `Xrgb8888` has to come first. Offering only `Argb8888` (which this
+/// did originally) hands the display engine an alpha-capable primary plane on
+/// every CRTC, and the per-pixel blending that implies feeds straight into the
+/// bandwidth/pipe validation a modeset has to satisfy. That was survivable
+/// while one monitor was lit and pathological once the second joined: the
+/// second connector's atomic commit blocked the compositor for ~25s on every
+/// DPMS wake. Both reference implementations (old halley's
+/// `SUPPORTED_COLOR_FORMATS` and niri's identically named constant) list these
+/// same four in this same order; there is no reason to differ.
+const SUPPORTED_COLOR_FORMATS: [Fourcc; 4] = [
+    Fourcc::Xrgb8888,
+    Fourcc::Xbgr8888,
+    Fourcc::Argb8888,
+    Fourcc::Abgr8888,
+];
 
 type TtyDrmOutputManager = DrmOutputManager<
     GbmAllocator<DrmDeviceFd>,
@@ -55,6 +76,8 @@ struct DrmOutputEntry {
     connector: connector::Info,
     current_mode: Mode,
     configured_vrr: halley_config::Vrr,
+    vrr_supported: bool,
+    vrr_active: bool,
     output: Output,
     drm_output: TtyDrmOutput,
     dmabuf_feedback: Option<super::dmabuf::SurfaceDmabufFeedback>,
@@ -178,7 +201,7 @@ impl TtyBackend {
             allocator,
             exporter,
             Some(gbm),
-            [Fourcc::Argb8888],
+            SUPPORTED_COLOR_FORMATS,
             renderer_formats,
         );
 
@@ -199,12 +222,16 @@ impl TtyBackend {
 
             if connector.modes().is_empty() {
                 eventline::warn!("output {name:?}: connected connector advertises no modes");
-                ipc_output_info.push(connector_output_info(name, &connector, None, offset, vrr));
+                ipc_output_info.push(connector_output_info(
+                    name, &connector, None, offset, vrr, false, false,
+                ));
                 continue;
             }
             let Some(crtc) = crtc else {
                 eventline::warn!("output {name:?}: connected connector has no available CRTC");
-                ipc_output_info.push(connector_output_info(name, &connector, None, offset, vrr));
+                ipc_output_info.push(connector_output_info(
+                    name, &connector, None, offset, vrr, false, false,
+                ));
                 continue;
             };
 
@@ -259,10 +286,29 @@ impl TtyBackend {
                             None
                         }
                     };
-                    if vrr == halley_config::Vrr::On {
+                    let vrr_supported = match drm_output
+                        .with_compositor(|compositor| compositor.vrr_supported(connector.handle()))
+                    {
+                        Ok(VrrSupport::Supported | VrrSupport::RequiresModeset) => true,
+                        Ok(VrrSupport::NotSupported) => false,
+                        Err(err) => {
+                            eventline::warn!("output {name:?}: failed to query VRR support: {err}");
+                            false
+                        }
+                    };
+                    let requested_vrr = vrr == halley_config::Vrr::On && vrr_supported;
+                    if let Err(err) =
+                        drm_output.with_compositor(|compositor| compositor.use_vrr(requested_vrr))
+                    {
                         eventline::warn!(
-                            "output {name:?}: vrr \"on\" is configured but not wired to real hardware VRR yet \
-                             (needs lower-level DRM compositor access this backend doesn't have) - ignored for now"
+                            "output {name:?}: failed to set initial VRR state to {requested_vrr}: {err}"
+                        );
+                    }
+                    let vrr_active =
+                        drm_output.with_compositor(|compositor| compositor.vrr_enabled());
+                    if !vrr_supported && vrr != halley_config::Vrr::Off {
+                        eventline::warn!(
+                            "output {name:?}: VRR is configured but the connector does not support it"
                         );
                     }
 
@@ -274,12 +320,16 @@ impl TtyBackend {
                         Some(mode),
                         offset,
                         vrr,
+                        vrr_supported,
+                        vrr_active,
                     ));
                     drm_outputs.push(DrmOutputEntry {
                         crtc,
                         connector,
                         current_mode: mode,
                         configured_vrr: vrr,
+                        vrr_supported,
+                        vrr_active,
                         output,
                         drm_output,
                         dmabuf_feedback,
@@ -289,8 +339,9 @@ impl TtyBackend {
                 }
                 Err(err) => {
                     eventline::error!("failed to initialize output {name:?}: {err}");
-                    ipc_output_info
-                        .push(connector_output_info(name, &connector, None, offset, vrr));
+                    ipc_output_info.push(connector_output_info(
+                        name, &connector, None, offset, vrr, false, false,
+                    ));
                 }
             }
         }
@@ -345,6 +396,13 @@ impl TtyBackend {
             .is_none_or(|entry| entry.dpms_enabled)
     }
 
+    pub fn output_vrr_active(&self, output: &Output) -> bool {
+        self.drm_outputs
+            .iter()
+            .find(|entry| &entry.output == output)
+            .is_some_and(|entry| entry.vrr_active)
+    }
+
     pub fn any_output_dpms_enabled(&self) -> bool {
         self.drm_outputs.iter().any(|entry| entry.dpms_enabled)
     }
@@ -386,25 +444,20 @@ impl TtyBackend {
             if entry.dpms_enabled == target_enabled {
                 continue;
             }
-            if target_enabled {
-                // `clear()` powers the CRTC off but intentionally leaves the
-                // compositor's damage history intact. Without resetting it,
-                // a static scene can produce an empty first frame and never
-                // queue the atomic modeset that actually wakes this output.
-                // This is especially visible on a secondary output without
-                // the software cursor or an active animation.
-                let reset = entry.drm_output.with_compositor(|compositor| {
-                    let result = compositor.reset_state();
-                    if result.is_ok() {
-                        compositor.reset_buffer_ages();
-                    }
-                    result
-                });
-                if let Err(err) = reset {
-                    failures.push(format!("{}: {err}", entry.output.name()));
-                    continue;
-                }
-            } else {
+            // Powering on touches no DRM state at all - the CRTC is re-enabled
+            // as a side effect of the first ordinary frame's atomic commit, so
+            // the enable and its scan-out buffer land together. Old halley and
+            // niri both do exactly nothing here; `reset_state()` belongs on the
+            // VT-switch path (see `resume()`), not this one, and calling it here
+            // cost a ~25s event-loop stall on every wake.
+            //
+            // Nothing is needed to force that first frame to be non-empty
+            // either: `clear()` wipes the surface's *current* mode and connector
+            // set, so `commit_pending()` stays true, which makes the next
+            // prepared frame a full (not partial) one, and a full frame's
+            // `is_empty()` is false by construction.
+            if !target_enabled {
+                set_entry_vrr(entry, false);
                 let clear = entry
                     .drm_output
                     .with_compositor(|compositor| compositor.clear());
@@ -561,7 +614,7 @@ impl TtyBackend {
                 }
             }
 
-            let (name, output, connector, current_mode, configured_vrr) = {
+            let (name, output, connector, current_mode, configured_vrr, vrr_supported, vrr_active) = {
                 let entry = &mut self.drm_outputs[index];
                 entry.output.change_current_state(
                     diff.mode_changed.then(|| drm_output_mode(&target.mode)),
@@ -571,12 +624,15 @@ impl TtyBackend {
                 );
                 entry.current_mode = target.mode;
                 entry.configured_vrr = target.vrr;
+                set_entry_vrr(entry, target.vrr == halley_config::Vrr::On);
                 (
                     entry.output.name(),
                     entry.output.clone(),
                     entry.connector.clone(),
                     entry.current_mode,
                     entry.configured_vrr,
+                    entry.vrr_supported,
+                    entry.vrr_active,
                 )
             };
 
@@ -602,6 +658,8 @@ impl TtyBackend {
                     (location.x, location.y)
                 },
                 configured_vrr,
+                vrr_supported,
+                vrr_active,
             );
             if let Some(existing) = self
                 .ipc_output_info
@@ -635,6 +693,10 @@ impl TtyBackend {
         // output from rendering again (its VBlank is never coming).
         for entry in &mut self.drm_outputs {
             entry.pending = false;
+            set_entry_vrr(
+                entry,
+                entry.dpms_enabled && entry.configured_vrr == halley_config::Vrr::On,
+            );
             if !entry.dpms_enabled
                 && let Err(err) = entry
                     .drm_output
@@ -688,12 +750,16 @@ impl TtyBackend {
 impl crate::ipc::OutputInfoSource for TtyBackend {
     fn output_info(&self) -> Vec<halley_ipc::OutputInfo> {
         let mut outputs = self.ipc_output_info.clone();
-        for entry in self.drm_outputs.iter().filter(|entry| !entry.dpms_enabled) {
+        for entry in &self.drm_outputs {
             if let Some(info) = outputs
                 .iter_mut()
                 .find(|info| info.name == entry.output.name())
             {
-                info.current_mode = None;
+                info.vrr_supported = entry.vrr_supported;
+                info.vrr_active = entry.vrr_active && entry.dpms_enabled;
+                if !entry.dpms_enabled {
+                    info.current_mode = None;
+                }
             }
         }
         outputs
@@ -721,6 +787,8 @@ impl Renderable for TtyBackend {
         if entry.pending {
             return Ok(RenderOutcome::new(RenderStatus::Skipped, None));
         }
+        let requested_vrr = configured_vrr_target(entry.configured_vrr, request.vrr_auto_eligible);
+        set_entry_vrr(entry, requested_vrr);
         let output_geometry = request
             .space
             .output_geometry(&entry.output)
@@ -777,12 +845,41 @@ impl Renderable for TtyBackend {
             target_presentation_time,
             presentation_feedback,
             session_lock_generation,
+            variable_refresh: entry.vrr_active,
         })?;
         entry.pending = true;
         Ok(RenderOutcome::new(
             RenderStatus::Submitted,
             Some(element_states),
         ))
+    }
+}
+
+fn set_entry_vrr(entry: &mut DrmOutputEntry, requested: bool) {
+    let requested = requested && entry.dpms_enabled && entry.vrr_supported;
+    if requested == entry.vrr_active {
+        return;
+    }
+    let name = entry.output.name();
+    if let Err(err) = entry
+        .drm_output
+        .with_compositor(|compositor| compositor.use_vrr(requested))
+    {
+        eventline::warn!(
+            "output {name:?}: failed to {} VRR: {err}",
+            if requested { "enable" } else { "disable" }
+        );
+    }
+    entry.vrr_active = entry
+        .drm_output
+        .with_compositor(|compositor| compositor.vrr_enabled());
+}
+
+fn configured_vrr_target(configured: halley_config::Vrr, auto_eligible: bool) -> bool {
+    match configured {
+        halley_config::Vrr::Off => false,
+        halley_config::Vrr::On => true,
+        halley_config::Vrr::Auto => auto_eligible,
     }
 }
 
@@ -802,7 +899,7 @@ fn dpms_target_enabled(
 
 #[cfg(test)]
 mod dpms_tests {
-    use super::dpms_target_enabled;
+    use super::{configured_vrr_target, dpms_target_enabled};
 
     #[test]
     fn toggle_turns_all_off_only_when_every_target_is_on() {
@@ -822,5 +919,15 @@ mod dpms_tests {
             dpms_target_enabled(halley_ipc::DpmsCommand::Toggle, []),
             None
         );
+    }
+
+    #[test]
+    fn vrr_policy_keeps_on_and_off_absolute_and_gates_auto() {
+        assert!(!configured_vrr_target(halley_config::Vrr::Off, true));
+        assert!(!configured_vrr_target(halley_config::Vrr::Off, false));
+        assert!(configured_vrr_target(halley_config::Vrr::On, true));
+        assert!(configured_vrr_target(halley_config::Vrr::On, false));
+        assert!(configured_vrr_target(halley_config::Vrr::Auto, true));
+        assert!(!configured_vrr_target(halley_config::Vrr::Auto, false));
     }
 }

@@ -56,11 +56,11 @@ pub struct OverlayVisuals {
     pub key_fill: OverlayRgb,
     pub border: OverlayRgb,
     pub border_px: f32,
-    pub shape: halley_config::OverlayShape,
+    pub radius: f32,
 }
 
 impl OverlayVisuals {
-    fn label_chrome(mut self) -> Self {
+    pub(crate) fn label_chrome(mut self) -> Self {
         self.border_px = 0.0;
         self
     }
@@ -117,7 +117,7 @@ pub fn resolve_visuals(
         } else {
             0.0
         },
-        shape: config.shape,
+        radius: config.radius_px.max(0) as f32,
     }
 }
 
@@ -171,7 +171,7 @@ pub fn card_element(
     node_renderer.overlay_card_element(
         renderer,
         destination,
-        visuals.shape,
+        visuals.radius,
         fill.tuple(),
         visuals.border.tuple(),
         visuals.border_px,
@@ -465,7 +465,7 @@ mod tests {
         );
         assert_eq!(visuals.fill, LIGHT_FILL);
         assert_eq!(visuals.text, LIGHT_TEXT);
-        assert_eq!(visuals.shape, halley_config::OverlayShape::Square);
+        assert_eq!(visuals.radius, 8.0);
     }
 
     #[test]

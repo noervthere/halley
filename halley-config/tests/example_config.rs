@@ -195,7 +195,7 @@ fn example_config_overlay_section_is_the_bootstrap_style() {
     let config = RuneConfig::from_file(EXAMPLE_PATH).expect("example config parses");
     let overlays = halley_config::parse_overlays_checked(&config).expect("overlays parse");
 
-    assert_eq!(overlays.shape, halley_config::OverlayShape::Square);
+    assert_eq!(overlays.radius_px, 8);
     assert!(overlays.borders);
     assert_eq!(
         overlays.notifications.position,

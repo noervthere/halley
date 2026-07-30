@@ -8,13 +8,28 @@ use smithay::backend::renderer::gles::{
 use smithay::backend::renderer::utils::{CommitCounter, DamageSet, OpaqueRegions};
 use smithay::backend::renderer::{ContextId, ImportMem, Renderer, Texture};
 use smithay::utils::user_data::UserDataMap;
-use smithay::utils::{Buffer, Logical, Physical, Rectangle, Scale, Transform};
+use smithay::utils::{Buffer, Logical, Physical, Rectangle, Scale, Size, Transform};
 use std::error::Error;
 
 const SQUARE: &str = include_str!("shaders/node_square.frag");
 const SQUIRCLE: &str = include_str!("shaders/node_squircle.frag");
 const LABEL_SQUARE: &str = include_str!("shaders/ui_rect_square.frag");
 const LABEL_ROUNDED: &str = include_str!("shaders/ui_rect_rounded.frag");
+
+fn overlay_card_metrics(
+    size: Size<i32, Physical>,
+    requested_content_radius: f32,
+    requested_border_px: f32,
+) -> super::window_decoration::Metrics {
+    let border_px = requested_border_px
+        .max(0.0)
+        .min(size.w.min(size.h).max(0) as f32 * 0.5);
+    let max_content_radius = (size.w.min(size.h).max(0) as f32 * 0.5 - border_px).max(0.0);
+    super::window_decoration::metrics(
+        requested_content_radius.max(0.0).min(max_content_radius),
+        border_px,
+    )
+}
 
 struct Resources {
     context: ContextId<GlesTexture>,
@@ -51,7 +66,15 @@ pub struct LabelRenderElement {
     border: (f32, f32, f32, f32),
     size: (f32, f32),
     corner_radius: f32,
+    inner_offset: f32,
+    inner_corner_radius: f32,
     border_px: f32,
+}
+
+impl LabelRenderElement {
+    pub fn corner_radius(&self) -> f32 {
+        self.corner_radius
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -166,6 +189,8 @@ impl NodeRenderer {
             border: (rgb.0, rgb.1, rgb.2, 1.0),
             size: (destination.size.w as f32, destination.size.h as f32),
             corner_radius: destination.size.h as f32 * 0.32,
+            inner_offset: 0.0,
+            inner_corner_radius: destination.size.h as f32 * 0.32,
             border_px: 0.0,
         })
     }
@@ -174,7 +199,7 @@ impl NodeRenderer {
         &mut self,
         renderer: &mut GlesRenderer,
         destination: Rectangle<i32, Physical>,
-        shape: halley_config::OverlayShape,
+        content_radius: f32,
         fill: (f32, f32, f32, f32),
         border: (f32, f32, f32, f32),
         border_px: f32,
@@ -182,9 +207,11 @@ impl NodeRenderer {
     ) -> Result<LabelRenderElement, Box<dyn Error>> {
         self.ensure_resources(renderer)?;
         let resources = self.resources.as_ref().expect("ensured above");
-        let program = match shape {
-            halley_config::OverlayShape::Square => resources.label_square.clone(),
-            halley_config::OverlayShape::Rounded => resources.label_rounded.clone(),
+        let metrics = overlay_card_metrics(destination.size, content_radius, border_px);
+        let program = if metrics.content_radius > 0.0 {
+            resources.label_rounded.clone()
+        } else {
+            resources.label_square.clone()
         };
         let source = Rectangle::<f64, Logical>::new(
             (0.0, 0.0).into(),
@@ -214,11 +241,10 @@ impl NodeRenderer {
             fill,
             border,
             size: (destination.size.w as f32, destination.size.h as f32),
-            corner_radius: match shape {
-                halley_config::OverlayShape::Square => 0.0,
-                halley_config::OverlayShape::Rounded => destination.size.h as f32 * 0.32,
-            },
-            border_px: border_px.max(0.0),
+            corner_radius: metrics.outer_radius,
+            inner_offset: metrics.inner_offset,
+            inner_corner_radius: metrics.inner_radius,
+            border_px: metrics.border_width,
         })
     }
 
@@ -439,16 +465,13 @@ impl RenderElement<GlesRenderer> for LabelRenderElement {
                 Uniform::new(
                     "inner_rect_size",
                     (
-                        (self.size.0 - self.border_px * 2.0).max(1.0),
-                        (self.size.1 - self.border_px * 2.0).max(1.0),
+                        (self.size.0 - self.inner_offset * 2.0).max(1.0),
+                        (self.size.1 - self.inner_offset * 2.0).max(1.0),
                     ),
                 ),
-                Uniform::new("inner_rect_offset", (self.border_px, self.border_px)),
+                Uniform::new("inner_rect_offset", (self.inner_offset, self.inner_offset)),
                 Uniform::new("corner_radius", self.corner_radius),
-                Uniform::new(
-                    "inner_corner_radius",
-                    (self.corner_radius - self.border_px).max(0.0),
-                ),
+                Uniform::new("inner_corner_radius", self.inner_corner_radius),
                 Uniform::new("border_px", self.border_px),
             ],
         )
@@ -490,5 +513,21 @@ impl RenderElement<GlesRenderer> for NodeRenderElement {
 
     fn underlying_storage(&self, _renderer: &mut GlesRenderer) -> Option<UnderlyingStorage<'_>> {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn overlay_card_uses_window_border_radius_semantics() {
+        let size = Size::<i32, Physical>::from((300, 300));
+        let overlay = overlay_card_metrics(size, 8.0, 3.0);
+        let window = super::super::window_decoration::metrics(8.0, 3.0);
+        assert_eq!(overlay, window);
+        assert_eq!(overlay.content_radius, 8.0);
+        assert_eq!(overlay.outer_radius, 11.0);
+        assert_eq!(overlay_card_metrics(size, 0.0, 3.0).outer_radius, 0.0);
     }
 }

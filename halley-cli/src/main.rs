@@ -644,7 +644,14 @@ fn format_output(output: &OutputInfo) -> Result<String, String> {
             output.offset_x, output.offset_y
         )
         .unwrap();
-        writeln!(formatted, "  VRR: {}", output.vrr).unwrap();
+        let vrr_state = if !output.vrr_supported {
+            "unsupported"
+        } else if output.vrr_active {
+            "active"
+        } else {
+            "inactive"
+        };
+        writeln!(formatted, "  VRR: {} ({vrr_state})", output.vrr).unwrap();
     } else {
         writeln!(formatted, "  Disabled").unwrap();
     }
@@ -960,6 +967,8 @@ mod tests {
             offset_x: 2560,
             offset_y: 0,
             vrr: "auto".to_string(),
+            vrr_supported: true,
+            vrr_active: true,
         };
 
         assert_eq!(
@@ -968,7 +977,7 @@ mod tests {
 DP-1
   Current mode: 2560x1440 @ 179.998 Hz (preferred)
   Position: 2560, 0
-  VRR: auto
+  VRR: auto (active)
   Available modes:
     2560x1440@179.998 (current, preferred)
     2560x1440@143.912
@@ -986,6 +995,8 @@ DP-1
             offset_x: 0,
             offset_y: 0,
             vrr: "off".to_string(),
+            vrr_supported: false,
+            vrr_active: false,
         };
 
         assert_eq!(
@@ -1008,6 +1019,8 @@ HDMI-A-1
             offset_x: 0,
             offset_y: 0,
             vrr: "off".to_string(),
+            vrr_supported: false,
+            vrr_active: false,
         };
 
         assert_eq!(

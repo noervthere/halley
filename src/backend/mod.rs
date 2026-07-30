@@ -188,11 +188,15 @@ pub struct FrameSubmission {
     pub target_presentation_time: std::time::Duration,
     pub presentation_feedback: smithay::desktop::utils::OutputPresentationFeedback,
     pub session_lock_generation: Option<u64>,
+    pub variable_refresh: bool,
 }
 
 /// Immutable scene data needed to construct one output frame.
 pub struct RenderRequest<'a> {
     pub target_presentation_time: std::time::Duration,
+    /// True only when the output has a committed, fully settled fullscreen
+    /// window and no compositor or layer-shell overlay is visible.
+    pub vrr_auto_eligible: bool,
     pub clear: Color32F,
     pub session_lock: &'a crate::wayland::session_lock::State,
     pub cursor: &'a CursorManager,
@@ -214,6 +218,7 @@ pub struct RenderRequest<'a> {
         &'a mut crate::backend::fullscreen_texture::FullscreenTextureTransitions,
     pub overlay_previews: &'a mut crate::backend::overlay_preview::OverlayPreviewCache,
     pub nodes: &'a crate::nodes::NodesState,
+    pub node_grab_active: bool,
     pub bearings: &'a crate::bearings::BearingsState,
     pub backdrop_blur_renderer: &'a mut crate::backend::backdrop_blur::BackdropBlurRenderer,
     pub shadow_renderer: &'a mut crate::backend::shadow::ShadowRenderer,

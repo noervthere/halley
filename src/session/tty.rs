@@ -16,6 +16,7 @@ use smithay::reexports::wayland_server::Display;
 use smithay::wayland::compositor::CompositorHandler;
 use smithay::wayland::drm_syncobj::DrmSyncPointSource;
 use smithay::wayland::seat::WaylandFocus;
+use smithay::wayland::shell::wlr_layer::Layer;
 
 use crate::backend::tty::TtyBackend;
 use crate::backend::{CLEAR_COLOR, RenderOutcome, RenderRequest, RenderStatus, Renderable};
@@ -217,7 +218,10 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
         .cloned()
         .map(|output| {
             let interval = backend.refresh_interval_for_output(&output);
-            (output, OutputFrameState::new(interval))
+            let vrr_active = backend.output_vrr_active(&output);
+            let mut state = OutputFrameState::new(interval);
+            state.set_vrr(vrr_active);
+            (output, state)
         })
         .collect();
 
@@ -533,14 +537,15 @@ fn on_vblank(app: &mut TtyApp, crtc: crtc::Handle, metadata: Option<&DrmEventMet
         // diagnostics, while reporting the kernel page-flip timestamp to
         // clients whenever it is available.
         let _target_presentation_time = submission.target_presentation_time;
-        let refresh = output
+        let fixed_refresh = output
             .current_mode()
-            .map(|mode| {
-                smithay::wayland::presentation::Refresh::fixed(Duration::from_secs_f64(
-                    1_000.0 / mode.refresh as f64,
-                ))
-            })
-            .unwrap_or(smithay::wayland::presentation::Refresh::Unknown);
+            .map(|mode| Duration::from_secs_f64(1_000.0 / mode.refresh as f64))
+            .filter(|refresh| !refresh.is_zero());
+        let refresh = match (submission.variable_refresh, fixed_refresh) {
+            (true, Some(refresh)) => smithay::wayland::presentation::Refresh::variable(refresh),
+            (false, Some(refresh)) => smithay::wayland::presentation::Refresh::fixed(refresh),
+            (_, None) => smithay::wayland::presentation::Refresh::Unknown,
+        };
         let sequence = metadata
             .map(|metadata| u64::from(metadata.sequence))
             .unwrap_or(0);
@@ -583,6 +588,12 @@ fn on_vblank(app: &mut TtyApp, crtc: crtc::Handle, metadata: Option<&DrmEventMet
                     Some(output.clone())
                 });
             });
+        crate::nodes::send_hover_preview_frame(
+            &app.nodes,
+            &output,
+            elapsed,
+            crate::frame_clock::monotonic_now(),
+        );
     }
     wayland::layer_shell::send_frames(&output, elapsed);
     crate::cursor::surface::send_frame(
@@ -654,6 +665,10 @@ fn apply_tty_output_config(app: &mut TtyApp, outputs_config: &[halley_config::Ou
                 state.replace_clock(interval);
             }
         }
+        let vrr_active = app.driver.backend.output_vrr_active(&change.output);
+        if let Some(state) = app.driver.output_frames.get_mut(&change.output) {
+            state.set_vrr(vrr_active);
+        }
 
         if change.layout_changed {
             app.wayland
@@ -674,9 +689,7 @@ fn apply_tty_output_config(app: &mut TtyApp, outputs_config: &[halley_config::Ou
             crate::xwayland::reconfigure_fullscreen(external);
         }
 
-        if change.mode_changed || change.layout_changed {
-            queue_output_redraw(app, &change.output);
-        }
+        queue_output_redraw(app, &change.output);
     }
 
     if layout_changed {
@@ -691,12 +704,21 @@ fn apply_tty_output_config(app: &mut TtyApp, outputs_config: &[halley_config::Ou
 
 fn redraw_queued_outputs(app: &mut TtyApp, loop_handle: &LoopHandle<'_, TtyApp>) {
     let _ = crate::nodes::tick_physics(app, crate::frame_clock::monotonic_now());
+    // Match startup's connector/CRTC activation order. Iterating the
+    // `HashMap` made a multi-output DPMS wake nondeterministic, so the
+    // primary could intermittently queue its modeset before the secondary
+    // that normally commits first during compositor startup.
     let outputs: Vec<_> = app
         .driver
-        .output_frames
-        .iter()
-        .filter(|(_, state)| state.is_redraw_queued())
-        .map(|(output, _)| output.clone())
+        .backend
+        .outputs()
+        .filter(|output| {
+            app.driver
+                .output_frames
+                .get(*output)
+                .is_some_and(OutputFrameState::is_redraw_queued)
+        })
+        .cloned()
         .collect();
 
     for output in outputs {
@@ -793,11 +815,13 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
     if view_before != view_after {
         super::pointer::update_client_state(app, app.start_time.elapsed().as_millis() as u32);
     }
+    let vrr_auto_eligible = auto_vrr_eligible(app, output, target_presentation_time);
 
     let outcome = match app.driver.backend.render(
         output,
         RenderRequest {
             target_presentation_time,
+            vrr_auto_eligible,
             clear: CLEAR_COLOR,
             session_lock: &app.session_lock,
             cursor: &app.cursor,
@@ -818,6 +842,11 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
             fullscreen_textures: &mut app.fullscreen_textures,
             overlay_previews: &mut app.overlay_previews,
             nodes: &app.nodes,
+            node_grab_active: matches!(
+                &app.grab,
+                crate::input::grab::Grab::PendingNode { .. }
+                    | crate::input::grab::Grab::MoveNode { .. }
+            ),
             bearings: &app.bearings,
             backdrop_blur_renderer: &mut app.backdrop_blur_renderer,
             shadow_renderer: &mut app.shadow_renderer,
@@ -858,6 +887,10 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
             element_states,
         );
     }
+    let vrr_active = app.driver.backend.output_vrr_active(output);
+    if let Some(state) = app.driver.output_frames.get_mut(output) {
+        state.set_vrr(vrr_active);
+    }
 
     if outcome.status() == RenderStatus::Submitted {
         let state = app
@@ -872,6 +905,32 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
     }
 
     queue_estimated_vblank_timer(app, output, animating, loop_handle);
+}
+
+fn auto_vrr_eligible(app: &TtyApp, output: &Output, now: Duration) -> bool {
+    if app.session_lock.active()
+        || app.capture.is_active()
+        || app.apogee.is_active()
+        || app.focus_cycle.session().is_some()
+        || app.bearings.mix(&output.name()) > 0.002
+        || app
+            .nodes
+            .hover_preview_visible_on_output(&output.name(), now)
+    {
+        return false;
+    }
+    let overlays = app.overlays.snapshot(&output.name(), now);
+    if overlays.exit_mix.is_some() || overlays.notification.is_some() {
+        return false;
+    }
+    if smithay::desktop::layer_map_for_output(output)
+        .layers_on(Layer::Overlay)
+        .next()
+        .is_some()
+    {
+        return false;
+    }
+    app.fullscreen.has_stable_fullscreen_on_output(output, now)
 }
 
 fn queue_estimated_vblank_timer(

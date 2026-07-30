@@ -425,7 +425,6 @@ impl<D: SessionDriver> Session<D> {
         {
             return false;
         }
-        self.fullscreen_textures.remove(&root);
         true
     }
 }

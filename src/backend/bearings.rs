@@ -201,10 +201,12 @@ pub fn elements(
             .filter(|layout| layout.alpha >= 0.04)
             .map(|layout| super::backdrop_blur::BlurPatch {
                 rect: layout.chip,
-                radius: match overlay_visuals.shape {
-                    halley_config::OverlayShape::Square => 0.0,
-                    halley_config::OverlayShape::Rounded => 11.0,
-                },
+                radius: overlay_visuals.radius
+                    + if overlay_visuals.radius > 0.0 {
+                        overlay_visuals.border_px
+                    } else {
+                        0.0
+                    },
                 alpha: layout.alpha,
                 clip: None,
             })

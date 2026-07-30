@@ -1,18 +1,18 @@
 # Compositor overlays
 
 The `overlays:` section is the shared style contract for compositor-owned UI:
-Apogee title bands, the Alt+Tab rail, Bearings chips, configuration notices,
-and the exit confirmation. It deliberately does not restyle client window
-decorations or node labels; those retain their existing sections.
+Apogee title bands, the Alt+Tab rail, Bearings chips, the screenshot picker,
+configuration notices, and the exit confirmation. It deliberately does not
+restyle client window decorations or node labels; those retain their existing
+sections.
 
 ```rune
 overlays:
   background-colour "auto"
   text-colour "auto"
   error-colour "#fb4934"
-  shape "square"
+  radius 8
   borders true
-  border-source "primary"
 
   notifications:
     position "top-center"
@@ -24,17 +24,21 @@ end
 
 `background-colour`, `text-colour`, and `error-colour` accept `auto`, `light`,
 `dark`, or a `#rgb`, `#rgba`, `#rrggbb`, or `#rrggbbaa` colour. American `color`
-spellings are accepted as aliases. `shape` is `square` or `rounded`.
-`borders false` removes overlay borders. `border-source` is `primary` or
-`secondary`; until a secondary decoration palette is configured, `secondary`
-falls back to the primary focused decoration colour.
+spellings are accepted as aliases. `radius` is the overlay content-corner
+radius in pixels; `0` is square.
+`borders false` removes overlay borders. Overlay borders always use the
+configured focused decoration border colour; there is no secondary/dual
+overlay border source.
 Apogee and Alt+Tab title bands, monitor badges, and `NODE` badges remain
 borderless regardless of this setting, matching old Halley's label chrome.
+Window preview textures use `decorations.border.radius`; the one surrounding
+overlay border uses `overlays.radius`. Both settings use the same content-radius
+semantics, so setting both to `8` produces matching curves.
 
 Notification positions are `top-left`, `top-center`, `top-right`,
 `bottom-left`, `bottom-center`, and `bottom-right`. Durations are positive
 milliseconds. The renderer builds every card at its final pixel dimensions,
-so changing shape or output scale does not stretch a small blurred texture.
+so changing its radius or output scale does not stretch a small blurred texture.
 
 ## Configuration lifecycle
 

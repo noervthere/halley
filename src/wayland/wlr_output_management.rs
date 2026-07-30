@@ -69,9 +69,14 @@ impl<D: SessionDriver> GlobalDispatch<ZwlrOutputManagerV1, (), Session<D>> for S
         data_init: &mut DataInit<'_, Session<D>>,
     ) {
         let manager = data_init.init(resource, ());
+        let output_info = crate::ipc::OutputInfoSource::output_info(&session.driver);
         let outputs: Vec<_> = session.wayland.space.outputs().cloned().collect();
         for output in outputs {
-            advertise_output::<D>(display, client, &manager, output);
+            let adaptive_sync = output_info
+                .iter()
+                .find(|info| info.name == output.name())
+                .is_some_and(|info| info.vrr_active);
+            advertise_output::<D>(display, client, &manager, output, adaptive_sync);
         }
         manager.done(SERIAL);
     }
@@ -82,6 +87,7 @@ fn advertise_output<D: SessionDriver>(
     client: &Client,
     manager: &ZwlrOutputManagerV1,
     output: Output,
+    adaptive_sync: bool,
 ) {
     let Ok(head) = client.create_resource::<ZwlrOutputHeadV1, _, Session<D>>(
         display,
@@ -149,9 +155,11 @@ fn advertise_output<D: SessionDriver>(
         head.transform(wl_transform(output.current_transform()));
         head.scale(output.current_scale().fractional_scale());
         if head.version() >= 4 {
-            // Smithay's Output handle does not expose the backend's live VRR
-            // state. Disabled is the conservative truthful default.
-            head.adaptive_sync(zwlr_output_head_v1::AdaptiveSyncState::Disabled);
+            head.adaptive_sync(if adaptive_sync {
+                zwlr_output_head_v1::AdaptiveSyncState::Enabled
+            } else {
+                zwlr_output_head_v1::AdaptiveSyncState::Disabled
+            });
         }
     }
 }

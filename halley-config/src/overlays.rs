@@ -14,18 +14,6 @@ pub enum OverlayColorMode {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum OverlayShape {
-    Square,
-    Rounded,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum OverlayBorderSource {
-    Primary,
-    Secondary,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NotificationPosition {
     TopLeft,
     TopCenter,
@@ -57,9 +45,8 @@ pub struct Overlays {
     pub background_color: OverlayColorMode,
     pub text_color: OverlayColorMode,
     pub error_color: OverlayColorMode,
-    pub shape: OverlayShape,
+    pub radius_px: i32,
     pub borders: bool,
-    pub border_source: OverlayBorderSource,
     pub notifications: Notifications,
 }
 
@@ -74,9 +61,8 @@ impl Default for Overlays {
                 b: 0x34 as f32 / 255.0,
                 a: 1.0,
             },
-            shape: OverlayShape::Square,
+            radius_px: 8,
             borders: true,
-            border_source: OverlayBorderSource::Primary,
             notifications: Notifications::default(),
         }
     }
@@ -152,37 +138,9 @@ pub fn parse_overlays_checked(config: &RuneConfig) -> Result<Overlays, OverlayPa
         "overlays.error-colour",
         defaults.error_color,
     )?;
-    let shape = match optional_string(config, &["overlays.shape", "overlay.shape"])?
-        .as_deref()
-        .map(str::to_ascii_lowercase)
-        .as_deref()
-    {
-        None => defaults.shape,
-        Some("square") => OverlayShape::Square,
-        Some("rounded") => OverlayShape::Rounded,
-        Some(value) => {
-            return Err(OverlayParseError::InvalidValue {
-                path: "overlays.shape",
-                value: value.to_string(),
-            });
-        }
-    };
-    let border_source =
-        match optional_string(config, &["overlays.border-source", "overlay.border-source"])?
-            .as_deref()
-            .map(str::to_ascii_lowercase)
-            .as_deref()
-        {
-            None => defaults.border_source,
-            Some("primary") => OverlayBorderSource::Primary,
-            Some("secondary") => OverlayBorderSource::Secondary,
-            Some(value) => {
-                return Err(OverlayParseError::InvalidValue {
-                    path: "overlays.border-source",
-                    value: value.to_string(),
-                });
-            }
-        };
+    let radius_px = optional_i32(config, &["overlays.radius", "overlay.radius"])?
+        .unwrap_or(defaults.radius_px)
+        .clamp(0, 256);
     let position = match optional_string(
         config,
         &[
@@ -237,10 +195,9 @@ pub fn parse_overlays_checked(config: &RuneConfig) -> Result<Overlays, OverlayPa
         background_color,
         text_color,
         error_color,
-        shape,
+        radius_px,
         borders: optional_bool(config, &["overlays.borders", "overlay.borders"])?
             .unwrap_or(defaults.borders),
-        border_source,
         notifications: Notifications {
             position,
             success_duration_ms,
@@ -279,6 +236,15 @@ fn optional_u64(config: &RuneConfig, paths: &[&str]) -> Result<Option<u64>, rune
     Ok(None)
 }
 
+fn optional_i32(config: &RuneConfig, paths: &[&str]) -> Result<Option<i32>, rune_cfg::RuneError> {
+    for path in paths {
+        if let Some(value) = config.get_optional::<i32>(path)? {
+            return Ok(Some(value));
+        }
+    }
+    Ok(None)
+}
+
 fn parse_color(
     raw: Option<String>,
     path: &'static str,
@@ -291,8 +257,7 @@ fn parse_color(
         "auto" => Ok(OverlayColorMode::Auto),
         "light" => Ok(OverlayColorMode::Light),
         "dark" => Ok(OverlayColorMode::Dark),
-        value => parse_hex_color(value)
-            .ok_or_else(|| OverlayParseError::InvalidValue { path, value: raw }),
+        value => parse_hex_color(value).ok_or(OverlayParseError::InvalidValue { path, value: raw }),
     }
 }
 
@@ -350,11 +315,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn defaults_restore_old_halley_square_overlay_style() {
+    fn defaults_match_the_window_content_radius() {
         let overlays = parse_overlays_checked(&RuneConfig::from_str("").unwrap()).unwrap();
-        assert_eq!(overlays.shape, OverlayShape::Square);
+        assert_eq!(overlays.radius_px, 8);
         assert!(overlays.borders);
-        assert_eq!(overlays.border_source, OverlayBorderSource::Primary);
         assert_eq!(
             overlays.notifications.position,
             NotificationPosition::TopCenter
@@ -373,9 +337,8 @@ overlays:
   background-colour "#1238"
   text-color "dark"
   error-colour "#fb4934"
-  shape "rounded"
+  radius 12
   borders false
-  border-source "secondary"
   notifications:
     position "bottom-right"
     success-duration-ms 1500
@@ -387,9 +350,8 @@ end
         .unwrap();
         let overlays = parse_overlays_checked(&config).unwrap();
 
-        assert_eq!(overlays.shape, OverlayShape::Rounded);
+        assert_eq!(overlays.radius_px, 12);
         assert!(!overlays.borders);
-        assert_eq!(overlays.border_source, OverlayBorderSource::Secondary);
         assert_eq!(
             overlays.notifications.position,
             NotificationPosition::BottomRight
@@ -403,10 +365,9 @@ end
     }
 
     #[test]
-    fn rejects_invalid_style_and_zero_duration() {
-        let shape = RuneConfig::from_str("overlays:\n  shape \"squircle\"\nend\n").unwrap();
-        assert!(parse_overlays_checked(&shape).is_err());
-
+    fn clamps_radius_and_rejects_zero_duration() {
+        let radius = RuneConfig::from_str("overlays:\n  radius 999\nend\n").unwrap();
+        assert_eq!(parse_overlays_checked(&radius).unwrap().radius_px, 256);
         let duration = RuneConfig::from_str(
             "overlays:\n  notifications:\n    error-duration-ms 0\n  end\nend\n",
         )

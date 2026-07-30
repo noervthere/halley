@@ -19,7 +19,6 @@ pub(crate) struct WindowVisualState {
     pub(crate) presentation_rect: Rectangle<i32, Physical>,
     pub(crate) animated_rect: Rectangle<i32, Physical>,
     pub(crate) opening_alpha: f32,
-    pub(crate) opening_is_animating: bool,
     pub(crate) fullscreen: Option<crate::wayland::fullscreen::FullscreenPresentation>,
     pub(crate) maximize: Option<crate::wayland::maximize::FieldMaximizePresentation>,
     pub(crate) camera_center: Point<f32, Physical>,
@@ -72,7 +71,6 @@ pub(crate) fn window_visual_state(
         output_size,
         view.scale,
     );
-    let opening_is_animating = window_open_animations.is_animating(window_surface.as_ref(), now);
     let opening_visual = window_open_animations
         .visual(window_surface.as_ref(), now, camera_rect)
         .unwrap_or_default();
@@ -110,7 +108,6 @@ pub(crate) fn window_visual_state(
         .unwrap_or(camera_rect);
     let mut animated_rect = opening_visual.transform_rect(presentation_rect, presentation_rect);
     let mut opening_alpha = opening_visual.alpha();
-    let mut opening_is_animating = opening_is_animating;
     let mut inherited_presentation = false;
     let mut inherited_camera_center = camera_center;
     let mut inherited_zoom_scale = view.scale;
@@ -142,7 +139,6 @@ pub(crate) fn window_visual_state(
             owner_visual.animated_rect,
         );
         opening_alpha = owner_visual.opening_alpha;
-        opening_is_animating = owner_visual.opening_is_animating;
         inherited_camera_center = owner_visual.camera_center;
         inherited_zoom_scale = owner_visual.zoom_scale;
         inherited_presentation = true;
@@ -154,7 +150,6 @@ pub(crate) fn window_visual_state(
         presentation_rect,
         animated_rect,
         opening_alpha,
-        opening_is_animating,
         fullscreen: fullscreen_presentation,
         maximize: maximize_presentation,
         camera_center: inherited_camera_center,

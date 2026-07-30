@@ -668,13 +668,22 @@ where
         if let Some(route) = route.as_ref() {
             super::focus::update_hover(session, route, SERIAL_COUNTER.next_serial());
         }
-        let hovered_node = node_at_pointer(session);
+        let node_grab_active = matches!(
+            &session.grab,
+            crate::input::grab::Grab::PendingNode { .. }
+                | crate::input::grab::Grab::MoveNode { .. }
+        );
+        let hovered_node = (!node_grab_active)
+            .then(|| node_at_pointer(session))
+            .flatten();
         if let Some((id, output)) = hovered_node.as_ref() {
             super::focus::focus_node_from_hover(session, *id, output, SERIAL_COUNTER.next_serial());
         }
         let hovered = hovered_node.map(|(id, _)| id);
-        if session.nodes.hovered != hovered {
-            session.nodes.hovered = hovered;
+        if session
+            .nodes
+            .set_hovered(hovered, crate::frame_clock::monotonic_now())
+        {
             session.request_redraw();
         }
     }
@@ -781,6 +790,9 @@ where
                 x: center.x as f32 - position_after.0 as f32,
                 y: center.y as f32 - position_after.1 as f32,
             };
+            session
+                .nodes
+                .clear_hover(crate::frame_clock::monotonic_now());
             super::focus::focus_node_from_pointer(session, id, &output, serial);
             let mod_held = crate::input::mod_key_held(&modifiers, session.keyboard.effective_mod);
             if mod_held {

@@ -322,6 +322,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                     &output,
                     RenderRequest {
                         target_presentation_time,
+                        vrr_auto_eligible: false,
                         clear: backend::CLEAR_COLOR,
                         session_lock: &app.session_lock,
                         cursor: &app.cursor,
@@ -342,6 +343,11 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                         fullscreen_textures: &mut app.fullscreen_textures,
                         overlay_previews: &mut app.overlay_previews,
                         nodes: &app.nodes,
+                        node_grab_active: matches!(
+                            &app.grab,
+                            crate::input::grab::Grab::PendingNode { .. }
+                                | crate::input::grab::Grab::MoveNode { .. }
+                        ),
                         bearings: &app.bearings,
                         backdrop_blur_renderer: &mut app.backdrop_blur_renderer,
                         shadow_renderer: &mut app.shadow_renderer,
@@ -401,6 +407,12 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                             Some(output.clone())
                         });
                     });
+                    crate::nodes::send_hover_preview_frame(
+                        &app.nodes,
+                        &output,
+                        elapsed,
+                        target_presentation_time,
+                    );
                 }
                 wayland::layer_shell::send_frames(&output, elapsed);
                 crate::cursor::surface::send_frame(

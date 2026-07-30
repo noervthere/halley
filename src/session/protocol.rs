@@ -391,7 +391,9 @@ impl<D: SessionDriver> XdgShellHandler for Session<D> {
         let preparation = super::prepare_window_unmap(self, surface.wl_surface());
         wayland::xdg_shell::toplevel_destroyed(&mut self.wayland, &surface);
         super::finish_window_unmap(self, preparation);
-        self.nodes.remove_surface(surface.wl_surface());
+        if let Some(record) = self.nodes.remove_surface(surface.wl_surface()) {
+            self.overlay_previews.remove(record.id);
+        }
         super::sync_keyboard_focus(self, SERIAL_COUNTER.next_serial());
         self.request_redraw();
     }

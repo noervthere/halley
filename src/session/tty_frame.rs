@@ -72,6 +72,10 @@ impl OutputFrameState {
         self.unfinished_animations = false;
     }
 
+    pub fn set_vrr(&mut self, vrr: bool) {
+        self.clock.set_vrr(vrr);
+    }
+
     pub fn next_frame_sample(&mut self, now: Duration) -> (Duration, Duration) {
         let target = self.clock.next_presentation_time(now);
         let dt = target.saturating_sub(self.last_camera_sample);

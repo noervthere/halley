@@ -35,7 +35,11 @@ impl FileProps {
             })
         })();
         result.unwrap_or_else(|error| {
-            Self::Unavailable(format!("{:?}:{}", error.kind(), error.raw_os_error().unwrap_or(0)))
+            Self::Unavailable(format!(
+                "{:?}:{}",
+                error.kind(),
+                error.raw_os_error().unwrap_or(0)
+            ))
         })
     }
 }
@@ -127,9 +131,7 @@ pub fn load_initial(explicit_path: Option<PathBuf>) -> InitialConfig {
         };
     };
 
-    if !explicit
-        && let Err(error) = halley_config::bootstrap_default_config_at(&path)
-    {
+    if !explicit && let Err(error) = halley_config::bootstrap_default_config_at(&path) {
         eventline::warn!("config: failed to bootstrap default config: {error}");
     }
 
@@ -214,10 +216,8 @@ mod tests {
 
     impl ScratchFile {
         fn new(name: &str) -> Self {
-            let dir = std::env::temp_dir().join(format!(
-                "halley-config-watch-{}-{name}",
-                std::process::id()
-            ));
+            let dir = std::env::temp_dir()
+                .join(format!("halley-config-watch-{}-{name}", std::process::id()));
             fs::create_dir_all(&dir).unwrap();
             Self {
                 path: dir.join("halley.rune"),

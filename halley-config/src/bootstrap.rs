@@ -135,6 +135,11 @@ mod tests {
             "success-duration-ms 4000",
             "\"retract\" - reverse \"launch\"",
             "close-restore-nodes false",
+            "maximize:",
+            "motion \"easing\"",
+            "duration-ms 240",
+            "damping-ratio 1.0",
+            "stiffness 800.0",
         ] {
             assert!(
                 DEFAULT_CONFIG.contains(expected),

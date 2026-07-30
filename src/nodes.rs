@@ -19,6 +19,7 @@ mod dynamics;
 
 const OUTSIDE_THRESHOLD: f32 = 0.90;
 pub const NODE_DIAMETER_PX: f32 = 51.0;
+pub const HOVER_PREVIEW_DWELL_MS: u64 = 1_500;
 const LANDMARK_SLIDE_MS: u64 = 520;
 const RELEASE_LOCK_MS: u64 = 350;
 
@@ -28,6 +29,12 @@ fn release_lock_deadline(now: Duration) -> Duration {
 
 fn release_lock_is_active(until: Duration, now: Duration) -> bool {
     now < until
+}
+
+fn hover_preview_ready(started_at: Option<Duration>, now: Duration) -> bool {
+    started_at.is_some_and(|started_at| {
+        now.saturating_sub(started_at) >= Duration::from_millis(HOVER_PREVIEW_DWELL_MS)
+    })
 }
 
 fn logical_focus_after_collapse(
@@ -47,6 +54,33 @@ struct LandmarkSlide {
     from: Vec2,
     to: Vec2,
     started: Duration,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct HoverPreviewState {
+    node: Option<NodeId>,
+    mix: f32,
+}
+
+fn advance_hover_preview(
+    state: &mut HoverPreviewState,
+    target: Option<NodeId>,
+) -> Option<(NodeId, f32)> {
+    if target.is_some() && target != state.node {
+        state.node = target;
+        state.mix = 0.0;
+    }
+    let target_mix = if target.is_some() { 1.0 } else { 0.0 };
+    let rate = if target_mix > 0.5 { 0.30 } else { 0.14 };
+    state.mix += (target_mix - state.mix) * rate;
+    if (state.mix - target_mix).abs() < 0.002 {
+        state.mix = target_mix;
+    }
+    if target.is_none() && state.mix <= 0.002 {
+        state.mix = 0.0;
+        state.node = None;
+    }
+    state.node.map(|id| (id, state.mix))
 }
 
 #[derive(Clone)]
@@ -78,9 +112,11 @@ pub struct NodesState {
     pub animation: halley_config::NodeAnimation,
     pub animations_enabled: bool,
     pub hovered: Option<NodeId>,
+    hover_started_at: Option<Duration>,
     focused: Option<NodeId>,
     last_focus_ms: HashMap<NodeId, u64>,
     label_hover: RefCell<HashMap<NodeId, f32>>,
+    preview_hover: RefCell<HashMap<String, HoverPreviewState>>,
     landmark_slides: RefCell<HashMap<NodeId, LandmarkSlide>>,
     physics_velocity: HashMap<NodeId, Vec2>,
     physics_last_tick: Duration,
@@ -106,9 +142,11 @@ impl NodesState {
             animation: config.animations.node,
             animations_enabled: config.animations.enabled,
             hovered: None,
+            hover_started_at: None,
             focused: None,
             last_focus_ms: HashMap::new(),
             label_hover: RefCell::new(HashMap::new()),
+            preview_hover: RefCell::new(HashMap::new()),
             landmark_slides: RefCell::new(HashMap::new()),
             physics_velocity: HashMap::new(),
             physics_last_tick: crate::frame_clock::monotonic_now(),
@@ -295,11 +333,17 @@ impl NodesState {
         if self.focused == Some(id) {
             self.focused = None;
         }
+        if self.hovered == Some(id) {
+            self.set_hovered(None, crate::frame_clock::monotonic_now());
+        }
     }
 
     pub fn remove_surface(&mut self, surface: &WlSurface) -> Option<NodeRecord> {
         let id = self.by_surface.remove(surface)?;
         self.label_hover.borrow_mut().remove(&id);
+        self.preview_hover
+            .borrow_mut()
+            .retain(|_, state| state.node != Some(id));
         self.landmark_slides.borrow_mut().remove(&id);
         self.physics_velocity.remove(&id);
         self.release_locks.remove(&id);
@@ -307,6 +351,10 @@ impl NodesState {
         self.last_focus_ms.remove(&id);
         if self.focused == Some(id) {
             self.focused = None;
+        }
+        if self.hovered == Some(id) {
+            self.hovered = None;
+            self.hover_started_at = None;
         }
         self.field.remove(id);
         self.records.remove(&id)
@@ -422,6 +470,51 @@ impl NodesState {
             .filter(move |record| record.collapsed && record.attached && record.output == output)
     }
 
+    pub fn set_hovered(&mut self, hovered: Option<NodeId>, now: Duration) -> bool {
+        if self.hovered == hovered {
+            return false;
+        }
+        self.hovered = hovered;
+        self.hover_started_at = hovered.map(|_| now);
+        true
+    }
+
+    pub fn clear_hover(&mut self, now: Duration) -> bool {
+        self.set_hovered(None, now)
+    }
+
+    pub fn label_hovered_on_output(&self, output: &str, now: Duration) -> Option<NodeId> {
+        let id = self.hovered?;
+        self.records
+            .get(&id)
+            .filter(|record| record.collapsed && record.attached && record.output == output)?;
+        (!hover_preview_ready(self.hover_started_at, now)).then_some(id)
+    }
+
+    pub fn preview_hovered_on_output(&self, output: &str, now: Duration) -> Option<NodeId> {
+        let id = self.hovered?;
+        self.records
+            .get(&id)
+            .filter(|record| record.collapsed && record.attached && record.output == output)?;
+        hover_preview_ready(self.hover_started_at, now).then_some(id)
+    }
+
+    pub fn preview_hover_mix(&self, output: &str, now: Duration) -> Option<(NodeId, f32)> {
+        let target = self.preview_hovered_on_output(output, now);
+        let mut states = self.preview_hover.borrow_mut();
+        let state = states.entry(output.to_string()).or_default();
+        advance_hover_preview(state, target)
+    }
+
+    pub fn hover_preview_visible_on_output(&self, output: &str, now: Duration) -> bool {
+        self.preview_hovered_on_output(output, now).is_some()
+            || self
+                .preview_hover
+                .borrow()
+                .get(output)
+                .is_some_and(|state| state.mix > 0.002)
+    }
+
     pub fn is_animating_on_output(&self, output: &str, now: Duration) -> bool {
         let node_transition = self.animations_enabled
             && self.animation.enabled
@@ -434,13 +527,36 @@ impl NodesState {
         let hover_transition = self.config.show_labels == halley_config::NodeDisplayPolicy::Hover
             && self.collapsed_on_output(output).any(|record| {
                 let mix = states.get(&record.id).copied().unwrap_or(0.0);
-                let target = if self.hovered == Some(record.id) {
+                let target = if self.label_hovered_on_output(output, now) == Some(record.id) {
                     1.0
                 } else {
                     0.0
                 };
                 (mix - target).abs() > 0.002
             });
+        let dwell_transition = self
+            .hovered
+            .and_then(|id| self.records.get(&id))
+            .is_some_and(|record| {
+                record.collapsed
+                    && record.attached
+                    && record.output == output
+                    && !hover_preview_ready(self.hover_started_at, now)
+            });
+        let preview_target = self.preview_hovered_on_output(output, now);
+        let preview_transition = self
+            .preview_hover
+            .borrow()
+            .get(output)
+            .is_some_and(|state| {
+                if preview_target.is_some() && preview_target != state.node {
+                    true
+                } else {
+                    let target = if preview_target.is_some() { 1.0 } else { 0.0 };
+                    (state.mix - target).abs() > 0.002
+                }
+            })
+            || (preview_target.is_some() && !self.preview_hover.borrow().contains_key(output));
         let icon_transition = self
             .collapsed_on_output(output)
             .any(|record| now.saturating_sub(record.collapsed_at) < Duration::from_millis(1_220));
@@ -454,6 +570,8 @@ impl NodesState {
         });
         node_transition
             || hover_transition
+            || dwell_transition
+            || preview_transition
             || icon_transition
             || slide_transition
             || self.has_physics_on_output(output, now)
@@ -771,6 +889,25 @@ pub fn screen_from_world(
             + ((world.y - global_center.y) * scale).round() as i32,
     )
         .into()
+}
+
+pub fn send_hover_preview_frame(
+    nodes: &NodesState,
+    output: &Output,
+    elapsed: Duration,
+    now: Duration,
+) {
+    let Some(id) = nodes.preview_hovered_on_output(&output.name(), now) else {
+        return;
+    };
+    let Some(record) = nodes.record(id) else {
+        return;
+    };
+    record
+        .window
+        .send_frame(output, elapsed, Some(Duration::ZERO), |_, _| {
+            Some(output.clone())
+        });
 }
 
 fn metadata(window: &Window) -> (String, Option<String>) {
@@ -2028,6 +2165,7 @@ fn relation_metadata<D: crate::session::SessionDriver>(
 #[cfg(test)]
 mod tests {
     use super::{
+        HoverPreviewState, advance_hover_preview, hover_preview_ready,
         logical_focus_after_collapse, minimal_reveal_delta, nearest_free_landmark,
         nearest_free_window_rect, physics_frame_delta, release_lock_deadline,
         release_lock_is_active,
@@ -2060,6 +2198,40 @@ mod tests {
             now + Duration::from_millis(349)
         ));
         assert!(!release_lock_is_active(until, until));
+    }
+
+    #[test]
+    fn hover_preview_starts_at_the_old_halley_dwell_boundary() {
+        let started = Duration::from_secs(10);
+        assert!(!hover_preview_ready(
+            Some(started),
+            started + Duration::from_millis(1_499)
+        ));
+        assert!(hover_preview_ready(
+            Some(started),
+            started + Duration::from_millis(1_500)
+        ));
+        assert!(!hover_preview_ready(None, Duration::from_secs(20)));
+    }
+
+    #[test]
+    fn hover_preview_switch_resets_and_leave_fades_the_previous_node() {
+        let first = NodeId::new(1);
+        let second = NodeId::new(2);
+        let mut state = HoverPreviewState::default();
+
+        assert_eq!(
+            advance_hover_preview(&mut state, Some(first)),
+            Some((first, 0.3))
+        );
+        let (_, advanced) = advance_hover_preview(&mut state, Some(first)).unwrap();
+        assert!(advanced > 0.3);
+        assert_eq!(
+            advance_hover_preview(&mut state, Some(second)),
+            Some((second, 0.3))
+        );
+        let (_, fading) = advance_hover_preview(&mut state, None).unwrap();
+        assert!(fading < 0.3);
     }
 
     #[test]

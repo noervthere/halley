@@ -252,7 +252,6 @@ fn toggle_focused_fullscreen<D: SessionDriver>(session: &mut Session<D>, output:
     let record_output = record.output.clone();
     let focused = record.surface;
     let window = record.window;
-
     cancel_grab_for_surface(session, &focused);
     let entering = !session.fullscreen.is_fullscreen_or_pending(&focused);
     let field_restore = entering
@@ -357,6 +356,7 @@ fn toggle_focused_field_maximize<D: SessionDriver>(session: &mut Session<D>, out
         }
     }
     cancel_grab_for_surface(session, &record.surface);
+    let now = crate::frame_clock::monotonic_now();
     if session.fullscreen.is_fullscreen_or_pending(&record.surface) {
         if let Some(toplevel) = record.window.toplevel() {
             session.fullscreen.unrequest(&session.wayland, toplevel);
@@ -370,7 +370,7 @@ fn toggle_focused_field_maximize<D: SessionDriver>(session: &mut Session<D>, out
         restore_geometry,
         restore_output,
         target,
-        crate::frame_clock::monotonic_now(),
+        now,
     );
     if let Some(displaced) = change.displaced.as_ref() {
         session.fullscreen_textures.remove(&displaced.surface);

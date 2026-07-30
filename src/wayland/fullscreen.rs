@@ -27,6 +27,7 @@ struct WindowedPlacement {
 struct FullscreenWindow {
     desired: bool,
     active: bool,
+    presented: bool,
     target_output: String,
     restore: Option<WindowedPlacement>,
     presentation_windowed: Option<Rectangle<i32, Logical>>,
@@ -128,7 +129,8 @@ impl FullscreenManager {
         self.windows.retain(|_, entry| {
             entry.transition = None;
             entry.snapshot_serials.clear();
-            entry.active || entry.desired
+            entry.presented = entry.desired;
+            entry.active || entry.desired || entry.presented
         });
         true
     }
@@ -203,8 +205,9 @@ impl FullscreenManager {
             .windows
             .entry(toplevel.wl_surface().clone())
             .or_insert_with(|| FullscreenWindow {
-                desired: true,
+                desired: false,
                 active: false,
+                presented: false,
                 target_output: target.name(),
                 restore: window.as_ref().and_then(|window| {
                     Some(WindowedPlacement {
@@ -266,15 +269,14 @@ impl FullscreenManager {
                 if let Some(window) = find_window(wayland, toplevel.wl_surface()) {
                     entry.fullscreen_size = window.geometry().size;
                 }
+                entry.presentation_windowed =
+                    entry.restore.as_ref().map(|restore| restore.geometry);
                 (
                     entry.restore.as_ref().map(|restore| restore.geometry.size),
                     entry.active,
                 )
             })
             .unwrap_or((None, false));
-        if let Some(entry) = self.windows.get_mut(toplevel.wl_surface()) {
-            entry.presentation_windowed = entry.restore.as_ref().map(|restore| restore.geometry);
-        }
         let bounds = self
             .windows
             .get(toplevel.wl_surface())
@@ -319,6 +321,7 @@ impl FullscreenManager {
             .or_insert_with(|| FullscreenWindow {
                 desired: true,
                 active: true,
+                presented: true,
                 target_output: target_name,
                 restore: Some(WindowedPlacement {
                     location: wayland
@@ -431,6 +434,7 @@ impl FullscreenManager {
             .or_insert_with(|| FullscreenWindow {
                 desired: false,
                 active: false,
+                presented: false,
                 target_output: target_name.clone(),
                 restore: restore.clone(),
                 presentation_windowed: None,
@@ -508,6 +512,7 @@ impl FullscreenManager {
         };
         if !relocate_external_window(wayland, window, entry) {
             entry.transition = None;
+            entry.presented = fullscreen;
             return ExternalConfigureResult::Settled {
                 fullscreen,
                 animated: false,
@@ -535,18 +540,6 @@ impl FullscreenManager {
         }
         finish_external_transition(entry);
         relocate_external_window(wayland, window, entry)
-    }
-
-    pub(crate) fn should_capture_external_snapshot(
-        &self,
-        surface: &WlSurface,
-        fullscreen: bool,
-    ) -> bool {
-        animations_enabled(self.animations)
-            && self
-                .windows
-                .get(surface)
-                .is_none_or(|entry| entry.desired != fullscreen)
     }
 
     pub(crate) fn external_desired_matches(&self, window: &Window, fullscreen: bool) -> bool {
@@ -677,7 +670,8 @@ impl FullscreenManager {
         if committed {
             entry.fullscreen_size = window.geometry().size;
         }
-        retarget_transition(entry, self.animations, now, committed);
+        retarget_visual(entry, self.animations, now, committed);
+        entry.active = committed;
         true
     }
 
@@ -694,20 +688,22 @@ impl FullscreenManager {
         let progress = entry
             .transition
             .map(|transition| transition.value_at(now))
-            .unwrap_or_else(|| if entry.active { 1.0 } else { 0.0 })
+            .unwrap_or_else(|| if entry.presented { 1.0 } else { 0.0 })
             .clamp(0.0, 1.0);
         let transition_completion = entry
             .transition
             .map(|transition| transition.completion_at(now))
             .unwrap_or(1.0);
-        (progress > 0.0).then_some(FullscreenPresentation {
-            progress,
-            transition_completion,
-            windowed_geometry: entry
-                .presentation_windowed
-                .or_else(|| entry.restore.as_ref().map(|restore| restore.geometry)),
-            fullscreen_size: entry.fullscreen_size,
-        })
+        fullscreen_presentation_is_visible(progress, entry.transition.is_some()).then_some(
+            FullscreenPresentation {
+                progress,
+                transition_completion,
+                windowed_geometry: entry
+                    .presentation_windowed
+                    .or_else(|| entry.restore.as_ref().map(|restore| restore.geometry)),
+                fullscreen_size: entry.fullscreen_size,
+            },
+        )
     }
 
     /// Returns the monitor-wide camera track for the fullscreen transaction.
@@ -726,13 +722,14 @@ impl FullscreenManager {
             entry.target_output == output.name()
                 && (entry.active
                     || entry.desired
+                    || entry.presented
                     || entry.transition.is_some()
                     || entry.external_pending.is_some())
         })?;
         let progress = entry
             .transition
             .map(|transition| transition.value_at(now))
-            .unwrap_or_else(|| if entry.active { 1.0 } else { 0.0 })
+            .unwrap_or_else(|| if entry.presented { 1.0 } else { 0.0 })
             .clamp(0.0, 1.0) as f32;
         let center = entry
             .restore
@@ -782,6 +779,20 @@ impl FullscreenManager {
         })
     }
 
+    pub fn has_stable_fullscreen_on_output(&self, output: &Output, now: Duration) -> bool {
+        self.windows.values().any(|entry| {
+            entry.target_output == output.name()
+                && entry.origin != FullscreenOrigin::Maximize
+                && entry.desired
+                && entry.active
+                && (entry.presented
+                    || entry
+                        .transition
+                        .is_some_and(|transition| transition.is_finished_at(now)))
+                && entry.external_pending.is_none()
+        })
+    }
+
     pub fn is_fullscreen_or_pending(&self, surface: &WlSurface) -> bool {
         self.windows
             .get(surface)
@@ -813,6 +824,9 @@ impl FullscreenManager {
         }
     }
 
+    /// Match a client commit to the fullscreen configure which requested it.
+    /// Clients may skip intermediate configures, so all serials no newer than
+    /// the acknowledged commit are consumed, as in Niri's resize path.
     pub fn should_capture_snapshot(&mut self, surface: &WlSurface, commit_serial: Serial) -> bool {
         let Some(entry) = self.windows.get_mut(surface) else {
             return false;
@@ -827,6 +841,18 @@ impl FullscreenManager {
             }
         });
         capture
+    }
+
+    pub(crate) fn should_capture_external_snapshot(
+        &self,
+        surface: &WlSurface,
+        fullscreen: bool,
+    ) -> bool {
+        animations_enabled(self.animations)
+            && self
+                .windows
+                .get(surface)
+                .is_none_or(|entry| entry.desired != fullscreen)
     }
 
     pub fn reconfigure_output(
@@ -868,13 +894,17 @@ impl FullscreenManager {
             if entry
                 .transition
                 .is_some_and(|transition| transition.is_finished_at(now))
+                && entry.active == entry.desired
+                && entry.external_pending.is_none()
             {
                 entry.transition = None;
+                entry.presented = entry.desired;
                 finished = true;
                 finished_surfaces.push(surface.clone());
             }
             entry.active
                 || entry.desired
+                || entry.presented
                 || entry.transition.is_some()
                 || entry.external_pending.is_some()
         });
@@ -896,6 +926,14 @@ pub struct FullscreenCleanup {
 
 fn animations_enabled(animations: Animations) -> bool {
     animations.enabled && animations.fullscreen.enabled
+}
+
+fn fullscreen_presentation_is_visible(progress: f64, transition_active: bool) -> bool {
+    // A transition owns the handoff even at its exact zero endpoint. Dropping
+    // presentation there exposes the client's newly configured live buffer for
+    // one frame before the captured texture blend takes over (and once again
+    // on exit immediately before cleanup), which reads as a fullscreen flash.
+    transition_active || progress > 0.0
 }
 
 fn entry_covers_top(entry: &FullscreenWindow, output: &str, now: Duration) -> bool {
@@ -946,6 +984,7 @@ fn settle_external_fullscreen(
 ) {
     entry.desired = true;
     entry.active = true;
+    entry.presented = true;
     entry.target_output = target_output.to_string();
     entry.fullscreen_size = fullscreen_size;
     entry.transition = None;
@@ -986,10 +1025,12 @@ fn acknowledge_external_transaction(
     match pending.presentation {
         ExternalPresentationKind::Opening => {
             entry.active = fullscreen;
+            entry.presented = fullscreen;
             entry.transition = None;
         }
         ExternalPresentationKind::Animated => {
-            retarget_transition(entry, animations, now, fullscreen);
+            retarget_visual(entry, animations, now, fullscreen);
+            entry.active = fullscreen;
         }
     }
     ExternalConfigureResult::Settled {
@@ -1001,6 +1042,7 @@ fn acknowledge_external_transaction(
 fn finish_external_transition(entry: &mut FullscreenWindow) {
     entry.external_pending = None;
     entry.active = entry.desired;
+    entry.presented = entry.desired;
     entry.transition = None;
 }
 
@@ -1036,26 +1078,28 @@ fn relocate_external_window(
     true
 }
 
-fn retarget_transition(
+fn retarget_visual(
     entry: &mut FullscreenWindow,
     animations: Animations,
     now: Duration,
-    active: bool,
+    presented: bool,
 ) {
     let (current, velocity) = entry
         .transition
         .map(|transition| (transition.value_at(now), transition.velocity_at(now)))
-        .unwrap_or_else(|| (if entry.active { 1.0 } else { 0.0 }, 0.0));
-    entry.active = active;
-    entry.transition = animations_enabled(animations).then(|| {
-        MotionTimeline::between(
+        .unwrap_or_else(|| (if entry.presented { 1.0 } else { 0.0 }, 0.0));
+    if animations_enabled(animations) {
+        entry.transition = Some(MotionTimeline::between(
             animations.fullscreen.motion,
             now,
             current,
-            if active { 1.0 } else { 0.0 },
+            if presented { 1.0 } else { 0.0 },
             velocity,
-        )
-    });
+        ));
+    } else {
+        entry.presented = presented;
+        entry.transition = None;
+    }
 }
 
 fn send_required_configure(toplevel: &ToplevelSurface) -> Option<Serial> {
@@ -1128,6 +1172,7 @@ mod tests {
         FullscreenWindow {
             desired: active,
             active,
+            presented: active,
             target_output: "DP-1".to_string(),
             restore: None,
             presentation_windowed: None,
@@ -1197,12 +1242,12 @@ mod tests {
         let mut entry = test_entry(false);
         let started = Duration::from_secs(1);
 
-        retarget_transition(&mut entry, animations, started, true);
+        retarget_visual(&mut entry, animations, started, true);
         let forward = entry.transition.expect("forward transition");
         let reversed_at = started + Duration::from_millis(100);
         let value_before_reverse = forward.value_at(reversed_at);
 
-        retarget_transition(&mut entry, animations, reversed_at, false);
+        retarget_visual(&mut entry, animations, reversed_at, false);
         let reverse = entry.transition.expect("reverse transition");
 
         assert!(!entry.active);
@@ -1214,14 +1259,23 @@ mod tests {
     }
 
     #[test]
+    fn fullscreen_transition_owns_the_zero_progress_handoff_frame() {
+        assert!(fullscreen_presentation_is_visible(0.0, true));
+        assert!(fullscreen_presentation_is_visible(0.5, true));
+        assert!(fullscreen_presentation_is_visible(1.0, false));
+        assert!(!fullscreen_presentation_is_visible(0.0, false));
+    }
+
+    #[test]
     fn fullscreen_motion_killswitch_still_applies_state() {
         let mut animations = Animations::default();
         animations.fullscreen.enabled = false;
         let mut entry = test_entry(false);
 
-        retarget_transition(&mut entry, animations, Duration::ZERO, true);
+        retarget_visual(&mut entry, animations, Duration::ZERO, true);
 
-        assert!(entry.active);
+        assert!(!entry.active);
+        assert!(entry.presented);
         assert!(entry.transition.is_none());
     }
 
@@ -1229,7 +1283,7 @@ mod tests {
     fn external_fullscreen_is_logically_settled_without_animation() {
         let animations = Animations::default();
         let mut entry = test_entry(false);
-        retarget_transition(&mut entry, animations, Duration::from_secs(1), true);
+        retarget_visual(&mut entry, animations, Duration::from_secs(1), true);
 
         settle_external_fullscreen(&mut entry, "HDMI-A-1", (2560, 1440).into());
 
@@ -1241,7 +1295,7 @@ mod tests {
     }
 
     #[test]
-    fn external_animation_waits_for_matching_geometry() {
+    fn external_animation_waits_for_matching_geometry_and_settles_once() {
         let animations = Animations::default();
         let mut entry = test_entry(false);
         let target = Rectangle::new((0, 0).into(), (1920, 1080).into());
@@ -1252,17 +1306,12 @@ mod tests {
                 &mut entry,
                 true,
                 target,
-                ExternalPresentationKind::Animated
+                ExternalPresentationKind::Animated,
             ),
             ExternalTransactionRequest::Configure(target)
         );
         assert_eq!(
-            acknowledge_external_transaction(
-                &mut entry,
-                intermediate,
-                animations,
-                Duration::from_secs(1)
-            ),
+            acknowledge_external_transaction(&mut entry, intermediate, animations, Duration::ZERO,),
             ExternalConfigureResult::Waiting
         );
         assert!(entry.transition.is_none());
@@ -1271,7 +1320,7 @@ mod tests {
                 &mut entry,
                 target,
                 animations,
-                Duration::from_secs(1)
+                Duration::from_secs(1),
             ),
             ExternalConfigureResult::Settled {
                 fullscreen: true,
@@ -1345,7 +1394,7 @@ mod tests {
                 &mut entry,
                 true,
                 fullscreen,
-                ExternalPresentationKind::Opening
+                ExternalPresentationKind::Opening,
             ),
             ExternalTransactionRequest::Configure(fullscreen)
         );
@@ -1354,7 +1403,7 @@ mod tests {
                 &mut entry,
                 false,
                 restore,
-                ExternalPresentationKind::Opening
+                ExternalPresentationKind::Opening,
             ),
             ExternalTransactionRequest::Configure(restore)
         );
@@ -1363,7 +1412,7 @@ mod tests {
                 &mut entry,
                 true,
                 fullscreen,
-                ExternalPresentationKind::Opening
+                ExternalPresentationKind::Opening,
             ),
             ExternalTransactionRequest::Configure(fullscreen)
         );
@@ -1387,12 +1436,7 @@ mod tests {
         begin_external_transaction(&mut entry, true, target, ExternalPresentationKind::Opening);
 
         assert_eq!(
-            acknowledge_external_transaction(
-                &mut entry,
-                target,
-                animations,
-                Duration::from_secs(1)
-            ),
+            acknowledge_external_transaction(&mut entry, target, animations, Duration::ZERO),
             ExternalConfigureResult::Settled {
                 fullscreen: true,
                 animated: false

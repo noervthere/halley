@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 /// the end of `Request`/`Response` silently breaks wire-compatibility with
 /// a differently-versioned build - worth remembering as this grows, not
 /// solved here (this first pass has nothing to negotiate against yet).
-pub const HALLEY_IPC_VERSION: u32 = 9;
+pub const HALLEY_IPC_VERSION: u32 = 10;
 
 /// A request from `halleyctl`, the portal backend, or another local client.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -345,11 +345,12 @@ pub struct OutputInfo {
     pub current_mode: Option<usize>,
     pub offset_x: i32,
     pub offset_y: i32,
-    /// The *configured* VRR mode as a plain string ("off"/"on"/"auto") -
-    /// not necessarily what's actually active at the hardware level yet
-    /// (see `TtyBackend`'s own doc comment on why `vrr "on"` isn't wired to
-    /// real DRM VRR in this pass).
+    /// Configured VRR policy as "off", "on", or "auto".
     pub vrr: String,
+    /// Whether the connector advertises usable variable-refresh support.
+    pub vrr_supported: bool,
+    /// Effective hardware state for the next submitted frame.
+    pub vrr_active: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]

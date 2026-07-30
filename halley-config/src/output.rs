@@ -4,11 +4,9 @@ use std::fmt;
 use rune_cfg::RuneConfig;
 use rune_cfg::ast::{ObjectItem, Value};
 
-/// Variable refresh rate mode for one output. `Auto` parses and stores like
-/// old halley's own `OnDemand` - honestly unimplemented for now (no
-/// per-content signal exists yet to drive it), so it behaves like `Off`
-/// until there's something real to base that decision on. Only `On` calls
-/// the real DRM VRR toggle.
+/// Variable refresh rate mode for one output. `On` keeps hardware VRR enabled;
+/// `Auto` enables it only for a committed, settled fullscreen window while no
+/// compositor or layer-shell overlay is visible.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Vrr {
     #[default]
