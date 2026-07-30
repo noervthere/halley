@@ -97,6 +97,12 @@ pub fn build(
         .cameras
         .view(&output.name())
         .ok_or_else(|| format!("output {:?} has no camera", output.name()))?;
+    if request.decorations.border_radius_px > 0 {
+        // Compile both programs as one capability before any window needs
+        // them. A bad driver/compiler therefore selects the coherent square
+        // fallback at startup instead of halfway through a transition.
+        request.window_decoration_renderer.available(renderer);
+    }
     let overlay_snapshot = request
         .overlays
         .snapshot(&output.name(), request.target_presentation_time);
