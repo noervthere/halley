@@ -59,6 +59,13 @@ pub struct OverlayVisuals {
     pub shape: halley_config::OverlayShape,
 }
 
+impl OverlayVisuals {
+    fn label_chrome(mut self) -> Self {
+        self.border_px = 0.0;
+        self
+    }
+}
+
 const LIGHT_FILL: OverlayRgb = OverlayRgb {
     r: 0.92,
     g: 0.95,
@@ -168,6 +175,27 @@ pub fn card_element(
         fill.tuple(),
         visuals.border.tuple(),
         visuals.border_px,
+        alpha,
+    )
+}
+
+/// Internal caption bands and badges were borderless in old Halley. They use
+/// the shared overlay palette and shape, but never inherit the container
+/// border setting.
+pub fn label_card_element(
+    renderer: &mut GlesRenderer,
+    node_renderer: &mut NodeRenderer,
+    destination: Rectangle<i32, Physical>,
+    visuals: OverlayVisuals,
+    fill: OverlayRgb,
+    alpha: f32,
+) -> Result<LabelRenderElement, Box<dyn Error>> {
+    card_element(
+        renderer,
+        node_renderer,
+        destination,
+        visuals.label_chrome(),
+        fill,
         alpha,
     )
 }
@@ -450,5 +478,16 @@ mod tests {
             resolve_visuals(&config, &halley_config::Decorations::default()).text,
             DARK_TEXT
         );
+    }
+
+    #[test]
+    fn internal_label_chrome_never_inherits_container_borders() {
+        let visuals = resolve_visuals(
+            &halley_config::Overlays::default(),
+            &halley_config::Decorations::default(),
+        );
+
+        assert!(visuals.border_px > 0.0);
+        assert_eq!(visuals.label_chrome().border_px, 0.0);
     }
 }

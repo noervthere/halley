@@ -28,6 +28,8 @@ spellings are accepted as aliases. `shape` is `square` or `rounded`.
 `borders false` removes overlay borders. `border-source` is `primary` or
 `secondary`; until a secondary decoration palette is configured, `secondary`
 falls back to the primary focused decoration colour.
+Apogee and Alt+Tab title bands, monitor badges, and `NODE` badges remain
+borderless regardless of this setting, matching old Halley's label chrome.
 
 Notification positions are `top-left`, `top-center`, `top-right`,
 `bottom-left`, `bottom-center`, and `bottom-right`. Durations are positive

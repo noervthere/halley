@@ -378,7 +378,7 @@ fn apogee_elements(
             } else {
                 overlay_visuals.fill
             };
-            elements.push(SceneElement::NodeLabel(super::overlay::card_element(
+            elements.push(SceneElement::NodeLabel(super::overlay::label_card_element(
                 renderer,
                 node_renderer,
                 caption,
@@ -605,7 +605,7 @@ fn focus_cycle_elements(
             )? {
                 elements.push(SceneElement::UiText(text.element));
             }
-            elements.push(SceneElement::NodeLabel(super::overlay::card_element(
+            elements.push(SceneElement::NodeLabel(super::overlay::label_card_element(
                 renderer,
                 node_renderer,
                 badge,
@@ -633,7 +633,7 @@ fn focus_cycle_elements(
             )? {
                 elements.push(SceneElement::UiText(text.element));
             }
-            elements.push(SceneElement::NodeLabel(super::overlay::card_element(
+            elements.push(SceneElement::NodeLabel(super::overlay::label_card_element(
                 renderer,
                 node_renderer,
                 badge,
@@ -698,7 +698,7 @@ fn focus_cycle_elements(
         )? {
             elements.push(SceneElement::UiText(text.element));
         }
-        elements.push(SceneElement::NodeLabel(super::overlay::card_element(
+        elements.push(SceneElement::NodeLabel(super::overlay::label_card_element(
             renderer,
             node_renderer,
             band,
