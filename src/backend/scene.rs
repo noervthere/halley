@@ -35,6 +35,7 @@ render_elements! {
     NodeTexture=super::node::NodeTextureElement,
     UiText=super::text::UiTextElement,
     BackdropBlur=super::backdrop_blur::BackdropBlurElement,
+    Shadow=super::shadow::ShadowElement,
     Closing=smithay::backend::renderer::element::texture::TextureRenderElement<
         smithay::backend::renderer::gles::GlesTexture
     >,
@@ -131,6 +132,15 @@ pub fn build(
             request.overlay_previews,
             request.target_presentation_time,
         )?;
+        append_overlay_shadows(
+            renderer,
+            output,
+            "apogee",
+            request.shadows.overlay,
+            request.overlay_config,
+            request.shadow_renderer,
+            &mut elements,
+        )?;
         elements.extend(
             super::layer_surface_elements(renderer, output, Layer::Background)
                 .into_iter()
@@ -151,8 +161,10 @@ pub fn build(
             output_geometry.size,
             "shell-overlay",
             request.blur,
+            request.shadows.overlay,
             request.overlay_config,
             request.backdrop_blur_renderer,
+            request.shadow_renderer,
             &mut overlay_elements,
         )?;
         elements.splice(0..0, overlay_elements);
@@ -178,7 +190,7 @@ pub fn build(
         request.capture_overlay,
         request.decorations,
     )?;
-    elements.extend(super::bearings::elements(
+    let mut bearings = super::bearings::elements(
         renderer,
         output,
         output_geometry,
@@ -191,7 +203,17 @@ pub fn build(
         request.ui_text,
         request.overlay_config,
         request.decorations,
-    )?);
+    )?;
+    append_overlay_shadows(
+        renderer,
+        output,
+        "bearings",
+        request.shadows.overlay,
+        request.overlay_config,
+        request.shadow_renderer,
+        &mut bearings,
+    )?;
+    elements.extend(bearings);
     elements.extend(layer_surface_scene_elements(
         renderer,
         output,
@@ -218,8 +240,10 @@ pub fn build(
         output_geometry.size,
         "focus-cycle",
         request.blur,
+        request.shadows.overlay,
         request.overlay_config,
         request.backdrop_blur_renderer,
+        request.shadow_renderer,
         &mut focus_cycle,
     )?;
     elements.extend(focus_cycle);
@@ -247,6 +271,8 @@ pub fn build(
             nodes: request.nodes,
             cameras: request.cameras,
             decorations: request.decorations,
+            shadow_config: request.shadows.node,
+            shadow_renderer: request.shadow_renderer,
             now: request.target_presentation_time,
         },
     )?;
@@ -262,8 +288,10 @@ pub fn build(
             request.target_presentation_time,
         )
         .into_iter()
-        .map(|closing| {
+        .map(|closing| -> Result<StackGroup, Box<dyn Error>> {
             let mut elements = Vec::new();
+            let shadow_alpha = closing.texture.alpha();
+            let border_width = closing.border.map(|border| border.width).unwrap_or(0);
             let rounded = closing.content_radius > 0.0
                 && request.window_decoration_renderer.available(renderer);
             if let Some(border) = closing.border {
@@ -301,13 +329,39 @@ pub fn build(
             } else {
                 elements.push(SceneElement::Closing(closing.texture));
             }
-            StackGroup {
+            let caster = Rectangle::new(
+                (
+                    closing.destination.loc.x - border_width,
+                    closing.destination.loc.y - border_width,
+                )
+                    .into(),
+                (
+                    closing.destination.size.w + border_width * 2,
+                    closing.destination.size.h + border_width * 2,
+                )
+                    .into(),
+            );
+            if let Some(shadow) = request.shadow_renderer.element(
+                renderer,
+                format!("{}:closing:{}", output.name(), closing.order),
+                caster,
+                if rounded {
+                    closing.content_radius + border_width as f32
+                } else {
+                    0.0
+                },
+                shadow_alpha,
+                request.shadows.window,
+            )? {
+                elements.push(SceneElement::Shadow(shadow));
+            }
+            Ok(StackGroup {
                 stack_index: closing.stack_index,
                 order: closing.order,
                 elements,
-            }
+            })
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, _>>()?;
     stack.extend(node_scene.groups);
     let context = LiveWindowContext {
         space: request.space,
@@ -318,6 +372,7 @@ pub fn build(
         focused: request.focused,
         decorations: request.decorations,
         blur: request.blur,
+        shadow_config: request.shadows.window,
         window_open_animations: request.window_open_animations,
         fullscreen: request.fullscreen,
         maximize: request.maximize,
@@ -332,6 +387,7 @@ pub fn build(
             context,
             request.fullscreen_textures,
             request.backdrop_blur_renderer,
+            request.shadow_renderer,
             request.window_decoration_renderer,
         )?;
         if !window_elements.is_empty() {
@@ -377,8 +433,10 @@ pub fn build(
         output_geometry.size,
         "shell-overlay",
         request.blur,
+        request.shadows.overlay,
         request.overlay_config,
         request.backdrop_blur_renderer,
+        request.shadow_renderer,
         &mut overlay_elements,
     )?;
     elements.splice(0..0, overlay_elements);
@@ -408,41 +466,83 @@ fn append_compositor_overlay_blur(
     output_size: smithay::utils::Size<i32, Logical>,
     identity: &str,
     blur_config: halley_config::Blur,
+    shadow_config: halley_config::ShadowLayer,
     overlay_config: &halley_config::Overlays,
     backdrop_blur_renderer: &mut super::backdrop_blur::BackdropBlurRenderer,
+    shadow_renderer: &mut super::shadow::ShadowRenderer,
     elements: &mut Vec<SceneElement>,
 ) -> Result<(), Box<dyn Error>> {
-    if !blur_config.enabled || !blur_config.overlays {
-        return Ok(());
+    if blur_config.enabled && blur_config.overlays {
+        let radius = match overlay_config.shape {
+            halley_config::OverlayShape::Square => 0.0,
+            halley_config::OverlayShape::Rounded => 11.0,
+        };
+        let patches = elements
+            .iter()
+            .filter_map(|element| match element {
+                SceneElement::NodeLabel(card) => Some(super::backdrop_blur::BlurPatch {
+                    rect: card.geometry(Scale::from(1.0)),
+                    radius,
+                    alpha: card.alpha(),
+                    clip: None,
+                }),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if let Some(blur) = backdrop_blur_renderer.blur_element(
+            renderer,
+            &output.name(),
+            identity,
+            output_size,
+            patches,
+            blur_config,
+        )? {
+            elements.push(SceneElement::BackdropBlur(blur));
+        }
     }
+    append_overlay_shadows(
+        renderer,
+        output,
+        identity,
+        shadow_config,
+        overlay_config,
+        shadow_renderer,
+        elements,
+    )?;
+    Ok(())
+}
+
+fn append_overlay_shadows(
+    renderer: &mut GlesRenderer,
+    output: &Output,
+    identity: &str,
+    shadow_config: halley_config::ShadowLayer,
+    overlay_config: &halley_config::Overlays,
+    shadow_renderer: &mut super::shadow::ShadowRenderer,
+    elements: &mut Vec<SceneElement>,
+) -> Result<(), Box<dyn Error>> {
     let radius = match overlay_config.shape {
         halley_config::OverlayShape::Square => 0.0,
         halley_config::OverlayShape::Rounded => 11.0,
     };
-    let patches = elements
+    let casters = elements
         .iter()
         .filter_map(|element| match element {
-            SceneElement::NodeLabel(card) => Some(super::backdrop_blur::BlurPatch {
-                rect: card.geometry(Scale::from(1.0)),
-                radius,
-                alpha: 1.0,
-                clip: None,
-            }),
+            SceneElement::NodeLabel(card) => Some((card.geometry(Scale::from(1.0)), card.alpha())),
             _ => None,
         })
         .collect::<Vec<_>>();
-    if let Some(blur) = backdrop_blur_renderer.blur_element(
-        renderer,
-        &output.name(),
-        identity,
-        output_size,
-        patches,
-        blur_config,
-    )? {
-        // Scene lists are front-to-back. Placing the framebuffer effect at
-        // the back of this atomic overlay group captures the already-drawn
-        // desktop, then every card and its text render above that capture.
-        elements.push(SceneElement::BackdropBlur(blur));
+    for (index, (caster, alpha)) in casters.into_iter().enumerate() {
+        if let Some(shadow) = shadow_renderer.element(
+            renderer,
+            format!("{}:overlay:{identity}:{index}", output.name()),
+            caster,
+            radius,
+            alpha,
+            shadow_config,
+        )? {
+            elements.push(SceneElement::Shadow(shadow));
+        }
     }
     Ok(())
 }
@@ -1158,6 +1258,8 @@ struct NodeElementContext<'a> {
     nodes: &'a crate::nodes::NodesState,
     cameras: &'a crate::camera::OutputCameras,
     decorations: &'a halley_config::Decorations,
+    shadow_config: halley_config::ShadowLayer,
+    shadow_renderer: &'a mut super::shadow::ShadowRenderer,
     now: std::time::Duration,
 }
 
@@ -1173,6 +1275,8 @@ fn node_elements(
         nodes,
         cameras,
         decorations,
+        shadow_config,
+        shadow_renderer,
         now,
     } = context;
     let Some(camera) = cameras.get(&output.name()) else {
@@ -1268,6 +1372,19 @@ fn node_elements(
                 ),
             },
         )?));
+        if let Some(shadow) = shadow_renderer.element(
+            renderer,
+            format!("{}:node:{}", output.name(), record.id.as_u64()),
+            destination,
+            match nodes.config.shape {
+                halley_config::NodeShape::Square => 0.0,
+                halley_config::NodeShape::Squircle => side as f32 * 0.21,
+            },
+            nodes.config.opacity * eased,
+            shadow_config,
+        )? {
+            markers.push(SceneElement::Shadow(shadow));
+        }
 
         let elapsed_ms = now.saturating_sub(record.collapsed_at).as_millis() as f32;
         let icon_alpha = (((elapsed_ms - 1_000.0) / 220.0).clamp(0.0, 1.0) * nodes.config.opacity)
@@ -1535,6 +1652,7 @@ struct LiveWindowContext<'a> {
     focused: Option<&'a smithay::reexports::wayland_server::protocol::wl_surface::WlSurface>,
     decorations: &'a halley_config::Decorations,
     blur: halley_config::Blur,
+    shadow_config: halley_config::ShadowLayer,
     window_open_animations: &'a crate::animation::WindowOpenAnimations,
     fullscreen: &'a crate::wayland::fullscreen::FullscreenManager,
     maximize: &'a crate::wayland::maximize::FieldMaximizeManager,
@@ -1546,6 +1664,7 @@ fn live_window_elements(
     context: LiveWindowContext<'_>,
     fullscreen_textures: &mut super::fullscreen_texture::FullscreenTextureTransitions,
     backdrop_blur_renderer: &mut super::backdrop_blur::BackdropBlurRenderer,
+    shadow_renderer: &mut super::shadow::ShadowRenderer,
     window_decoration_renderer: &mut super::window_decoration::WindowDecorationRenderer,
 ) -> Result<Vec<SceneElement>, Box<dyn Error>> {
     let Some(location) = context.space.element_location(window) else {
@@ -1791,6 +1910,36 @@ fn live_window_elements(
                 .into_iter()
                 .map(SceneElement::Border),
             );
+        }
+    }
+    if managed && visual.fullscreen.is_none() {
+        let border_outset = border_width.max(0);
+        let caster = Rectangle::new(
+            (
+                visual.animated_rect.loc.x - border_outset,
+                visual.animated_rect.loc.y - border_outset,
+            )
+                .into(),
+            (
+                (visual.animated_rect.size.w + border_outset * 2).max(1),
+                (visual.animated_rect.size.h + border_outset * 2).max(1),
+            )
+                .into(),
+        );
+        let caster_radius = if rounded_available {
+            content_radius + border_outset as f32
+        } else {
+            0.0
+        };
+        if let Some(shadow) = shadow_renderer.element(
+            renderer,
+            format!("{}:window:{:?}", context.output.name(), window_surface.id()),
+            caster,
+            caster_radius,
+            visual.opening_alpha,
+            context.shadow_config,
+        )? {
+            elements.push(SceneElement::Shadow(shadow));
         }
     }
     if let Some(backdrop_alpha) =

@@ -208,6 +208,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
         window_decoration_renderer:
             crate::backend::window_decoration::WindowDecorationRenderer::default(),
         backdrop_blur_renderer: crate::backend::backdrop_blur::BackdropBlurRenderer::default(),
+        shadow_renderer: crate::backend::shadow::ShadowRenderer::default(),
         ui_text: crate::backend::text::UiTextRenderer::new(&runtime_config.font),
         xwayland,
     };
@@ -332,6 +333,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                         focused: app.wayland.focused_window.as_ref(),
                         decorations: &app.decorations,
                         blur: app.effects.blur,
+                        shadows: app.effects.shadows,
                         cameras: &app.cameras,
                         window_open_animations: &app.window_open_animations,
                         window_close_animations: &mut app.window_close_animations,
@@ -342,6 +344,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                         nodes: &app.nodes,
                         bearings: &app.bearings,
                         backdrop_blur_renderer: &mut app.backdrop_blur_renderer,
+                        shadow_renderer: &mut app.shadow_renderer,
                         focus_cycle: &app.focus_cycle,
                         apogee: &app.apogee,
                         apogee_config: app.apogee_config,

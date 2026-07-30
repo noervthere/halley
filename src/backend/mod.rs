@@ -10,6 +10,7 @@ pub mod overlay;
 pub mod overlay_preview;
 pub mod rescale;
 pub mod scene;
+pub mod shadow;
 pub mod text;
 pub mod tty;
 mod tty_dmabuf;
@@ -203,6 +204,7 @@ pub struct RenderRequest<'a> {
     pub focused: Option<&'a WlSurface>,
     pub decorations: &'a Decorations,
     pub blur: halley_config::Blur,
+    pub shadows: halley_config::Shadows,
     pub cameras: &'a crate::camera::OutputCameras,
     pub window_open_animations: &'a crate::animation::WindowOpenAnimations,
     pub window_close_animations: &'a mut crate::backend::close::WindowCloseAnimations,
@@ -214,6 +216,7 @@ pub struct RenderRequest<'a> {
     pub nodes: &'a crate::nodes::NodesState,
     pub bearings: &'a crate::bearings::BearingsState,
     pub backdrop_blur_renderer: &'a mut crate::backend::backdrop_blur::BackdropBlurRenderer,
+    pub shadow_renderer: &'a mut crate::backend::shadow::ShadowRenderer,
     pub focus_cycle: &'a crate::focus_cycle::FocusCycleState,
     pub apogee: &'a crate::apogee::ApogeeState,
     pub apogee_config: halley_config::Apogee,

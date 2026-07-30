@@ -193,9 +193,10 @@ fn parse_shadow_layer(
 ) -> Result<ShadowLayer, EffectsParseError> {
     let color_path = format!("{root}.colour");
     let color_alias = format!("{root}.color");
-    let raw_color = config
-        .get_optional::<String>(&color_path)?
-        .or(config.get_optional::<String>(&color_alias)?);
+    let raw_color = match config.get_optional::<String>(&color_path)? {
+        Some(value) => Some(value),
+        None => config.get_optional::<String>(&color_alias)?,
+    };
     let color = match raw_color {
         Some(value) => parse_hex_rgba(&value).ok_or(EffectsParseError::InvalidValue {
             path: "effects.shadows.*.colour",

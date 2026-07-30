@@ -55,6 +55,7 @@ pub fn save_region<D: SessionDriver>(
     let wayland = &session.wayland;
     let decorations = &session.decorations;
     let blur = session.effects.blur;
+    let shadows = session.effects.shadows;
     let cameras = &session.cameras;
     let window_open_animations = &session.window_open_animations;
     let window_close_animations = &mut session.window_close_animations;
@@ -65,6 +66,7 @@ pub fn save_region<D: SessionDriver>(
     let nodes = &session.nodes;
     let bearings = &session.bearings;
     let backdrop_blur_renderer = &mut session.backdrop_blur_renderer;
+    let shadow_renderer = &mut session.shadow_renderer;
     let overlays = &session.overlays;
     let overlay_config = &session.overlay_config;
     let node_renderer = &mut session.node_renderer;
@@ -93,6 +95,7 @@ pub fn save_region<D: SessionDriver>(
                         focused: wayland.focused_window.as_ref(),
                         decorations,
                         blur,
+                        shadows,
                         cameras,
                         window_open_animations,
                         window_close_animations: &mut *window_close_animations,
@@ -103,6 +106,7 @@ pub fn save_region<D: SessionDriver>(
                         nodes,
                         bearings,
                         backdrop_blur_renderer: &mut *backdrop_blur_renderer,
+                        shadow_renderer: &mut *shadow_renderer,
                         focus_cycle: &session.focus_cycle,
                         apogee: &session.apogee,
                         apogee_config: session.apogee_config,
@@ -295,6 +299,7 @@ where
     let wayland = &session.wayland;
     let decorations = &session.decorations;
     let blur = session.effects.blur;
+    let shadows = session.effects.shadows;
     let cameras = &session.cameras;
     let window_open_animations = &session.window_open_animations;
     let window_close_animations = &mut session.window_close_animations;
@@ -305,6 +310,7 @@ where
     let nodes = &session.nodes;
     let bearings = &session.bearings;
     let backdrop_blur_renderer = &mut session.backdrop_blur_renderer;
+    let shadow_renderer = &mut session.shadow_renderer;
     let overlays = &session.overlays;
     let overlay_config = &session.overlay_config;
     let node_renderer = &mut session.node_renderer;
@@ -330,6 +336,7 @@ where
                 focused: wayland.focused_window.as_ref(),
                 decorations,
                 blur,
+                shadows,
                 cameras,
                 window_open_animations,
                 window_close_animations,
@@ -340,6 +347,7 @@ where
                 nodes,
                 bearings,
                 backdrop_blur_renderer,
+                shadow_renderer,
                 focus_cycle: &session.focus_cycle,
                 apogee: &session.apogee,
                 apogee_config: session.apogee_config,
