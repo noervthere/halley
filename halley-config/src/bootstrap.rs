@@ -134,6 +134,7 @@ mod tests {
             "notifications:",
             "success-duration-ms 4000",
             "\"retract\" - reverse \"launch\"",
+            "close-restore-nodes false",
         ] {
             assert!(
                 DEFAULT_CONFIG.contains(expected),

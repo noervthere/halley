@@ -325,13 +325,22 @@ field:
   # The same value is the clearance between landmarks and active windows.
   gap 20.0
 
-  # After a focused window closes, restore the most recently used window on
-  # that output (then fall back globally). A collapsed successor remains a
-  # node unless close-restore-nodes is enabled. "if-offscreen" minimally
-  # reveals a restored successor only when it is completely outside the
-  # current camera view.
+  # After the focused window closes, select the most recently focused survivor
+  # on the same output, then fall back to the global most-recently-used window.
+  # Set this to false to clear focus instead; the two settings below then have
+  # no effect.
   close-restore-focus true
+
+  # The selected successor may already be a collapsed node. False keeps it
+  # collapsed while making it Halley's logical node focus, so node-aware
+  # commands still target it without unexpectedly turning it back into a
+  # window. True restores ("un-nodes") and focuses it as part of the close.
   close-restore-nodes false
+
+  # Camera behavior after focusing an active successor or restoring a node:
+  # "never" leaves the camera alone, "if-offscreen" minimally reveals only a
+  # fully offscreen successor, and "always" centers the successor. A node kept
+  # collapsed by close-restore-nodes false does not move the camera.
   close-restore-pan "if-offscreen"
 
   # Camera zoom changes both presentation and input coordinates. Halley only
