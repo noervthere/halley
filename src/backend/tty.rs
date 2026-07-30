@@ -817,7 +817,7 @@ impl Renderable for TtyBackend {
             &mut self.renderer,
             &elements,
             clear,
-            super::tty_dmabuf::frame_flags(),
+            super::tty_dmabuf::frame_flags(entry.vrr_active),
         )?;
 
         let element_states = result.states.clone();
