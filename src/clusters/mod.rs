@@ -727,6 +727,7 @@ impl ClusterSystem {
         {
             return false;
         }
+        self.surfaces.invalidate_target(member);
         self.dragged_tile = Some(member);
         true
     }

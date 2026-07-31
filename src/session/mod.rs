@@ -1002,7 +1002,27 @@ pub(crate) fn begin_pointer_move<D: SessionDriver>(
             .apply_field_maximize(&route.output.name(), None);
     }
 
-    let screen_offset = if was_maximized {
+    focus::focus_window_from_pointer(session, window, serial);
+    let id = window
+        .wl_surface()
+        .and_then(|surface| session.nodes.id_for_surface(surface.as_ref()));
+    let tiled_output = id.and_then(|id| {
+        let output = route.output.name();
+        session
+            .clusters
+            .begin_tiled_drag(&output, id)
+            .then_some(output)
+    });
+    let screen_offset = if tiled_output.is_some() {
+        let visual = route.visual_geometry.unwrap_or_else(|| {
+            session
+                .wayland
+                .space
+                .element_geometry(window)
+                .unwrap_or_else(|| window.geometry())
+        });
+        crate::input::grab::screen_grip_offset(session.pointer.position(), visual.loc)
+    } else if was_maximized {
         let visual = route.visual_geometry.unwrap_or_else(|| {
             session
                 .wayland
@@ -1032,17 +1052,6 @@ pub(crate) fn begin_pointer_move<D: SessionDriver>(
         }
     };
 
-    focus::focus_window_from_pointer(session, window, serial);
-    let id = window
-        .wl_surface()
-        .and_then(|surface| session.nodes.id_for_surface(surface.as_ref()));
-    let tiled_output = id.and_then(|id| {
-        let output = route.output.name();
-        session
-            .clusters
-            .begin_tiled_drag(&output, id)
-            .then_some(output)
-    });
     if let Some(id) = id {
         session.nodes.clear_direct_motion(id);
     }

@@ -66,6 +66,26 @@ pub enum Grab {
     ResizeWindow(ResizeState),
 }
 
+pub(crate) fn screen_grip_offset(
+    pointer: (f64, f64),
+    visual_location: Point<i32, Logical>,
+) -> Vec2 {
+    Vec2 {
+        x: visual_location.x as f32 - pointer.0 as f32,
+        y: visual_location.y as f32 - pointer.1 as f32,
+    }
+}
+
+pub(crate) fn screen_location_from_grip(
+    pointer: (f64, f64),
+    screen_offset: Vec2,
+) -> Point<i32, Logical> {
+    Point::from((
+        (pointer.0 + f64::from(screen_offset.x)).round() as i32,
+        (pointer.1 + f64::from(screen_offset.y)).round() as i32,
+    ))
+}
+
 impl Grab {
     /// Whether a collapsed landmark is being pressed or moved. Both nodes and
     /// cluster cores suppress hover presentation while the pointer owns them.
@@ -794,6 +814,25 @@ mod tests {
                 x: -400.0,
                 y: -160.0
             }
+        );
+    }
+
+    #[test]
+    fn output_local_grip_follows_the_pointer_without_field_camera_conversion() {
+        let pointer = (460.0, 280.0);
+        let visual_location = Point::from((320, 180));
+        let offset = screen_grip_offset(pointer, visual_location);
+
+        assert_eq!(
+            offset,
+            Vec2 {
+                x: -140.0,
+                y: -100.0
+            }
+        );
+        assert_eq!(
+            screen_location_from_grip((700.0, 510.0), offset),
+            Point::from((560, 410))
         );
     }
 }

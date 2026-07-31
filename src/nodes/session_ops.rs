@@ -299,6 +299,7 @@ pub(crate) fn tick_physics<D: crate::session::SessionDriver>(
     let authority = match &session.grab {
         crate::input::grab::Grab::MoveWindow {
             id: Some(id),
+            tiled_output: None,
             last_world,
             velocity,
             ..

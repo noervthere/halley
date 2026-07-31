@@ -36,6 +36,10 @@ impl WorkspaceSurfaceState {
         self.requested.remove(&node_id);
         self.restore.remove(&node_id);
     }
+
+    pub(super) fn invalidate_target(&mut self, node_id: NodeId) {
+        self.requested.remove(&node_id);
+    }
 }
 
 impl ClusterSystem {
@@ -161,6 +165,21 @@ mod tests {
         assert!(state.prepare(id, current, first));
         assert!(state.prepare(id, first, second));
         assert_eq!(state.restore.get(&id), Some(&current));
+    }
+
+    #[test]
+    fn invalidating_a_dragged_target_preserves_its_restore_geometry() {
+        let mut state = WorkspaceSurfaceState::default();
+        let id = NodeId::new(1);
+        let restore = Rectangle::new((20, 30).into(), (800, 600).into());
+        let target = Rectangle::new((0, 0).into(), (1_000, 700).into());
+        assert!(state.prepare(id, restore, target));
+
+        state.invalidate_target(id);
+
+        assert!(!state.requested.contains_key(&id));
+        assert_eq!(state.restore.get(&id), Some(&restore));
+        assert!(state.prepare(id, restore, target));
     }
 
     #[test]

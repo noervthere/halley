@@ -1266,10 +1266,14 @@ where
                 );
                 let world_offset =
                     crate::input::grab::screen_offset_to_world(screen_offset, camera);
-                let desired_location = Point::<i32, Logical>::from((
-                    (world.x + world_offset.x).round() as i32,
-                    (world.y + world_offset.y).round() as i32,
-                ));
+                let desired_location = if tiled_output.is_some() {
+                    crate::input::grab::screen_location_from_grip(position_after, screen_offset)
+                } else {
+                    Point::<i32, Logical>::from((
+                        (world.x + world_offset.x).round() as i32,
+                        (world.y + world_offset.y).round() as i32,
+                    ))
+                };
                 let output_changed =
                     wayland::window_output_name(&window).as_deref() != Some(output_name.as_str());
                 wayland::set_window_output(&window, &output);
@@ -1292,7 +1296,13 @@ where
                     now,
                 );
                 if let Some(id) = id {
-                    if !session.nodes.physics.enabled {
+                    if tiled_output.is_some() {
+                        session
+                            .wayland
+                            .space
+                            .relocate_element(&window, desired_location);
+                        session.request_redraw();
+                    } else if !session.nodes.physics.enabled {
                         let _ = crate::nodes::move_grabbed_body_rigid(session, id, desired_center);
                     }
                     let cluster_reordered = tiled_output.as_ref().is_some_and(|output_name| {
