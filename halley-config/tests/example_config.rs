@@ -21,7 +21,7 @@ fn example_config_parses_end_to_end() {
             )
         }
     }
-    assert_eq!(keybinds.binds.len(), 18);
+    assert_eq!(keybinds.binds.len(), 30);
 
     let quit = keybinds
         .binds
@@ -138,6 +138,7 @@ fn example_config_parses_end_to_end() {
         .expect("zoom-reset bind present");
     assert_eq!(zoom_reset.key, "0");
     assert!(zoom_reset.modifiers.super_key);
+    assert!(zoom_reset.modifiers.shift);
 
     let screenshot = keybinds
         .binds
@@ -146,6 +147,29 @@ fn example_config_parses_end_to_end() {
         .expect("screenshot bind present");
     assert_eq!(screenshot.key, "Print");
     assert_eq!(screenshot.modifiers, halley_config::Modifiers::default());
+}
+
+#[test]
+fn example_config_cluster_sections_parse() {
+    let config = RuneConfig::from_file(EXAMPLE_PATH).expect("example config parses");
+    let runtime = halley_config::parse_runtime_config(&config).expect("runtime config parses");
+
+    assert_eq!(
+        runtime.clusters.default_layout,
+        halley_config::ClusterLayout::Stacking
+    );
+    assert_eq!(runtime.clusters.tiling.max_stack, 4);
+    assert_eq!(runtime.clusters.stacking.max_visible, 5);
+    assert!(runtime.animations.cluster.enabled);
+    assert_eq!(runtime.animations.cluster.tiling.open_duration_ms, 300);
+    assert_eq!(runtime.animations.cluster.stacking.cycle_duration_ms, 220);
+    assert!(
+        runtime
+            .keybinds
+            .binds
+            .iter()
+            .any(|binding| binding.action == Action::ClusterSlot(10))
+    );
 }
 
 #[test]

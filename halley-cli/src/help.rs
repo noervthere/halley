@@ -5,6 +5,7 @@ Commands:
   outputs        List connected monitors and their current mode/position
   dpms           Control tty output power state
   node           List, inspect, focus, move, collapse, restore, toggle, or close nodes
+  cluster        List, inspect, switch, or change cluster workspaces
   bearings       Show, hide, toggle, or inspect Bearings
   config         Verify the configuration selected by the compositor
   quit           Open Halley's exit confirmation
@@ -12,6 +13,16 @@ Commands:
 Options:
   -h, --help     Print this message
   -V, --version  Print both halleyctl's and the running compositor's version
+";
+
+pub const CLUSTER_HELP: &str = "\
+Usage:
+  halleyctl cluster list [-o OUTPUT] [--json]
+  halleyctl cluster info [current|ID|id:ID] [-o OUTPUT] [--json]
+  halleyctl cluster layout-cycle [-o OUTPUT]
+  halleyctl cluster slot 1..10 [-o OUTPUT]
+
+Without -o, current and control commands use the selected monitor.
 ";
 
 pub const CONFIG_HELP: &str = "\

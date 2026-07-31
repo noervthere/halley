@@ -2,11 +2,11 @@ use std::fmt::Write;
 use std::process::ExitCode;
 
 use halley_ipc::{
-    ModeInfo, NodeInfo, NodeListResponse, NodeProtocolFamily, NodeRelationInfo, NodeRole,
-    NodeState, OutputInfo, Response,
+    ClusterInfo, ClusterLayoutKind, ClusterListResponse, ModeInfo, NodeInfo, NodeListResponse,
+    NodeProtocolFamily, NodeRelationInfo, NodeRole, NodeState, OutputInfo, Response,
 };
 
-use crate::cmd::NodeOutput;
+use crate::cmd::{ClusterOutput, NodeOutput};
 
 pub fn node(response: Response, output: NodeOutput) -> ExitCode {
     match (response, output) {
@@ -37,6 +37,27 @@ pub fn bearings(response: Response) -> ExitCode {
             ExitCode::SUCCESS
         }
         response => unexpected(response),
+    }
+}
+
+pub fn cluster(response: Response, output: ClusterOutput) -> ExitCode {
+    match (response, output) {
+        (Response::ClusterList(list), ClusterOutput::List { json: true }) => {
+            print_json(&list, "cluster list")
+        }
+        (Response::ClusterList(list), ClusterOutput::List { json: false }) => {
+            print!("{}", format_cluster_list(&list));
+            ExitCode::SUCCESS
+        }
+        (Response::ClusterInfo(info), ClusterOutput::Info { json: true }) => {
+            print_json(&info, "cluster info")
+        }
+        (Response::ClusterInfo(info), ClusterOutput::Info { json: false }) => {
+            print!("{}", format_cluster_info(&info));
+            ExitCode::SUCCESS
+        }
+        (Response::Ack, ClusterOutput::Ack) => ExitCode::SUCCESS,
+        (response, _) => unexpected(response),
     }
 }
 
@@ -140,6 +161,79 @@ fn format_node_info(node: &NodeInfo) -> String {
     writeln!(formatted, "{}  {}", node.id, node.title).unwrap();
     format_node_fields(&mut formatted, node, 2);
     formatted
+}
+
+fn format_cluster_list(list: &ClusterListResponse) -> String {
+    if list.outputs.iter().all(|group| group.clusters.is_empty()) {
+        return "No clusters.\n".to_string();
+    }
+    let mut formatted = String::new();
+    for group in &list.outputs {
+        writeln!(formatted, "{}", group.output).unwrap();
+        if group.clusters.is_empty() {
+            writeln!(formatted, "  (none)").unwrap();
+            continue;
+        }
+        for cluster in &group.clusters {
+            let marker = if cluster.active {
+                "*"
+            } else if cluster.focused {
+                "+"
+            } else {
+                "-"
+            };
+            let slot = cluster
+                .slot
+                .map(|slot| slot.to_string())
+                .unwrap_or_else(|| "?".into());
+            writeln!(
+                formatted,
+                "  {marker} slot {slot}: {}  {} [{}; {} window{}]",
+                cluster.id,
+                cluster.name,
+                cluster_layout(cluster.layout),
+                cluster.member_count,
+                if cluster.member_count == 1 { "" } else { "s" },
+            )
+            .unwrap();
+        }
+    }
+    formatted
+}
+
+fn format_cluster_info(info: &ClusterInfo) -> String {
+    let mut formatted = String::new();
+    writeln!(formatted, "{}  {}", info.summary.id, info.summary.name).unwrap();
+    writeln!(formatted, "  output: {}", info.summary.output).unwrap();
+    writeln!(
+        formatted,
+        "  slot: {}",
+        info.summary
+            .slot
+            .map(|slot| slot.to_string())
+            .unwrap_or_else(|| "(none)".into())
+    )
+    .unwrap();
+    writeln!(
+        formatted,
+        "  layout: {}",
+        cluster_layout(info.summary.layout)
+    )
+    .unwrap();
+    writeln!(formatted, "  active: {}", info.summary.active).unwrap();
+    writeln!(formatted, "  focused: {}", info.summary.focused).unwrap();
+    writeln!(formatted, "  members: {}", info.members.len()).unwrap();
+    for member in &info.members {
+        writeln!(formatted, "    - {}  {}", member.id, member.title).unwrap();
+    }
+    formatted
+}
+
+fn cluster_layout(layout: ClusterLayoutKind) -> &'static str {
+    match layout {
+        ClusterLayoutKind::Tiling => "tiling",
+        ClusterLayoutKind::Stacking => "stacking",
+    }
 }
 
 fn format_node_fields(formatted: &mut String, node: &NodeInfo, indent: usize) {

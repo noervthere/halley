@@ -502,6 +502,44 @@ debug:
   show-focus-ring false
 end
 
+# Clusters group related windows behind one circular desktop icon. Press the
+# cluster-mode binding, click each window you want to include, press Enter,
+# type a name, then press Enter again. Escape cancels at either step.
+clusters:
+  # New clusters open in "stacking" (overlapping cards) or "tiling" (one
+  # master window beside a vertical stack). Mod+L changes the active cluster.
+  default-layout "stacking"
+
+  # Reserved for drag-to-cluster interaction: a window must remain near a
+  # cluster core for this long and within this many logical pixels.
+  join-dwell-ms 2000
+  join-distance-px 280.0
+
+  # Draw the restored old-Halley cluster glyph inside each circular core.
+  show-icons true
+  bloom-direction "clockwise"
+
+  tiling:
+    # false appends newly joined windows; true inserts them at the front.
+    new-on-top false
+
+    # Outer is the distance from the monitor work area. Inner is the gap
+    # between cluster windows. Both values are logical pixels.
+    gaps-inner 20.0
+    gaps-outer 20.0
+
+    # The master plus this many stack windows are visible. Extra windows stay
+    # in the overflow queue instead of being destroyed or removed.
+    max-stack 4
+    overflow-show-icons true
+  end
+
+  stacking:
+    # Maximum overlapping cards drawn at once. 0 means no limit.
+    max-visible 5
+  end
+end
+
 # Multi-monitor window overview. It replaces the desktop with tiles over the
 # wallpaper only. GPU-local previews coalesce commits at the configured
 # ceiling; max-rows accepts the old-Halley range 1 through 5.
@@ -614,6 +652,30 @@ animations:
     enabled true
     duration-ms 280
   end
+
+  cluster:
+    # One switch for cluster workspace motion; it does not affect Field,
+    # fullscreen, maximize, node, or cursor behavior.
+    enabled true
+
+    tiling:
+      # Opening and closing control transitions between the circular core and
+      # the 1.0-scale workspace. Reflow covers tile order/size changes.
+      open-duration-ms 300
+      close-duration-ms 420
+      reflow-duration-ms 240
+
+      # Delay between consecutive tile starts. Set to 0 for simultaneous
+      # motion while keeping the same open/close durations.
+      stagger-ms 55
+    end
+
+    stacking:
+      open-duration-ms 240
+      close-duration-ms 360
+      cycle-duration-ms 220
+    end
+  end
 end
 
 # A keybind entry is `"chord" "action"`. Modifiers are matched exactly:
@@ -638,6 +700,31 @@ keybinds:
   "alt+tab" "cycle-focus"
   "alt+shift+tab" "cycle-focus-backward"
 
+  # Create a cluster, switch the active cluster's layout, or open a numbered
+  # cluster slot on the currently selected monitor. Press an open slot again
+  # to return to the Field. Slot 10 uses 0, like a ten-key workspace row.
+  "$var.mod+shift+c" "cluster-mode"
+  "$var.mod+l" "cluster-layout-cycle"
+  "$var.mod+1" "cluster-slot-1"
+  "$var.mod+2" "cluster-slot-2"
+  "$var.mod+3" "cluster-slot-3"
+  "$var.mod+4" "cluster-slot-4"
+  "$var.mod+5" "cluster-slot-5"
+  "$var.mod+6" "cluster-slot-6"
+  "$var.mod+7" "cluster-slot-7"
+  "$var.mod+8" "cluster-slot-8"
+  "$var.mod+9" "cluster-slot-9"
+  "$var.mod+0" "cluster-slot-10"
+
+  # Alt+Tab and Alt+Shift+Tab cycle forward/backward when a stacking cluster
+  # is open. Outside a stacking cluster they retain normal focus-cycle use.
+  #
+  # Directional tiling commands are available for custom bindings:
+  # "$var.mod+ctrl+left" "cluster-tile-focus-left"
+  # "$var.mod+ctrl+right" "cluster-tile-focus-right"
+  # "$var.mod+ctrl+shift+left" "cluster-tile-swap-left"
+  # "$var.mod+ctrl+shift+right" "cluster-tile-swap-right"
+
   # `open-terminal` uses `default-terminal` near the end of this section.
   "$var.mod+t" "open-terminal"
 
@@ -650,7 +737,7 @@ keybinds:
   # Zoom out, walk back inward, or reset directly to native scale.
   "$var.mod+minus" "zoom-out"
   "$var.mod+equal" "zoom-in"
-  "$var.mod+0" "zoom-reset"
+  "$var.mod+shift+0" "zoom-reset"
 
   # Open the Region, Screen, and Window screenshot menu.
   "Print" "screenshot"

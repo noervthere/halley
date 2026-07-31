@@ -1,8 +1,9 @@
+mod cluster;
 mod node;
 
 use std::path::PathBuf;
 
-use halley_ipc::{BearingsRequest, DpmsCommand, NodeRequest};
+use halley_ipc::{BearingsRequest, ClusterRequest, DpmsCommand, NodeRequest};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
@@ -17,6 +18,11 @@ pub enum Action {
         output: NodeOutput,
     },
     NodeHelp,
+    Cluster {
+        request: ClusterRequest,
+        output: ClusterOutput,
+    },
+    ClusterHelp,
     Bearings(BearingsRequest),
     BearingsHelp,
     ConfigVerify(Option<PathBuf>),
@@ -28,6 +34,13 @@ pub enum Action {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NodeOutput {
+    List { json: bool },
+    Info { json: bool },
+    Ack,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClusterOutput {
     List { json: bool },
     Info { json: bool },
     Ack,
@@ -45,6 +58,7 @@ pub fn parse(args: &[String]) -> Result<Action, String> {
         }
         Some("dpms") => return parse_dpms(&args[1..]),
         Some("node") => return node::parse(&args[1..]),
+        Some("cluster") => return cluster::parse(&args[1..]),
         Some("bearings") => return parse_bearings(&args[1..]),
         Some("config") => return parse_config(&args[1..]),
         Some("quit") => Action::Quit,

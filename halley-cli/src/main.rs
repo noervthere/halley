@@ -23,6 +23,12 @@ fn main() -> ExitCode {
             })
         }
         Ok(Action::NodeHelp) => show(help::NODE_HELP),
+        Ok(Action::Cluster { request, output }) => {
+            transport::query(Request::Cluster(request), |response| {
+                print::cluster(response, output)
+            })
+        }
+        Ok(Action::ClusterHelp) => show(help::CLUSTER_HELP),
         Ok(Action::Bearings(request)) => {
             transport::query(Request::Bearings(request), print::bearings)
         }
@@ -57,6 +63,7 @@ mod tests {
         assert!(commands.contains("outputs"));
         assert!(commands.contains("dpms"));
         assert!(commands.contains("node"));
+        assert!(commands.contains("cluster"));
         assert!(commands.contains("bearings"));
         assert!(commands.contains("config"));
         assert!(commands.contains("quit"));

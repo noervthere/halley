@@ -127,7 +127,7 @@ mod tests {
                 )
             }
         }
-        assert_eq!(kb.binds.len(), 18);
+        assert_eq!(kb.binds.len(), 30);
 
         let quit = kb.binds.iter().find(|b| b.action == Action::Quit).unwrap();
         assert!(quit.modifiers.super_key);

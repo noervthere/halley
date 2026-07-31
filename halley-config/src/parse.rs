@@ -63,13 +63,35 @@ fn parse_action(s: &str) -> Action {
     {
         return Action::ClusterSlot(slot);
     }
-    if let ["tile", "focus", direction] = words.as_slice()
+    if let Some(slot) = s
+        .strip_prefix("cluster-slot-")
+        .or_else(|| s.strip_prefix("cluster_slot_"))
+        .and_then(|slot| slot.parse::<u8>().ok())
+        .filter(|slot| (1..=10).contains(slot))
+    {
+        return Action::ClusterSlot(slot);
+    }
+    if let ["tile", "focus", direction] | ["tile-focus", direction] = words.as_slice()
         && let Some(direction) = parse_direction(direction)
     {
         return Action::ClusterTileFocus(direction);
     }
-    if let ["tile", "swap", direction] = words.as_slice()
+    if let Some(direction) = s
+        .strip_prefix("cluster-tile-focus-")
+        .or_else(|| s.strip_prefix("cluster_tile_focus_"))
+        .and_then(parse_direction)
+    {
+        return Action::ClusterTileFocus(direction);
+    }
+    if let ["tile", "swap", direction] | ["tile-swap", direction] = words.as_slice()
         && let Some(direction) = parse_direction(direction)
+    {
+        return Action::ClusterTileSwap(direction);
+    }
+    if let Some(direction) = s
+        .strip_prefix("cluster-tile-swap-")
+        .or_else(|| s.strip_prefix("cluster_tile_swap_"))
+        .and_then(parse_direction)
     {
         return Action::ClusterTileSwap(direction);
     }
