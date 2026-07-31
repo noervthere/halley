@@ -741,6 +741,27 @@ where
         }
     }
 
+    if motion.is_some()
+        && let crate::input::grab::Grab::PendingClusterCore {
+            id,
+            press_screen,
+            screen_offset,
+            ..
+        } = &session.grab
+    {
+        let dx = position_after.0 - press_screen.x;
+        let dy = position_after.1 - press_screen.y;
+        if dx.hypot(dy) >= NODE_DRAG_THRESHOLD_PX {
+            session.grab = crate::input::grab::Grab::MoveClusterCore {
+                id: *id,
+                screen_offset: *screen_offset,
+            };
+            session
+                .cursor
+                .set_override(Some(smithay::input::pointer::CursorIcon::Grabbing));
+        }
+    }
+
     match &session.grab {
         crate::input::grab::Grab::MoveWindow {
             id,
@@ -885,6 +906,31 @@ where
                 }
             }
         }
+        crate::input::grab::Grab::MoveClusterCore {
+            id,
+            screen_offset,
+        } => {
+            let id = *id;
+            let screen_offset = *screen_offset;
+            if let Some((output, output_geometry)) =
+                output_at_pointer(&session.wayland.space, position_after)
+                && let Some(camera) = session.cameras.get(&output.name())
+            {
+                let pointer_world = crate::input::grab::screen_to_world_on_output(
+                    position_after,
+                    camera,
+                    output_geometry,
+                );
+                let offset = crate::input::grab::screen_offset_to_world(screen_offset, camera);
+                let desired = halley_core::field::Vec2 {
+                    x: pointer_world.x + offset.x,
+                    y: pointer_world.y + offset.y,
+                };
+                if session.clusters.move_core(id, &output.name(), desired) {
+                    session.request_redraw();
+                }
+            }
+        }
         crate::input::grab::Grab::Pan { output } => {
             let dx = position_after.0 - position_before.0;
             let dy = position_after.1 - position_before.1;
@@ -936,7 +982,9 @@ where
                 crate::xwayland::configure_window(&state.window, Rectangle::new(location, size));
             }
         }
-        crate::input::grab::Grab::None | crate::input::grab::Grab::PendingNode { .. } => {}
+        crate::input::grab::Grab::None
+        | crate::input::grab::Grab::PendingNode { .. }
+        | crate::input::grab::Grab::PendingClusterCore { .. } => {}
     }
 
     if let Some((delta, delta_unaccel, time, time_msec)) = motion {
@@ -954,11 +1002,7 @@ where
         if let Some(route) = route.as_ref() {
             super::focus::update_hover(session, route, SERIAL_COUNTER.next_serial());
         }
-        let node_grab_active = matches!(
-            &session.grab,
-            crate::input::grab::Grab::PendingNode { .. }
-                | crate::input::grab::Grab::MoveNode { .. }
-        );
+        let node_grab_active = session.grab.landmark_active();
         let hovered_node = (!node_grab_active)
             .then(|| node_at_pointer(session))
             .flatten();
@@ -1009,6 +1053,45 @@ where
                     session.grab = crate::input::grab::Grab::None;
                     session.cursor.set_override(None);
                     session.nodes.clear_direct_motion(id);
+                    session.request_redraw();
+                    super::pointer::finish_frame(session, &pointer_handle);
+                    return;
+                }
+                crate::input::grab::Grab::PendingClusterCore { id, output, .. } => {
+                    let id = *id;
+                    let output_name = output.clone();
+                    session
+                        .suppressed_buttons
+                        .release_is_suppressed(BTN_LEFT);
+                    session.grab = crate::input::grab::Grab::None;
+                    session.cursor.set_override(None);
+                    if session.clusters.activate(
+                        &output_name,
+                        id,
+                        crate::frame_clock::monotonic_now(),
+                    ) {
+                        let output = {
+                            session
+                                .wayland
+                                .space
+                                .outputs()
+                                .find(|candidate| candidate.name() == output_name)
+                                .cloned()
+                        };
+                        if let Some(output) = output {
+                            sync_cluster_activation_focus(session, &output, id, serial);
+                        }
+                        session.request_redraw();
+                    }
+                    super::pointer::finish_frame(session, &pointer_handle);
+                    return;
+                }
+                crate::input::grab::Grab::MoveClusterCore { .. } => {
+                    session
+                        .suppressed_buttons
+                        .release_is_suppressed(BTN_LEFT);
+                    session.grab = crate::input::grab::Grab::None;
+                    session.cursor.set_override(None);
                     session.request_redraw();
                     super::pointer::finish_frame(session, &pointer_handle);
                     return;
@@ -1117,17 +1200,30 @@ where
             && !session.focus_cycle.is_open()
             && !intercepted
             && let Some((id, output)) = cluster_at_pointer(session)
+            && let Some(metadata) = session.clusters.metadata(id)
+            && let Some(output_geometry) = session.wayland.space.output_geometry(&output)
+            && let Some(camera) = session.cameras.get(&output.name())
         {
             wayland::focus::select_output(&mut session.wayland, &output);
-            if session
-                .clusters
-                .activate(&output.name(), id, crate::frame_clock::monotonic_now())
-            {
-                sync_cluster_activation_focus(session, &output, id, serial);
-                session.suppressed_buttons.suppress(button);
-                session.request_redraw();
-                intercepted = true;
-            }
+            let center =
+                crate::nodes::screen_from_world(metadata.core_position, camera, output_geometry);
+            let screen_offset = halley_core::field::Vec2 {
+                x: center.x as f32 - position_after.0 as f32,
+                y: center.y as f32 - position_after.1 as f32,
+            };
+            session.clusters.set_hovered_core(None);
+            session.grab = crate::input::grab::Grab::PendingClusterCore {
+                id,
+                output: output.name(),
+                press_screen: Point::<f64, Logical>::from(position_after),
+                screen_offset,
+            };
+            session
+                .cursor
+                .set_override(Some(smithay::input::pointer::CursorIcon::Grab));
+            session.suppressed_buttons.suppress(button);
+            session.request_redraw();
+            intercepted = true;
         }
         if button == BTN_LEFT
             && state == ButtonState::Pressed

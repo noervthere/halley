@@ -41,6 +41,19 @@ pub enum Grab {
         last_update: Duration,
         velocity: Vec2,
     },
+    /// A cluster-core press that remains a click until it crosses the shared
+    /// landmark drag threshold.
+    PendingClusterCore {
+        id: halley_core::cluster::ClusterId,
+        output: String,
+        press_screen: Point<f64, Logical>,
+        screen_offset: Vec2,
+    },
+    /// A collapsed cluster core carried as one cluster-owned landmark.
+    MoveClusterCore {
+        id: halley_core::cluster::ClusterId,
+        screen_offset: Vec2,
+    },
     /// Left-click-drag on empty desktop. The output is captured at press
     /// time so crossing a boundary mid-drag never pans both monitors.
     Pan {
@@ -50,11 +63,30 @@ pub enum Grab {
     ResizeWindow(ResizeState),
 }
 
+impl Grab {
+    /// Whether a collapsed landmark is being pressed or moved. Both nodes and
+    /// cluster cores suppress hover presentation while the pointer owns them.
+    pub fn landmark_active(&self) -> bool {
+        matches!(
+            self,
+            Self::PendingNode { .. }
+                | Self::MoveNode { .. }
+                | Self::PendingClusterCore { .. }
+                | Self::MoveClusterCore { .. }
+        )
+    }
+}
+
 pub fn belongs_to_surface(grab: &Grab, surface: &WlSurface) -> bool {
     let window = match grab {
         Grab::MoveWindow { window, .. } => Some(window),
         Grab::ResizeWindow(resize) => Some(&resize.window),
-        Grab::None | Grab::Pan { .. } | Grab::PendingNode { .. } | Grab::MoveNode { .. } => None,
+        Grab::None
+        | Grab::Pan { .. }
+        | Grab::PendingNode { .. }
+        | Grab::MoveNode { .. }
+        | Grab::PendingClusterCore { .. }
+        | Grab::MoveClusterCore { .. } => None,
     };
     window.is_some_and(|window| {
         window

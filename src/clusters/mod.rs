@@ -131,6 +131,35 @@ impl ClusterSystem {
         true
     }
 
+    pub fn move_core(&mut self, id: ClusterId, output: &str, position: Vec2) -> bool {
+        if self.active.values().any(|active| *active == id) {
+            return false;
+        }
+        let Some(previous_output) = self.metadata.get(&id).map(|metadata| metadata.output.clone())
+        else {
+            return false;
+        };
+        if previous_output != output {
+            let destination = self.slots.entry(output.to_string()).or_default();
+            if destination.len() >= 10 {
+                return false;
+            }
+            destination.push(id);
+            if let Some(previous) = self.slots.get_mut(&previous_output) {
+                previous.retain(|candidate| *candidate != id);
+                if previous.is_empty() {
+                    self.slots.remove(&previous_output);
+                }
+            }
+        }
+        let Some(metadata) = self.metadata.get_mut(&id) else {
+            return false;
+        };
+        metadata.output = output.to_string();
+        metadata.core_position = position;
+        true
+    }
+
     pub fn label_hover_mix(&self, id: ClusterId, highlighted: bool) -> f32 {
         let mut states = self.label_hover.borrow_mut();
         let mix = states.entry(id).or_insert(0.0);
@@ -676,6 +705,47 @@ mod tests {
         assert!(system.set_hovered_core(Some(id)));
         assert!(system.labels_animating_on_output("DP-1", halley_config::NodeDisplayPolicy::Hover));
         assert!(system.label_hover_mix(id, true) > 0.0);
+    }
+
+    #[test]
+    fn collapsed_cluster_core_moves_as_one_cluster_owned_landmark() {
+        let mut system = ClusterSystem::new(
+            halley_config::Clusters::default(),
+            halley_config::ClusterAnimation::default(),
+        );
+        let id = ClusterId::new(1);
+        system.metadata.insert(
+            id,
+            ClusterMetadata {
+                name: "Cluster 1".into(),
+                output: "DP-1".into(),
+                layout: ClusterWorkspaceLayoutKind::Tiling,
+                core: None,
+                core_position: Vec2 { x: 10.0, y: 20.0 },
+            },
+        );
+        system.slots.insert("DP-1".into(), vec![id]);
+
+        assert!(system.move_core(id, "DP-1", Vec2 { x: 30.0, y: 40.0 }));
+        assert_eq!(
+            system.metadata(id).unwrap().core_position,
+            Vec2 { x: 30.0, y: 40.0 }
+        );
+
+        assert!(system.move_core(id, "DP-2", Vec2 { x: 50.0, y: 60.0 }));
+        assert_eq!(system.metadata(id).unwrap().output, "DP-2");
+        assert_eq!(
+            system.clusters_for_output("DP-1").next().map(|(_, id, _)| id),
+            None
+        );
+        assert_eq!(
+            system.clusters_for_output("DP-2").next().map(|(_, id, _)| id),
+            Some(id)
+        );
+
+        system.active.insert("DP-2".into(), id);
+        assert!(!system.move_core(id, "DP-1", Vec2 { x: 0.0, y: 0.0 }));
+        assert_eq!(system.metadata(id).unwrap().output, "DP-2");
     }
 
     #[test]

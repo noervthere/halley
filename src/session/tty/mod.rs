@@ -920,11 +920,7 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
                 nodes: &app.nodes,
                 clusters: &app.clusters,
                 window_rules: &app.window_rules,
-                node_grab_active: matches!(
-                    &app.grab,
-                    crate::input::grab::Grab::PendingNode { .. }
-                        | crate::input::grab::Grab::MoveNode { .. }
-                ),
+                node_grab_active: app.grab.landmark_active(),
             },
             cursor: CursorContext {
                 cursor: &app.cursor,
