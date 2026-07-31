@@ -158,6 +158,15 @@ fn example_config_keeps_environment_and_autostart_inactive() {
     assert!(runtime.autostart.on_reload.is_empty());
 }
 
+#[test]
+fn example_config_keeps_background_and_window_rules_inert() {
+    let config = RuneConfig::from_file(EXAMPLE_PATH).expect("example config parses");
+    let runtime = halley_config::parse_runtime_config(&config).expect("runtime config parses");
+
+    assert_eq!(runtime.background, halley_config::Background::default());
+    assert!(runtime.window_rules.is_empty());
+}
+
 /// Confirms the shipped example's nested field zoom parses to the documented
 /// values.
 #[test]

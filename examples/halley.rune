@@ -351,6 +351,44 @@ effects:
   end
 end
 
+# The compositor background is the absolute back of the scene: protocol
+# background-layer surfaces, windows, panels, overlays, and the cursor all draw
+# above it. "none" keeps the normal clear colour and costs no render work.
+background:
+  mode "none" # "none", "classic", or "field-shader"
+
+  # Classic image example. Relative paths resolve beside this config file.
+  # mode "classic"
+  # path "~/Pictures/wallpaper.png"
+  # fit "cover" # "cover", "contain", or "stretch"
+  # intensity 1.0
+
+  # Field shader example. "space" is Halley's bundled old-Halley shader; a
+  # file path selects a compatible custom fragment shader instead.
+  # mode "field-shader"
+  # shader "space"
+  # colour "#181a26"
+  # accent-colour "#8fa8d8"
+  # intensity 1.0
+  # animated false
+end
+
+# Managed-window rules are shared by native Wayland and XWayland windows.
+# Rules are checked top-to-bottom and only the first complete match applies.
+# Exact strings are case-sensitive; r"..." values are regular expressions.
+rules:
+  # rule:
+  #   app-id ["firefox", r"org\.mozilla\..*"]
+  #   title r"Picture.*"
+  #   width 720
+  #   height 520
+  #   opacity 0.90
+  #   blur true
+  #   spawn-placement "cursor"
+  #   cluster-participation "float"
+  # end
+end
+
 # Offscreen node navigation. Bearings are laid out independently per monitor
 # around that monitor's current camera view. Hold Mod+Z for a temporary view;
 # Mod+Shift+Z toggles a persistent view.

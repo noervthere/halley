@@ -11,8 +11,11 @@ state do not share implementation files.
   VRR mechanics. TTY output and DMA-BUF policy live below `backend::tty`.
 - `presentation` owns camera transforms plus shared window and field-maximize
   presentation state used by rendering and input mapping.
-- `render` owns scene composition, persistent GPU resources, effects,
-  decorations, textures, text, nodes, and shell UI rendering.
+- `render` owns scene composition and dedicated persistent GPU resources for
+  backgrounds, effects, decorations, textures, text, nodes, and shell UI.
+- `window` owns backend-neutral managed-window rules and initial routing.
+  Wayland and XWayland supply identities and apply the resolved policy without
+  maintaining separate rule engines.
 - `shell` owns renderer-independent overlay, bearings, focus-cycle, and Apogee
   state. Their GLES presentation lives below `render`.
 - `capture` owns screenshot selection, pixel capture, and screencast buffers.
@@ -30,24 +33,22 @@ motion algorithms remain in `session::pointer::constraints`; presentation
 adapters may be called by that subsystem, but rendering and refactors must not
 own or duplicate constraint policy.
 
-## Maintainability rubric
+## Quality rubric
 
-Scores use a ten-point scale and are reviewed against production structure,
-dependency direction, interface size, strict linting, and regression coverage.
+Scores use a ten-point scale and are gated separately; an average cannot hide
+a category below 8.
 
-| Category | Weight | Score | Evidence |
-| --- | ---: | ---: | --- |
-| Ownership and cohesion | 30% | 9.2 | Shell, presentation, capture, backend TTY, and XWayland policies have dedicated modules |
-| Dependency direction | 20% | 9.0 | Renderer-independent state points toward presentation, never GLES implementation |
-| Interface coupling | 20% | 8.5 | Six frame contexts and one persistent render-resource aggregate |
-| Local complexity | 15% | 8.0 | Central scene is under 300 production lines; nodes and XWM are decomposed |
-| Regression safety | 15% | 9.2 | Workspace tests, strict clippy, formatting, build, and nested smoke gate |
-| **Weighted total** | **100%** | **8.8** | No category is below 8 |
+| Category | Score | Evidence |
+| --- | ---: | --- |
+| Cohesion | 9.0 | Shell, presentation, capture, backend TTY, XWayland, window rules/routing, and background rendering have dedicated ownership boundaries |
+| Coupling | 8.6 | Both backends share one scene request; rule consumers share one resolved policy; renderer resources cross the boundary as one aggregate and background input as one typed request |
+| Maintainability | 8.7 | Typed/validated config, documented compatibility behavior, cached failure paths, focused unit tests, workspace regression tests, formatting, build, and strict clippy gates |
 
 The remaining large orchestration files are `session/input.rs`,
-`wayland/fullscreen.rs`, and the TTY session/backend drivers. They are cohesive
-event loops or transaction managers rather than mixed-domain modules; future
-feature work should extract policy objects from them instead of adding more
+`wayland/fullscreen.rs`, `render/scene.rs`, and the TTY session/backend
+drivers. They are cohesive event loops, transaction managers, or scene
+assemblers rather than mixed-domain feature modules. Future feature work should
+extract policy objects and render elements from them instead of adding more
 branches in place.
 
 ## Change gates
