@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::Cursor;
 use std::mem::MaybeUninit;
-use std::os::fd::{AsRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
 use std::ptr;
@@ -59,11 +59,31 @@ struct AllocatedDmabuf {
     planes: Vec<halley_ipc::DmabufPlane>,
 }
 
+struct AllocatedMemfd {
+    fd: OwnedFd,
+}
+
+enum AllocatedBuffer {
+    Dmabuf(AllocatedDmabuf),
+    Memfd(AllocatedMemfd),
+}
+
 #[derive(Clone)]
 struct DmabufAllocator {
     device: Rc<gbm::Device<File>>,
+    formats: Vec<DmabufAllocationFormat>,
+}
+
+#[derive(Clone, Copy)]
+struct DmabufAllocationFormat {
     modifier: gbm::Modifier,
     plane_count: u32,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct NegotiatedDmabufModifier {
+    value: u64,
+    needs_fixation: bool,
 }
 
 pub struct Producer {
@@ -242,13 +262,15 @@ fn create_stream(
     } else {
         None
     };
-    let allow_dmabuf = dmabuf_allocator.is_some();
-    let negotiated_modifier = dmabuf_allocator
+    let dmabuf_modifiers = dmabuf_allocator
         .as_ref()
-        .map(|allocator| u64::from(allocator.modifier));
-    let data_blocks = dmabuf_allocator
-        .as_ref()
-        .map_or(1, |allocator| allocator.plane_count);
+        .map_or_else(Vec::new, |allocator| {
+            allocator
+                .formats
+                .iter()
+                .map(|format| u64::from(format.modifier))
+                .collect()
+        });
     let mut properties = PropertiesBox::new();
     properties.insert("media.class", "Video/Source");
     properties.insert("media.name", format!("halley-screencast-{handle}"));
@@ -271,6 +293,7 @@ fn create_stream(
     let frame_failure_logged = Rc::new(Cell::new(false));
     let buffer_ids = Rc::new(RefCell::new(HashMap::<RawFd, u64>::new()));
     let next_buffer_id = Rc::new(Cell::new(1u64));
+    let selected_dmabuf_format = Rc::new(Cell::new(None::<DmabufAllocationFormat>));
     let process_handle = handle.to_string();
     let process_source = source.clone();
     let listener = stream
@@ -285,17 +308,56 @@ fn create_stream(
             }
         })
         .param_changed({
+            let allocator = dmabuf_allocator.clone();
+            let selected_dmabuf_format = selected_dmabuf_format.clone();
             move |stream, _frame_count, id, param| {
-                if id != spa::param::ParamType::Format.as_raw() || param.is_none() {
+                if id != spa::param::ParamType::Format.as_raw() {
                     return;
                 }
-                let buffers_data = match buffers_pod(width, height, allow_dmabuf, data_blocks) {
-                    Ok(data) => data,
+                let Some(param) = param else {
+                    return;
+                };
+                let selected = match negotiated_dmabuf_modifier(param) {
+                    Ok(Some(negotiated)) => {
+                        let selected = allocator.as_ref().and_then(|allocator| {
+                            allocator
+                                .formats
+                                .iter()
+                                .copied()
+                                .find(|format| u64::from(format.modifier) == negotiated.value)
+                        });
+                        let Some(selected) = selected else {
+                            eventline::error!(
+                                "PipeWire selected unallocatable DMA-BUF modifier {:#x}",
+                                negotiated.value
+                            );
+                            return;
+                        };
+                        if negotiated.needs_fixation {
+                            eventline::info!(
+                                "screencast: using DMA-BUF modifier choice default {:#x}",
+                                negotiated.value
+                            );
+                        }
+                        Some(selected)
+                    }
+                    Ok(None) => None,
                     Err(err) => {
-                        eventline::error!("build negotiated PipeWire buffers: {err}");
+                        eventline::error!("inspect negotiated PipeWire format: {err}");
                         return;
                     }
                 };
+                selected_dmabuf_format.set(selected);
+                let selected_dmabuf = selected.is_some();
+                let selected_blocks = selected.map_or(1, |format| format.plane_count);
+                let buffers_data =
+                    match buffers_pod(width, height, selected_dmabuf, selected_blocks) {
+                        Ok(data) => data,
+                        Err(err) => {
+                            eventline::error!("build negotiated PipeWire buffers: {err}");
+                            return;
+                        }
+                    };
                 let cursor_meta_data = meta_pod(spa_sys::SPA_META_Cursor, CURSOR_META_SIZE);
                 let header_meta_data = meta_pod(
                     spa_sys::SPA_META_Header,
@@ -331,55 +393,87 @@ fn create_stream(
             let handle = handle.to_string();
             let compositor = compositor.clone();
             let allocator = dmabuf_allocator.clone();
+            let selected_dmabuf_format = selected_dmabuf_format.clone();
             let buffer_ids = buffer_ids.clone();
             let next_buffer_id = next_buffer_id.clone();
             move |_stream, _frame_count, buffer| {
-                let Some(allocator) = allocator.as_ref() else {
+                let Some(data_type) = allowed_buffer_type(buffer) else {
+                    eventline::error!("PipeWire did not permit a supported buffer type");
                     return;
                 };
-                let buffer_id = next_buffer_id.get();
-                next_buffer_id.set(buffer_id.wrapping_add(1).max(1));
-                let allocated = match allocate_dmabuf(
-                    buffer,
-                    &allocator.device,
-                    width,
-                    height,
-                    allocator.modifier,
-                    buffer_id,
-                ) {
-                    Ok(allocated) => allocated,
-                    Err(err) => {
-                        eventline::error!("could not allocate PipeWire DMA-BUF: {err}");
+                let allocated = match data_type {
+                    DataType::DmaBuf => {
+                        let Some(allocator) = allocator.as_ref() else {
+                            eventline::error!(
+                                "PipeWire selected DMA-BUF without an available allocator"
+                            );
+                            return;
+                        };
+                        let Some(format) = selected_dmabuf_format.get() else {
+                            eventline::error!(
+                                "PipeWire requested a DMA-BUF before selecting its modifier"
+                            );
+                            return;
+                        };
+                        let buffer_id = next_buffer_id.get();
+                        next_buffer_id.set(buffer_id.wrapping_add(1).max(1));
+                        let allocated = match allocate_dmabuf(
+                            buffer,
+                            &allocator.device,
+                            width,
+                            height,
+                            format.modifier,
+                            buffer_id,
+                        ) {
+                            Ok(allocated) => allocated,
+                            Err(err) => {
+                                eventline::error!("could not allocate PipeWire DMA-BUF: {err}");
+                                return;
+                            }
+                        };
+                        let Some(primary_fd) = allocated.fds.first().map(AsRawFd::as_raw_fd) else {
+                            eventline::error!("allocated DMA-BUF has no planes");
+                            return;
+                        };
+                        let request = halley_ipc::RegisterDmabufRequest {
+                            stream_handle: handle.clone(),
+                            buffer_id: allocated.buffer_id,
+                            width: width as i32,
+                            height: height as i32,
+                            format: u32::from_le_bytes(*b"XR24"),
+                            modifier: allocated.modifier,
+                            flags: 0,
+                            planes: allocated.planes.clone(),
+                        };
+                        let fds = allocated
+                            .fds
+                            .iter()
+                            .map(AsRawFd::as_raw_fd)
+                            .collect::<Vec<_>>();
+                        if let Err(err) = crate::compositor::register_dmabuf(
+                            &mut compositor.borrow_mut(),
+                            request,
+                            &fds,
+                        ) {
+                            eventline::error!("DMA-BUF registration rejected: {err}");
+                        }
+                        buffer_ids.borrow_mut().insert(primary_fd, buffer_id);
+                        AllocatedBuffer::Dmabuf(allocated)
+                    }
+                    DataType::MemFd => match allocate_memfd(buffer, width, height) {
+                        Ok(allocated) => AllocatedBuffer::Memfd(allocated),
+                        Err(err) => {
+                            eventline::error!("could not allocate PipeWire MemFd: {err}");
+                            return;
+                        }
+                    },
+                    _ => {
+                        eventline::error!("unsupported PipeWire buffer type {data_type:?}");
                         return;
                     }
                 };
-                let Some(primary_fd) = allocated.fds.first().map(AsRawFd::as_raw_fd) else {
-                    eventline::error!("allocated DMA-BUF has no planes");
-                    return;
-                };
-                let request = halley_ipc::RegisterDmabufRequest {
-                    stream_handle: handle.clone(),
-                    buffer_id: allocated.buffer_id,
-                    width: width as i32,
-                    height: height as i32,
-                    format: u32::from_le_bytes(*b"XR24"),
-                    modifier: allocated.modifier,
-                    flags: 0,
-                    planes: allocated.planes.clone(),
-                };
-                let fds = allocated
-                    .fds
-                    .iter()
-                    .map(AsRawFd::as_raw_fd)
-                    .collect::<Vec<_>>();
-                if let Err(err) =
-                    crate::compositor::register_dmabuf(&mut compositor.borrow_mut(), request, &fds)
-                {
-                    eventline::error!("DMA-BUF registration rejected: {err}");
-                }
-                buffer_ids.borrow_mut().insert(primary_fd, buffer_id);
                 unsafe {
-                    (*buffer).user_data = Box::into_raw(allocated).cast();
+                    (*buffer).user_data = Box::into_raw(Box::new(allocated)).cast();
                 }
             }
         })
@@ -388,14 +482,23 @@ fn create_stream(
             let compositor = compositor.clone();
             let buffer_ids = buffer_ids.clone();
             move |_stream, _frame_count, buffer| {
-                if let Some(allocated) = take_allocated_dmabuf(buffer) {
-                    let _ = crate::compositor::remove_dmabuf(
-                        &mut compositor.borrow_mut(),
-                        handle.clone(),
-                        allocated.buffer_id,
-                    );
-                    if let Some(fd) = allocated.fds.first().map(AsRawFd::as_raw_fd) {
-                        buffer_ids.borrow_mut().remove(&fd);
+                if let Some(allocated) = take_allocated_buffer(buffer) {
+                    match allocated.as_ref() {
+                        AllocatedBuffer::Dmabuf(allocated) => {
+                            let _ = crate::compositor::remove_dmabuf(
+                                &mut compositor.borrow_mut(),
+                                handle.clone(),
+                                allocated.buffer_id,
+                            );
+                            if let Some(fd) = allocated.fds.first().map(AsRawFd::as_raw_fd) {
+                                buffer_ids.borrow_mut().remove(&fd);
+                            }
+                        }
+                        AllocatedBuffer::Memfd(allocated) => {
+                            // Keep the owned descriptor alive until PipeWire
+                            // has completely removed this buffer.
+                            let _ = allocated.fd.as_raw_fd();
+                        }
                     }
                     clear_buffer_fds(buffer);
                 }
@@ -492,17 +595,24 @@ fn create_stream(
         .register()
         .map_err(|err| format!("register PipeWire listener: {err}"))?;
 
-    let format_data = format_pod(width, height, negotiated_modifier)?;
-    let format = spa::pod::Pod::from_bytes(&format_data)
-        .ok_or_else(|| "invalid PipeWire format POD".to_string())?;
-    let mut params = [format];
-    let flags = if allow_dmabuf {
-        StreamFlags::ALLOC_BUFFERS | StreamFlags::DRIVER
-    } else {
-        StreamFlags::AUTOCONNECT | StreamFlags::MAP_BUFFERS
-    };
+    let format_data = format_pods(width, height, &dmabuf_modifiers)?;
+    let mut params = format_data
+        .iter()
+        .map(|data| {
+            spa::pod::Pod::from_bytes(data).ok_or_else(|| "invalid PipeWire format POD".to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    // Keep DMA-BUF first so OBS retains its zero-copy path. The second,
+    // modifier-free format lets consumers whose GPU cannot import the
+    // compositor's modifier negotiate a producer-owned MemFd instead.
+    let flags = StreamFlags::ALLOC_BUFFERS | StreamFlags::DRIVER;
     stream
-        .connect(spa::utils::Direction::Output, None, flags, &mut params)
+        .connect(
+            spa::utils::Direction::Output,
+            None,
+            flags,
+            params.as_mut_slice(),
+        )
         .map_err(|err| format!("connect PipeWire stream: {err}"))?;
     stream
         .set_active(true)
@@ -529,6 +639,52 @@ fn wait_for_node(mainloop: &MainLoopRc, stream: &StreamRc) -> Result<u32, String
             .loop_()
             .iterate(Timeout::Finite(Duration::from_millis(16)));
     }
+}
+
+fn negotiated_dmabuf_modifier(
+    format: &spa::pod::Pod,
+) -> Result<Option<NegotiatedDmabufModifier>, String> {
+    let Ok((_, spa::pod::Value::Object(object))) =
+        spa::pod::deserialize::PodDeserializer::deserialize_from::<spa::pod::Value>(
+            format.as_bytes(),
+        )
+    else {
+        return Err("format is not a SPA object".to_string());
+    };
+    let Some(property) = object.properties.iter().find(|property| {
+        property.key == spa::param::format::FormatProperties::VideoModifier.as_raw()
+    }) else {
+        return Ok(None);
+    };
+    match &property.value {
+        spa::pod::Value::Long(modifier) => Ok(Some(NegotiatedDmabufModifier {
+            value: *modifier as u64,
+            needs_fixation: false,
+        })),
+        spa::pod::Value::Choice(spa::pod::ChoiceValue::Long(spa::utils::Choice(_, choice))) => {
+            let modifier = match choice {
+                spa::utils::ChoiceEnum::None(value) => *value,
+                spa::utils::ChoiceEnum::Range { default, .. }
+                | spa::utils::ChoiceEnum::Step { default, .. }
+                | spa::utils::ChoiceEnum::Enum { default, .. }
+                | spa::utils::ChoiceEnum::Flags { default, .. } => *default,
+            };
+            Ok(Some(NegotiatedDmabufModifier {
+                value: modifier as u64,
+                needs_fixation: true,
+            }))
+        }
+        _ => Err("DMA-BUF modifier was neither a Long nor a Long choice".to_string()),
+    }
+}
+
+fn format_pods(width: u32, height: u32, dmabuf_modifiers: &[u64]) -> Result<Vec<Vec<u8>>, String> {
+    let mut formats = Vec::with_capacity(dmabuf_modifiers.len() + 1);
+    for modifier in dmabuf_modifiers {
+        formats.push(format_pod(width, height, Some(*modifier))?);
+    }
+    formats.push(format_pod(width, height, None)?);
+    Ok(formats)
 }
 
 fn format_pod(width: u32, height: u32, modifier: Option<u64>) -> Result<Vec<u8>, String> {
@@ -727,16 +883,15 @@ fn open_gbm_device(
             let file = OpenOptions::new().read(true).write(true).open(&node)?;
             let device = gbm::Device::new(file)?;
             let mut allocation_errors = Vec::new();
+            let mut formats = Vec::new();
             for modifier in &modifiers {
                 match create_gbm_buffer(&device, width, height, *modifier) {
                     Ok(probe) if probe.modifier() == *modifier => {
-                        let plane_count = probe.plane_count();
-                        drop(probe);
-                        return Ok(DmabufAllocator {
-                            device: Rc::new(device),
+                        formats.push(DmabufAllocationFormat {
                             modifier: *modifier,
-                            plane_count,
+                            plane_count: probe.plane_count(),
                         });
+                        drop(probe);
                     }
                     Ok(probe) => allocation_errors.push(format!(
                         "requested {modifier:?}, GBM returned {:?}",
@@ -745,14 +900,26 @@ fn open_gbm_device(
                     Err(err) => allocation_errors.push(format!("{modifier:?}: {err}")),
                 }
             }
-            Err(std::io::Error::other(allocation_errors.join(", ")))
+            if formats.is_empty() {
+                Err(std::io::Error::other(allocation_errors.join(", ")))
+            } else {
+                Ok(DmabufAllocator {
+                    device: Rc::new(device),
+                    formats,
+                })
+            }
         })();
         match result {
             Ok(result) => {
+                let modifiers = result
+                    .formats
+                    .iter()
+                    .map(|format| format!("{:#x}", u64::from(format.modifier)))
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 eventline::info!(
-                    "screencast DMA-BUF allocator: {} ({:?})",
+                    "screencast DMA-BUF allocator: {} (modifiers: {modifiers})",
                     node.display(),
-                    result.modifier
                 );
                 return Ok(result);
             }
@@ -792,6 +959,81 @@ fn create_gbm_buffer(
     }
 }
 
+fn allowed_buffer_type(buffer: *mut pipewire::sys::pw_buffer) -> Option<DataType> {
+    if buffer.is_null() {
+        return None;
+    }
+    let spa_buffer = unsafe { (*buffer).buffer };
+    if spa_buffer.is_null() || unsafe { (*spa_buffer).n_datas } == 0 {
+        return None;
+    }
+    let datas = unsafe { (*spa_buffer).datas };
+    if datas.is_null() {
+        return None;
+    }
+    let allowed = unsafe { (*datas).type_ };
+    if allowed == u32::MAX || allowed & (1 << spa_sys::SPA_DATA_MemFd) != 0 {
+        Some(DataType::MemFd)
+    } else if allowed & (1 << spa_sys::SPA_DATA_DmaBuf) != 0 {
+        Some(DataType::DmaBuf)
+    } else {
+        None
+    }
+}
+
+fn allocate_memfd(
+    buffer: *mut pipewire::sys::pw_buffer,
+    width: u32,
+    height: u32,
+) -> Result<AllocatedMemfd, String> {
+    if buffer.is_null() {
+        return Err("null PipeWire buffer".to_string());
+    }
+    let spa_buffer = unsafe { (*buffer).buffer };
+    if spa_buffer.is_null() {
+        return Err("null SPA buffer".to_string());
+    }
+    let count = unsafe { (*spa_buffer).n_datas as usize };
+    let datas = unsafe { (*spa_buffer).datas };
+    if count != 1 || datas.is_null() {
+        return Err(format!("MemFd buffer requires one data block, got {count}"));
+    }
+    let size = width
+        .checked_mul(height)
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or_else(|| format!("MemFd size overflow for {width}x{height}"))?;
+    let raw_fd = unsafe {
+        libc::memfd_create(
+            c"halley-screencast".as_ptr(),
+            libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
+        )
+    };
+    if raw_fd < 0 {
+        return Err(format!("memfd_create: {}", std::io::Error::last_os_error()));
+    }
+    let fd = unsafe { OwnedFd::from_raw_fd(raw_fd) };
+    if unsafe { libc::ftruncate(fd.as_raw_fd(), i64::from(size)) } != 0 {
+        return Err(format!("ftruncate: {}", std::io::Error::last_os_error()));
+    }
+    let data = unsafe { &mut *datas };
+    if data.chunk.is_null() {
+        return Err("MemFd data block has no SPA chunk".to_string());
+    }
+    data.type_ = spa_sys::SPA_DATA_MemFd;
+    data.flags = spa_sys::SPA_DATA_FLAG_READABLE | spa_sys::SPA_DATA_FLAG_MAPPABLE;
+    data.fd = i64::from(fd.as_raw_fd());
+    data.mapoffset = 0;
+    data.maxsize = size;
+    data.data = ptr::null_mut();
+    unsafe {
+        (*data.chunk).offset = 0;
+        (*data.chunk).size = size;
+        (*data.chunk).stride = (width * 4) as i32;
+        (*data.chunk).flags = 0;
+    }
+    Ok(AllocatedMemfd { fd })
+}
+
 fn allocate_dmabuf(
     buffer: *mut pipewire::sys::pw_buffer,
     device: &gbm::Device<File>,
@@ -799,7 +1041,7 @@ fn allocate_dmabuf(
     height: u32,
     expected_modifier: gbm::Modifier,
     buffer_id: u64,
-) -> Result<Box<AllocatedDmabuf>, String> {
+) -> Result<AllocatedDmabuf, String> {
     if buffer.is_null() {
         return Err("null PipeWire buffer".to_string());
     }
@@ -868,20 +1110,20 @@ fn allocate_dmabuf(
         });
         fds.push(fd);
     }
-    Ok(Box::new(AllocatedDmabuf {
+    Ok(AllocatedDmabuf {
         _bo: bo,
         fds,
         buffer_id,
         modifier: modifier.into(),
         planes,
-    }))
+    })
 }
 
-fn take_allocated_dmabuf(buffer: *mut pipewire::sys::pw_buffer) -> Option<Box<AllocatedDmabuf>> {
+fn take_allocated_buffer(buffer: *mut pipewire::sys::pw_buffer) -> Option<Box<AllocatedBuffer>> {
     if buffer.is_null() {
         return None;
     }
-    let allocation = unsafe { (*buffer).user_data.cast::<AllocatedDmabuf>() };
+    let allocation = unsafe { (*buffer).user_data.cast::<AllocatedBuffer>() };
     if allocation.is_null() {
         return None;
     }
@@ -1069,6 +1311,76 @@ mod tests {
             .expect("modifier property");
         assert_eq!(modifier.value, spa::pod::Value::Long(0));
         assert!(modifier.flags.contains(spa::pod::PropertyFlags::MANDATORY));
+    }
+
+    #[test]
+    fn hardware_stream_offers_dmabuf_then_memfd_fallback() {
+        let formats = format_pods(1920, 1080, &[42, 0]).expect("format PODs");
+        assert_eq!(formats.len(), 3);
+        let tiled = spa::pod::Pod::from_bytes(&formats[0]).expect("tiled DMA-BUF POD");
+        let linear = spa::pod::Pod::from_bytes(&formats[1]).expect("linear DMA-BUF POD");
+        let memfd = spa::pod::Pod::from_bytes(&formats[2]).expect("MemFd POD");
+        assert_eq!(
+            negotiated_dmabuf_modifier(tiled),
+            Ok(Some(NegotiatedDmabufModifier {
+                value: 42,
+                needs_fixation: false,
+            }))
+        );
+        assert_eq!(
+            negotiated_dmabuf_modifier(linear),
+            Ok(Some(NegotiatedDmabufModifier {
+                value: 0,
+                needs_fixation: false,
+            }))
+        );
+        assert_eq!(negotiated_dmabuf_modifier(memfd), Ok(None));
+    }
+
+    #[test]
+    fn dmabuf_modifier_choice_requests_fixation_of_its_default() {
+        let data = format_pod(1920, 1080, Some(42)).expect("format POD");
+        let (_, mut value) =
+            spa::pod::deserialize::PodDeserializer::deserialize_from::<spa::pod::Value>(&data)
+                .expect("deserialize format");
+        let spa::pod::Value::Object(object) = &mut value else {
+            panic!("format is not an object");
+        };
+        let modifier = object
+            .properties
+            .iter_mut()
+            .find(|property| {
+                property.key == spa::param::format::FormatProperties::VideoModifier.as_raw()
+            })
+            .expect("modifier property");
+        modifier.value = spa::pod::Value::Choice(spa::pod::ChoiceValue::Long(spa::utils::Choice(
+            spa::utils::ChoiceFlags::empty(),
+            spa::utils::ChoiceEnum::Enum {
+                default: 42,
+                alternatives: vec![0],
+            },
+        )));
+        modifier.flags |= spa::pod::PropertyFlags::DONT_FIXATE;
+        let data = spa::pod::serialize::PodSerializer::serialize(Cursor::new(Vec::new()), &value)
+            .expect("serialize choice format")
+            .0
+            .into_inner();
+        let pod = spa::pod::Pod::from_bytes(&data).expect("choice POD");
+        assert_eq!(
+            negotiated_dmabuf_modifier(pod),
+            Ok(Some(NegotiatedDmabufModifier {
+                value: 42,
+                needs_fixation: true,
+            }))
+        );
+    }
+
+    #[test]
+    fn software_stream_only_offers_memfd() {
+        let formats = format_pods(1920, 1080, &[]).expect("format PODs");
+        assert_eq!(formats.len(), 1);
+        let memfd = spa::pod::Pod::from_bytes(&formats[0]).expect("MemFd POD");
+        assert_eq!(negotiated_dmabuf_modifier(memfd), Ok(None));
     }
 
     #[test]

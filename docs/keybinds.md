@@ -238,9 +238,9 @@ with `Mod+F`, a client fullscreen request, or an initial fullscreen hint.
 The presentation remains compositor-internal: an xdg decoration maximize
 request is configured with the standard `Maximized` state, while explicit
 fullscreen requests are configured with `Fullscreen`.
-Double-clicking a window titlebar is intentionally ignored for now; it does not
-maximize or unmaximize the window. Single-click decoration buttons and the
-`maximize-focused`/`toggle-fullscreen` keybindings continue to work normally.
+Double-clicking a client titlebar follows the same maximize/unmaximize request
+path as its maximize button, toggling Halley's fullscreen presentation. The
+`maximize-focused` keybinding remains the separate field-maximize action.
 Top layer-shell
 surfaces are suppressed per fullscreen output, independent of pointer or
 keyboard focus on another monitor. Fullscreen also owns that output's complete

@@ -1698,21 +1698,6 @@ where
             && let Some(route) = route.as_ref()
         {
             wayland::focus::select_output(&mut session.wayland, &route.output);
-            if let crate::input::pointer::PointerTarget::Window(window) = &route.target
-                && !crate::xwayland::is_override_redirect(window)
-                && let Some(surface) = window.wl_surface()
-                && let Some(geometry) = route.visual_geometry
-                && position_after.0 >= f64::from(geometry.loc.x)
-                && position_after.0 < f64::from(geometry.loc.x + geometry.size.w)
-                && position_after.1 >= f64::from(geometry.loc.y)
-                && position_after.1 < f64::from(geometry.loc.y + 48)
-            {
-                session.wayland_titlebar_clicks.note_press(
-                    surface.into_owned(),
-                    position_after,
-                    crate::frame_clock::monotonic_now(),
-                );
-            }
         }
         let mut intercepted = false;
         let bloom_token =

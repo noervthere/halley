@@ -322,19 +322,6 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
             surface.is_fullscreen(),
             maximize_origin_active(&surface),
         );
-        let suppress = window_for_surface(self, &surface)
-            .and_then(|window| window.wl_surface().map(|surface| surface.into_owned()))
-            .is_some_and(|wl_surface| {
-                self.wayland_titlebar_clicks
-                    .consume_suppressed_request(&wl_surface, crate::frame_clock::monotonic_now())
-            });
-        if suppress {
-            if let Err(err) = surface.set_maximized(maximize_origin_active(&surface)) {
-                eventline::warn!("xwayland: failed to reject titlebar maximize request: {err}");
-            }
-            self.request_redraw();
-            return;
-        }
         maximize_window(self, &surface);
         self.request_redraw();
     }
@@ -348,19 +335,6 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
             surface.is_fullscreen(),
             maximize_origin_active(&surface),
         );
-        let suppress = window_for_surface(self, &surface)
-            .and_then(|window| window.wl_surface().map(|surface| surface.into_owned()))
-            .is_some_and(|wl_surface| {
-                self.wayland_titlebar_clicks
-                    .consume_suppressed_request(&wl_surface, crate::frame_clock::monotonic_now())
-            });
-        if suppress {
-            if let Err(err) = surface.set_maximized(maximize_origin_active(&surface)) {
-                eventline::warn!("xwayland: failed to reject titlebar unmaximize request: {err}");
-            }
-            self.request_redraw();
-            return;
-        }
         restore_window(self, &surface);
         self.request_redraw();
     }

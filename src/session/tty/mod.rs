@@ -412,7 +412,6 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
             runtime_config.field,
             runtime_config.animations,
         ),
-        wayland_titlebar_clicks: super::state::WaylandTitlebarClicks::default(),
         xwayland,
     };
     for output in outputs {

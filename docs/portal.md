@@ -32,12 +32,16 @@ session and removes its PipeWire node.
 The portal supports hidden, embedded, and metadata cursor modes. The requesting
 application chooses the mode; no Halley configuration key is required.
 
-Halley prefers DMA-BUF buffers and acknowledges each capture only after the
-renderer fence signals. PipeWire therefore queues a frame only when its GPU
-work is complete; mapped shared memory remains a compatibility fallback.
+Halley offers every DMA-BUF modifier that both its renderer can import and its
+GBM device can allocate, with the renderer-preferred tiled modifier first, and
+acknowledges each such capture only after the renderer fence signals. PipeWire
+therefore queues a frame only when its GPU work is complete. The same stream
+also offers a producer-owned shared-memory format as a last-resort fallback;
+clients can choose a compatible linear DMA-BUF without changing the preferred
+zero-copy path used by consumers such as OBS.
 The portal queries the compositor's render device and supported modifiers
-before allocating, so nested/software sessions fall back safely and multi-GPU
-systems never guess a render node.
+before allocating, so nested/software sessions use shared memory safely and
+multi-GPU systems never guess a render node.
 
 PipeWire frames use the standard variable-framerate/max-framerate fields and
 carry header and full-damage metadata. DMA-BUF chunks remain explicitly

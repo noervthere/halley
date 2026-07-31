@@ -338,7 +338,7 @@ pub fn handle_request<D: crate::session::SessionDriver>(
         halley_ipc::Request::CaptureCapabilities => {
             let capabilities = app.driver.dmabuf_capabilities();
             halley_ipc::Response::CaptureCapabilities(halley_ipc::CaptureCapabilities {
-                main_device: capabilities.main_device().map(|device| device as u64),
+                main_device: capabilities.main_device(),
                 dmabuf_formats: capabilities
                     .formats()
                     .iter()

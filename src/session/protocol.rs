@@ -597,42 +597,28 @@ impl<D: SessionDriver> XdgShellHandler for Session<D> {
             crate::nodes::restore(self, id, SERIAL_COUNTER.next_serial());
         }
         super::cancel_grab_for_surface(self, surface.wl_surface());
-        let now = crate::frame_clock::monotonic_now();
-        if self
-            .wayland_titlebar_clicks
-            .consume_suppressed_request(surface.wl_surface(), now)
-        {
-            surface.send_configure();
-        } else {
-            let cluster_restore = super::cluster_presentation_restore(
-                self,
+        let cluster_restore = super::cluster_presentation_restore(
+            self,
+            surface.wl_surface(),
+            crate::frame_clock::monotonic_now(),
+            true,
+        );
+        self.fullscreen
+            .request_maximize(&mut self.wayland, &surface);
+        if let Some(restore) = cluster_restore {
+            self.fullscreen.override_restore_from_cluster(
                 surface.wl_surface(),
-                crate::frame_clock::monotonic_now(),
-                true,
+                restore.geometry,
+                restore.output,
+                restore.presentation_output,
             );
-            self.fullscreen
-                .request_maximize(&mut self.wayland, &surface);
-            if let Some(restore) = cluster_restore {
-                self.fullscreen.override_restore_from_cluster(
-                    surface.wl_surface(),
-                    restore.geometry,
-                    restore.output,
-                    restore.presentation_output,
-                );
-            }
-            super::pointer::reconcile_state(self);
-            self.request_redraw();
         }
+        super::pointer::reconcile_state(self);
+        self.request_redraw();
     }
 
     fn unmaximize_request(&mut self, surface: ToplevelSurface) {
-        let now = crate::frame_clock::monotonic_now();
-        if self
-            .wayland_titlebar_clicks
-            .consume_suppressed_request(surface.wl_surface(), now)
-        {
-            surface.send_configure();
-        } else if self.maximize.contains(surface.wl_surface()) {
+        if self.maximize.contains(surface.wl_surface()) {
             super::set_surface_field_maximized(self, surface.wl_surface(), false);
         } else if self.fullscreen.has_origin(
             surface.wl_surface(),

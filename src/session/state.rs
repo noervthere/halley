@@ -1,6 +1,5 @@
 use std::ffi::OsStr;
 use std::path::PathBuf;
-use std::time::Duration;
 
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::renderer::gles::GlesRenderer;
@@ -43,71 +42,6 @@ use crate::input::pointer::{Pointer, WheelAccumulator};
 use crate::input::{Keyboard, SuppressedButtons, SuppressedKeys};
 use crate::presentation::camera::OutputCameras;
 use crate::wayland::{ClientState, WaylandState};
-
-const TITLEBAR_DOUBLE_CLICK_INTERVAL: Duration = Duration::from_millis(450);
-const TITLEBAR_DOUBLE_CLICK_DISTANCE: f64 = 8.0;
-
-#[derive(Clone, Debug)]
-struct TitlebarClick {
-    surface: WlSurface,
-    position: (f64, f64),
-    at: Duration,
-}
-
-#[derive(Debug, Default)]
-pub(crate) struct WaylandTitlebarClicks {
-    last: Option<TitlebarClick>,
-    pending_suppression: Option<(WlSurface, Duration)>,
-}
-
-impl WaylandTitlebarClicks {
-    pub(crate) fn note_press(&mut self, surface: WlSurface, position: (f64, f64), now: Duration) {
-        let is_double = self.last.as_ref().is_some_and(|last| {
-            last.surface == surface
-                && titlebar_clicks_form_double(last.position, last.at, position, now)
-        });
-        if is_double {
-            self.pending_suppression =
-                Some((surface, now.saturating_add(TITLEBAR_DOUBLE_CLICK_INTERVAL)));
-            self.last = None;
-        } else {
-            self.last = Some(TitlebarClick {
-                surface,
-                position,
-                at: now,
-            });
-        }
-    }
-
-    pub(crate) fn consume_suppressed_request(
-        &mut self,
-        surface: &WlSurface,
-        now: Duration,
-    ) -> bool {
-        match self.pending_suppression.as_ref() {
-            Some((candidate, deadline)) if now > *deadline => {
-                self.pending_suppression = None;
-                false
-            }
-            Some((candidate, _)) if candidate == surface => {
-                self.pending_suppression = None;
-                true
-            }
-            _ => false,
-        }
-    }
-}
-
-fn titlebar_clicks_form_double(
-    first_position: (f64, f64),
-    first_at: Duration,
-    second_position: (f64, f64),
-    second_at: Duration,
-) -> bool {
-    second_at.saturating_sub(first_at) <= TITLEBAR_DOUBLE_CLICK_INTERVAL
-        && (first_position.0 - second_position.0).abs() <= TITLEBAR_DOUBLE_CLICK_DISTANCE
-        && (first_position.1 - second_position.1).abs() <= TITLEBAR_DOUBLE_CLICK_DISTANCE
-}
 
 /// The narrow contract shared compositor policy needs from a session driver.
 /// Hardware setup, rendering, output reconfiguration, and event sources stay
@@ -222,7 +156,6 @@ pub struct Session<D: SessionDriver> {
     pub render: crate::render::resources::RenderState,
     pub fullscreen: crate::wayland::fullscreen::FullscreenManager,
     pub maximize: crate::presentation::maximize::FieldMaximizeManager,
-    pub(crate) wayland_titlebar_clicks: WaylandTitlebarClicks,
     pub xwayland: crate::xwayland::State<D>,
 }
 
@@ -568,36 +501,5 @@ impl<D: SessionDriver> Session<D> {
             return false;
         }
         true
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn titlebar_double_click_accepts_nearby_click_within_deadline() {
-        assert!(titlebar_clicks_form_double(
-            (120.0, 30.0),
-            Duration::from_millis(100),
-            (126.0, 37.0),
-            Duration::from_millis(550),
-        ));
-    }
-
-    #[test]
-    fn titlebar_double_click_rejects_slow_or_distant_clicks() {
-        assert!(!titlebar_clicks_form_double(
-            (120.0, 30.0),
-            Duration::from_millis(100),
-            (120.0, 30.0),
-            Duration::from_millis(551),
-        ));
-        assert!(!titlebar_clicks_form_double(
-            (120.0, 30.0),
-            Duration::from_millis(100),
-            (129.0, 30.0),
-            Duration::from_millis(200),
-        ));
     }
 }
