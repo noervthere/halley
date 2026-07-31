@@ -967,6 +967,9 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
             element_states,
         );
     }
+    if let Some(element_states) = outcome.element_states().cloned() {
+        app.update_idle_inhibit_visibility(output, &element_states);
+    }
     let vrr_active = app.driver.backend.output_vrr_active(output);
     if let Some(state) = app.driver.output_frames.get_mut(output) {
         state.set_vrr(vrr_active);

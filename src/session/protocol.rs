@@ -62,6 +62,7 @@ use smithay::{
     delegate_background_effect, delegate_compositor, delegate_cursor_shape, delegate_data_device,
     delegate_dmabuf, delegate_drm_syncobj, delegate_ext_data_control,
     delegate_fractional_scale,
+    delegate_idle_inhibit,
     delegate_idle_notify,
     delegate_keyboard_shortcuts_inhibit, delegate_layer_shell, delegate_output,
     delegate_pointer_constraints, delegate_primary_selection, delegate_relative_pointer,
@@ -111,6 +112,7 @@ pub fn init_wayland_listener<D: SessionDriver>(
                     display.get_mut().dispatch_clients(session)?;
                 }
                 super::sync_keyboard_focus(session, SERIAL_COUNTER.next_serial());
+                session.refresh_idle_inhibit();
                 Ok(PostAction::Continue)
             },
         )
@@ -782,6 +784,7 @@ delegate_cursor_shape!(@<D: SessionDriver> Session<D>);
 delegate_output!(@<D: SessionDriver> Session<D>);
 delegate_viewporter!(@<D: SessionDriver> Session<D>);
 delegate_fractional_scale!(@<D: SessionDriver> Session<D>);
+delegate_idle_inhibit!(@<D: SessionDriver> Session<D>);
 delegate_idle_notify!(@<D: SessionDriver> Session<D>);
 delegate_presentation!(@<D: SessionDriver> Session<D>);
 delegate_relative_pointer!(@<D: SessionDriver> Session<D>);

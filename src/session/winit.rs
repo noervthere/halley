@@ -431,19 +431,22 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                         resources: crate::render::resources::RenderResources::from(&mut app.render),
                     },
                 );
-                let submitted = match outcome {
+                let (submitted, element_states) = match outcome {
                     Ok(outcome) if outcome.status() == backend::RenderStatus::Submitted => {
                         if let Some(generation) = app.session_lock.frame_generation() {
                             app.session_lock.presented(&output, generation);
                         }
-                        true
+                        (true, outcome.element_states().cloned())
                     }
-                    Ok(_) => false,
+                    Ok(outcome) => (false, outcome.element_states().cloned()),
                     Err(err) => {
                         eventline::error!("render failed: {err}");
-                        false
+                        (false, None)
                     }
                 };
+                if let Some(element_states) = element_states {
+                    app.update_idle_inhibit_visibility(&output, &element_states);
+                }
                 if submitted {
                     app.service_screencopy(&output);
                 }

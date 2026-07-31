@@ -130,6 +130,7 @@ impl<D: SessionDriver> Session<D> {
             } else if change.before.enabled {
                 self.wayland.wlr_gamma_control_state.output_disabled(output);
                 self.wayland.wlr_screencopy_state.output_disabled(output);
+                self.clear_idle_inhibit_output(output);
                 if let Err(err) = self.driver.set_gamma(output, None) {
                     eventline::warn!(
                         "output {:?}: failed to reset gamma while disabling: {err}",

@@ -28,6 +28,14 @@ idle/resume edges while compositor-owned interfaces such as screenshot and
 portal source selectors consume the input instead of forwarding it to a
 client surface.
 
+Halley advertises `zwp_idle_inhibit_manager_v1` version 1. Inhibitors are
+reference-counted per surface and suppress ordinary idle notifications only
+while at least one inhibited surface is actually visible in a composed output
+scene. Fully occluded, unmapped, session-lock-hidden, dead, and disabled-output
+surfaces do not keep the session awake. Visibility follows Smithay's
+per-surface render-element state, including the primary-output selection for
+surfaces spanning outputs.
+
 Halley advertises `ext_session_lock_manager_v1` version 1. A lock request
 immediately replaces every powered output with an opaque black scene; the
 `locked` event is sent only after that generation has actually been submitted
@@ -62,7 +70,38 @@ reference to the buffer. The nested winit backend never advertises this
 hardware protocol, and ordinary implicit-sync clients retain the existing
 commit and render path.
 
+Halley advertises `zwlr_output_manager_v1` version 4 as a writable output
+management interface. Every request is validated as one complete, one-head-
+per-output configuration before test or apply. The TTY backend supports mode,
+position, transform, enable/disable, and adaptive-sync changes while retaining
+at least one enabled output. Scale remains fixed at 1 and custom modes are
+rejected. The nested backend is host-controlled and accepts only configurations
+that leave its output unchanged. Successful TTY changes update `wl_output`
+globals, layer layout, camera/fullscreen geometry, gamma ownership, and pending
+capture ownership as one compositor transaction.
+
+The TTY backend advertises `zwlr_gamma_control_manager_v1` version 1. Each
+output with DRM gamma-ramp support has at most one active controller; requests
+for an unavailable output fail.
+Ramp file descriptors must contain exactly three native-endian `u16` channels
+of the advertised gamma size; short and trailing data are rejected. Halley uses
+atomic `GAMMA_LUT` blobs when supported, falls back to the legacy CRTC gamma
+ioctl, and restores a linear ramp when control ends, an output is disabled, or
+the compositor leaves its virtual terminal. The nested backend does not
+advertise this hardware-only global.
+
+Halley advertises `zwlr_screencopy_manager_v1` version 3 on both backends.
+Whole-output and clamped output-region captures support optional cursor
+composition and exact-size XRGB8888 SHM or DMA-BUF targets. SHM targets may
+occupy a correctly bounded subrange of a larger pool. Ordinary copies complete
+after composition; `copy_with_damage` waits for that output to submit a changed
+frame and reports the captured buffer as damaged. DMA-BUF completion is sent
+only after the renderer fence signals. Invalid, disabled-output, destroyed, or
+session-lock capture requests fail rather than exposing stale or protected
+content.
+
 These globals are intended for shells, tools, and latency-sensitive clients.
-They are independent: data-control, idle notification, presentation timing,
-and blur do not require one another, and clients that do not bind them follow
-Halley's existing rendering, clipboard, and input paths.
+They are independent: data-control, idle notification/inhibition, presentation
+timing, output control, capture, and blur do not require one another, and
+clients that do not bind them follow Halley's existing rendering, clipboard,
+and input paths.

@@ -15,6 +15,7 @@ use smithay::wayland::cursor_shape::CursorShapeManagerState;
 use smithay::wayland::dmabuf::DmabufState;
 use smithay::wayland::drm_syncobj::{DrmSyncPointSource, DrmSyncobjState};
 use smithay::wayland::fractional_scale::FractionalScaleManagerState;
+use smithay::wayland::idle_inhibit::IdleInhibitManagerState;
 use smithay::wayland::idle_notify::IdleNotifierState;
 use smithay::wayland::keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitState;
 use smithay::wayland::output::OutputManagerState;
@@ -216,6 +217,7 @@ impl<D: SessionDriver> Session<D> {
             XdgDecorationState::new::<Self>(&display_handle),
             ViewporterState::new::<Self>(&display_handle),
             FractionalScaleManagerState::new::<Self>(&display_handle),
+            IdleInhibitManagerState::new::<Self>(&display_handle),
             RelativePointerManagerState::new::<Self>(&display_handle),
             PointerConstraintsState::new::<Self>(&display_handle),
             PointerGesturesState::new::<Self>(&display_handle),

@@ -4,6 +4,7 @@ pub mod decoration;
 pub mod dmabuf;
 pub mod focus;
 pub mod fullscreen;
+pub mod idle_inhibit;
 pub mod layer_shell;
 pub mod popup;
 pub mod presentation;
@@ -29,6 +30,7 @@ use smithay::wayland::compositor::{CompositorClientState, CompositorState};
 use smithay::wayland::cursor_shape::CursorShapeManagerState;
 use smithay::wayland::dmabuf::{DmabufGlobal, DmabufState};
 use smithay::wayland::fractional_scale::FractionalScaleManagerState;
+use smithay::wayland::idle_inhibit::IdleInhibitManagerState;
 use smithay::wayland::keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitState;
 use smithay::wayland::output::OutputManagerState;
 use smithay::wayland::pointer_constraints::PointerConstraintsState;
@@ -205,6 +207,7 @@ pub struct WaylandState {
     _xdg_decoration_state: XdgDecorationState,
     _viewporter_state: ViewporterState,
     _fractional_scale_manager_state: FractionalScaleManagerState,
+    _idle_inhibit_manager_state: IdleInhibitManagerState,
     _relative_pointer_manager_state: RelativePointerManagerState,
     _pointer_constraints_state: PointerConstraintsState,
     _pointer_gestures_state: PointerGesturesState,
@@ -217,6 +220,7 @@ pub struct WaylandState {
     pub wlr_output_management_state: wlr_output_management::State,
     pub wlr_gamma_control_state: wlr_gamma_control::State,
     pub wlr_screencopy_state: wlr_screencopy::State,
+    pub(crate) idle_inhibitors: HashMap<WlSurface, usize>,
     output_globals: HashMap<String, GlobalId>,
     /// Clipboard (ctrl+c/ctrl+v) and drag-and-drop. Smithay owns the actual
     /// transfer - it hands the source client's fd straight to the receiving
@@ -289,6 +293,7 @@ impl WaylandState {
         xdg_decoration_state: XdgDecorationState,
         viewporter_state: ViewporterState,
         fractional_scale_manager_state: FractionalScaleManagerState,
+        idle_inhibit_manager_state: IdleInhibitManagerState,
         relative_pointer_manager_state: RelativePointerManagerState,
         pointer_constraints_state: PointerConstraintsState,
         pointer_gestures_state: PointerGesturesState,
@@ -317,6 +322,7 @@ impl WaylandState {
             _xdg_decoration_state: xdg_decoration_state,
             _viewporter_state: viewporter_state,
             _fractional_scale_manager_state: fractional_scale_manager_state,
+            _idle_inhibit_manager_state: idle_inhibit_manager_state,
             _relative_pointer_manager_state: relative_pointer_manager_state,
             _pointer_constraints_state: pointer_constraints_state,
             _pointer_gestures_state: pointer_gestures_state,
@@ -328,6 +334,7 @@ impl WaylandState {
             wlr_output_management_state,
             wlr_gamma_control_state,
             wlr_screencopy_state,
+            idle_inhibitors: HashMap::new(),
             output_globals,
             data_device_state,
             primary_selection_state,
