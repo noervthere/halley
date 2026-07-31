@@ -501,10 +501,10 @@ pub(crate) fn wakeup_cluster_interactions<D: SessionDriver>(
     true
 }
 
-fn navigate_cluster_tile<D: SessionDriver>(
+fn navigate_cluster<D: SessionDriver>(
     session: &mut Session<D>,
     output_name: &str,
-    direction: halley_config::ClusterDirection,
+    direction: halley_config::Direction,
     swap: bool,
 ) {
     let Some(output) = session
@@ -527,9 +527,28 @@ fn navigate_cluster_tile<D: SessionDriver>(
             crate::frame_clock::monotonic_now(),
         )
     } else {
-        session
+        let layout = session
             .clusters
-            .directional_tile_target(output_name, focused, direction, work_area)
+            .active_on(output_name)
+            .and_then(|id| session.clusters.metadata(id))
+            .map(|metadata| metadata.layout);
+        match (layout, stacking_cycle_direction(direction)) {
+            (
+                Some(halley_core::cluster::layout::ClusterWorkspaceLayoutKind::Stacking),
+                Some(cycle_direction),
+            ) => session.clusters.cycle_stack(
+                output_name,
+                cycle_direction,
+                work_area,
+                crate::frame_clock::monotonic_now(),
+            ),
+            (Some(halley_core::cluster::layout::ClusterWorkspaceLayoutKind::Stacking), _) => None,
+            _ => {
+                session
+                    .clusters
+                    .directional_tile_target(output_name, focused, direction, work_area)
+            }
+        }
     };
     if let Some(window) = target
         .and_then(|id| session.nodes.record(id))
@@ -538,6 +557,54 @@ fn navigate_cluster_tile<D: SessionDriver>(
         super::focus_window(session, &window, SERIAL_COUNTER.next_serial());
         session.request_redraw();
     }
+}
+
+fn stacking_cycle_direction(
+    direction: halley_config::Direction,
+) -> Option<halley_config::FocusCycleDirection> {
+    match direction {
+        halley_config::Direction::Left => Some(halley_config::FocusCycleDirection::Forward),
+        halley_config::Direction::Right => Some(halley_config::FocusCycleDirection::Backward),
+        halley_config::Direction::Up | halley_config::Direction::Down => None,
+    }
+}
+
+fn focus_adjacent_output<D: SessionDriver>(
+    session: &mut Session<D>,
+    direction: halley_config::Direction,
+) {
+    let Some(current) = crate::wayland::focus::selected_output(&session.wayland).cloned() else {
+        return;
+    };
+    let Some(target) =
+        crate::wayland::focus::adjacent_output(&session.wayland.space, &current, direction)
+    else {
+        return;
+    };
+    crate::wayland::focus::select_output(&mut session.wayland, &target);
+
+    let target_id = session.nodes.focused_on_output(&target.name());
+    let target_record = target_id.and_then(|id| session.nodes.record(id)).cloned();
+    match (target_id, target_record) {
+        (Some(id), Some(record)) if record.collapsed => {
+            crate::window::clear_focus(&mut session.wayland);
+            session
+                .nodes
+                .focus(Some(id), session.start_time.elapsed().as_millis() as u64);
+            super::sync_keyboard_focus(session, SERIAL_COUNTER.next_serial());
+        }
+        (_, Some(record)) => {
+            super::focus_window(session, &record.window, SERIAL_COUNTER.next_serial());
+        }
+        _ => {
+            crate::window::clear_focus(&mut session.wayland);
+            session
+                .nodes
+                .focus(None, session.start_time.elapsed().as_millis() as u64);
+            super::sync_keyboard_focus(session, SERIAL_COUNTER.next_serial());
+        }
+    }
+    session.request_redraw();
 }
 
 fn toggle_cluster_or_focused_node<D: SessionDriver>(
@@ -740,14 +807,15 @@ fn dispatch_action<D: SessionDriver>(
         }
         super::SessionControl::ClusterTileFocus(direction) => {
             if let Some(output) = action_output {
-                navigate_cluster_tile(session, &output, direction, false);
+                navigate_cluster(session, &output, direction, false);
             }
         }
         super::SessionControl::ClusterTileSwap(direction) => {
             if let Some(output) = action_output {
-                navigate_cluster_tile(session, &output, direction, true);
+                navigate_cluster(session, &output, direction, true);
             }
         }
+        super::SessionControl::MonitorFocus(direction) => focus_adjacent_output(session, direction),
         super::SessionControl::BearingsShow => {
             let changed = match held_keycode {
                 Some(keycode) => session.bearings.show_while_held(keycode),
@@ -2549,7 +2617,7 @@ mod tests {
 
     use super::{
         CaptureKeyRouting, bloom_drag_handoff, capture_key_routing, sampled_drag_velocity,
-        shortcut_policy_allows_bindings, window_action_output,
+        shortcut_policy_allows_bindings, stacking_cycle_direction, window_action_output,
     };
     fn sample_constant_motion(report_hz: u32) -> Vec2 {
         let step = Duration::from_secs_f64(1.0 / f64::from(report_hz));
@@ -2630,6 +2698,23 @@ mod tests {
         assert_eq!(
             window_action_output(halley_config::FocusMode::Hover, None, Some("left")),
             Some("left".to_string())
+        );
+    }
+
+    #[test]
+    fn horizontal_cluster_focus_maps_to_old_stack_cycle_directions() {
+        assert_eq!(
+            stacking_cycle_direction(halley_config::Direction::Left),
+            Some(halley_config::FocusCycleDirection::Forward)
+        );
+        assert_eq!(
+            stacking_cycle_direction(halley_config::Direction::Right),
+            Some(halley_config::FocusCycleDirection::Backward)
+        );
+        assert_eq!(stacking_cycle_direction(halley_config::Direction::Up), None);
+        assert_eq!(
+            stacking_cycle_direction(halley_config::Direction::Down),
+            None
         );
     }
 

@@ -50,8 +50,9 @@ enum SessionControl {
     ClusterMode,
     ClusterLayoutCycle,
     ClusterSlot(u8),
-    ClusterTileFocus(halley_config::ClusterDirection),
-    ClusterTileSwap(halley_config::ClusterDirection),
+    ClusterTileFocus(halley_config::Direction),
+    ClusterTileSwap(halley_config::Direction),
+    MonitorFocus(halley_config::Direction),
 }
 
 #[derive(Clone, Copy)]
@@ -86,6 +87,7 @@ fn dispatch_action(
         Action::ClusterSlot(slot) => return SessionControl::ClusterSlot(slot),
         Action::ClusterTileFocus(direction) => return SessionControl::ClusterTileFocus(direction),
         Action::ClusterTileSwap(direction) => return SessionControl::ClusterTileSwap(direction),
+        Action::MonitorFocus(direction) => return SessionControl::MonitorFocus(direction),
         Action::BearingsShow => return SessionControl::BearingsShow,
         Action::BearingsToggle => return SessionControl::BearingsToggle,
         Action::OpenTerminal => match terminal_command {

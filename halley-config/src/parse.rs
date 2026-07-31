@@ -45,12 +45,12 @@ fn parse_modifier_key(s: &str) -> Option<ModifierKey> {
     }
 }
 
-fn parse_direction(value: &str) -> Option<crate::ClusterDirection> {
+fn parse_direction(value: &str) -> Option<crate::Direction> {
     match value {
-        "left" => Some(crate::ClusterDirection::Left),
-        "right" => Some(crate::ClusterDirection::Right),
-        "up" => Some(crate::ClusterDirection::Up),
-        "down" => Some(crate::ClusterDirection::Down),
+        "left" => Some(crate::Direction::Left),
+        "right" => Some(crate::Direction::Right),
+        "up" => Some(crate::Direction::Up),
+        "down" => Some(crate::Direction::Down),
         _ => None,
     }
 }
@@ -71,13 +71,18 @@ fn parse_action(s: &str) -> Action {
     {
         return Action::ClusterSlot(slot);
     }
-    if let ["tile", "focus", direction] | ["tile-focus", direction] = words.as_slice()
+    if let ["cluster", "focus", direction]
+    | ["cluster-focus", direction]
+    | ["tile", "focus", direction]
+    | ["tile-focus", direction] = words.as_slice()
         && let Some(direction) = parse_direction(direction)
     {
         return Action::ClusterTileFocus(direction);
     }
     if let Some(direction) = s
-        .strip_prefix("cluster-tile-focus-")
+        .strip_prefix("cluster-focus-")
+        .or_else(|| s.strip_prefix("cluster_focus_"))
+        .or_else(|| s.strip_prefix("cluster-tile-focus-"))
         .or_else(|| s.strip_prefix("cluster_tile_focus_"))
         .and_then(parse_direction)
     {
@@ -87,6 +92,18 @@ fn parse_action(s: &str) -> Action {
         && let Some(direction) = parse_direction(direction)
     {
         return Action::ClusterTileSwap(direction);
+    }
+    if let ["monitor", "focus", direction] | ["monitor-focus", direction] = words.as_slice()
+        && let Some(direction) = parse_direction(direction)
+    {
+        return Action::MonitorFocus(direction);
+    }
+    if let Some(direction) = s
+        .strip_prefix("monitor-focus-")
+        .or_else(|| s.strip_prefix("monitor_focus_"))
+        .and_then(parse_direction)
+    {
+        return Action::MonitorFocus(direction);
     }
     if let Some(direction) = s
         .strip_prefix("cluster-tile-swap-")
@@ -321,8 +338,9 @@ keybinds:
   "$var.mod+shift+c" "cluster-mode"
   "$var.mod+l" "cluster-layout cycle"
   "$var.mod+1" "cluster slot 1"
-  "$var.mod+left" "tile focus left"
+  "$var.mod+left" "cluster-focus-left"
   "$var.mod+ctrl+right" "tile swap right"
+  "$var.mod+shift+up" "monitor-focus up"
 end
 "#,
         );
@@ -333,6 +351,7 @@ end
             Action::ClusterSlot(1),
             Action::ClusterTileFocus(crate::ClusterDirection::Left),
             Action::ClusterTileSwap(crate::ClusterDirection::Right),
+            Action::MonitorFocus(crate::Direction::Up),
         ] {
             assert!(kb.binds.iter().any(|bind| bind.action == expected));
         }

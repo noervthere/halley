@@ -118,6 +118,56 @@ pub fn selected_output(wayland: &WaylandState) -> Option<&Output> {
     selected_output_in(&wayland.space, wayland.focused_output.as_deref())
 }
 
+/// Finds the nearest mapped output whose center lies in `direction` from the
+/// selected output. Primary-axis distance wins, then cross-axis distance and
+/// finally connector name keep irregular layouts deterministic.
+pub fn adjacent_output(
+    space: &Space<Window>,
+    current: &Output,
+    direction: halley_config::Direction,
+) -> Option<Output> {
+    let current_geometry = space.output_geometry(current)?;
+    let current_center = output_center(current_geometry);
+    space
+        .outputs()
+        .filter(|candidate| *candidate != current)
+        .filter_map(|candidate| {
+            let geometry = space.output_geometry(candidate)?;
+            let center = output_center(geometry);
+            let dx = center.0 - current_center.0;
+            let dy = center.1 - current_center.1;
+            let (primary, secondary) = output_direction_score(direction, dx, dy)?;
+            Some((primary, secondary, candidate.name(), candidate.clone()))
+        })
+        .min_by(|a, b| {
+            a.0.total_cmp(&b.0)
+                .then_with(|| a.1.total_cmp(&b.1))
+                .then_with(|| a.2.cmp(&b.2))
+        })
+        .map(|(_, _, _, output)| output)
+}
+
+fn output_center(geometry: smithay::utils::Rectangle<i32, smithay::utils::Logical>) -> (f64, f64) {
+    (
+        f64::from(geometry.loc.x) + f64::from(geometry.size.w) * 0.5,
+        f64::from(geometry.loc.y) + f64::from(geometry.size.h) * 0.5,
+    )
+}
+
+fn output_direction_score(
+    direction: halley_config::Direction,
+    dx: f64,
+    dy: f64,
+) -> Option<(f64, f64)> {
+    match direction {
+        halley_config::Direction::Left if dx < 0.0 => Some((-dx, dy.abs())),
+        halley_config::Direction::Right if dx > 0.0 => Some((dx, dy.abs())),
+        halley_config::Direction::Up if dy < 0.0 => Some((-dy, dx.abs())),
+        halley_config::Direction::Down if dy > 0.0 => Some((dy, dx.abs())),
+        _ => None,
+    }
+}
+
 /// Resolves the output for a newly created surface. A client-selected output
 /// wins while it remains mapped; otherwise every surface type follows the
 /// compositor's click-focused output.
@@ -253,6 +303,33 @@ mod tests {
             selected_output_in(&space, Some("unplugged")).map(Output::name),
             Some("DP-1".to_string())
         );
+    }
+
+    #[test]
+    fn adjacent_output_follows_monitor_geometry_in_each_direction() {
+        let center = output("center", Size::from((1000, 800)));
+        let left = output("left", Size::from((800, 600)));
+        let right = output("right", Size::from((1200, 900)));
+        let above = output("above", Size::from((900, 700)));
+        let below = output("below", Size::from((900, 700)));
+        let mut space = Space::<Window>::default();
+        space.map_output(&center, (0, 0));
+        space.map_output(&left, (-800, 100));
+        space.map_output(&right, (1000, -50));
+        space.map_output(&above, (50, -700));
+        space.map_output(&below, (50, 800));
+
+        for (direction, expected) in [
+            (halley_config::Direction::Left, "left"),
+            (halley_config::Direction::Right, "right"),
+            (halley_config::Direction::Up, "above"),
+            (halley_config::Direction::Down, "below"),
+        ] {
+            assert_eq!(
+                adjacent_output(&space, &center, direction).map(|output| output.name()),
+                Some(expected.to_string())
+            );
+        }
     }
 
     #[test]

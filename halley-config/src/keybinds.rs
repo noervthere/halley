@@ -33,12 +33,16 @@ pub enum FocusCycleDirection {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ClusterDirection {
+pub enum Direction {
     Left,
     Right,
     Up,
     Down,
 }
+
+/// Compatibility name retained for callers written before directional
+/// navigation expanded beyond cluster tiles.
+pub type ClusterDirection = Direction;
 
 /// What a keybind does. Grows alongside whatever `halley-wl` actually wires
 /// up next. `ZoomIn` exists to walk back a `ZoomOut` one step at a time, but
@@ -61,8 +65,9 @@ pub enum Action {
     ClusterMode,
     ClusterLayoutCycle,
     ClusterSlot(u8),
-    ClusterTileFocus(ClusterDirection),
-    ClusterTileSwap(ClusterDirection),
+    ClusterTileFocus(Direction),
+    ClusterTileSwap(Direction),
+    MonitorFocus(Direction),
     OpenTerminal,
     ZoomIn,
     ZoomOut,
