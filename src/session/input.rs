@@ -132,6 +132,41 @@ fn sync_cluster_activation_focus<D: SessionDriver>(
     }
 }
 
+fn navigate_cluster_tile<D: SessionDriver>(
+    session: &mut Session<D>,
+    output_name: &str,
+    direction: halley_config::ClusterDirection,
+    swap: bool,
+) {
+    let Some(output) = session
+        .wayland
+        .space
+        .outputs()
+        .find(|output| output.name() == output_name)
+        .cloned()
+    else {
+        return;
+    };
+    let work_area = smithay::desktop::layer_map_for_output(&output).non_exclusive_zone();
+    let focused = session.nodes.focused();
+    let target = if swap {
+        session
+            .clusters
+            .swap_directional_tile(output_name, focused, direction, work_area)
+    } else {
+        session
+            .clusters
+            .directional_tile_target(output_name, focused, direction, work_area)
+    };
+    if let Some(window) = target
+        .and_then(|id| session.nodes.record(id))
+        .map(|record| record.window.clone())
+    {
+        super::focus_window(session, &window, SERIAL_COUNTER.next_serial());
+        session.request_redraw();
+    }
+}
+
 fn bearing_at_pointer<D: SessionDriver>(
     session: &Session<D>,
 ) -> Option<(halley_core::field::NodeId, Output)> {
@@ -266,9 +301,15 @@ fn dispatch_action<D: SessionDriver>(
                 session.request_redraw();
             }
         }
-        super::SessionControl::ClusterTileFocus(_) | super::SessionControl::ClusterTileSwap(_) => {
-            // Directional layout commands are consumed once an active cluster
-            // workspace has produced its placement snapshot.
+        super::SessionControl::ClusterTileFocus(direction) => {
+            if let Some(output) = action_output {
+                navigate_cluster_tile(session, &output, direction, false);
+            }
+        }
+        super::SessionControl::ClusterTileSwap(direction) => {
+            if let Some(output) = action_output {
+                navigate_cluster_tile(session, &output, direction, true);
+            }
         }
         super::SessionControl::BearingsShow => {
             let changed = match held_keycode {

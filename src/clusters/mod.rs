@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use halley_core::cluster::layout::ClusterWorkspaceLayoutKind;
-use halley_core::cluster::layout::layout_cluster_workspace;
+use halley_core::cluster::layout::{ClusterWorkspaceLayoutResult, layout_cluster_workspace};
 use halley_core::cluster::tiling::Rect as LayoutRect;
 use halley_core::cluster::{ClusterId, ClusterRegistry};
 use halley_core::field::{Field, NodeId, Vec2};
@@ -326,31 +326,9 @@ impl ClusterSystem {
         if member_cluster != Some(active) {
             return WindowPresentation::Hidden;
         }
-        let Some(cluster) = self.registry.cluster(active) else {
+        let Some(layout) = self.workspace_layout(active, work_area) else {
             return WindowPresentation::Hidden;
         };
-        let Some(metadata) = self.metadata(active) else {
-            return WindowPresentation::Hidden;
-        };
-        let outer = self.config.tiling.gaps_outer_px.max(0.0);
-        let bounds = LayoutRect {
-            x: work_area.loc.x as f32 + outer,
-            y: work_area.loc.y as f32 + outer,
-            w: (work_area.size.w as f32 - outer * 2.0).max(1.0),
-            h: (work_area.size.h as f32 - outer * 2.0).max(1.0),
-        };
-        let limit = match metadata.layout {
-            ClusterWorkspaceLayoutKind::Tiling => self.config.tiling.max_stack,
-            ClusterWorkspaceLayoutKind::Stacking => self.config.stacking.max_visible,
-        };
-        let layout = layout_cluster_workspace(
-            metadata.layout,
-            bounds,
-            self.config.tiling.gaps_inner_px,
-            self.config.tiling.gaps_inner_px,
-            cluster.members(),
-            limit,
-        );
         layout
             .placements
             .into_iter()
@@ -371,6 +349,96 @@ impl ClusterSystem {
                 depth: placement.depth,
             })
             .unwrap_or(WindowPresentation::Hidden)
+    }
+
+    pub fn directional_tile_target(
+        &self,
+        output: &str,
+        current: Option<NodeId>,
+        direction: halley_config::ClusterDirection,
+        work_area: Rectangle<i32, Logical>,
+    ) -> Option<NodeId> {
+        let id = self.active_on(output)?;
+        if self.metadata(id)?.layout != ClusterWorkspaceLayoutKind::Tiling {
+            return None;
+        }
+        let layout = self.workspace_layout(id, work_area)?;
+        let current = current
+            .filter(|current| {
+                layout
+                    .placements
+                    .iter()
+                    .any(|tile| tile.node_id == *current)
+            })
+            .or_else(|| layout.placements.first().map(|tile| tile.node_id))?;
+        let source = layout
+            .placements
+            .iter()
+            .find(|tile| tile.node_id == current)?;
+        let (sx, sy) = rect_center(source.rect);
+        layout
+            .placements
+            .iter()
+            .filter(|tile| tile.node_id != current)
+            .filter_map(|tile| {
+                let (tx, ty) = rect_center(tile.rect);
+                let (primary, secondary) = match direction {
+                    halley_config::ClusterDirection::Left if tx < sx => (sx - tx, (sy - ty).abs()),
+                    halley_config::ClusterDirection::Right if tx > sx => (tx - sx, (sy - ty).abs()),
+                    halley_config::ClusterDirection::Up if ty < sy => (sy - ty, (sx - tx).abs()),
+                    halley_config::ClusterDirection::Down if ty > sy => (ty - sy, (sx - tx).abs()),
+                    _ => return None,
+                };
+                Some((primary + secondary * 0.35, tile.node_id))
+            })
+            .min_by(|(a, _), (b, _)| a.total_cmp(b))
+            .map(|(_, id)| id)
+    }
+
+    pub fn swap_directional_tile(
+        &mut self,
+        output: &str,
+        current: Option<NodeId>,
+        direction: halley_config::ClusterDirection,
+        work_area: Rectangle<i32, Logical>,
+    ) -> Option<NodeId> {
+        let id = self.active_on(output)?;
+        let current = current.or_else(|| self.first_member(id))?;
+        let target = self.directional_tile_target(output, Some(current), direction, work_area)?;
+        let mut members = self.registry.cluster(id)?.members().to_vec();
+        let current_index = members.iter().position(|member| *member == current)?;
+        let target_index = members.iter().position(|member| *member == target)?;
+        members.swap(current_index, target_index);
+        self.registry.reorder_cluster_members(id, members).ok()?;
+        Some(current)
+    }
+
+    fn workspace_layout(
+        &self,
+        id: ClusterId,
+        work_area: Rectangle<i32, Logical>,
+    ) -> Option<ClusterWorkspaceLayoutResult> {
+        let cluster = self.registry.cluster(id)?;
+        let metadata = self.metadata(id)?;
+        let outer = self.config.tiling.gaps_outer_px.max(0.0);
+        let bounds = LayoutRect {
+            x: work_area.loc.x as f32 + outer,
+            y: work_area.loc.y as f32 + outer,
+            w: (work_area.size.w as f32 - outer * 2.0).max(1.0),
+            h: (work_area.size.h as f32 - outer * 2.0).max(1.0),
+        };
+        let limit = match metadata.layout {
+            ClusterWorkspaceLayoutKind::Tiling => self.config.tiling.max_stack,
+            ClusterWorkspaceLayoutKind::Stacking => self.config.stacking.max_visible,
+        };
+        Some(layout_cluster_workspace(
+            metadata.layout,
+            bounds,
+            self.config.tiling.gaps_inner_px,
+            self.config.tiling.gaps_inner_px,
+            cluster.members(),
+            limit,
+        ))
     }
 
     pub fn clusters_for_output(
@@ -493,6 +561,10 @@ fn output_context<D: crate::session::SessionDriver>(
     Ok(crate::wayland::focus::selected_output(&session.wayland)
         .unwrap_or_else(|| session.driver.primary_output())
         .name())
+}
+
+fn rect_center(rect: LayoutRect) -> (f32, f32) {
+    (rect.x + rect.w * 0.5, rect.y + rect.h * 0.5)
 }
 
 fn summary<D: crate::session::SessionDriver>(
@@ -664,5 +736,55 @@ mod tests {
         assert!(system.metadata(id).is_none());
         assert!(system.clusters_for_output("DP-1").next().is_none());
         assert!(system.active_on("DP-1").is_none());
+    }
+
+    #[test]
+    fn directional_tiling_focus_and_swap_share_the_layout_snapshot() {
+        let mut field = Field::new();
+        let ids = (0..3)
+            .map(|index| {
+                field.spawn_surface(
+                    format!("W{index}"),
+                    Vec2 {
+                        x: index as f32 * 120.0,
+                        y: 0.0,
+                    },
+                    Vec2 { x: 100.0, y: 80.0 },
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut system = ClusterSystem::new(
+            halley_config::Clusters::default(),
+            halley_config::ClusterAnimation::default(),
+        );
+        assert!(system.begin_creation("DP-1".into()));
+        for id in &ids {
+            assert!(system.toggle_creation_member(*id, "DP-1"));
+        }
+        assert!(system.begin_naming());
+        let cluster = system.finish_creation(&mut field).unwrap();
+        system.metadata.get_mut(&cluster).unwrap().layout = ClusterWorkspaceLayoutKind::Tiling;
+        assert!(system.activate_slot("DP-1", 1));
+        let work_area = Rectangle::new((0, 0).into(), (1_000, 700).into());
+
+        assert_eq!(
+            system.directional_tile_target(
+                "DP-1",
+                Some(ids[0]),
+                halley_config::ClusterDirection::Right,
+                work_area,
+            ),
+            Some(ids[1])
+        );
+        assert_eq!(
+            system.swap_directional_tile(
+                "DP-1",
+                Some(ids[0]),
+                halley_config::ClusterDirection::Right,
+                work_area,
+            ),
+            Some(ids[0])
+        );
+        assert_eq!(system.registry().cluster(cluster).unwrap().master(), ids[1]);
     }
 }
