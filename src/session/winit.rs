@@ -1,6 +1,7 @@
 use std::time::{Duration, Instant};
 
-use calloop::EventLoop;
+use calloop::generic::Generic;
+use calloop::{EventLoop, Interest, LoopHandle, Mode, PostAction};
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::winit::{self as smithay_winit, WinitEvent};
 use smithay::input::{Seat, SeatState};
@@ -24,6 +25,7 @@ use super::{Session, SessionDriver};
 
 struct WinitDriver {
     backend: WinitBackend,
+    loop_handle: LoopHandle<'static, App>,
     exit: bool,
     last_camera_tick: Instant,
 }
@@ -107,6 +109,30 @@ impl SessionDriver for WinitDriver {
         Ok(Vec::new())
     }
 
+    fn schedule_render_completion(
+        &mut self,
+        sync: smithay::backend::renderer::sync::SyncPoint,
+        completion: Box<dyn FnOnce() + 'static>,
+    ) -> Result<(), String> {
+        let Some(fence) = sync.export() else {
+            completion();
+            return Ok(());
+        };
+        let mut completion = Some(completion);
+        self.loop_handle
+            .insert_source(
+                Generic::new(fence, Interest::READ, Mode::OneShot),
+                move |_, _, _| {
+                    if let Some(completion) = completion.take() {
+                        completion();
+                    }
+                    Ok(PostAction::Remove)
+                },
+            )
+            .map(|_| ())
+            .map_err(|err| format!("failed to watch render fence: {err}"))
+    }
+
     fn stop(&mut self) {
         self.exit = true;
     }
@@ -170,6 +196,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
 
     let mut driver = WinitDriver {
         backend: winit_backend,
+        loop_handle: event_loop.handle(),
         exit: false,
         last_camera_tick: Instant::now(),
     };
@@ -417,6 +444,9 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                         false
                     }
                 };
+                if submitted {
+                    app.service_screencopy(&output);
+                }
 
                 // Lets clients know their last commit was actually
                 // presented, so they schedule their next frame - without

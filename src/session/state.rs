@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::renderer::gles::GlesRenderer;
+use smithay::backend::renderer::sync::SyncPoint;
 use smithay::input::{Seat, SeatState};
 use smithay::output::Output;
 use smithay::reexports::wayland_server::Client;
@@ -71,6 +72,11 @@ pub trait SessionDriver: crate::ipc::OutputInfoSource + 'static {
     fn set_gamma(&mut self, _output: &Output, _ramp: Option<Vec<u16>>) -> Result<(), String> {
         Err("gamma control is not supported by this backend".into())
     }
+    fn schedule_render_completion(
+        &mut self,
+        sync: SyncPoint,
+        completion: Box<dyn FnOnce() + 'static>,
+    ) -> Result<(), String>;
     fn register_drm_syncobj_source(
         &mut self,
         _client: Client,
@@ -225,6 +231,7 @@ impl<D: SessionDriver> Session<D> {
                 &display_handle,
                 D::BACKEND_KIND == crate::input::keybinds::BackendKind::Tty,
             ),
+            crate::wayland::wlr_screencopy::State::new::<Self>(&display_handle),
             std::collections::HashMap::new(),
             DataDeviceState::new::<Self>(&display_handle),
             primary_selection_state,

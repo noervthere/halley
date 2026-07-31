@@ -10,7 +10,9 @@ use smithay::backend::renderer::element::Kind;
 use smithay::backend::renderer::element::surface::{
     WaylandSurfaceRenderElement, render_elements_from_surface_tree,
 };
+use smithay::backend::renderer::element::utils::{Relocate, RelocateRenderElement};
 use smithay::backend::renderer::gles::{GlesRenderer, GlesTexture};
+use smithay::backend::renderer::sync::SyncPoint;
 use smithay::backend::renderer::utils::draw_render_elements;
 use smithay::backend::renderer::{Bind, Color32F, ExportMem, Frame, Offscreen, Renderer};
 use smithay::output::Output;
@@ -263,9 +265,10 @@ pub(crate) fn render_source_dmabuf<D: SessionDriver>(
             })
         }
     }
+    .map(|_| ())
 }
 
-fn with_monitor_scene<D, T>(
+pub(crate) fn with_monitor_scene<D, T>(
     session: &mut Session<D>,
     name: &str,
     width: i32,
@@ -368,6 +371,80 @@ where
     })
 }
 
+pub(crate) fn capture_monitor_region_pixels<D: SessionDriver>(
+    session: &mut Session<D>,
+    output: &Output,
+    region: Rectangle<i32, Physical>,
+    show_cursor: bool,
+) -> Result<Vec<u8>, Box<dyn Error>> {
+    let geometry = session
+        .wayland
+        .space
+        .output_geometry(output)
+        .ok_or_else(|| io::Error::other("screencopy output is not mapped"))?;
+    with_monitor_scene(
+        session,
+        &output.name(),
+        geometry.size.w,
+        geometry.size.h,
+        show_cursor,
+        |renderer, elements, _| {
+            let offset = region.loc.upscale(-1);
+            let relocated = elements
+                .iter()
+                .map(|element| {
+                    RelocateRenderElement::from_element(element, offset, Relocate::Relative)
+                })
+                .collect::<Vec<_>>();
+            capture_elements(
+                renderer,
+                Fourcc::Xrgb8888,
+                region.size,
+                &relocated,
+                render::CLEAR_COLOR,
+            )
+        },
+    )
+}
+
+pub(crate) fn render_monitor_region_dmabuf<D: SessionDriver>(
+    session: &mut Session<D>,
+    output: &Output,
+    region: Rectangle<i32, Physical>,
+    show_cursor: bool,
+    dmabuf: &mut Dmabuf,
+) -> Result<SyncPoint, Box<dyn Error>> {
+    let geometry = session
+        .wayland
+        .space
+        .output_geometry(output)
+        .ok_or_else(|| io::Error::other("screencopy output is not mapped"))?;
+    session.driver.import_dmabuf(dmabuf);
+    with_monitor_scene(
+        session,
+        &output.name(),
+        geometry.size.w,
+        geometry.size.h,
+        show_cursor,
+        |renderer, elements, _| {
+            let offset = region.loc.upscale(-1);
+            let relocated = elements
+                .iter()
+                .map(|element| {
+                    RelocateRenderElement::from_element(element, offset, Relocate::Relative)
+                })
+                .collect::<Vec<_>>();
+            render_elements_to_dmabuf(
+                renderer,
+                dmabuf,
+                region.size,
+                &relocated,
+                render::CLEAR_COLOR,
+            )
+        },
+    )
+}
+
 fn resolve_source_window(
     space: &smithay::desktop::Space<smithay::desktop::Window>,
     surface_id: u32,
@@ -402,13 +479,13 @@ fn resolve_source_window(
     ))
 }
 
-fn render_elements_to_dmabuf<E>(
+pub(crate) fn render_elements_to_dmabuf<E>(
     renderer: &mut GlesRenderer,
     dmabuf: &mut Dmabuf,
     size: smithay::utils::Size<i32, Physical>,
     elements: &[E],
     clear: Color32F,
-) -> Result<(), Box<dyn Error>>
+) -> Result<SyncPoint, Box<dyn Error>>
 where
     E: smithay::backend::renderer::element::RenderElement<GlesRenderer>,
 {
@@ -417,8 +494,7 @@ where
     let mut frame = renderer.render(&mut target, size, Transform::Normal)?;
     frame.clear(clear, &[damage])?;
     draw_render_elements(&mut frame, 1.0, elements, &[damage])?;
-    let _ = frame.finish()?;
-    Ok(())
+    Ok(frame.finish()?)
 }
 
 fn save_pixels(

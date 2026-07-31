@@ -11,6 +11,7 @@ pub mod selection;
 pub mod session_lock;
 pub mod wlr_gamma_control;
 pub mod wlr_output_management;
+pub mod wlr_screencopy;
 pub mod xdg_shell;
 
 use std::collections::{HashMap, HashSet};
@@ -215,6 +216,7 @@ pub struct WaylandState {
     _output_manager_state: OutputManagerState,
     pub wlr_output_management_state: wlr_output_management::State,
     pub wlr_gamma_control_state: wlr_gamma_control::State,
+    pub wlr_screencopy_state: wlr_screencopy::State,
     output_globals: HashMap<String, GlobalId>,
     /// Clipboard (ctrl+c/ctrl+v) and drag-and-drop. Smithay owns the actual
     /// transfer - it hands the source client's fd straight to the receiving
@@ -297,6 +299,7 @@ impl WaylandState {
         output_manager_state: OutputManagerState,
         wlr_output_management_state: wlr_output_management::State,
         wlr_gamma_control_state: wlr_gamma_control::State,
+        wlr_screencopy_state: wlr_screencopy::State,
         output_globals: HashMap<String, GlobalId>,
         data_device_state: DataDeviceState,
         primary_selection_state: PrimarySelectionState,
@@ -324,6 +327,7 @@ impl WaylandState {
             _output_manager_state: output_manager_state,
             wlr_output_management_state,
             wlr_gamma_control_state,
+            wlr_screencopy_state,
             output_globals,
             data_device_state,
             primary_selection_state,

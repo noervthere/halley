@@ -3,8 +3,9 @@ use std::time::{Duration, Instant};
 
 mod frame;
 
+use calloop::generic::Generic;
 use calloop::timer::{TimeoutAction, Timer};
-use calloop::{EventLoop, LoopHandle, LoopSignal};
+use calloop::{EventLoop, Interest, LoopHandle, LoopSignal, Mode, PostAction};
 use smithay::backend::drm::{DrmEvent, DrmEventMetadata, DrmEventTime};
 use smithay::backend::libinput::{LibinputInputBackend, LibinputSessionInterface};
 use smithay::backend::session::Event as SessionEvent;
@@ -136,6 +137,30 @@ impl super::SessionDriver for TtyDriver {
 
     fn set_gamma(&mut self, output: &Output, ramp: Option<Vec<u16>>) -> Result<(), String> {
         self.backend.set_gamma(output, ramp)
+    }
+
+    fn schedule_render_completion(
+        &mut self,
+        sync: smithay::backend::renderer::sync::SyncPoint,
+        completion: Box<dyn FnOnce() + 'static>,
+    ) -> Result<(), String> {
+        let Some(fence) = sync.export() else {
+            completion();
+            return Ok(());
+        };
+        let mut completion = Some(completion);
+        self.loop_handle
+            .insert_source(
+                Generic::new(fence, Interest::READ, Mode::OneShot),
+                move |_, _, _| {
+                    if let Some(completion) = completion.take() {
+                        completion();
+                    }
+                    Ok(PostAction::Remove)
+                },
+            )
+            .map(|_| ())
+            .map_err(|err| format!("failed to watch render fence: {err}"))
     }
 
     fn register_drm_syncobj_source(&mut self, client: Client, source: DrmSyncPointSource) -> bool {
@@ -956,6 +981,7 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
         if let Some(token) = state.frame_submitted(animating) {
             loop_handle.remove(token);
         }
+        app.service_screencopy(output);
         return;
     }
 
