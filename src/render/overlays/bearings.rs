@@ -289,7 +289,7 @@ pub fn elements(
                 foreground.push(SceneElement::UiText(text.element));
             }
             backgrounds.push(SceneElement::NodeLabel(
-                crate::render::overlays::shell::card_element(
+                crate::render::overlays::shell::label_card_element(
                     renderer,
                     node_renderer,
                     rect,
@@ -300,7 +300,7 @@ pub fn elements(
             ));
         }
         backgrounds.push(SceneElement::NodeLabel(
-            crate::render::overlays::shell::card_element(
+            crate::render::overlays::shell::label_card_element(
                 renderer,
                 node_renderer,
                 layout.chip,
