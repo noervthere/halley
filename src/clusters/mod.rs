@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
@@ -18,6 +19,8 @@ mod transition;
 
 pub use creation::{CreationState, NameInput};
 pub use ipc::handle_request;
+
+pub const CORE_DIAMETER_PX: f32 = 68.0;
 
 #[derive(Clone, Debug)]
 pub struct ClusterMetadata {
@@ -58,6 +61,8 @@ pub struct ClusterSystem {
     reflows: HashMap<String, transition::ReflowTransition>,
     floating: HashSet<NodeId>,
     join_candidate: Option<JoinCandidate>,
+    hovered_core: Option<ClusterId>,
+    label_hover: RefCell<HashMap<ClusterId, f32>>,
     creation: Option<CreationState>,
     surfaces: surfaces::WorkspaceSurfaceState,
     config: halley_config::Clusters,
@@ -78,6 +83,8 @@ impl ClusterSystem {
             reflows: HashMap::new(),
             floating: HashSet::new(),
             join_candidate: None,
+            hovered_core: None,
+            label_hover: RefCell::new(HashMap::new()),
             creation: None,
             surfaces: surfaces::WorkspaceSurfaceState::default(),
             config,
@@ -110,6 +117,50 @@ impl ClusterSystem {
 
     pub fn active_on(&self, output: &str) -> Option<ClusterId> {
         self.active.get(output).copied()
+    }
+
+    pub fn hovered_core(&self) -> Option<ClusterId> {
+        self.hovered_core
+    }
+
+    pub fn set_hovered_core(&mut self, hovered: Option<ClusterId>) -> bool {
+        if self.hovered_core == hovered {
+            return false;
+        }
+        self.hovered_core = hovered;
+        true
+    }
+
+    pub fn label_hover_mix(&self, id: ClusterId, highlighted: bool) -> f32 {
+        let mut states = self.label_hover.borrow_mut();
+        let mix = states.entry(id).or_insert(0.0);
+        let target = if highlighted { 1.0 } else { 0.0 };
+        let rate = if highlighted { 0.06 } else { 0.10 };
+        *mix += (target - *mix) * rate;
+        if (*mix - target).abs() < 0.002 {
+            *mix = target;
+        }
+        *mix
+    }
+
+    pub fn labels_animating_on_output(
+        &self,
+        output: &str,
+        policy: halley_config::NodeDisplayPolicy,
+    ) -> bool {
+        if policy != halley_config::NodeDisplayPolicy::Hover {
+            return false;
+        }
+        let states = self.label_hover.borrow();
+        self.clusters_for_output(output).any(|(_, id, _)| {
+            let mix = states.get(&id).copied().unwrap_or(0.0);
+            let target = if self.hovered_core == Some(id) {
+                1.0
+            } else {
+                0.0
+            };
+            (mix - target).abs() > 0.002
+        })
     }
 
     pub fn cycle_active_layout(
@@ -451,7 +502,7 @@ impl ClusterSystem {
                     camera,
                     output_geometry,
                 );
-                let diameter = crate::nodes::NODE_DIAMETER_PX.round() as i32;
+                let diameter = CORE_DIAMETER_PX.round() as i32;
                 Rectangle::new(
                     (center.x - diameter / 2, center.y - diameter / 2).into(),
                     (diameter, diameter).into(),
@@ -503,6 +554,10 @@ impl ClusterSystem {
     }
 
     fn remove_cluster_metadata(&mut self, id: ClusterId) {
+        if self.hovered_core == Some(id) {
+            self.hovered_core = None;
+        }
+        self.label_hover.borrow_mut().remove(&id);
         let output = self.metadata.remove(&id).map(|metadata| metadata.output);
         if let Some(output) = output {
             if let Some(slots) = self.slots.get_mut(&output) {
@@ -545,6 +600,56 @@ mod tests {
         assert_eq!(system.creation().unwrap().output, "DP-1");
         assert!(system.cancel_creation());
         assert!(system.creation().is_none());
+    }
+
+    #[test]
+    fn cluster_core_uses_the_old_larger_hit_area_and_hover_animation() {
+        let mut system = ClusterSystem::new(
+            halley_config::Clusters::default(),
+            halley_config::ClusterAnimation::default(),
+        );
+        let id = ClusterId::new(1);
+        system.metadata.insert(
+            id,
+            ClusterMetadata {
+                name: "Cluster 1".into(),
+                output: "DP-1".into(),
+                layout: ClusterWorkspaceLayoutKind::Tiling,
+                core: None,
+                core_position: Vec2 { x: 0.0, y: 0.0 },
+            },
+        );
+        system.slots.insert("DP-1".into(), vec![id]);
+        let camera = halley_core::camera::Camera::new(
+            Vec2 { x: 0.0, y: 0.0 },
+            Vec2 {
+                x: 1920.0,
+                y: 1080.0,
+            },
+        );
+        let output_geometry = Rectangle::new((0, 0).into(), (1920, 1080).into());
+
+        assert_eq!(
+            system.core_hit_test(
+                "DP-1",
+                &camera,
+                output_geometry,
+                (960.0 + CORE_DIAMETER_PX as f64 / 2.0 - 1.0, 540.0).into(),
+            ),
+            Some(id)
+        );
+        assert_eq!(
+            system.core_hit_test(
+                "DP-1",
+                &camera,
+                output_geometry,
+                (960.0 + CORE_DIAMETER_PX as f64 / 2.0 + 1.0, 540.0).into(),
+            ),
+            None
+        );
+        assert!(system.set_hovered_core(Some(id)));
+        assert!(system.labels_animating_on_output("DP-1", halley_config::NodeDisplayPolicy::Hover));
+        assert!(system.label_hover_mix(id, true) > 0.0);
     }
 
     #[test]

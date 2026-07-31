@@ -80,8 +80,6 @@ pub(super) fn node_elements(
         let Some(node) = nodes.field.node(record.id) else {
             continue;
         };
-        let mut label_text = Vec::new();
-        let mut label_backgrounds = Vec::new();
         let mut icons = Vec::new();
         let mut markers = Vec::new();
         let landmark_position = nodes.landmark_position(record.id, node.pos, now);
@@ -179,79 +177,22 @@ pub(super) fn node_elements(
             }
             (false, halley_config::NodeDisplayPolicy::Always) => 1.0,
         };
-        let reveal = ease_in_out_cubic(hover_mix * hover_mix * hover_mix);
-        let fade = ((reveal - 0.30) / 0.55).clamp(0.0, 1.0);
-        if fade > 0.01 {
-            let slide = ((reveal - 0.15) / 0.65).clamp(0.0, 1.0);
-            let grow = ((reveal - 0.40) / 0.55).clamp(0.0, 1.0);
-            let base_width =
-                ((node.label.chars().count() as f32 * 9.5).round() as i32).clamp(72, 420);
-            let width =
-                even(((base_width as f32 * (1.0 + 0.80 * grow)).round() as i32).clamp(72, 240));
-            let height = even((26.0 * (1.0 + 0.55 * grow)).round() as i32);
-            let gap = (14.0 * (1.0 + 0.45 * grow)).round() as i32;
-            let target_width = even(((base_width as f32 * 1.80).round() as i32).clamp(72, 240));
-            let margin = 12;
-            let side_gap = side / 2 + gap.max(10);
-            let prefer_left = local.x + side_gap + target_width + margin > output_geometry.size.w;
-            let target_x = if prefer_left {
-                local.x - side_gap - width
-            } else {
-                local.x + side_gap
-            };
-            let start_x = if prefer_left {
-                target_x + 44
-            } else {
-                target_x - 44
-            };
-            let label_x = (start_x as f32 + (target_x - start_x) as f32 * slide).round() as i32;
-            let label_y =
-                (local.y as f32 - height as f32 / 2.0 + (1.0 - slide) * 10.0).round() as i32;
-            let label = Rectangle::<i32, Physical>::new(
-                (
-                    label_x.clamp(
-                        margin,
-                        (output_geometry.size.w - width - margin).max(margin),
-                    ),
-                    label_y.clamp(
-                        margin,
-                        (output_geometry.size.h - height - margin).max(margin),
-                    ),
-                )
-                    .into(),
-                (width, height).into(),
-            );
-            let label_fill = label_fill_color(fill, ring);
-            label_backgrounds.push(SceneElement::NodeLabel(node_renderer.label_element(
-                renderer,
-                label,
-                nodes.config.label_shape,
-                label_fill,
-                1.0,
-            )?));
-
-            let text_rgb = contrast_text_rgb(label_fill);
-            let (text, text_size) =
-                fit_node_label(renderer, ui_text, &node.label, text_rgb, width - 20)?;
-            if !text.is_empty()
-                && let Some(prepared) = ui_text.element(
-                    renderer,
-                    (
-                        label.loc.x + (width - text_size.w).max(0) / 2,
-                        label.loc.y + (height - text_size.h).max(0) / 2,
-                    )
-                        .into(),
-                    &text,
-                    2,
-                    text_rgb,
-                    0.94 * eased * fade,
-                )?
-            {
-                label_text.push(SceneElement::UiText(prepared.element));
-            }
-        }
-        let mut elements = label_text;
-        elements.extend(label_backgrounds);
+        let mut elements = landmark_label_elements(
+            renderer,
+            node_renderer,
+            ui_text,
+            LandmarkLabel {
+                center: (local.x, local.y),
+                marker_side: side,
+                output_size: (output_geometry.size.w, output_geometry.size.h),
+                text: &node.label,
+                shape: nodes.config.label_shape,
+                fill,
+                ring,
+                hover_mix,
+                alpha: eased,
+            },
+        )?;
         elements.extend(icons);
         elements.extend(markers);
         groups.push(StackGroup {
@@ -270,6 +211,90 @@ pub(super) fn node_elements(
 pub(super) struct NodeScene {
     pub(super) overlay: Vec<SceneElement>,
     pub(super) groups: Vec<StackGroup>,
+}
+
+pub(super) struct LandmarkLabel<'a> {
+    pub(super) center: (i32, i32),
+    pub(super) marker_side: i32,
+    pub(super) output_size: (i32, i32),
+    pub(super) text: &'a str,
+    pub(super) shape: halley_config::NodeShape,
+    pub(super) fill: (f32, f32, f32),
+    pub(super) ring: (f32, f32, f32),
+    pub(super) hover_mix: f32,
+    pub(super) alpha: f32,
+}
+
+pub(super) fn landmark_label_elements(
+    renderer: &mut GlesRenderer,
+    node_renderer: &mut crate::render::node::NodeRenderer,
+    ui_text: &mut crate::render::text::UiTextRenderer,
+    label: LandmarkLabel<'_>,
+) -> Result<Vec<SceneElement>, Box<dyn Error>> {
+    let reveal = ease_in_out_cubic(label.hover_mix * label.hover_mix * label.hover_mix);
+    let fade = ((reveal - 0.30) / 0.55).clamp(0.0, 1.0);
+    if fade <= 0.01 {
+        return Ok(Vec::new());
+    }
+    let slide = ((reveal - 0.15) / 0.65).clamp(0.0, 1.0);
+    let grow = ((reveal - 0.40) / 0.55).clamp(0.0, 1.0);
+    let base_width = ((label.text.chars().count() as f32 * 9.5).round() as i32).clamp(72, 420);
+    let width = even(((base_width as f32 * (1.0 + 0.80 * grow)).round() as i32).clamp(72, 240));
+    let height = even((26.0 * (1.0 + 0.55 * grow)).round() as i32);
+    let gap = (14.0 * (1.0 + 0.45 * grow)).round() as i32;
+    let target_width = even(((base_width as f32 * 1.80).round() as i32).clamp(72, 240));
+    let margin = 12;
+    let side_gap = label.marker_side / 2 + gap.max(10);
+    let prefer_left = label.center.0 + side_gap + target_width + margin > label.output_size.0;
+    let target_x = if prefer_left {
+        label.center.0 - side_gap - width
+    } else {
+        label.center.0 + side_gap
+    };
+    let start_x = if prefer_left {
+        target_x + 44
+    } else {
+        target_x - 44
+    };
+    let label_x = (start_x as f32 + (target_x - start_x) as f32 * slide).round() as i32;
+    let label_y =
+        (label.center.1 as f32 - height as f32 / 2.0 + (1.0 - slide) * 10.0).round() as i32;
+    let destination = Rectangle::<i32, Physical>::new(
+        (
+            label_x.clamp(margin, (label.output_size.0 - width - margin).max(margin)),
+            label_y.clamp(margin, (label.output_size.1 - height - margin).max(margin)),
+        )
+            .into(),
+        (width, height).into(),
+    );
+    let label_fill = label_fill_color(label.fill, label.ring);
+    let text_rgb = contrast_text_rgb(label_fill);
+    let (text, text_size) = fit_node_label(renderer, ui_text, label.text, text_rgb, width - 20)?;
+    let mut elements = Vec::new();
+    if !text.is_empty()
+        && let Some(prepared) = ui_text.element(
+            renderer,
+            (
+                destination.loc.x + (width - text_size.w).max(0) / 2,
+                destination.loc.y + (height - text_size.h).max(0) / 2,
+            )
+                .into(),
+            &text,
+            2,
+            text_rgb,
+            0.94 * label.alpha * fade,
+        )?
+    {
+        elements.push(SceneElement::UiText(prepared.element));
+    }
+    elements.push(SceneElement::NodeLabel(node_renderer.label_element(
+        renderer,
+        destination,
+        label.shape,
+        label_fill,
+        1.0,
+    )?));
+    Ok(elements)
 }
 
 pub(super) fn fit_node_label(

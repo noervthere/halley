@@ -929,14 +929,20 @@ where
         let hovered_node = (!node_grab_active)
             .then(|| node_at_pointer(session))
             .flatten();
+        let hovered_cluster = (!node_grab_active && hovered_node.is_none())
+            .then(|| cluster_at_pointer(session))
+            .flatten();
         if let Some((id, output)) = hovered_node.as_ref() {
             super::focus::focus_node_from_hover(session, *id, output, SERIAL_COUNTER.next_serial());
         }
         let hovered = hovered_node.map(|(id, _)| id);
-        if session
+        let node_changed = session
             .nodes
-            .set_hovered(hovered, crate::frame_clock::monotonic_now())
-        {
+            .set_hovered(hovered, crate::frame_clock::monotonic_now());
+        let cluster_changed = session
+            .clusters
+            .set_hovered_core(hovered_cluster.map(|(id, _)| id));
+        if node_changed || cluster_changed {
             session.request_redraw();
         }
     }

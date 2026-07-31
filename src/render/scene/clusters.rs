@@ -10,6 +10,9 @@ pub(super) struct ClusterElementContext<'a> {
     pub(super) decorations: &'a halley_config::Decorations,
     pub(super) shadow_config: halley_config::ShadowLayer,
     pub(super) shadow_renderer: &'a mut crate::render::effects::shadow::ShadowRenderer,
+    pub(super) node_grab_active: bool,
+    pub(super) node_renderer: &'a mut crate::render::node::NodeRenderer,
+    pub(super) ui_text: &'a mut crate::render::text::UiTextRenderer,
 }
 
 pub(super) fn cluster_elements(
@@ -26,6 +29,9 @@ pub(super) fn cluster_elements(
         decorations,
         shadow_config,
         shadow_renderer,
+        node_grab_active,
+        node_renderer,
+        ui_text,
     } = context;
     if clusters.active_on(&output.name()).is_some() {
         return Ok(Vec::new());
@@ -42,17 +48,43 @@ pub(super) fn cluster_elements(
     for (_, id, metadata) in clusters.clusters_for_output(&output.name()) {
         let focused =
             focused_node.is_some_and(|node| clusters.cluster_for_member(node) == Some(id));
+        let hovered = clusters.hovered_core() == Some(id);
+        let highlighted = focused || hovered;
         let center =
             crate::nodes::screen_from_world(metadata.core_position, camera, output_geometry);
         let local = center - output_geometry.loc;
-        let side = crate::nodes::NODE_DIAMETER_PX.round() as i32;
+        let side = crate::clusters::CORE_DIAMETER_PX.round() as i32;
         let destination = Rectangle::<i32, Physical>::new(
             (local.x - side / 2, local.y - side / 2).into(),
             (side, side).into(),
         );
-        let ring = node_ring_color(nodes.config, decorations, focused);
+        let ring = node_ring_color(nodes.config, decorations, highlighted);
         let fill = node_fill_color(nodes.config, ring);
         let mut elements = Vec::new();
+        let hover_mix = match (node_grab_active, nodes.config.show_labels) {
+            (true, halley_config::NodeDisplayPolicy::Hover) => clusters.label_hover_mix(id, false),
+            (true, _) | (_, halley_config::NodeDisplayPolicy::Off) => 0.0,
+            (false, halley_config::NodeDisplayPolicy::Hover) => {
+                clusters.label_hover_mix(id, hovered)
+            }
+            (false, halley_config::NodeDisplayPolicy::Always) => 1.0,
+        };
+        elements.extend(super::nodes::landmark_label_elements(
+            renderer,
+            node_renderer,
+            ui_text,
+            super::nodes::LandmarkLabel {
+                center: (local.x, local.y),
+                marker_side: side,
+                output_size: (output_geometry.size.w, output_geometry.size.h),
+                text: &metadata.name,
+                shape: nodes.config.label_shape,
+                fill,
+                ring,
+                hover_mix,
+                alpha: 1.0,
+            },
+        )?);
         if clusters.config().show_icons {
             let icon_side =
                 ((side as f32 * nodes.config.icon_size * 0.98).round() as i32).clamp(16, 42);
@@ -62,7 +94,7 @@ pub(super) fn cluster_elements(
                     (local.x - icon_side / 2, local.y - icon_side / 2).into(),
                     (icon_side, icon_side).into(),
                 ),
-                focused,
+                highlighted,
                 icon_colors,
                 nodes.config.opacity,
             )?));

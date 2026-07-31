@@ -10,16 +10,29 @@ use crate::render::text::UiTextRenderer;
 
 use super::shell::{card_element, label_card_element, resolve_visuals};
 
+pub(crate) struct OverflowElementContext<'a> {
+    pub(crate) output: &'a Output,
+    pub(crate) clusters: &'a crate::clusters::ClusterSystem,
+    pub(crate) nodes: &'a crate::nodes::NodesState,
+    pub(crate) config: &'a halley_config::Overlays,
+    pub(crate) decorations: &'a halley_config::Decorations,
+    pub(crate) node_renderer: &'a mut NodeRenderer,
+    pub(crate) ui_text: &'a mut UiTextRenderer,
+}
+
 pub(crate) fn elements(
     renderer: &mut GlesRenderer,
-    output: &Output,
-    clusters: &crate::clusters::ClusterSystem,
-    nodes: &crate::nodes::NodesState,
-    config: &halley_config::Overlays,
-    decorations: &halley_config::Decorations,
-    node_renderer: &mut NodeRenderer,
-    ui_text: &mut UiTextRenderer,
+    context: OverflowElementContext<'_>,
 ) -> Result<Vec<SceneElement>, Box<dyn Error>> {
+    let OverflowElementContext {
+        output,
+        clusters,
+        nodes,
+        config,
+        decorations,
+        node_renderer,
+        ui_text,
+    } = context;
     let work_area = smithay::desktop::layer_map_for_output(output).non_exclusive_zone();
     let Some(layout) = clusters.overflow_layout(&output.name(), work_area) else {
         return Ok(Vec::new());
