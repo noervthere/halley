@@ -65,6 +65,12 @@ pub trait SessionDriver: crate::ipc::OutputInfoSource + 'static {
         &mut self,
         configuration: &[OutputConfiguration],
     ) -> Result<Vec<OutputChange>, String>;
+    fn gamma_size(&self, _output: &Output) -> Result<u32, String> {
+        Err("gamma control is not supported by this backend".into())
+    }
+    fn set_gamma(&mut self, _output: &Output, _ramp: Option<Vec<u16>>) -> Result<(), String> {
+        Err("gamma control is not supported by this backend".into())
+    }
     fn register_drm_syncobj_source(
         &mut self,
         _client: Client,
@@ -215,6 +221,10 @@ impl<D: SessionDriver> Session<D> {
             ShmState::new::<Self>(&display_handle, vec![]),
             OutputManagerState::new_with_xdg_output::<Self>(&display_handle),
             crate::wayland::wlr_output_management::State::new::<Self>(&display_handle),
+            crate::wayland::wlr_gamma_control::State::new::<Self>(
+                &display_handle,
+                D::BACKEND_KIND == crate::input::keybinds::BackendKind::Tty,
+            ),
             std::collections::HashMap::new(),
             DataDeviceState::new::<Self>(&display_handle),
             primary_selection_state,

@@ -130,6 +130,14 @@ impl super::SessionDriver for TtyDriver {
         Ok(changes)
     }
 
+    fn gamma_size(&self, output: &Output) -> Result<u32, String> {
+        self.backend.gamma_size(output)
+    }
+
+    fn set_gamma(&mut self, output: &Output, ramp: Option<Vec<u16>>) -> Result<(), String> {
+        self.backend.set_gamma(output, ramp)
+    }
+
     fn register_drm_syncobj_source(&mut self, client: Client, source: DrmSyncPointSource) -> bool {
         self.loop_handle
             .insert_source(source, move |_, _, app| {

@@ -9,6 +9,7 @@ pub mod popup;
 pub mod presentation;
 pub mod selection;
 pub mod session_lock;
+pub mod wlr_gamma_control;
 pub mod wlr_output_management;
 pub mod xdg_shell;
 
@@ -213,6 +214,7 @@ pub struct WaylandState {
     // Retained alongside the wl_output globals it serves.
     _output_manager_state: OutputManagerState,
     pub wlr_output_management_state: wlr_output_management::State,
+    pub wlr_gamma_control_state: wlr_gamma_control::State,
     output_globals: HashMap<String, GlobalId>,
     /// Clipboard (ctrl+c/ctrl+v) and drag-and-drop. Smithay owns the actual
     /// transfer - it hands the source client's fd straight to the receiving
@@ -294,6 +296,7 @@ impl WaylandState {
         shm_state: ShmState,
         output_manager_state: OutputManagerState,
         wlr_output_management_state: wlr_output_management::State,
+        wlr_gamma_control_state: wlr_gamma_control::State,
         output_globals: HashMap<String, GlobalId>,
         data_device_state: DataDeviceState,
         primary_selection_state: PrimarySelectionState,
@@ -320,6 +323,7 @@ impl WaylandState {
             shm_state,
             _output_manager_state: output_manager_state,
             wlr_output_management_state,
+            wlr_gamma_control_state,
             output_globals,
             data_device_state,
             primary_selection_state,

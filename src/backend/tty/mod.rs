@@ -2,6 +2,7 @@ use std::error::Error;
 use std::time::Duration;
 
 mod dmabuf;
+mod gamma;
 mod output;
 
 use smithay::backend::allocator::dmabuf::Dmabuf;
@@ -87,6 +88,7 @@ struct DrmOutputEntry {
     pending: bool,
     dpms_enabled: bool,
     enabled: bool,
+    gamma: gamma::GammaState,
 }
 
 #[derive(Debug)]
@@ -315,6 +317,7 @@ impl TtyBackend {
                         vrr_supported,
                         vrr_active,
                     ));
+                    let gamma = gamma::GammaState::new(drm_output_manager.device(), crtc);
                     drm_outputs.push(DrmOutputEntry {
                         crtc,
                         connector,
@@ -328,6 +331,7 @@ impl TtyBackend {
                         pending: false,
                         dpms_enabled: true,
                         enabled: true,
+                        gamma,
                     });
                 }
                 Err(err) => {
@@ -400,6 +404,29 @@ impl TtyBackend {
         self.drm_outputs
             .iter()
             .any(|entry| entry.enabled && entry.dpms_enabled)
+    }
+
+    pub fn gamma_size(&self, output: &Output) -> Result<u32, String> {
+        let entry = self
+            .drm_outputs
+            .iter()
+            .find(|entry| entry.output == *output && entry.enabled)
+            .ok_or_else(|| format!("output {:?} is not enabled", output.name()))?;
+        entry.gamma.size(self.drm_output_manager.device())
+    }
+
+    pub fn set_gamma(&mut self, output: &Output, ramp: Option<Vec<u16>>) -> Result<(), String> {
+        let active = self.session.is_active();
+        let device = self.drm_output_manager.device();
+        let entry = self
+            .drm_outputs
+            .iter_mut()
+            .find(|entry| entry.output == *output)
+            .ok_or_else(|| format!("output {:?} is not connected", output.name()))?;
+        if !entry.enabled && ramp.is_some() {
+            return Err(format!("output {:?} is not enabled", output.name()));
+        }
+        entry.gamma.set(device, ramp, active)
     }
 
     pub fn output_states(&self) -> Vec<crate::session::output::OutputState> {
@@ -902,6 +929,15 @@ impl TtyBackend {
         // output from rendering again (its VBlank is never coming).
         for entry in &mut self.drm_outputs {
             entry.pending = false;
+            if let Err(err) = entry
+                .gamma
+                .restore_after_resume(self.drm_output_manager.device())
+            {
+                eventline::warn!(
+                    "output {:?}: failed to restore gamma after VT activation: {err}",
+                    entry.output.name()
+                );
+            }
             set_entry_vrr(
                 entry,
                 configured_vrr_target(entry.configured_vrr, false, entry.vrr_support),

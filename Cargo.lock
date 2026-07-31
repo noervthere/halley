@@ -1160,6 +1160,7 @@ dependencies = [
  "calloop 0.14.4",
  "cgmath",
  "cosmic-text",
+ "drm-ffi",
  "eventline",
  "futures-util",
  "halley-config",
