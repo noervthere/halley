@@ -516,8 +516,8 @@ impl<D: SessionDriver> XdgShellHandler for Session<D> {
     fn maximize_request(&mut self, surface: ToplevelSurface) {
         // Ignore startup maximize hints. Honoring them during the first reveal
         // creates a monitor-sized configure/remap feedback loop in clients such
-        // as Steam. A later decoration-button request is deliberate and maps to
-        // Halley's fullscreen presentation.
+        // as Steam. A later decoration-button or title-bar request is deliberate
+        // and maps to Halley's Field maximize presentation.
         if !surface.is_initial_configure_sent() {
             surface.with_pending_state(|state| {
                 state.states.unset(
@@ -534,17 +534,11 @@ impl<D: SessionDriver> XdgShellHandler for Session<D> {
             crate::nodes::restore(self, id, SERIAL_COUNTER.next_serial());
         }
         super::cancel_grab_for_surface(self, surface.wl_surface());
-        if self.fullscreen.toggle_maximize(&mut self.wayland, &surface) {
-            super::pointer::reconcile_state(self);
-            self.request_redraw();
-        }
+        super::set_surface_field_maximized(self, surface.wl_surface(), true);
     }
 
     fn unmaximize_request(&mut self, surface: ToplevelSurface) {
-        if self.fullscreen.unrequest_maximize(&self.wayland, &surface) {
-            super::pointer::reconcile_state(self);
-            self.request_redraw();
-        }
+        super::set_surface_field_maximized(self, surface.wl_surface(), false);
     }
 
     fn minimize_request(&mut self, surface: ToplevelSurface) {

@@ -397,6 +397,33 @@ fn toggle_focused_field_maximize<D: SessionDriver>(session: &mut Session<D>, out
     else {
         return;
     };
+    let _ = toggle_field_maximize(session, record);
+}
+
+pub(crate) fn set_surface_field_maximized<D: SessionDriver>(
+    session: &mut Session<D>,
+    surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+    maximized: bool,
+) -> bool {
+    if session.maximize.contains(surface) == maximized {
+        return false;
+    }
+    let Some(record) = session
+        .nodes
+        .id_for_surface(surface)
+        .and_then(|id| session.nodes.record(id))
+        .filter(|record| !record.collapsed)
+        .cloned()
+    else {
+        return false;
+    };
+    toggle_field_maximize(session, record)
+}
+
+fn toggle_field_maximize<D: SessionDriver>(
+    session: &mut Session<D>,
+    record: crate::nodes::NodeRecord,
+) -> bool {
     let output_name =
         crate::wayland::window_output_name(&record.window).unwrap_or_else(|| record.output.clone());
     let Some(target_output) = session
@@ -406,10 +433,10 @@ fn toggle_focused_field_maximize<D: SessionDriver>(session: &mut Session<D>, out
         .find(|candidate| candidate.name() == output_name)
         .cloned()
     else {
-        return;
+        return false;
     };
     let Some(output_geometry) = session.wayland.space.output_geometry(&target_output) else {
-        return;
+        return false;
     };
     let usable = smithay::desktop::layer_map_for_output(&target_output).non_exclusive_zone();
     let inset = (session.field_config.gap.ceil() as i32)
@@ -430,7 +457,7 @@ fn toggle_focused_field_maximize<D: SessionDriver>(session: &mut Session<D>, out
         .map(|(geometry, _)| *geometry)
         .or_else(|| session.wayland.space.element_geometry(&record.window))
     else {
-        return;
+        return false;
     };
     let restore_output = inherited_restore
         .and_then(|(_, output)| output)
@@ -522,6 +549,7 @@ fn toggle_focused_field_maximize<D: SessionDriver>(session: &mut Session<D>, out
     );
     pointer::reconcile_state(session);
     session.request_redraw();
+    true
 }
 
 fn presented_window_rect<D: SessionDriver>(
@@ -571,9 +599,19 @@ pub(crate) fn configure_field_geometry<D: SessionDriver>(
         .space
         .relocate_element(&window, request.geometry.loc);
     if let Some(toplevel) = window.toplevel() {
+        let maximized = session.maximize.contains(&request.surface);
         toplevel.with_pending_state(|pending| {
             pending.size = Some(request.geometry.size);
             pending.bounds = Some(request.geometry.size);
+            if maximized {
+                pending.states.set(
+                    smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Maximized,
+                );
+            } else {
+                pending.states.unset(
+                    smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Maximized,
+                );
+            }
         });
         if toplevel.is_initial_configure_sent() {
             toplevel.send_configure();
