@@ -90,6 +90,10 @@ impl CursorManager {
         previous
     }
 
+    pub fn reset_image(&mut self) -> Option<WlSurface> {
+        self.set_image(CursorImageStatus::default_named())
+    }
+
     pub fn current_surface(&self) -> Option<&WlSurface> {
         if self.override_icon.is_some() {
             return None;
@@ -235,6 +239,20 @@ mod tests {
         assert!(matches!(
             manager.render_cursor(1, Duration::ZERO),
             RenderCursor::Hidden
+        ));
+    }
+
+    #[test]
+    fn reset_image_recovers_from_a_hidden_client_cursor() {
+        let config = halley_config::Cursor::default();
+        let mut manager = CursorManager::new(&config);
+        manager.set_image(CursorImageStatus::Hidden);
+
+        manager.reset_image();
+
+        assert!(matches!(
+            manager.image,
+            CursorImageStatus::Named(CursorIcon::Default)
         ));
     }
 }

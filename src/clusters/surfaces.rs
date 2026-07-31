@@ -39,6 +39,18 @@ impl WorkspaceSurfaceState {
 }
 
 impl ClusterSystem {
+    pub(crate) fn workspace_surface_target_for(
+        &self,
+        node_id: NodeId,
+        output: &str,
+        work_area: Rectangle<i32, Logical>,
+        output_geometry: Rectangle<i32, Logical>,
+    ) -> Option<WorkspaceSurfaceTarget> {
+        self.workspace_surface_targets(output, work_area, output_geometry)
+            .into_iter()
+            .find(|target| target.node_id == node_id)
+    }
+
     pub(crate) fn workspace_surface_targets(
         &self,
         output: &str,

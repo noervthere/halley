@@ -55,6 +55,9 @@ pub(crate) fn elements(
         );
     let mut contents = Vec::new();
     let mut tokens = Vec::new();
+    let mut labels = Vec::new();
+    let hovered = clusters.overlay_hovered_on_output(&output.name());
+    let pulled = clusters.bloom_pull().map(|(_, member, _, _)| member);
 
     for token in layout {
         let center = token.center - output_geometry.loc;
@@ -75,6 +78,35 @@ pub(crate) fn elements(
         ));
 
         let record = nodes.record(token.member_id);
+        let label = record
+            .map(|record| record.title.as_str())
+            .or_else(|| {
+                nodes
+                    .field
+                    .node(token.member_id)
+                    .map(|node| node.label.as_str())
+            })
+            .unwrap_or("Window");
+        let hover_mix = clusters.overlay_label_hover_mix(
+            token.member_id,
+            hovered == Some(token.member_id) && pulled != Some(token.member_id),
+        );
+        labels.extend(crate::render::scene::nodes::landmark_label_elements(
+            renderer,
+            node_renderer,
+            ui_text,
+            crate::render::scene::nodes::LandmarkLabel {
+                center: (center.x, center.y),
+                marker_side: side,
+                output_size: (output_geometry.size.w, output_geometry.size.h),
+                text: label,
+                shape: nodes.config.label_shape,
+                fill,
+                ring,
+                hover_mix,
+                alpha: token.alpha,
+            },
+        )?);
         let real_icon = allow_real_icons
             .then(|| record.and_then(|record| record.app_id.as_deref()))
             .flatten()
@@ -124,5 +156,6 @@ pub(crate) fn elements(
     // Scene order is front-to-back: member identity must stay in front of
     // the circle token that carries it.
     contents.extend(tokens);
-    Ok(contents)
+    labels.extend(contents);
+    Ok(labels)
 }

@@ -326,11 +326,29 @@ mod tests {
                 command: crate::DpmsCommand::Toggle,
                 output: Some("DP-1".to_string()),
             },
+            Request::CaptureCapabilities,
         ] {
             let bytes = encode_request(&req).unwrap();
             let decoded = decode_request(&bytes).unwrap();
             assert_eq!(format!("{decoded:?}"), format!("{req:?}"));
         }
+    }
+
+    #[test]
+    fn capture_capabilities_round_trip_through_postcard() {
+        let response = Response::CaptureCapabilities(crate::CaptureCapabilities {
+            main_device: Some(226 << 8 | 128),
+            dmabuf_formats: vec![crate::DmabufFormat {
+                fourcc: u32::from_le_bytes(*b"XR24"),
+                modifier: 0,
+            }],
+        });
+        let bytes = encode_response(&response).unwrap();
+        let Response::CaptureCapabilities(decoded) = decode_response(&bytes).unwrap() else {
+            panic!("wrong response variant");
+        };
+        assert_eq!(decoded.main_device, Some(226 << 8 | 128));
+        assert_eq!(decoded.dmabuf_formats[0].modifier, 0);
     }
 
     #[test]

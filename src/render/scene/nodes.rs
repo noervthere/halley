@@ -213,19 +213,19 @@ pub(super) struct NodeScene {
     pub(super) groups: Vec<StackGroup>,
 }
 
-pub(super) struct LandmarkLabel<'a> {
-    pub(super) center: (i32, i32),
-    pub(super) marker_side: i32,
-    pub(super) output_size: (i32, i32),
-    pub(super) text: &'a str,
-    pub(super) shape: halley_config::NodeShape,
-    pub(super) fill: (f32, f32, f32),
-    pub(super) ring: (f32, f32, f32),
-    pub(super) hover_mix: f32,
-    pub(super) alpha: f32,
+pub(crate) struct LandmarkLabel<'a> {
+    pub(crate) center: (i32, i32),
+    pub(crate) marker_side: i32,
+    pub(crate) output_size: (i32, i32),
+    pub(crate) text: &'a str,
+    pub(crate) shape: halley_config::NodeShape,
+    pub(crate) fill: (f32, f32, f32),
+    pub(crate) ring: (f32, f32, f32),
+    pub(crate) hover_mix: f32,
+    pub(crate) alpha: f32,
 }
 
-pub(super) fn landmark_label_elements(
+pub(crate) fn landmark_label_elements(
     renderer: &mut GlesRenderer,
     node_renderer: &mut crate::render::node::NodeRenderer,
     ui_text: &mut crate::render::text::UiTextRenderer,

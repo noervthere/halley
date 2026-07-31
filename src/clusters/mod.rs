@@ -18,8 +18,10 @@ pub mod render;
 mod surfaces;
 mod transition;
 
+pub use bloom::{DETACH_HOLD_DURATION, TokenLayout};
 pub use creation::{CreationState, NameInput};
 pub use ipc::handle_request;
+pub use overflow::REVEAL_EDGE_PX;
 
 pub const CORE_DIAMETER_PX: f32 = 68.0;
 
@@ -64,7 +66,10 @@ pub struct ClusterSystem {
     join_candidate: Option<JoinCandidate>,
     hovered_core: Option<ClusterId>,
     bloom: bloom::BloomState,
+    overflow: overflow::OverflowState,
     label_hover: RefCell<HashMap<ClusterId, f32>>,
+    overlay_hovered: Option<(String, NodeId)>,
+    overlay_label_hover: RefCell<HashMap<NodeId, f32>>,
     creation: Option<CreationState>,
     surfaces: surfaces::WorkspaceSurfaceState,
     config: halley_config::Clusters,
@@ -87,7 +92,10 @@ impl ClusterSystem {
             join_candidate: None,
             hovered_core: None,
             bloom: bloom::BloomState::default(),
+            overflow: overflow::OverflowState::default(),
             label_hover: RefCell::new(HashMap::new()),
+            overlay_hovered: None,
+            overlay_label_hover: RefCell::new(HashMap::new()),
             creation: None,
             surfaces: surfaces::WorkspaceSurfaceState::default(),
             config,
@@ -182,24 +190,77 @@ impl ClusterSystem {
         *mix
     }
 
+    pub fn set_overlay_hovered(&mut self, hovered: Option<(String, NodeId)>) -> bool {
+        if self.overlay_hovered == hovered {
+            return false;
+        }
+        self.overlay_hovered = hovered;
+        true
+    }
+
+    pub fn overlay_hovered_on_output(&self, output: &str) -> Option<NodeId> {
+        self.overlay_hovered
+            .as_ref()
+            .filter(|(candidate, _)| candidate == output)
+            .map(|(_, member)| *member)
+    }
+
+    pub fn overlay_label_hover_mix(&self, id: NodeId, highlighted: bool) -> f32 {
+        let mut states = self.overlay_label_hover.borrow_mut();
+        let mix = states.entry(id).or_insert(0.0);
+        let target = if highlighted { 1.0 } else { 0.0 };
+        let rate = if highlighted { 0.10 } else { 0.16 };
+        *mix += (target - *mix) * rate;
+        if (*mix - target).abs() < 0.002 {
+            *mix = target;
+        }
+        *mix
+    }
+
     pub fn labels_animating_on_output(
         &self,
         output: &str,
         policy: halley_config::NodeDisplayPolicy,
     ) -> bool {
-        if policy != halley_config::NodeDisplayPolicy::Hover {
-            return false;
+        let core_animating = if policy == halley_config::NodeDisplayPolicy::Hover {
+            let states = self.label_hover.borrow();
+            self.clusters_for_output(output).any(|(_, id, _)| {
+                let mix = states.get(&id).copied().unwrap_or(0.0);
+                let target = if self.hovered_core == Some(id)
+                    && self.bloom.cluster_on_output(output) != Some(id)
+                {
+                    1.0
+                } else {
+                    0.0
+                };
+                (mix - target).abs() > 0.002
+            })
+        } else {
+            false
+        };
+        let target = self.overlay_hovered_on_output(output);
+        let overlay_present =
+            self.bloom.cluster_on_output(output).is_some() || self.overflow.is_revealed(output);
+        if !overlay_present {
+            let members = self
+                .clusters_for_output(output)
+                .flat_map(|(_, id, _)| self.member_ids(id))
+                .collect::<Vec<_>>();
+            let mut states = self.overlay_label_hover.borrow_mut();
+            for member in members {
+                states.remove(&member);
+            }
         }
-        let states = self.label_hover.borrow();
-        self.clusters_for_output(output).any(|(_, id, _)| {
-            let mix = states.get(&id).copied().unwrap_or(0.0);
-            let target = if self.hovered_core == Some(id) {
-                1.0
-            } else {
-                0.0
-            };
-            (mix - target).abs() > 0.002
-        })
+        let states = self.overlay_label_hover.borrow();
+        let overlay_animating = target.is_some_and(|id| !states.contains_key(&id))
+            || self.clusters_for_output(output).any(|(_, id, _)| {
+                self.member_ids(id).into_iter().any(|member| {
+                    let mix = states.get(&member).copied().unwrap_or(0.0);
+                    let target_mix = if target == Some(member) { 1.0 } else { 0.0 };
+                    (mix - target_mix).abs() > 0.002
+                })
+            });
+        core_animating || overlay_animating
     }
 
     pub fn cycle_active_layout(
@@ -221,10 +282,19 @@ impl ClusterSystem {
             ClusterWorkspaceLayoutKind::Tiling => ClusterWorkspaceLayoutKind::Stacking,
             ClusterWorkspaceLayoutKind::Stacking => ClusterWorkspaceLayoutKind::Tiling,
         };
-        let duration_ms = match metadata.layout {
+        let layout = metadata.layout;
+        let duration_ms = match layout {
             ClusterWorkspaceLayoutKind::Tiling => self.animations.tiling.reflow_duration_ms,
             ClusterWorkspaceLayoutKind::Stacking => self.animations.stacking.cycle_duration_ms,
         };
+        match layout {
+            ClusterWorkspaceLayoutKind::Tiling => {
+                self.overflow.reveal(output, now);
+            }
+            ClusterWorkspaceLayoutKind::Stacking => {
+                self.hide_overflow(output);
+            }
+        }
         self.begin_reflow(output, id, before, now, duration_ms);
         true
     }
@@ -252,13 +322,16 @@ impl ClusterSystem {
                 }
             },
         )?;
-        self.begin_reflow(
-            output,
-            id,
-            before,
-            now,
-            self.animations.stacking.cycle_duration_ms,
-        );
+        let direction = match direction {
+            halley_config::FocusCycleDirection::Forward => {
+                halley_core::cluster::layout::ClusterCycleDirection::Next
+            }
+            halley_config::FocusCycleDirection::Backward => {
+                halley_core::cluster::layout::ClusterCycleDirection::Prev
+            }
+        };
+        let after = self.workspace_layout(id, work_area)?;
+        self.begin_stack_cycle_reflow(output, id, before, after, direction, now);
         Some(member)
     }
 
@@ -271,17 +344,20 @@ impl ClusterSystem {
         else {
             return false;
         };
-        self.close_bloom(output);
+        self.close_bloom(output, now);
         self.set_hovered_core(None, now);
         if self.active_on(output) == Some(id) {
+            self.hide_overflow(output);
             self.active.remove(output);
             self.registry.deactivate_cluster_workspace(id);
             self.begin_transition(output, id, transition::TransitionKind::Closing, now);
         } else {
+            self.hide_overflow(output);
             if let Some(previous) = self.active.insert(output.to_string(), id) {
                 self.registry.deactivate_cluster_workspace(previous);
             }
             self.registry.activate_cluster_workspace(id);
+            self.overflow.reveal(output, now);
             self.begin_transition(output, id, transition::TransitionKind::Opening, now);
         }
         true
@@ -295,17 +371,20 @@ impl ClusterSystem {
         {
             return false;
         }
-        self.close_bloom(output);
+        self.close_bloom(output, now);
         self.set_hovered_core(None, now);
         if self.active_on(output) == Some(id) {
+            self.hide_overflow(output);
             self.active.remove(output);
             self.registry.deactivate_cluster_workspace(id);
             self.begin_transition(output, id, transition::TransitionKind::Closing, now);
         } else {
+            self.hide_overflow(output);
             if let Some(previous) = self.active.insert(output.to_string(), id) {
                 self.registry.deactivate_cluster_workspace(previous);
             }
             self.registry.activate_cluster_workspace(id);
+            self.overflow.reveal(output, now);
             self.begin_transition(output, id, transition::TransitionKind::Opening, now);
         }
         true
@@ -319,11 +398,41 @@ impl ClusterSystem {
         self.registry.cluster_id_for_member(id)
     }
 
+    pub fn cluster_for_core(&self, id: NodeId) -> Option<ClusterId> {
+        self.registry.cluster_id_for_core(id)
+    }
+
+    pub fn core_node(&self, id: ClusterId) -> Option<NodeId> {
+        self.registry.cluster(id)?.core_node()
+    }
+
+    pub(crate) fn collapsed_core_landmarks(&self) -> Vec<(ClusterId, NodeId, String, Vec2, bool)> {
+        self.metadata
+            .iter()
+            .filter_map(|(cluster_id, metadata)| {
+                let cluster = self.registry.cluster(*cluster_id)?;
+                (self.active_on(&metadata.output) != Some(*cluster_id)).then_some((
+                    *cluster_id,
+                    cluster.core_node()?,
+                    metadata.output.clone(),
+                    metadata.core_position,
+                    cluster.pinned,
+                ))
+            })
+            .collect()
+    }
+
     pub fn member_ids(&self, id: ClusterId) -> Vec<NodeId> {
         self.registry
             .cluster(id)
             .map(|cluster| cluster.members().to_vec())
             .unwrap_or_default()
+    }
+
+    pub fn close_targets_for_node(&self, id: NodeId) -> Vec<NodeId> {
+        self.cluster_for_core(id)
+            .map(|cluster| self.member_ids(cluster))
+            .unwrap_or_else(|| vec![id])
     }
 
     pub fn active_layout_for_member(&self, id: NodeId) -> Option<ClusterWorkspaceLayoutKind> {
@@ -356,6 +465,10 @@ impl ClusterSystem {
                     .map(|metadata| metadata.layout)
                     .unwrap_or(ClusterWorkspaceLayoutKind::Tiling);
                 let before = self.workspace_layout(active, work_area);
+                let previous_overflow_len = before
+                    .as_ref()
+                    .map(|layout| layout.queue_members.len())
+                    .unwrap_or(0);
                 let result = match layout {
                     ClusterWorkspaceLayoutKind::Stacking => self
                         .registry
@@ -370,10 +483,26 @@ impl ClusterSystem {
                 if result.is_err() {
                     return false;
                 }
-                if layout == ClusterWorkspaceLayoutKind::Stacking
-                    && let Some(before) = before
+                if let Some(before) = before {
+                    match layout {
+                        ClusterWorkspaceLayoutKind::Stacking => self.begin_stack_insert_reflow(
+                            output, active, before, member, work_area, now,
+                        ),
+                        ClusterWorkspaceLayoutKind::Tiling => self.begin_reflow(
+                            output,
+                            active,
+                            before,
+                            now,
+                            self.animations.tiling.reflow_duration_ms,
+                        ),
+                    }
+                }
+                if layout == ClusterWorkspaceLayoutKind::Tiling
+                    && self
+                        .workspace_layout(active, work_area)
+                        .is_some_and(|layout| layout.queue_members.len() > previous_overflow_len)
                 {
-                    self.begin_stack_insert_reflow(output, active, before, member, work_area, now);
+                    self.overflow.reveal(output, now);
                 }
                 true
             }
@@ -414,7 +543,7 @@ impl ClusterSystem {
         let Some(layout) = self.workspace_layout(active, work_area) else {
             return WindowPresentation::Hidden;
         };
-        layout
+        let target = layout
             .placements
             .into_iter()
             .find(|placement| placement.node_id == id)
@@ -431,21 +560,57 @@ impl ClusterSystem {
                     )
                         .into(),
                 );
-                let visual = self.transition_visual(output, active, id, target, core, now);
-                let rect = visual.map_or_else(
-                    || {
-                        self.reflow_visual(output, active, id, target, now)
-                            .unwrap_or(target)
-                    },
-                    |visual| visual.rect,
-                );
+                (target, placement.depth)
+            });
+        if let Some((target, depth)) = target {
+            if let Some(visual) = self.transition_visual(output, active, id, target, core, now) {
                 WindowPresentation::Workspace {
-                    rect,
-                    depth: placement.depth,
-                    alpha: visual.map_or(1.0, |visual| visual.alpha),
+                    rect: visual.rect,
+                    depth,
+                    alpha: visual.alpha,
                 }
-            })
-            .unwrap_or(WindowPresentation::Hidden)
+            } else if let Some(visual) =
+                self.reflow_visual(output, active, id, Some((target, depth)), now)
+            {
+                WindowPresentation::Workspace {
+                    rect: visual.rect,
+                    depth: visual.depth,
+                    alpha: visual.alpha,
+                }
+            } else {
+                WindowPresentation::Workspace {
+                    rect: target,
+                    depth,
+                    alpha: 1.0,
+                }
+            }
+        } else if let Some(visual) = self.reflow_visual(output, active, id, None, now) {
+            WindowPresentation::Workspace {
+                rect: visual.rect,
+                depth: visual.depth,
+                alpha: visual.alpha,
+            }
+        } else {
+            WindowPresentation::Hidden
+        }
+    }
+
+    pub fn extra_window_presentation(
+        &self,
+        id: NodeId,
+        output: &str,
+        now: Duration,
+    ) -> Option<WindowPresentation> {
+        let active = self.active_on(output)?;
+        if self.cluster_for_member(id) != Some(active) {
+            return None;
+        }
+        let visual = self.extra_reflow_visual(output, active, id, now)?;
+        Some(WindowPresentation::Workspace {
+            rect: visual.rect,
+            depth: visual.depth,
+            alpha: visual.alpha,
+        })
     }
 
     pub fn directional_tile_target(
@@ -594,6 +759,46 @@ impl ClusterSystem {
         self.registry.cluster(id)?.members().first().copied()
     }
 
+    pub fn detach_member(
+        &mut self,
+        field: &mut Field,
+        cluster_id: ClusterId,
+        member: NodeId,
+        position: Vec2,
+        now: Duration,
+    ) -> bool {
+        use halley_core::cluster::ClusterRemoveMemberOutcome;
+        use halley_core::field::{NodeState, Visibility};
+
+        let Some(outcome) = self.registry.remove_member_from_cluster(cluster_id, member) else {
+            return false;
+        };
+        match outcome {
+            ClusterRemoveMemberOutcome::Removed => {
+                let _ = field.set_state(member, NodeState::Active);
+                if let Some(node) = field.node_mut(member) {
+                    node.visibility.clear(Visibility::HIDDEN_BY_CLUSTER);
+                    node.visibility.clear(Visibility::DETACHED);
+                    node.pos = position;
+                }
+                let _ = field.touch(member, now.as_millis() as u64);
+            }
+            ClusterRemoveMemberOutcome::RequiresDissolve => {
+                if !self.registry.dissolve_cluster(field, cluster_id) {
+                    return false;
+                }
+                self.remove_cluster_metadata(cluster_id);
+                if let Some(node) = field.node_mut(member) {
+                    node.pos = position;
+                }
+                let _ = field.touch(member, now.as_millis() as u64);
+            }
+        }
+        self.overlay_label_hover.borrow_mut().remove(&member);
+        self.overlay_hovered = None;
+        true
+    }
+
     /// Removes one destroyed window from cluster bookkeeping before
     /// `NodesState` discards its Field node. A remapped/unmapped window is
     /// intentionally retained; only final surface destruction reaches here.
@@ -629,12 +834,67 @@ impl ClusterSystem {
         true
     }
 
+    pub fn forget_destroyed_member_animated(
+        &mut self,
+        field: &mut Field,
+        member: NodeId,
+        work_area: Rectangle<i32, Logical>,
+        now: Duration,
+    ) -> bool {
+        let reflow = self.cluster_for_member(member).and_then(|cluster| {
+            let metadata = self.metadata(cluster)?;
+            (self.active_on(&metadata.output) == Some(cluster)
+                && metadata.layout == ClusterWorkspaceLayoutKind::Tiling)
+                .then_some(())?;
+            let before = self.workspace_layout(cluster, work_area)?;
+            let removed_was_visible = before
+                .placements
+                .iter()
+                .any(|placement| placement.node_id == member);
+            if !removed_was_visible {
+                return None;
+            }
+            let promotion = before.queue_members.first().copied().and_then(|promoted| {
+                let origin = self
+                    .overflow_geometry(&metadata.output, work_area)?
+                    .items
+                    .into_iter()
+                    .find(|item| item.node_id == promoted)?
+                    .rect;
+                Some((promoted, origin))
+            });
+            Some((cluster, metadata.output.clone(), before, promotion))
+        });
+        let changed = self.forget_destroyed_member(field, member);
+        if changed
+            && let Some((cluster, output, before, promotion)) = reflow
+            && self.active_on(&output) == Some(cluster)
+        {
+            if let Some((promoted, origin)) = promotion
+                && self.cluster_for_member(promoted) == Some(cluster)
+            {
+                self.begin_reflow_with_origin(&output, cluster, before, promoted, origin, now);
+                self.overflow.reveal(&output, now);
+            } else {
+                self.begin_reflow(
+                    &output,
+                    cluster,
+                    before,
+                    now,
+                    self.animations.tiling.reflow_duration_ms,
+                );
+            }
+        }
+        changed
+    }
+
     fn remove_cluster_metadata(&mut self, id: ClusterId) {
         if self.hovered_core == Some(id) {
             self.hovered_core = None;
         }
         self.label_hover.borrow_mut().remove(&id);
         self.bloom.remove_cluster(id);
+        self.overflow.remove_cluster(id);
         let output = self.metadata.remove(&id).map(|metadata| metadata.output);
         if let Some(output) = output {
             if let Some(slots) = self.slots.get_mut(&output) {
@@ -791,11 +1051,41 @@ mod tests {
         assert!(system.begin_naming());
         assert!(system.edit_name(NameInput::Character('W')));
         let id = system.finish_creation(&mut field).unwrap();
+        system.metadata.get_mut(&id).unwrap().layout = ClusterWorkspaceLayoutKind::Tiling;
         assert!(system.activate_slot("DP-1", 1, Duration::ZERO));
+        let work_area = Rectangle::new((0, 0).into(), (1_000, 700).into());
+        let before = system
+            .workspace_layout(id, work_area)
+            .unwrap()
+            .placements
+            .into_iter()
+            .find(|placement| placement.node_id == b)
+            .unwrap()
+            .rect;
+        let before = Rectangle::<i32, Logical>::new(
+            (before.x.round() as i32, before.y.round() as i32).into(),
+            (
+                before.w.round().max(1.0) as i32,
+                before.h.round().max(1.0) as i32,
+            )
+                .into(),
+        );
+        let started = Duration::from_secs(2);
 
-        assert!(system.forget_destroyed_member(&mut field, a));
+        assert!(system.forget_destroyed_member_animated(&mut field, a, work_area, started));
         assert_eq!(system.registry().cluster(id).unwrap().members(), &[b]);
         assert_eq!(system.active_on("DP-1"), Some(id));
+        assert!(system.is_animating_on_output("DP-1", started));
+        assert_eq!(
+            system.window_presentation(b, "DP-1", work_area, None, started),
+            WindowPresentation::Workspace {
+                rect: before,
+                depth: 0,
+                alpha: 1.0,
+            }
+        );
+        let core = system.core_node(id).unwrap();
+        assert_eq!(system.close_targets_for_node(core), vec![b]);
 
         assert!(system.forget_destroyed_member(&mut field, b));
         assert!(system.registry().cluster(id).is_none());
@@ -853,6 +1143,7 @@ mod tests {
             Some(ids[0])
         );
         assert_eq!(system.registry().cluster(cluster).unwrap().master(), ids[1]);
+        let before_join = system.workspace_layout(cluster, work_area).unwrap();
 
         let joined = field.spawn_surface(
             "joined",
@@ -868,6 +1159,33 @@ mod tests {
             Duration::from_secs(2),
         ));
         assert!(system.registry().cluster(cluster).unwrap().contains(joined));
+        let after_join = system.workspace_layout(cluster, work_area).unwrap();
+        let (moved, old_rect) = before_join
+            .placements
+            .iter()
+            .find_map(|before| {
+                let after = after_join
+                    .placements
+                    .iter()
+                    .find(|after| after.node_id == before.node_id)?;
+                (before.rect != after.rect).then_some((before.node_id, before.rect))
+            })
+            .expect("adding a fourth tile should move an existing tile");
+        let old_rect = Rectangle::<i32, Logical>::new(
+            (old_rect.x.round() as i32, old_rect.y.round() as i32).into(),
+            (
+                old_rect.w.round().max(1.0) as i32,
+                old_rect.h.round().max(1.0) as i32,
+            )
+                .into(),
+        );
+        let WindowPresentation::Workspace { rect, .. } =
+            system.window_presentation(moved, "DP-1", work_area, None, Duration::from_secs(2))
+        else {
+            panic!("existing tile should remain visible during insertion reflow");
+        };
+        assert_eq!(rect, old_rect);
+        assert!(system.is_animating_on_output("DP-1", Duration::from_secs(2)));
 
         let floating = field.spawn_surface(
             "floating",

@@ -6,6 +6,7 @@ use smithay::backend::allocator::{
     Fourcc, Modifier,
     dmabuf::{Dmabuf, DmabufFlags},
 };
+use smithay::backend::renderer::sync::SyncPoint;
 use smithay::reexports::wayland_server::Resource;
 use smithay::utils::{Logical, Point, Rectangle};
 use smithay::wayland::seat::WaylandFocus;
@@ -58,11 +59,25 @@ impl ScreencastState {
     }
 }
 
+/// Result of filling one PipeWire buffer.
+///
+/// CPU-backed buffers are complete when this function returns. DMA-BUFs are
+/// only publishable after their renderer fence signals; keeping that
+/// distinction explicit prevents the portal from ever queueing a stale GPU
+/// buffer again.
+pub enum CaptureFrameResult {
+    Immediate(halley_ipc::CaptureFrameResponse),
+    Submitted {
+        response: halley_ipc::CaptureFrameResponse,
+        sync: SyncPoint,
+    },
+}
+
 pub fn capture_frame<D: SessionDriver>(
     session: &mut Session<D>,
     request: halley_ipc::CaptureFrameRequest,
     fds: Vec<OwnedFd>,
-) -> Result<halley_ipc::CaptureFrameResponse, String> {
+) -> Result<CaptureFrameResult, String> {
     if session.session_lock.active() {
         return Err("session is locked".to_string());
     }
@@ -72,7 +87,7 @@ pub fn capture_frame<D: SessionDriver>(
     let height = request.source.height();
     let expected = frame_len(width, height)?;
 
-    match request.buffer {
+    let sync = match request.buffer {
         halley_ipc::CaptureBuffer::MemFd {
             fd_index,
             offset,
@@ -110,6 +125,7 @@ pub fn capture_frame<D: SessionDriver>(
             }
             rgba_to_bgrx(&mut pixels);
             write_all_at(fd, offset, &pixels).map_err(|err| err.to_string())?;
+            None
         }
         halley_ipc::CaptureBuffer::Dmabuf { buffer_id } => {
             if !fds.is_empty() {
@@ -129,14 +145,18 @@ pub fn capture_frame<D: SessionDriver>(
             )
             .map_err(|err| err.to_string());
             session.screencast.buffers.insert(key, dmabuf);
-            result?;
+            Some(result?)
         }
-    }
+    };
 
     let cursor = (request.cursor_mode == halley_ipc::CursorMode::Metadata)
         .then(|| cursor_metadata(session, &request.source))
         .flatten();
-    Ok(halley_ipc::CaptureFrameResponse { cursor })
+    let response = halley_ipc::CaptureFrameResponse { cursor };
+    Ok(match sync {
+        Some(sync) => CaptureFrameResult::Submitted { response, sync },
+        None => CaptureFrameResult::Immediate(response),
+    })
 }
 
 fn rgba_to_bgrx(pixels: &mut [u8]) {

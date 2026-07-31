@@ -14,11 +14,13 @@ use smithay::wayland::seat::WaylandFocus;
 use smithay::wayland::shell::wlr_layer::Layer;
 
 use super::RenderRequest;
-use crate::presentation::window::window_visual_state;
+use crate::presentation::window::{
+    window_visual_state, window_visual_state_with_cluster_presentation,
+};
 mod capture_ui;
 mod clusters;
 mod effects;
-mod nodes;
+pub(crate) mod nodes;
 mod overview;
 mod windows;
 
@@ -147,6 +149,15 @@ pub fn build(
         .overlays
         .overlays
         .snapshot(&output.name(), request.frame.target_presentation_time);
+    let cluster_exclusive = crate::presentation::window::cluster_exclusive_presentation(
+        request.desktop.clusters,
+        request.desktop.nodes,
+        request.desktop.fullscreen,
+        request.desktop.maximize,
+        output,
+        output_geometry,
+        request.frame.target_presentation_time,
+    );
 
     // Apogee is a replacement scene, not a translucent layer over the live
     // desktop. Keep only its tiles and the wallpaper layer behind them; normal
@@ -347,6 +358,11 @@ pub fn build(
             request.resources.backdrop_blur_renderer,
         )?);
     }
+    // Cluster-exclusive windows live above every desktop-owned element but
+    // below the top layer retained by field maximize. The insertion happens
+    // after the complete desktop has been built so the target can be removed
+    // from its ordinary cluster stack without duplicating it.
+    let desktop_foreground_index = elements.len();
 
     let mut hover_preview = hover_preview_elements(
         renderer,
@@ -499,6 +515,7 @@ pub fn build(
             shadow_config: request.visuals.shadows.node,
             shadow_renderer: request.resources.shadow_renderer,
             node_grab_active: request.desktop.node_grab_active,
+            now: request.frame.target_presentation_time,
             node_renderer: request.resources.node_renderer,
             ui_text: request.resources.ui_text,
         },
@@ -527,6 +544,7 @@ pub fn build(
             nodes: request.desktop.nodes,
             config: request.overlays.overlay_config,
             decorations: request.visuals.decorations,
+            now: request.frame.target_presentation_time,
             node_renderer: request.resources.node_renderer,
             ui_text: request.resources.ui_text,
         },
@@ -549,8 +567,11 @@ pub fn build(
         fullscreen: request.desktop.fullscreen,
         maximize: request.desktop.maximize,
         window_rules: request.desktop.window_rules,
+        cluster_presentation_override: None,
+        instance_identity: None,
     };
     let mut live_windows = Vec::new();
+    let mut exclusive_windows = Vec::new();
     for (stack_index, window) in request.desktop.space.elements().enumerate() {
         if !crate::wayland::window_is_on_output(window, output, primary_output) {
             continue;
@@ -564,8 +585,38 @@ pub fn build(
             request.resources.shadow_renderer,
             request.resources.window_decoration_renderer,
         )?;
-        if !window_scene.elements.is_empty() {
+        if window_scene.cluster_exclusive {
+            exclusive_windows.push((stack_index, window_scene));
+        } else if !window_scene.elements.is_empty() {
             live_windows.push((stack_index, window_scene));
+        }
+        let extra_presentation = window
+            .wl_surface()
+            .and_then(|surface| request.desktop.nodes.id_for_surface(surface.as_ref()))
+            .and_then(|id| {
+                request.desktop.clusters.extra_window_presentation(
+                    id,
+                    &output.name(),
+                    request.frame.target_presentation_time,
+                )
+            });
+        if let Some(extra_presentation) = extra_presentation {
+            let extra_scene = live_window_elements(
+                renderer,
+                window,
+                LiveWindowContext {
+                    cluster_presentation_override: Some(extra_presentation),
+                    instance_identity: Some("stack-cycle-extra"),
+                    ..context
+                },
+                request.resources.fullscreen_textures,
+                request.resources.backdrop_blur_renderer,
+                request.resources.shadow_renderer,
+                request.resources.window_decoration_renderer,
+            )?;
+            if !extra_scene.elements.is_empty() {
+                live_windows.push((stack_index, extra_scene));
+            }
         }
     }
     // A cluster workspace is one coherent stack. Preserve its position
@@ -589,6 +640,34 @@ pub fn build(
     }));
     sort_stack_groups(&mut stack);
     elements.extend(stack.into_iter().rev().flat_map(|group| group.elements));
+
+    if let Some(exclusive) = cluster_exclusive {
+        // Popups owned by the selected X11 member inherit the exclusive flag.
+        // Keep every such scene and retain normal front-to-back Space order.
+        let mut foreground = exclusive_windows
+            .into_iter()
+            .rev()
+            .flat_map(|(_, scene)| scene.elements)
+            .collect::<Vec<_>>();
+        if exclusive.progress > 0.0 {
+            foreground.push(SceneElement::Border(SolidColorRenderElement::new(
+                Id::new(),
+                Rectangle::from_size(output_geometry.size.to_physical(1)),
+                CommitCounter::default(),
+                smithay::backend::renderer::Color32F::new(
+                    0.0,
+                    0.0,
+                    0.0,
+                    exclusive.progress.clamp(0.0, 1.0),
+                ),
+                Kind::Unspecified,
+            )));
+        }
+        elements.splice(
+            desktop_foreground_index..desktop_foreground_index,
+            foreground,
+        );
+    }
 
     elements.extend(layer_surface_scene_elements(
         renderer,

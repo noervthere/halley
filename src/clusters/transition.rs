@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use halley_core::cluster::ClusterId;
-use halley_core::cluster::layout::ClusterWorkspaceLayoutKind;
+use halley_core::cluster::layout::{ClusterCycleDirection, ClusterWorkspaceLayoutKind};
 use halley_core::field::NodeId;
 use smithay::utils::{Logical, Point, Rectangle};
 
@@ -36,7 +36,28 @@ pub(super) struct ReflowTransition {
     cluster_id: ClusterId,
     started_at: Duration,
     duration: Duration,
-    from: HashMap<NodeId, Rectangle<i32, Logical>>,
+    from: HashMap<NodeId, ReflowPlacement>,
+    kind: ReflowKind,
+    wrapped: Option<NodeId>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ReflowPlacement {
+    rect: Rectangle<i32, Logical>,
+    depth: usize,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ReflowKind {
+    Standard,
+    StackCycle(ClusterCycleDirection),
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(super) struct ReflowVisual {
+    pub(super) rect: Rectangle<i32, Logical>,
+    pub(super) depth: usize,
+    pub(super) alpha: f32,
 }
 
 impl ClusterSystem {
@@ -185,7 +206,7 @@ impl ClusterSystem {
             self.reflows.remove(output);
             return;
         }
-        let from = placement_rects(before);
+        let from = self.current_reflow_origins(output, cluster_id, before, now);
         self.reflows.insert(
             output.to_string(),
             ReflowTransition {
@@ -193,8 +214,134 @@ impl ClusterSystem {
                 started_at: now,
                 duration: Duration::from_millis(u64::from(duration_ms.max(1))),
                 from,
+                kind: ReflowKind::Standard,
+                wrapped: None,
             },
         );
+    }
+
+    pub(super) fn begin_reflow_with_origin(
+        &mut self,
+        output: &str,
+        cluster_id: ClusterId,
+        before: halley_core::cluster::layout::ClusterWorkspaceLayoutResult,
+        member: NodeId,
+        origin: Rectangle<i32, Logical>,
+        now: Duration,
+    ) {
+        if !self.animations.enabled {
+            self.reflows.remove(output);
+            return;
+        }
+        let mut from = self.current_reflow_origins(output, cluster_id, before, now);
+        from.insert(
+            member,
+            ReflowPlacement {
+                rect: origin,
+                depth: usize::MAX,
+            },
+        );
+        self.reflows.insert(
+            output.to_string(),
+            ReflowTransition {
+                cluster_id,
+                started_at: now,
+                duration: Duration::from_millis(u64::from(
+                    self.animations.tiling.reflow_duration_ms.max(1),
+                )),
+                from,
+                kind: ReflowKind::Standard,
+                wrapped: None,
+            },
+        );
+    }
+
+    pub(super) fn begin_stack_cycle_reflow(
+        &mut self,
+        output: &str,
+        cluster_id: ClusterId,
+        before: halley_core::cluster::layout::ClusterWorkspaceLayoutResult,
+        after: halley_core::cluster::layout::ClusterWorkspaceLayoutResult,
+        direction: ClusterCycleDirection,
+        now: Duration,
+    ) {
+        if !self.animations.enabled {
+            self.reflows.remove(output);
+            return;
+        }
+        let from = placement_rects(before);
+        let to = placement_rects(after);
+        let same_visible_set =
+            from.len() == to.len() && from.keys().all(|member| to.contains_key(member));
+        let old_top = from
+            .iter()
+            .max_by_key(|(_, placement)| placement.depth)
+            .map(|(member, _)| *member);
+        let old_bottom = from
+            .iter()
+            .min_by_key(|(_, placement)| placement.depth)
+            .map(|(member, _)| *member);
+        let new_top = to
+            .iter()
+            .max_by_key(|(_, placement)| placement.depth)
+            .map(|(member, _)| *member);
+        let new_bottom = to
+            .iter()
+            .min_by_key(|(_, placement)| placement.depth)
+            .map(|(member, _)| *member);
+        let wrapped = match direction {
+            ClusterCycleDirection::Next
+                if same_visible_set && old_top.is_some() && old_top == new_bottom =>
+            {
+                old_top
+            }
+            ClusterCycleDirection::Prev
+                if same_visible_set && old_bottom.is_some() && old_bottom == new_top =>
+            {
+                old_bottom
+            }
+            _ => None,
+        };
+        self.reflows.insert(
+            output.to_string(),
+            ReflowTransition {
+                cluster_id,
+                started_at: now,
+                duration: Duration::from_millis(u64::from(
+                    self.animations.stacking.cycle_duration_ms.max(1),
+                )),
+                from,
+                kind: ReflowKind::StackCycle(direction),
+                wrapped,
+            },
+        );
+    }
+
+    fn current_reflow_origins(
+        &self,
+        output: &str,
+        cluster_id: ClusterId,
+        before: halley_core::cluster::layout::ClusterWorkspaceLayoutResult,
+        now: Duration,
+    ) -> HashMap<NodeId, ReflowPlacement> {
+        placement_rects(before)
+            .into_iter()
+            .map(|(member, target)| {
+                let current = self
+                    .reflow_visual(
+                        output,
+                        cluster_id,
+                        member,
+                        Some((target.rect, target.depth)),
+                        now,
+                    )
+                    .map_or(target, |visual| ReflowPlacement {
+                        rect: visual.rect,
+                        depth: visual.depth,
+                    });
+                (member, current)
+            })
+            .collect()
     }
 
     pub(super) fn begin_stack_insert_reflow(
@@ -220,17 +367,21 @@ impl ClusterSystem {
                     .find(|placement| placement.node_id == inserted)
             })
         {
+            let depth = target.depth;
             let target = placement_rect(target);
             from.insert(
                 inserted,
-                Rectangle::new(
-                    (
-                        target.loc.x - (target.size.w as f32 * 0.55).round() as i32,
-                        target.loc.y,
-                    )
-                        .into(),
-                    target.size,
-                ),
+                ReflowPlacement {
+                    rect: Rectangle::new(
+                        (
+                            target.loc.x - (target.size.w as f32 * 0.55).round() as i32,
+                            target.loc.y,
+                        )
+                            .into(),
+                        target.size,
+                    ),
+                    depth,
+                },
             );
         }
         self.reflows.insert(
@@ -242,6 +393,8 @@ impl ClusterSystem {
                     self.animations.stacking.cycle_duration_ms.max(1),
                 )),
                 from,
+                kind: ReflowKind::Standard,
+                wrapped: None,
             },
         );
     }
@@ -251,9 +404,9 @@ impl ClusterSystem {
         output: &str,
         cluster_id: ClusterId,
         member: NodeId,
-        target: Rectangle<i32, Logical>,
+        target: Option<(Rectangle<i32, Logical>, usize)>,
         now: Duration,
-    ) -> Option<Rectangle<i32, Logical>> {
+    ) -> Option<ReflowVisual> {
         let reflow = self.reflows.get(output)?;
         if reflow.cluster_id != cluster_id {
             return None;
@@ -262,21 +415,170 @@ impl ClusterSystem {
         if elapsed >= reflow.duration {
             return None;
         }
-        let from = *reflow.from.get(&member)?;
         let linear = (elapsed.as_secs_f32() / reflow.duration.as_secs_f32()).clamp(0.0, 1.0);
-        let eased = linear * linear * (3.0 - 2.0 * linear);
-        Some(lerp_rect(from, target, eased))
+        let eased = match reflow.kind {
+            ReflowKind::StackCycle(_) => ease_in_out_cubic(linear),
+            ReflowKind::Standard => linear * linear * (3.0 - 2.0 * linear),
+        };
+        let from = reflow.from.get(&member).copied();
+        match reflow.kind {
+            ReflowKind::Standard => {
+                let from = from?;
+                let (target, depth) = target?;
+                Some(ReflowVisual {
+                    rect: lerp_rect(from.rect, target, eased),
+                    depth,
+                    alpha: 1.0,
+                })
+            }
+            ReflowKind::StackCycle(direction) => stack_cycle_visual(
+                from,
+                target,
+                direction,
+                reflow.wrapped == Some(member),
+                eased,
+            ),
+        }
+    }
+
+    pub(super) fn extra_reflow_visual(
+        &self,
+        output: &str,
+        cluster_id: ClusterId,
+        member: NodeId,
+        now: Duration,
+    ) -> Option<ReflowVisual> {
+        let reflow = self.reflows.get(output)?;
+        if reflow.cluster_id != cluster_id || reflow.wrapped != Some(member) {
+            return None;
+        }
+        let ReflowKind::StackCycle(ClusterCycleDirection::Next) = reflow.kind else {
+            return None;
+        };
+        let elapsed = now.saturating_sub(reflow.started_at);
+        if elapsed >= reflow.duration {
+            return None;
+        }
+        let linear = (elapsed.as_secs_f32() / reflow.duration.as_secs_f32()).clamp(0.0, 1.0);
+        let progress = ease_in_out_cubic(linear);
+        let from = reflow.from.get(&member).copied()?;
+        stack_cycle_extra_visual(
+            from,
+            ClusterCycleDirection::Next,
+            reflow.wrapped == Some(member),
+            progress,
+        )
+    }
+}
+
+fn ease_in_out_cubic(progress: f32) -> f32 {
+    if progress < 0.5 {
+        4.0 * progress * progress * progress
+    } else {
+        1.0 - (-2.0 * progress + 2.0).powi(3) / 2.0
     }
 }
 
 fn placement_rects(
     layout: halley_core::cluster::layout::ClusterWorkspaceLayoutResult,
-) -> HashMap<NodeId, Rectangle<i32, Logical>> {
+) -> HashMap<NodeId, ReflowPlacement> {
     layout
         .placements
         .into_iter()
-        .map(|placement| (placement.node_id, placement_rect(placement)))
+        .map(|placement| {
+            (
+                placement.node_id,
+                ReflowPlacement {
+                    rect: placement_rect(placement),
+                    depth: placement.depth,
+                },
+            )
+        })
         .collect()
+}
+
+fn stack_cycle_visual(
+    from: Option<ReflowPlacement>,
+    target: Option<(Rectangle<i32, Logical>, usize)>,
+    direction: ClusterCycleDirection,
+    wrapped: bool,
+    progress: f32,
+) -> Option<ReflowVisual> {
+    if wrapped && let Some((target, depth)) = target {
+        return Some(match direction {
+            ClusterCycleDirection::Next => ReflowVisual {
+                rect: target,
+                depth,
+                alpha: progress,
+            },
+            ClusterCycleDirection::Prev => {
+                let mut start = target;
+                start.loc.x -= (start.size.w as f32 * 0.55).round() as i32;
+                ReflowVisual {
+                    rect: lerp_rect(start, target, progress),
+                    depth: usize::MAX,
+                    alpha: progress,
+                }
+            }
+        });
+    }
+    match (from, target) {
+        (Some(from), Some((target, depth))) => Some(ReflowVisual {
+            rect: lerp_rect(from.rect, target, progress),
+            depth,
+            alpha: 1.0,
+        }),
+        (Some(from), None) => {
+            let mut end = from.rect;
+            match direction {
+                ClusterCycleDirection::Next => {
+                    end.loc.x -= (end.size.w as f32 * 0.55).round() as i32;
+                }
+                ClusterCycleDirection::Prev => {
+                    end.loc.x += (end.size.w as f32 * 0.08).round() as i32;
+                    end.loc.y += (end.size.h as f32 * 0.04).round() as i32;
+                }
+            }
+            Some(ReflowVisual {
+                rect: lerp_rect(from.rect, end, progress),
+                depth: match direction {
+                    ClusterCycleDirection::Next => usize::MAX,
+                    ClusterCycleDirection::Prev => from.depth,
+                },
+                alpha: 1.0 - progress,
+            })
+        }
+        (None, Some((target, depth))) => {
+            let mut start = target;
+            if direction == ClusterCycleDirection::Prev {
+                start.loc.x -= (start.size.w as f32 * 0.55).round() as i32;
+            }
+            Some(ReflowVisual {
+                rect: lerp_rect(start, target, progress),
+                depth,
+                alpha: progress,
+            })
+        }
+        (None, None) => None,
+    }
+}
+
+fn stack_cycle_extra_visual(
+    from: ReflowPlacement,
+    direction: ClusterCycleDirection,
+    wrapped: bool,
+    progress: f32,
+) -> Option<ReflowVisual> {
+    if !wrapped || direction != ClusterCycleDirection::Next {
+        return None;
+    }
+    let mut end = from.rect;
+    end.loc.x -= (end.size.w as f32 * 0.55).round() as i32;
+    Some(ReflowVisual {
+        rect: lerp_rect(from.rect, end, progress),
+        depth: usize::MAX,
+        alpha: 1.0 - progress,
+    })
 }
 
 fn placement_rect(
@@ -322,5 +624,107 @@ mod tests {
         let to = Rectangle::new((100, 80).into(), (800, 600).into());
         assert_eq!(lerp_rect(from, to, 0.0), from);
         assert_eq!(lerp_rect(from, to, 1.0), to);
+    }
+
+    #[test]
+    fn forward_stack_cycle_flies_an_outgoing_card_left() {
+        let rect = Rectangle::new((100, 80).into(), (800, 600).into());
+        let visual = stack_cycle_visual(
+            Some(ReflowPlacement { rect, depth: 3 }),
+            None,
+            ClusterCycleDirection::Next,
+            false,
+            0.5,
+        )
+        .expect("outgoing visual");
+        assert!(visual.rect.loc.x < rect.loc.x);
+        assert_eq!(visual.alpha, 0.5);
+        assert_eq!(visual.depth, usize::MAX);
+    }
+
+    #[test]
+    fn backward_stack_cycle_flies_an_incoming_card_from_the_left() {
+        let target = Rectangle::new((100, 80).into(), (800, 600).into());
+        let visual = stack_cycle_visual(
+            None,
+            Some((target, 3)),
+            ClusterCycleDirection::Prev,
+            false,
+            0.5,
+        )
+        .expect("incoming visual");
+        assert!(visual.rect.loc.x < target.loc.x);
+        assert_eq!(visual.alpha, 0.5);
+        assert_eq!(visual.depth, 3);
+    }
+
+    #[test]
+    fn forward_wrapped_card_is_already_canonical_at_the_back() {
+        let old = Rectangle::new((100, 80).into(), (800, 600).into());
+        let target = Rectangle::new((220, 100).into(), (700, 520).into());
+        let visual = stack_cycle_visual(
+            Some(ReflowPlacement {
+                rect: old,
+                depth: 3,
+            }),
+            Some((target, 0)),
+            ClusterCycleDirection::Next,
+            true,
+            0.25,
+        )
+        .expect("canonical wrapped visual");
+        assert_eq!(visual.rect, target);
+        assert_eq!(visual.depth, 0);
+        assert_eq!(visual.alpha, 0.25);
+    }
+
+    #[test]
+    fn forward_wrap_keeps_a_second_topmost_outgoing_copy() {
+        let rect = Rectangle::new((100, 80).into(), (800, 600).into());
+        let visual = stack_cycle_extra_visual(
+            ReflowPlacement { rect, depth: 3 },
+            ClusterCycleDirection::Next,
+            true,
+            0.5,
+        )
+        .expect("render-only outgoing copy");
+        assert!(visual.rect.loc.x < rect.loc.x);
+        assert_eq!(visual.depth, usize::MAX);
+        assert_eq!(visual.alpha, 0.5);
+        assert!(
+            stack_cycle_extra_visual(
+                ReflowPlacement { rect, depth: 3 },
+                ClusterCycleDirection::Prev,
+                true,
+                0.5,
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn backward_wrapped_card_rises_from_the_left_above_the_stack() {
+        let old = Rectangle::new((220, 100).into(), (700, 520).into());
+        let target = Rectangle::new((100, 80).into(), (800, 600).into());
+        let visual = stack_cycle_visual(
+            Some(ReflowPlacement {
+                rect: old,
+                depth: 0,
+            }),
+            Some((target, 3)),
+            ClusterCycleDirection::Prev,
+            true,
+            0.5,
+        )
+        .expect("canonical wrapped visual");
+        assert!(visual.rect.loc.x < target.loc.x);
+        assert_eq!(visual.depth, usize::MAX);
+        assert_eq!(visual.alpha, 0.5);
+    }
+
+    #[test]
+    fn stack_cycles_use_old_halley_cubic_easing() {
+        assert!((ease_in_out_cubic(0.25) - 0.0625).abs() < f32::EPSILON);
+        assert!((ease_in_out_cubic(0.75) - 0.9375).abs() < f32::EPSILON);
     }
 }

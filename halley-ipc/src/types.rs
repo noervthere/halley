@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 /// the end of `Request`/`Response` silently breaks wire-compatibility with
 /// a differently-versioned build - worth remembering as this grows, not
 /// solved here (this first pass has nothing to negotiate against yet).
-pub const HALLEY_IPC_VERSION: u32 = 11;
+pub const HALLEY_IPC_VERSION: u32 = 15;
 
 /// A request from `halleyctl`, the portal backend, or another local client.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -36,6 +36,7 @@ pub enum Request {
         output: Option<String>,
     },
     Cluster(ClusterRequest),
+    CaptureCapabilities,
 }
 
 /// The compositor's reply to a `Request`.
@@ -54,6 +55,19 @@ pub enum Response {
     ConfigPath(Option<String>),
     ClusterList(ClusterListResponse),
     ClusterInfo(ClusterInfo),
+    CaptureCapabilities(CaptureCapabilities),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DmabufFormat {
+    pub fourcc: u32,
+    pub modifier: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CaptureCapabilities {
+    pub main_device: Option<u64>,
+    pub dmabuf_formats: Vec<DmabufFormat>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

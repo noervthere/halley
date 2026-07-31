@@ -22,9 +22,7 @@ pub(super) fn forget_window<D: SessionDriver>(session: &mut Session<D>, surface:
         session.wayland.space.unmap_elem(&window);
         crate::session::finish_window_unmap(session, preparation);
         if let Some(id) = session.nodes.id_for_surface(&wl_surface) {
-            session
-                .clusters
-                .forget_destroyed_member(&mut session.nodes.field, id);
+            crate::session::forget_destroyed_cluster_member(session, id);
         }
         if let Some(record) = session.nodes.remove_surface(&wl_surface) {
             session.render.overlay_previews.remove(record.id);
@@ -324,6 +322,19 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
             surface.is_fullscreen(),
             maximize_origin_active(&surface),
         );
+        let suppress = window_for_surface(self, &surface)
+            .and_then(|window| window.wl_surface().map(|surface| surface.into_owned()))
+            .is_some_and(|wl_surface| {
+                self.wayland_titlebar_clicks
+                    .consume_suppressed_request(&wl_surface, crate::frame_clock::monotonic_now())
+            });
+        if suppress {
+            if let Err(err) = surface.set_maximized(maximize_origin_active(&surface)) {
+                eventline::warn!("xwayland: failed to reject titlebar maximize request: {err}");
+            }
+            self.request_redraw();
+            return;
+        }
         maximize_window(self, &surface);
         self.request_redraw();
     }
@@ -337,6 +348,19 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
             surface.is_fullscreen(),
             maximize_origin_active(&surface),
         );
+        let suppress = window_for_surface(self, &surface)
+            .and_then(|window| window.wl_surface().map(|surface| surface.into_owned()))
+            .is_some_and(|wl_surface| {
+                self.wayland_titlebar_clicks
+                    .consume_suppressed_request(&wl_surface, crate::frame_clock::monotonic_now())
+            });
+        if suppress {
+            if let Err(err) = surface.set_maximized(maximize_origin_active(&surface)) {
+                eventline::warn!("xwayland: failed to reject titlebar unmaximize request: {err}");
+            }
+            self.request_redraw();
+            return;
+        }
         restore_window(self, &surface);
         self.request_redraw();
     }

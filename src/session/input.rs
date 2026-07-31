@@ -1,8 +1,8 @@
 use std::ffi::OsStr;
 
 use smithay::backend::input::{
-    ButtonState, Event, InputBackend, InputEvent, KeyState, KeyboardKeyEvent, PointerButtonEvent,
-    PointerMotionEvent,
+    Axis, ButtonState, Event, InputBackend, InputEvent, KeyState, KeyboardKeyEvent,
+    PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
 };
 use smithay::desktop::{Space, Window};
 use smithay::input::keyboard::{FilterResult, Keysym};
@@ -85,11 +85,37 @@ fn work_area_for_output(
     Some(smithay::desktop::layer_map_for_output(output).non_exclusive_zone())
 }
 
+fn cluster_exclusive_on_output<D: SessionDriver>(
+    session: &Session<D>,
+    output: &Output,
+    geometry: Rectangle<i32, Logical>,
+    now: std::time::Duration,
+) -> bool {
+    crate::presentation::window::cluster_exclusive_presentation(
+        &session.clusters,
+        &session.nodes,
+        &session.fullscreen,
+        &session.maximize,
+        output,
+        geometry,
+        now,
+    )
+    .is_some_and(|presentation| presentation.progress > 0.0)
+}
+
 fn node_at_pointer<D: SessionDriver>(
     session: &Session<D>,
 ) -> Option<(halley_core::field::NodeId, Output)> {
     let position = session.pointer.position();
     let (output, geometry) = output_at_pointer(&session.wayland.space, position)?;
+    if cluster_exclusive_on_output(
+        session,
+        &output,
+        geometry,
+        crate::frame_clock::monotonic_now(),
+    ) {
+        return None;
+    }
     let camera = session.cameras.get(&output.name())?;
     let id = session.nodes.hit_test(
         &output,
@@ -105,6 +131,14 @@ fn cluster_at_pointer<D: SessionDriver>(
 ) -> Option<(halley_core::cluster::ClusterId, Output)> {
     let position = session.pointer.position();
     let (output, geometry) = output_at_pointer(&session.wayland.space, position)?;
+    if cluster_exclusive_on_output(
+        session,
+        &output,
+        geometry,
+        crate::frame_clock::monotonic_now(),
+    ) {
+        return None;
+    }
     let camera = session.cameras.get(&output.name())?;
     let id = session.clusters.core_hit_test(
         &output.name(),
@@ -117,9 +151,13 @@ fn cluster_at_pointer<D: SessionDriver>(
 
 fn cluster_overflow_at_pointer<D: SessionDriver>(
     session: &Session<D>,
-) -> Option<(halley_core::field::NodeId, Output)> {
+    now: std::time::Duration,
+) -> Option<(halley_core::field::NodeId, Output, Point<f64, Logical>)> {
     let position = session.pointer.position();
     let (output, geometry) = output_at_pointer(&session.wayland.space, position)?;
+    if cluster_exclusive_on_output(session, &output, geometry, now) {
+        return None;
+    }
     let work_area = smithay::desktop::layer_map_for_output(&output).non_exclusive_zone();
     let local = Point::<f64, Logical>::from((
         position.0 - f64::from(geometry.loc.x),
@@ -127,14 +165,145 @@ fn cluster_overflow_at_pointer<D: SessionDriver>(
     ));
     let member = session
         .clusters
-        .overflow_hit_test(&output.name(), work_area, local)?;
-    Some((member, output))
+        .overflow_hit_test(&output.name(), work_area, local, now)?;
+    Some((member, output, local))
 }
 
-fn sync_cluster_activation_focus<D: SessionDriver>(
+fn cluster_bloom_at_pointer<D: SessionDriver>(
+    session: &Session<D>,
+    now: std::time::Duration,
+) -> Option<(crate::clusters::TokenLayout, Output)> {
+    let position = session.pointer.position();
+    let (output, geometry) = output_at_pointer(&session.wayland.space, position)?;
+    if cluster_exclusive_on_output(session, &output, geometry, now) {
+        return None;
+    }
+    let camera = session.cameras.get(&output.name())?;
+    let token = session.clusters.bloom_hit_test(
+        &output.name(),
+        camera,
+        geometry,
+        Point::<f64, Logical>::from(position),
+        now,
+    )?;
+    Some((token, output))
+}
+
+struct OverflowHover {
+    output: Output,
+    member: Option<halley_core::field::NodeId>,
+    intercepts_desktop: bool,
+    changed: bool,
+}
+
+fn update_overflow_hover<D: SessionDriver>(
+    session: &mut Session<D>,
+    now: std::time::Duration,
+) -> Option<OverflowHover> {
+    let position = session.pointer.position();
+    let (output, geometry) = output_at_pointer(&session.wayland.space, position)?;
+    if cluster_exclusive_on_output(session, &output, geometry, now) {
+        return None;
+    }
+    let output_name = output.name();
+    if !session.clusters.has_overflow(&output_name) {
+        return None;
+    }
+    let work_area = smithay::desktop::layer_map_for_output(&output).non_exclusive_zone();
+    let local = Point::<f64, Logical>::from((
+        position.0 - f64::from(geometry.loc.x),
+        position.1 - f64::from(geometry.loc.y),
+    ));
+    let at_reveal_edge =
+        local.x >= f64::from(work_area.loc.x + work_area.size.w) - crate::clusters::REVEAL_EDGE_PX;
+    let over_strip = session
+        .clusters
+        .overflow_strip_contains(&output_name, work_area, local, now);
+    let changed = if at_reveal_edge || over_strip {
+        session.clusters.reveal_overflow(&output_name, now)
+    } else {
+        false
+    };
+    let member = session
+        .clusters
+        .overflow_hit_test(&output_name, work_area, local, now);
+    Some(OverflowHover {
+        output,
+        member,
+        intercepts_desktop: at_reveal_edge || over_strip || member.is_some(),
+        changed,
+    })
+}
+
+fn scroll_cluster_overflow_at_pointer<D, B, E>(
+    session: &mut Session<D>,
+    event: &E,
+    now: std::time::Duration,
+) -> bool
+where
+    D: SessionDriver,
+    B: InputBackend,
+    E: PointerAxisEvent<B>,
+{
+    let position = session.pointer.position();
+    let Some((output, geometry)) = output_at_pointer(&session.wayland.space, position) else {
+        return false;
+    };
+    if cluster_exclusive_on_output(session, &output, geometry, now) {
+        return false;
+    }
+    let output_name = output.name();
+    let work_area = smithay::desktop::layer_map_for_output(&output).non_exclusive_zone();
+    let local = Point::<f64, Logical>::from((
+        position.0 - f64::from(geometry.loc.x),
+        position.1 - f64::from(geometry.loc.y),
+    ));
+    if !session
+        .clusters
+        .overflow_strip_contains(&output_name, work_area, local, now)
+    {
+        return false;
+    }
+
+    let delta_steps = event
+        .amount_v120(Axis::Vertical)
+        .map(|value| value / 120.0)
+        .or_else(|| event.amount(Axis::Vertical).map(|value| value / 15.0));
+    let Some(delta_steps) = delta_steps else {
+        return false;
+    };
+    session.clusters.scroll_overflow(
+        &output_name,
+        work_area,
+        delta_steps,
+        delta_steps == 0.0,
+        now,
+    )
+}
+
+pub(crate) fn cluster_owns_focus<D: SessionDriver>(
+    session: &Session<D>,
+    id: halley_core::cluster::ClusterId,
+) -> bool {
+    let logical = session.nodes.focused().is_some_and(|focused| {
+        session.clusters.cluster_for_member(focused) == Some(id)
+            || session.clusters.cluster_for_core(focused) == Some(id)
+    });
+    let keyboard = session
+        .seat
+        .get_keyboard()
+        .and_then(|keyboard| keyboard.current_focus())
+        .and_then(|focus| focus.wl_surface().map(|surface| surface.into_owned()))
+        .and_then(|surface| session.nodes.id_for_surface(&surface))
+        .is_some_and(|focused| session.clusters.cluster_for_member(focused) == Some(id));
+    logical || keyboard
+}
+
+pub(crate) fn sync_cluster_activation_focus<D: SessionDriver>(
     session: &mut Session<D>,
     output: &Output,
     id: halley_core::cluster::ClusterId,
+    collapsed_should_focus: bool,
     serial: smithay::utils::Serial,
 ) {
     let Some(member) = session.clusters.first_member(id) else {
@@ -148,23 +317,76 @@ fn sync_cluster_activation_focus<D: SessionDriver>(
         {
             super::focus_window(session, &window, serial);
         }
-    } else {
+    } else if collapsed_should_focus {
         crate::window::clear_focus(&mut session.wayland);
         session.nodes.focus(
-            Some(member),
+            session.clusters.core_node(id),
             session.start_time.elapsed().as_millis() as u64,
         );
         super::sync_keyboard_focus(session, serial);
     }
 }
 
+fn close_blooms_for_keybind<D: SessionDriver>(
+    session: &mut Session<D>,
+    preferred_output: Option<&str>,
+) -> bool {
+    let open = session
+        .wayland
+        .space
+        .outputs()
+        .filter_map(|output| {
+            let output_name = output.name();
+            let cluster = session.clusters.bloom_open_on_output(&output_name)?;
+            let core = session.clusters.core_node(cluster)?;
+            Some((output_name, core))
+        })
+        .collect::<Vec<_>>();
+    if open.is_empty() {
+        return false;
+    }
+    let focus_core = preferred_output
+        .and_then(|preferred| {
+            open.iter()
+                .find(|(output, _)| output == preferred)
+                .map(|(_, core)| *core)
+        })
+        .or_else(|| {
+            let focused = session.nodes.focused()?;
+            open.iter()
+                .find(|(_, core)| *core == focused)
+                .map(|(_, core)| *core)
+        })
+        .or_else(|| open.first().map(|(_, core)| *core));
+    let now = crate::frame_clock::monotonic_now();
+    let changed = open.iter().fold(false, |changed, (output, _)| {
+        session.clusters.close_bloom(output, now) || changed
+    });
+    if changed {
+        crate::window::clear_focus(&mut session.wayland);
+        session
+            .nodes
+            .focus(focus_core, session.start_time.elapsed().as_millis() as u64);
+        super::sync_keyboard_focus(session, SERIAL_COUNTER.next_serial());
+        session.request_redraw();
+    }
+    changed
+}
+
 fn finish_cluster_creation<D: SessionDriver>(session: &mut Session<D>) -> bool {
+    let focused_before = session.nodes.focused();
     match session.clusters.finish_creation(&mut session.nodes.field) {
-        Ok(_) => {
-            crate::window::clear_focus(&mut session.wayland);
-            session
-                .nodes
-                .focus(None, session.start_time.elapsed().as_millis() as u64);
+        Ok(id) => {
+            crate::nodes::resolve_new_cluster_core(session, id);
+            let focus_core = focused_before
+                .is_some_and(|focused| session.clusters.cluster_for_member(focused) == Some(id));
+            if focus_core {
+                crate::window::clear_focus(&mut session.wayland);
+                session.nodes.focus(
+                    session.clusters.core_node(id),
+                    session.start_time.elapsed().as_millis() as u64,
+                );
+            }
             super::sync_keyboard_focus(session, SERIAL_COUNTER.next_serial());
             session.cursor.set_override(None);
             true
@@ -174,6 +396,109 @@ fn finish_cluster_creation<D: SessionDriver>(session: &mut Session<D>) -> bool {
             false
         }
     }
+}
+
+fn bloom_drag_handoff(
+    window_location: Point<i32, Logical>,
+    window_size: smithay::utils::Size<i32, Logical>,
+    pointer_world: halley_core::field::Vec2,
+    camera_scale: f32,
+) -> (halley_core::field::Vec2, halley_core::field::Vec2) {
+    let screen_offset = halley_core::field::Vec2 {
+        x: (window_location.x as f32 - pointer_world.x) * camera_scale,
+        y: (window_location.y as f32 - pointer_world.y) * camera_scale,
+    };
+    let center = halley_core::field::Vec2 {
+        x: window_location.x as f32 + window_size.w as f32 * 0.5,
+        y: window_location.y as f32 + window_size.h as f32 * 0.5,
+    };
+    (screen_offset, center)
+}
+
+pub(crate) fn wakeup_cluster_interactions<D: SessionDriver>(
+    session: &mut Session<D>,
+    now: std::time::Duration,
+) -> bool {
+    let mut changed = session.clusters.repeat_name_input_if_due(now);
+    changed |= session.clusters.overflow_wakeup(now);
+
+    let Some((cluster_id, member_id, output_name, tether_started)) = session.clusters.bloom_pull()
+    else {
+        return changed;
+    };
+    let Some(tether_started) = tether_started else {
+        return changed;
+    };
+    if now.saturating_sub(tether_started) < crate::clusters::DETACH_HOLD_DURATION {
+        return changed;
+    }
+    let Some(output) = session
+        .wayland
+        .space
+        .outputs()
+        .find(|output| output.name() == output_name)
+        .cloned()
+    else {
+        session.clusters.clear_bloom_pull();
+        return true;
+    };
+    let Some(output_geometry) = session.wayland.space.output_geometry(&output) else {
+        session.clusters.clear_bloom_pull();
+        return true;
+    };
+    let Some(camera) = session.cameras.get(&output_name) else {
+        session.clusters.clear_bloom_pull();
+        return true;
+    };
+    let position = session.pointer.position();
+    let world = crate::input::grab::screen_to_world_on_output(position, camera, output_geometry);
+    let camera_scale = crate::input::zoom::scale(camera);
+    if !session
+        .clusters
+        .detach_member(&mut session.nodes.field, cluster_id, member_id, world, now)
+    {
+        session.clusters.clear_bloom_pull();
+        return true;
+    }
+    session.clusters.force_close_bloom(&output_name);
+    session.clusters.set_overlay_hovered(None);
+    crate::nodes::set_collapsed_output(session, member_id, &output);
+    session.nodes.clear_direct_motion(member_id);
+    let _ = crate::nodes::move_grabbed_body_rigid(session, member_id, world);
+    if let Some(record) = session.nodes.record(member_id).cloned() {
+        wayland::set_window_output(&record.window, &output);
+        let window_location = session
+            .wayland
+            .space
+            .element_location(&record.window)
+            .unwrap_or(record.geometry.loc);
+        let window_size = session
+            .wayland
+            .space
+            .element_geometry(&record.window)
+            .map(|geometry| geometry.size)
+            .unwrap_or(record.geometry.size);
+        let (screen_offset, center) =
+            bloom_drag_handoff(window_location, window_size, world, camera_scale);
+        session.grab = crate::input::grab::Grab::MoveWindow {
+            id: Some(member_id),
+            window: record.window.clone(),
+            screen_offset,
+            last_world: center,
+            last_update: now,
+            velocity: halley_core::field::Vec2 { x: 0.0, y: 0.0 },
+        };
+        // The bloom press was compositor-only. Retire its suppression at the
+        // handoff so the physical release reaches the MoveWindow cleanup
+        // below; that cleanup still intercepts it, so no orphan release is
+        // forwarded to the newly focused client.
+        session.suppressed_buttons.release_is_suppressed(BTN_LEFT);
+        super::focus_window(session, &record.window, SERIAL_COUNTER.next_serial());
+    }
+    session
+        .cursor
+        .set_override(Some(smithay::input::pointer::CursorIcon::Grabbing));
+    true
 }
 
 fn navigate_cluster_tile<D: SessionDriver>(
@@ -220,30 +545,45 @@ fn toggle_cluster_or_focused_node<D: SessionDriver>(
     output_name: Option<&str>,
     serial: smithay::utils::Serial,
 ) {
+    let focused_core = session.nodes.focused().and_then(|core| {
+        session
+            .clusters
+            .cluster_for_core(core)
+            .map(|cluster| (core, cluster))
+    });
     let active = output_name.and_then(|output| {
         session
             .clusters
             .active_on(output)
             .map(|cluster| (output.to_string(), cluster))
     });
-    if let Some((output_name, cluster)) = active
-        && session
+    let target = active.or_else(|| {
+        let (_, cluster) = focused_core?;
+        let metadata = session.clusters.metadata(cluster)?;
+        output_name
+            .is_none_or(|output| output == metadata.output)
+            .then(|| (metadata.output.clone(), cluster))
+    });
+    if let Some((output_name, cluster)) = target {
+        let owned_focus = cluster_owns_focus(session, cluster);
+        if session
             .clusters
             .activate(&output_name, cluster, crate::frame_clock::monotonic_now())
-    {
-        let output = {
-            session
-                .wayland
-                .space
-                .outputs()
-                .find(|output| output.name() == output_name)
-                .cloned()
-        };
-        if let Some(output) = output {
-            sync_cluster_activation_focus(session, &output, cluster, serial);
+        {
+            let output = {
+                session
+                    .wayland
+                    .space
+                    .outputs()
+                    .find(|output| output.name() == output_name)
+                    .cloned()
+            };
+            if let Some(output) = output {
+                sync_cluster_activation_focus(session, &output, cluster, owned_focus, serial);
+            }
+            session.request_redraw();
+            return;
         }
-        session.request_redraw();
-        return;
     }
     crate::nodes::toggle_focused_on_output(session, output_name, serial);
 }
@@ -366,35 +706,36 @@ fn dispatch_action<D: SessionDriver>(
             }
         }
         super::SessionControl::ClusterSlot(slot) => {
-            if let Some(output_name) = action_output
-                && session.clusters.activate_slot(
+            if let Some(output_name) = action_output {
+                let target = session
+                    .clusters
+                    .clusters_for_output(&output_name)
+                    .find_map(|(candidate_slot, id, _)| (candidate_slot == slot).then_some(id));
+                let owned_focus = target.is_some_and(|id| cluster_owns_focus(session, id));
+                if session.clusters.activate_slot(
                     &output_name,
                     slot,
                     crate::frame_clock::monotonic_now(),
-                )
-            {
-                if let Some(id) = session.clusters.active_on(&output_name).or_else(|| {
-                    session
-                        .clusters
-                        .clusters_for_output(&output_name)
-                        .find_map(|(candidate_slot, id, _)| (candidate_slot == slot).then_some(id))
-                }) {
-                    let output = session
-                        .wayland
-                        .space
-                        .outputs()
-                        .find(|candidate| candidate.name() == output_name)
-                        .cloned();
-                    if let Some(output) = output {
-                        sync_cluster_activation_focus(
-                            session,
-                            &output,
-                            id,
-                            SERIAL_COUNTER.next_serial(),
-                        );
+                ) {
+                    if let Some(id) = target {
+                        let output = session
+                            .wayland
+                            .space
+                            .outputs()
+                            .find(|candidate| candidate.name() == output_name)
+                            .cloned();
+                        if let Some(output) = output {
+                            sync_cluster_activation_focus(
+                                session,
+                                &output,
+                                id,
+                                owned_focus,
+                                SERIAL_COUNTER.next_serial(),
+                            );
+                        }
                     }
+                    session.request_redraw();
                 }
-                session.request_redraw();
             }
         }
         super::SessionControl::ClusterTileFocus(direction) => {
@@ -695,6 +1036,46 @@ where
         return;
     }
 
+    if motion.is_some() && session.clusters.bloom_pull().is_some() {
+        let now = crate::frame_clock::monotonic_now();
+        session
+            .clusters
+            .update_bloom_pull(Point::<f64, Logical>::from(position_after), now);
+        session.clusters.set_overlay_hovered(None);
+        session
+            .cursor
+            .set_override(Some(smithay::input::pointer::CursorIcon::Grabbing));
+        session.request_redraw();
+        super::pointer::finish_frame(session, &pointer_handle);
+        return;
+    }
+
+    if motion.is_some()
+        && let Some((drag_output, _)) = session.clusters.overflow_drag()
+    {
+        let now = crate::frame_clock::monotonic_now();
+        if let Some((output, geometry)) = output_at_pointer(&session.wayland.space, position_after)
+        {
+            let local = Point::<f64, Logical>::from((
+                position_after.0 - f64::from(geometry.loc.x),
+                position_after.1 - f64::from(geometry.loc.y),
+            ));
+            let output_name = output.name();
+            if output_name == drag_output {
+                session
+                    .clusters
+                    .update_overflow_drag(&output_name, local, now);
+            }
+        }
+        session.clusters.set_overlay_hovered(None);
+        session
+            .cursor
+            .set_override(Some(smithay::input::pointer::CursorIcon::Grabbing));
+        session.request_redraw();
+        super::pointer::finish_frame(session, &pointer_handle);
+        return;
+    }
+
     if motion.is_some()
         && let crate::input::grab::Grab::PendingNode {
             id,
@@ -933,10 +1314,22 @@ where
                 } else {
                     Vec::new()
                 };
-                if session.clusters.move_core(id, &output_name, desired) {
+                let output_ready = if output_changed {
+                    let current = session
+                        .clusters
+                        .metadata(id)
+                        .map(|metadata| metadata.core_position)
+                        .unwrap_or(desired);
+                    session.clusters.move_core(id, &output_name, current)
+                } else {
+                    true
+                };
+                if output_ready && output_changed {
                     for member in members {
                         crate::nodes::set_collapsed_output(session, member, &output);
                     }
+                }
+                if output_ready && crate::nodes::move_cluster_core_rigid(session, id, desired) {
                     session.request_redraw();
                 }
             }
@@ -1013,22 +1406,68 @@ where
             super::focus::update_hover(session, route, SERIAL_COUNTER.next_serial());
         }
         let node_grab_active = session.grab.landmark_active();
-        let hovered_node = (!node_grab_active)
+        let now = crate::frame_clock::monotonic_now();
+        let hovered_bloom = (!node_grab_active)
+            .then(|| cluster_bloom_at_pointer(session, now))
+            .flatten();
+        let overflow_hover = (!node_grab_active && hovered_bloom.is_none())
+            .then(|| update_overflow_hover(session, now))
+            .flatten();
+        let overflow_intercepts = overflow_hover
+            .as_ref()
+            .is_some_and(|hover| hover.intercepts_desktop);
+        let hovered_node = (!node_grab_active && hovered_bloom.is_none() && !overflow_intercepts)
             .then(|| node_at_pointer(session))
             .flatten();
-        let hovered_cluster = (!node_grab_active && hovered_node.is_none())
-            .then(|| cluster_at_pointer(session))
-            .flatten();
+        let hovered_cluster = (!node_grab_active
+            && hovered_bloom.is_none()
+            && !overflow_intercepts
+            && hovered_node.is_none())
+        .then(|| cluster_at_pointer(session))
+        .flatten();
         if let Some((id, output)) = hovered_node.as_ref() {
             super::focus::focus_node_from_hover(session, *id, output, SERIAL_COUNTER.next_serial());
         }
+        if let Some((id, output)) = hovered_cluster.as_ref()
+            && let Some(core) = session.clusters.core_node(*id)
+        {
+            super::focus::focus_cluster_core_from_hover(
+                session,
+                core,
+                output,
+                SERIAL_COUNTER.next_serial(),
+            );
+        }
         let hovered = hovered_node.map(|(id, _)| id);
-        let now = crate::frame_clock::monotonic_now();
         let node_changed = session.nodes.set_hovered(hovered, now);
         let cluster_changed = session
             .clusters
             .set_hovered_core(hovered_cluster.map(|(id, _)| id), now);
-        if node_changed || cluster_changed {
+        let overlay_hovered = hovered_bloom
+            .as_ref()
+            .map(|(token, output)| (output.name(), token.member_id))
+            .or_else(|| {
+                overflow_hover
+                    .as_ref()
+                    .and_then(|hover| hover.member.map(|member| (hover.output.name(), member)))
+            });
+        let overlay_changed = session.clusters.set_overlay_hovered(overlay_hovered);
+        if hovered_bloom.is_some()
+            || overflow_hover
+                .as_ref()
+                .is_some_and(|hover| hover.member.is_some())
+        {
+            session
+                .cursor
+                .set_override(Some(smithay::input::pointer::CursorIcon::Pointer));
+        } else if !node_grab_active {
+            session.cursor.set_override(None);
+        }
+        if node_changed
+            || cluster_changed
+            || overlay_changed
+            || overflow_hover.is_some_and(|hover| hover.changed)
+        {
             session.request_redraw();
         }
     }
@@ -1042,6 +1481,92 @@ where
         let time = button_event.time_msec();
         let serial = SERIAL_COUNTER.next_serial();
         if button == BTN_LEFT && state == ButtonState::Released {
+            if session.clusters.bloom_pull().is_some() {
+                session.clusters.clear_bloom_pull();
+                session.clusters.set_overlay_hovered(None);
+                session.suppressed_buttons.release_is_suppressed(button);
+                session.cursor.set_override(None);
+                session.request_redraw();
+                super::pointer::finish_frame(session, &pointer_handle);
+                return;
+            }
+            if let Some((drag_output, drag)) = session.clusters.take_overflow_drag() {
+                let now = crate::frame_clock::monotonic_now();
+                let output = session
+                    .wayland
+                    .space
+                    .outputs()
+                    .find(|output| output.name() == drag_output)
+                    .cloned();
+                let mut changed = false;
+                if let Some(output) = output.as_ref()
+                    && let Some(geometry) = session.wayland.space.output_geometry(output)
+                {
+                    let local = Point::<f64, Logical>::from((
+                        position_after.0 - f64::from(geometry.loc.x),
+                        position_after.1 - f64::from(geometry.loc.y),
+                    ));
+                    let work_area =
+                        smithay::desktop::layer_map_for_output(output).non_exclusive_zone();
+                    let moved = (local.x - drag.press_local.x).hypot(local.y - drag.press_local.y)
+                        >= NODE_DRAG_THRESHOLD_PX;
+                    let strip_slot = moved
+                        .then(|| {
+                            session.clusters.overflow_strip_slot(
+                                &drag_output,
+                                work_area,
+                                local,
+                                now,
+                            )
+                        })
+                        .flatten();
+                    let target = (moved && strip_slot.is_none())
+                        .then(|| {
+                            session
+                                .clusters
+                                .visible_tile_hit_test(&drag_output, work_area, local)
+                        })
+                        .flatten();
+                    changed = if let Some(target_slot) = strip_slot {
+                        session.clusters.reorder_overflow_member(
+                            &drag_output,
+                            drag.member_id,
+                            target_slot,
+                            now,
+                        )
+                    } else if let Some(target) = target {
+                        session.clusters.swap_overflow_member(
+                            &drag_output,
+                            drag.member_id,
+                            target,
+                            work_area,
+                            now,
+                        )
+                    } else {
+                        session.clusters.promote_overflow_member(
+                            &drag_output,
+                            drag.member_id,
+                            work_area,
+                            now,
+                        )
+                    };
+                    session.clusters.reveal_overflow(&drag_output, now);
+                }
+                if changed
+                    && let Some(window) = session
+                        .nodes
+                        .record(drag.member_id)
+                        .map(|record| record.window.clone())
+                {
+                    super::focus_window(session, &window, serial);
+                }
+                session.clusters.set_overlay_hovered(None);
+                session.suppressed_buttons.release_is_suppressed(button);
+                session.cursor.set_override(None);
+                session.request_redraw();
+                super::pointer::finish_frame(session, &pointer_handle);
+                return;
+            }
             match &session.grab {
                 crate::input::grab::Grab::PendingNode { id, .. } => {
                     let id = *id;
@@ -1081,10 +1606,11 @@ where
                             .find(|candidate| candidate.name() == output_name)
                             .cloned()
                     };
+                    let owned_focus = cluster_owns_focus(session, id);
                     if session.clusters.activate(&output_name, id, now)
                         && let Some(output) = output
                     {
-                        sync_cluster_activation_focus(session, &output, id, serial);
+                        sync_cluster_activation_focus(session, &output, id, owned_focus, serial);
                     }
                     session.request_redraw();
                     super::pointer::finish_frame(session, &pointer_handle);
@@ -1172,28 +1698,79 @@ where
             && let Some(route) = route.as_ref()
         {
             wayland::focus::select_output(&mut session.wayland, &route.output);
+            if let crate::input::pointer::PointerTarget::Window(window) = &route.target
+                && !crate::xwayland::is_override_redirect(window)
+                && let Some(surface) = window.wl_surface()
+                && let Some(geometry) = route.visual_geometry
+                && position_after.0 >= f64::from(geometry.loc.x)
+                && position_after.0 < f64::from(geometry.loc.x + geometry.size.w)
+                && position_after.1 >= f64::from(geometry.loc.y)
+                && position_after.1 < f64::from(geometry.loc.y + 48)
+            {
+                session.wayland_titlebar_clicks.note_press(
+                    surface.into_owned(),
+                    position_after,
+                    crate::frame_clock::monotonic_now(),
+                );
+            }
         }
         let mut intercepted = false;
+        let bloom_token =
+            (button == BTN_LEFT && state == ButtonState::Pressed && !session.focus_cycle.is_open())
+                .then(|| cluster_bloom_at_pointer(session, crate::frame_clock::monotonic_now()))
+                .flatten();
+        if button == BTN_LEFT && state == ButtonState::Pressed && bloom_token.is_none() {
+            let outputs = session
+                .wayland
+                .space
+                .outputs()
+                .map(|output| output.name().to_string())
+                .collect::<Vec<_>>();
+            let now = crate::frame_clock::monotonic_now();
+            let mut closed = false;
+            for output in outputs {
+                closed |= session.clusters.close_bloom(&output, now);
+            }
+            if closed {
+                session.clusters.set_overlay_hovered(None);
+                session.clusters.set_hovered_core(None, now);
+                session.request_redraw();
+            }
+        }
         if button == BTN_LEFT
             && state == ButtonState::Pressed
             && !session.focus_cycle.is_open()
-            && let Some((member, output)) = cluster_overflow_at_pointer(session)
-            && session.clusters.promote_overflow_member(
+            && let Some((token, output)) = bloom_token
+            && session.clusters.begin_bloom_pull(token, output.name())
+        {
+            wayland::focus::select_output(&mut session.wayland, &output);
+            session.suppressed_buttons.suppress(button);
+            session.clusters.set_overlay_hovered(None);
+            session
+                .cursor
+                .set_override(Some(smithay::input::pointer::CursorIcon::Grabbing));
+            session.request_redraw();
+            intercepted = true;
+        }
+        if button == BTN_LEFT
+            && state == ButtonState::Pressed
+            && !session.focus_cycle.is_open()
+            && !intercepted
+            && let Some((member, output, local)) =
+                cluster_overflow_at_pointer(session, crate::frame_clock::monotonic_now())
+            && session.clusters.begin_overflow_drag(
                 &output.name(),
                 member,
-                smithay::desktop::layer_map_for_output(&output).non_exclusive_zone(),
+                local,
                 crate::frame_clock::monotonic_now(),
             )
         {
             wayland::focus::select_output(&mut session.wayland, &output);
-            if let Some(window) = session
-                .nodes
-                .record(member)
-                .map(|record| record.window.clone())
-            {
-                super::focus_window(session, &window, serial);
-            }
             session.suppressed_buttons.suppress(button);
+            session.clusters.set_overlay_hovered(None);
+            session
+                .cursor
+                .set_override(Some(smithay::input::pointer::CursorIcon::Grabbing));
             session.request_redraw();
             intercepted = true;
         }
@@ -1207,13 +1784,20 @@ where
             && let Some(camera) = session.cameras.get(&output.name())
         {
             wayland::focus::select_output(&mut session.wayland, &output);
+            if let Some(core) = session.clusters.core_node(id) {
+                session
+                    .nodes
+                    .focus(Some(core), session.start_time.elapsed().as_millis() as u64);
+            }
             let center =
                 crate::nodes::screen_from_world(metadata.core_position, camera, output_geometry);
             let screen_offset = halley_core::field::Vec2 {
                 x: center.x as f32 - position_after.0 as f32,
                 y: center.y as f32 - position_after.1 as f32,
             };
-            session.clusters.close_bloom(&output.name());
+            session
+                .clusters
+                .close_bloom(&output.name(), crate::frame_clock::monotonic_now());
             session
                 .clusters
                 .set_hovered_core(None, crate::frame_clock::monotonic_now());
@@ -1476,9 +2060,22 @@ where
             bindings_enabled,
             |direction| match_wheel_bind(&session.keyboard.binds, &modifiers, direction),
         );
+        let bound_action = !result.actions.is_empty();
         for (direction, action) in result.actions {
             eventline::debug!("keybinds: wheel {direction:?} + {modifiers:?} -> {action:?}");
             dispatch_action(session, action, socket_name, output_name.as_deref(), None);
+        }
+
+        if !bound_action
+            && scroll_cluster_overflow_at_pointer(
+                session,
+                axis_event,
+                crate::frame_clock::monotonic_now(),
+            )
+        {
+            session.request_redraw();
+            super::pointer::finish_frame(session, &pointer_handle);
+            return;
         }
 
         if result.forward_horizontal || result.forward_vertical {
@@ -1497,6 +2094,9 @@ where
         let keycode = key_event.key_code();
         let state = key_event.state();
         let time = key_event.time_msec();
+        if state == KeyState::Released {
+            session.clusters.stop_name_repeat(keycode.raw());
+        }
         if state == KeyState::Pressed && session.cursor_policy.keyboard_press() {
             session.request_redraw();
         }
@@ -1691,6 +2291,7 @@ where
             }
             Some(KeyboardOutcome::Action(action)) => {
                 session.suppressed_keys.suppress(keycode);
+                close_blooms_for_keybind(session, pointer_output.as_deref());
                 dispatch_action(
                     session,
                     action,
@@ -1736,46 +2337,71 @@ where
             }
             Some(KeyboardOutcome::ClusterBackspace) => {
                 session.suppressed_keys.suppress(keycode);
-                if session
-                    .clusters
-                    .edit_name(crate::clusters::NameInput::Backspace)
-                {
+                let input = crate::clusters::NameInput::Backspace;
+                if session.clusters.edit_name(input) {
+                    session.clusters.start_name_repeat(
+                        keycode.raw(),
+                        input,
+                        crate::frame_clock::monotonic_now(),
+                        session.input.repeat_delay,
+                        session.input.repeat_rate,
+                    );
                     session.request_redraw();
                 }
             }
             Some(KeyboardOutcome::ClusterDelete) => {
                 session.suppressed_keys.suppress(keycode);
-                if session
-                    .clusters
-                    .edit_name(crate::clusters::NameInput::Delete)
-                {
+                let input = crate::clusters::NameInput::Delete;
+                if session.clusters.edit_name(input) {
+                    session.clusters.start_name_repeat(
+                        keycode.raw(),
+                        input,
+                        crate::frame_clock::monotonic_now(),
+                        session.input.repeat_delay,
+                        session.input.repeat_rate,
+                    );
                     session.request_redraw();
                 }
             }
             Some(KeyboardOutcome::ClusterMoveLeft) => {
                 session.suppressed_keys.suppress(keycode);
-                if session
-                    .clusters
-                    .edit_name(crate::clusters::NameInput::MoveLeft)
-                {
+                let input = crate::clusters::NameInput::MoveLeft;
+                if session.clusters.edit_name(input) {
+                    session.clusters.start_name_repeat(
+                        keycode.raw(),
+                        input,
+                        crate::frame_clock::monotonic_now(),
+                        session.input.repeat_delay,
+                        session.input.repeat_rate,
+                    );
                     session.request_redraw();
                 }
             }
             Some(KeyboardOutcome::ClusterMoveRight) => {
                 session.suppressed_keys.suppress(keycode);
-                if session
-                    .clusters
-                    .edit_name(crate::clusters::NameInput::MoveRight)
-                {
+                let input = crate::clusters::NameInput::MoveRight;
+                if session.clusters.edit_name(input) {
+                    session.clusters.start_name_repeat(
+                        keycode.raw(),
+                        input,
+                        crate::frame_clock::monotonic_now(),
+                        session.input.repeat_delay,
+                        session.input.repeat_rate,
+                    );
                     session.request_redraw();
                 }
             }
             Some(KeyboardOutcome::ClusterCharacter(ch)) => {
                 session.suppressed_keys.suppress(keycode);
-                if session
-                    .clusters
-                    .edit_name(crate::clusters::NameInput::Character(ch))
-                {
+                let input = crate::clusters::NameInput::Character(ch);
+                if session.clusters.edit_name(input) {
+                    session.clusters.start_name_repeat(
+                        keycode.raw(),
+                        input,
+                        crate::frame_clock::monotonic_now(),
+                        session.input.repeat_delay,
+                        session.input.repeat_rate,
+                    );
                     session.request_redraw();
                 }
             }
@@ -1934,9 +2560,10 @@ mod tests {
 
     use halley_core::field::Vec2;
     use smithay::backend::input::KeyState;
+    use smithay::utils::{Logical, Point, Size};
 
     use super::{
-        CaptureKeyRouting, capture_key_routing, sampled_drag_velocity,
+        CaptureKeyRouting, bloom_drag_handoff, capture_key_routing, sampled_drag_velocity,
         shortcut_policy_allows_bindings, window_action_output,
     };
     fn sample_constant_motion(report_hz: u32) -> Vec2 {
@@ -1977,6 +2604,24 @@ mod tests {
             Duration::from_millis(5),
         );
         assert_eq!(sampled, previous_velocity);
+    }
+
+    #[test]
+    fn bloom_drag_handoff_preserves_a_centered_grip_at_output_scale() {
+        let location = Point::<i32, Logical>::from((300, 200));
+        let size = Size::<i32, Logical>::from((800, 600));
+        let pointer = Vec2 { x: 700.0, y: 500.0 };
+
+        let (screen_offset, center) = bloom_drag_handoff(location, size, pointer, 0.75);
+
+        assert_eq!(
+            screen_offset,
+            Vec2 {
+                x: -300.0,
+                y: -225.0
+            }
+        );
+        assert_eq!(center, pointer);
     }
 
     #[test]

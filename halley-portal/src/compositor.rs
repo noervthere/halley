@@ -54,12 +54,31 @@ pub fn cancel_source(request_handle: String) -> Result<(), String> {
     request_ack(Request::CancelSourceChooser { request_handle }, &[])
 }
 
-pub fn capture_frame_optional(
+pub fn connect() -> Result<Connection, String> {
+    Connection::connect().map_err(|err| format!("connect to compositor: {err}"))
+}
+
+pub fn capture_capabilities(
+    connection: &mut Connection,
+) -> Result<halley_ipc::CaptureCapabilities, String> {
+    let response = connection
+        .request(&Request::CaptureCapabilities, &[])
+        .map_err(|err| format!("query compositor capture capabilities: {err}"))?;
+    if !response.fds.is_empty() {
+        return Err("compositor returned unexpected capability descriptors".to_string());
+    }
+    match response.response {
+        Response::CaptureCapabilities(capabilities) => Ok(capabilities),
+        Response::Error(message) => Err(message),
+        other => Err(format!("unexpected compositor response: {other:?}")),
+    }
+}
+
+pub fn capture_frame(
+    connection: &mut Connection,
     request: CaptureFrameRequest,
     fd: Option<std::os::fd::RawFd>,
 ) -> Result<CaptureFrameResponse, String> {
-    let mut connection =
-        Connection::connect().map_err(|err| format!("connect to compositor: {err}"))?;
     let fds = fd.as_slice();
     let response = connection
         .request(&Request::CaptureFrame(request), fds)
@@ -72,14 +91,20 @@ pub fn capture_frame_optional(
 }
 
 pub fn register_dmabuf(
+    connection: &mut Connection,
     request: halley_ipc::RegisterDmabufRequest,
     fds: &[std::os::fd::RawFd],
 ) -> Result<(), String> {
-    request_ack(Request::RegisterDmabuf(request), fds)
+    request_ack_on(connection, Request::RegisterDmabuf(request), fds)
 }
 
-pub fn remove_dmabuf(stream_handle: String, buffer_id: u64) -> Result<(), String> {
-    request_ack(
+pub fn remove_dmabuf(
+    connection: &mut Connection,
+    stream_handle: String,
+    buffer_id: u64,
+) -> Result<(), String> {
+    request_ack_on(
+        connection,
         Request::RemoveDmabuf {
             stream_handle,
             buffer_id,
@@ -95,6 +120,14 @@ pub fn cancel_screenshot(request_handle: String) -> Result<(), String> {
 fn request_ack(request: Request, fds: &[std::os::fd::RawFd]) -> Result<(), String> {
     let mut connection =
         Connection::connect().map_err(|err| format!("connect to compositor: {err}"))?;
+    request_ack_on(&mut connection, request, fds)
+}
+
+fn request_ack_on(
+    connection: &mut Connection,
+    request: Request,
+    fds: &[std::os::fd::RawFd],
+) -> Result<(), String> {
     let response = connection
         .request(&request, fds)
         .map_err(|err| format!("cancel compositor screenshot: {err}"))?;

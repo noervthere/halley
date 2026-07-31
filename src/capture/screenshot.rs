@@ -231,11 +231,13 @@ pub(crate) fn render_source_dmabuf<D: SessionDriver>(
     source: &halley_ipc::CaptureSource,
     show_cursor: bool,
     dmabuf: &mut Dmabuf,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<SyncPoint, Box<dyn Error>> {
     if session.session_lock.active() {
         return Err(io::Error::other("session is locked").into());
     }
-    session.driver.import_dmabuf(dmabuf);
+    if !session.driver.import_dmabuf(dmabuf) {
+        return Err(io::Error::other("renderer rejected capture DMA-BUF").into());
+    }
     match source {
         halley_ipc::CaptureSource::Monitor {
             name,
@@ -271,7 +273,6 @@ pub(crate) fn render_source_dmabuf<D: SessionDriver>(
             })
         }
     }
-    .map(|_| ())
 }
 
 pub(crate) fn with_monitor_scene<D, T>(

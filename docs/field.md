@@ -58,6 +58,13 @@ Mod+left drag ends field maximize and continues with the same cursor-relative
 grab point. Resize is blocked while maximized. Collapsing, minimizing, closing,
 unmapping, or entering fullscreen ends field maximize cleanly.
 
+An active cluster workspace is the exception to the normal visible-stack rule:
+maximizing a cluster member gives that member an exclusive presentation above
+the desktop while the rest of the cluster and field are covered. Exiting
+maximize smoothly returns it to the cluster's current tile without changing its
+persistent stack slot. Cluster fullscreen uses the same exclusive/restore
+behavior while retaining fullscreen's panel policy.
+
 The transition crossfades the outgoing and incoming window textures, using
 the same configurable spring/easing controls as fullscreen. Its default keeps
 the original ease-in-out cubic feel:

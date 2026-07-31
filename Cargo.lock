@@ -1216,7 +1216,9 @@ name = "halley-portal"
 version = "0.1.0"
 dependencies = [
  "eventline",
+ "gbm",
  "halley-ipc",
+ "libc",
  "pipewire",
  "pollster",
  "zbus",

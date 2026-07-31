@@ -100,6 +100,25 @@ pub(super) fn focus_node_from_hover<D: SessionDriver>(
     focus_collapsed_node(session, id, output, serial);
 }
 
+/// Cluster cores participate in hover focus exactly like ordinary collapsed
+/// nodes.  Cores do not have a `NodeRecord`, so they need their own entry
+/// point instead of going through `focus_node_from_hover`'s surface checks.
+pub(super) fn focus_cluster_core_from_hover<D: SessionDriver>(
+    session: &mut Session<D>,
+    id: halley_core::field::NodeId,
+    output: &smithay::output::Output,
+    serial: Serial,
+) {
+    if session.input.focus_mode != halley_config::FocusMode::Hover
+        || hover_is_blocked(session)
+        || session.nodes.focused() == Some(id)
+        || session.clusters.cluster_for_core(id).is_none()
+    {
+        return;
+    }
+    focus_collapsed_node(session, id, output, serial);
+}
+
 pub(super) fn focus_node_from_pointer<D: SessionDriver>(
     session: &mut Session<D>,
     id: halley_core::field::NodeId,

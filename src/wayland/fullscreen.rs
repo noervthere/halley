@@ -9,7 +9,7 @@ use smithay::reexports::wayland_server::protocol::wl_output::WlOutput;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Physical, Point, Rectangle, Serial, Size};
 use smithay::wayland::seat::WaylandFocus;
-use smithay::wayland::shell::xdg::ToplevelSurface;
+use smithay::wayland::shell::xdg::{ToplevelState, ToplevelSurface};
 
 use crate::animation::MotionTimeline;
 use crate::presentation::camera::{FullscreenCameraFrame, OutputCameras};
@@ -40,6 +40,7 @@ struct FullscreenWindow {
     external_pending: Option<ExternalPending>,
     snapshot_serials: Vec<Serial>,
     origin: FullscreenOrigin,
+    preserve_stack: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -150,6 +151,36 @@ impl FullscreenManager {
         self.request_with_origin(wayland, toplevel, None, FullscreenOrigin::Compositor);
     }
 
+    pub(crate) fn request_maximize(
+        &mut self,
+        wayland: &mut WaylandState,
+        toplevel: &ToplevelSurface,
+    ) {
+        if self
+            .windows
+            .get(toplevel.wl_surface())
+            .is_some_and(|entry| {
+                entry.origin != FullscreenOrigin::Maximize
+                    && (entry.active
+                        || entry.desired
+                        || entry.transition.is_some()
+                        || entry.external_pending.is_some())
+            })
+        {
+            // A maximize request has no direct effect while another fullscreen
+            // owner is active. Still send the configure required by xdg-shell.
+            send_required_configure(toplevel);
+            return;
+        }
+        self.request_with_origin(wayland, toplevel, None, FullscreenOrigin::Maximize);
+    }
+
+    pub(crate) fn has_origin(&self, surface: &WlSurface, origin: FullscreenOrigin) -> bool {
+        self.windows
+            .get(surface)
+            .is_some_and(|entry| entry.origin == origin)
+    }
+
     fn request_with_origin(
         &mut self,
         wayland: &mut WaylandState,
@@ -203,6 +234,7 @@ impl FullscreenManager {
                 external_pending: None,
                 snapshot_serials: Vec::new(),
                 origin,
+                preserve_stack: false,
             });
         let transition_requested = !entry.active;
         entry.desired = true;
@@ -215,12 +247,13 @@ impl FullscreenManager {
         entry.fullscreen_size = output_geometry.size;
 
         toplevel.with_pending_state(|state| {
-            state.states.set(State::Fullscreen);
-            state.states.unset(State::Maximized);
+            apply_protocol_presentation_state(state, origin, true);
             super::decoration::clear_tiled_hint(state);
             state.size = Some(output_geometry.size);
             state.bounds = Some(output_geometry.size);
-            state.fullscreen_output = requested;
+            state.fullscreen_output = (origin != FullscreenOrigin::Maximize)
+                .then_some(requested)
+                .flatten();
         });
         if let Some(serial) = send_required_configure(toplevel)
             && animations_enabled(self.animations)
@@ -231,7 +264,7 @@ impl FullscreenManager {
     }
 
     pub fn unrequest(&mut self, wayland: &WaylandState, toplevel: &ToplevelSurface) {
-        let (restore_size, transition_requested) = self
+        let (restore_size, transition_requested, origin) = self
             .windows
             .get_mut(toplevel.wl_surface())
             .map(|entry| {
@@ -241,13 +274,16 @@ impl FullscreenManager {
                 }
                 entry.presentation_windowed =
                     entry.restore.as_ref().map(|restore| restore.geometry);
-                entry.presentation_output = None;
+                if !entry.preserve_stack {
+                    entry.presentation_output = None;
+                }
                 (
                     entry.restore.as_ref().map(|restore| restore.geometry.size),
                     entry.active,
+                    entry.origin,
                 )
             })
-            .unwrap_or((None, false));
+            .unwrap_or((None, false, FullscreenOrigin::Client));
         let bounds = self
             .windows
             .get(toplevel.wl_surface())
@@ -256,7 +292,7 @@ impl FullscreenManager {
             .map(|geometry| geometry.size);
 
         toplevel.with_pending_state(|state| {
-            state.states.unset(State::Fullscreen);
+            apply_protocol_presentation_state(state, origin, false);
             state.size = restore_size;
             state.bounds = bounds;
             state.fullscreen_output = None;
@@ -282,11 +318,11 @@ impl FullscreenManager {
     /// no snapshot serial leaves the single configure and the captured
     /// crossfade texture to the caller.
     pub(crate) fn retire_for_handoff(&mut self, toplevel: &ToplevelSurface) {
-        if self.windows.remove(toplevel.wl_surface()).is_none() {
+        let Some(entry) = self.windows.remove(toplevel.wl_surface()) else {
             return;
-        }
+        };
         toplevel.with_pending_state(|state| {
-            state.states.unset(State::Fullscreen);
+            apply_protocol_presentation_state(state, entry.origin, false);
             state.fullscreen_output = None;
             super::decoration::apply_tiled_hint(state);
         });
@@ -335,6 +371,7 @@ impl FullscreenManager {
                 external_pending: None,
                 snapshot_serials: Vec::new(),
                 origin,
+                preserve_stack: false,
             });
         super::set_window_output(&window, &target);
         // X11 fullscreen changes presentation geometry, not stacking. Using
@@ -449,6 +486,7 @@ impl FullscreenManager {
                 external_pending: None,
                 snapshot_serials: Vec::new(),
                 origin,
+                preserve_stack: false,
             });
         entry.origin = origin;
         entry.target_output = target_name;
@@ -488,7 +526,9 @@ impl FullscreenManager {
         let entry = self.windows.get_mut(&wl_surface)?;
         let geometry = entry.restore.as_ref()?.geometry;
         entry.presentation_windowed = Some(geometry);
-        entry.presentation_output = None;
+        if !entry.preserve_stack {
+            entry.presentation_output = None;
+        }
         Some(begin_external_transaction(
             entry,
             false,
@@ -596,12 +636,13 @@ impl FullscreenManager {
         let Some(toplevel) = window.toplevel() else {
             return false;
         };
-        let committed = toplevel.with_committed_state(|state| {
-            state.is_some_and(|state| state.states.contains(State::Fullscreen))
-        });
         let Some(entry) = self.windows.get(surface) else {
             return false;
         };
+        let origin = entry.origin;
+        let committed = toplevel.with_committed_state(|state| {
+            state.is_some_and(|state| state.states.contains(protocol_presentation_state(origin)))
+        });
         if committed != entry.desired {
             return false;
         }
@@ -637,6 +678,7 @@ impl FullscreenManager {
             return false;
         };
 
+        let preserve_stack = entry.preserve_stack;
         if committed {
             super::set_window_output(&window, &output);
             let location = center_in_rect(
@@ -644,7 +686,11 @@ impl FullscreenManager {
                 output_geometry.loc,
                 output_geometry.size,
             );
-            wayland.space.map_element(window.clone(), location, true);
+            if preserve_stack {
+                wayland.space.relocate_element(&window, location);
+            } else {
+                wayland.space.map_element(window.clone(), location, true);
+            }
         } else {
             let location = match restore.as_ref() {
                 Some(restore) if restore.output.as_deref() == Some(target_output.as_str()) => {
@@ -658,7 +704,11 @@ impl FullscreenManager {
                 ),
             };
             super::set_window_output(&window, &output);
-            wayland.space.map_element(window.clone(), location, true);
+            if preserve_stack {
+                wayland.space.relocate_element(&window, location);
+            } else {
+                wayland.space.map_element(window.clone(), location, true);
+            }
         }
 
         let entry = self.windows.get_mut(surface).expect("entry checked above");
@@ -674,7 +724,9 @@ impl FullscreenManager {
                 output: Some(output.name()),
             });
             entry.presentation_windowed = Some(geometry);
-            entry.presentation_output = None;
+            if !entry.preserve_stack {
+                entry.presentation_output = None;
+            }
         }
         retarget_visual(entry, self.animations, now, committed);
         entry.active = committed;
@@ -880,6 +932,25 @@ impl FullscreenManager {
         }
     }
 
+    pub(crate) fn override_restore_from_cluster(
+        &mut self,
+        surface: &WlSurface,
+        restore_geometry: Rectangle<i32, Logical>,
+        restore_output: String,
+        presentation_output: Option<Rectangle<i32, Physical>>,
+    ) {
+        if let Some(entry) = self.windows.get_mut(surface) {
+            entry.restore = Some(WindowedPlacement {
+                location: restore_geometry.loc,
+                geometry: restore_geometry,
+                output: Some(restore_output),
+            });
+            entry.presentation_windowed = Some(restore_geometry);
+            entry.presentation_output = presentation_output;
+            entry.preserve_stack = true;
+        }
+    }
+
     /// Match a client commit to the fullscreen configure which requested it.
     /// Clients may skip intermediate configures, so all serials no newer than
     /// the acknowledged commit are consumed, as in Niri's resize path.
@@ -928,8 +999,9 @@ impl FullscreenManager {
                 continue;
             };
             if let Some(toplevel) = window.toplevel() {
+                let origin = entry.origin;
                 toplevel.with_pending_state(|state| {
-                    state.states.set(State::Fullscreen);
+                    apply_protocol_presentation_state(state, origin, true);
                     state.size = Some(geometry.size);
                     state.bounds = Some(geometry.size);
                     super::decoration::clear_tiled_hint(state);
@@ -982,6 +1054,25 @@ pub struct FullscreenCleanup {
 
 fn animations_enabled(animations: Animations) -> bool {
     animations.enabled && animations.fullscreen.enabled
+}
+
+fn protocol_presentation_state(origin: FullscreenOrigin) -> State {
+    match origin {
+        FullscreenOrigin::Maximize => State::Maximized,
+        FullscreenOrigin::Client | FullscreenOrigin::Compositor => State::Fullscreen,
+    }
+}
+
+fn apply_protocol_presentation_state(
+    state: &mut ToplevelState,
+    origin: FullscreenOrigin,
+    active: bool,
+) {
+    state.states.unset(State::Fullscreen);
+    state.states.unset(State::Maximized);
+    if active {
+        state.states.set(protocol_presentation_state(origin));
+    }
 }
 
 fn fullscreen_presentation_is_visible(progress: f64, transition_active: bool) -> bool {
@@ -1251,6 +1342,7 @@ mod tests {
             external_pending: None,
             snapshot_serials: Vec::new(),
             origin: FullscreenOrigin::Client,
+            preserve_stack: false,
         }
     }
 
@@ -1298,6 +1390,28 @@ mod tests {
         assert!(!fullscreen_origin_allows_global_blur(
             FullscreenOrigin::Client
         ));
+    }
+
+    #[test]
+    fn maximize_presentation_reports_maximized_not_fullscreen() {
+        let mut state = ToplevelState::default();
+        apply_protocol_presentation_state(&mut state, FullscreenOrigin::Maximize, true);
+
+        assert!(state.states.contains(State::Maximized));
+        assert!(!state.states.contains(State::Fullscreen));
+
+        apply_protocol_presentation_state(&mut state, FullscreenOrigin::Maximize, false);
+        assert!(!state.states.contains(State::Maximized));
+        assert!(!state.states.contains(State::Fullscreen));
+    }
+
+    #[test]
+    fn explicit_fullscreen_still_reports_fullscreen() {
+        let mut state = ToplevelState::default();
+        apply_protocol_presentation_state(&mut state, FullscreenOrigin::Client, true);
+
+        assert!(state.states.contains(State::Fullscreen));
+        assert!(!state.states.contains(State::Maximized));
     }
 
     #[test]

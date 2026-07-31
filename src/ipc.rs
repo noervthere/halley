@@ -1,6 +1,8 @@
+use std::cell::RefCell;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
+use std::rc::Rc;
 use std::sync::mpsc;
 
 use calloop::channel::{Event, Sender, channel};
@@ -265,7 +267,27 @@ pub fn handle_request<D: crate::session::SessionDriver>(
         }
         halley_ipc::Request::CaptureFrame(request) => {
             match crate::capture::screencast::capture_frame(app, request, fds) {
-                Ok(response) => halley_ipc::Response::Frame(response),
+                Ok(crate::capture::screencast::CaptureFrameResult::Immediate(response)) => {
+                    halley_ipc::Response::Frame(response)
+                }
+                Ok(crate::capture::screencast::CaptureFrameResult::Submitted {
+                    response,
+                    sync,
+                }) => {
+                    let pending_reply = Rc::new(RefCell::new(Some(reply)));
+                    let completion_reply = pending_reply.clone();
+                    let completion = Box::new(move || {
+                        if let Some(reply) = completion_reply.borrow_mut().take() {
+                            let _ = reply.send(halley_ipc::Response::Frame(response), Vec::new());
+                        }
+                    });
+                    if let Err(message) = app.driver.schedule_render_completion(sync, completion)
+                        && let Some(reply) = pending_reply.borrow_mut().take()
+                    {
+                        let _ = reply.send(halley_ipc::Response::Error(message), Vec::new());
+                    }
+                    return;
+                }
                 Err(message) => halley_ipc::Response::Error(message),
             }
         }
@@ -313,6 +335,20 @@ pub fn handle_request<D: crate::session::SessionDriver>(
             }
         }
         halley_ipc::Request::Cluster(request) => crate::clusters::handle_request(app, request),
+        halley_ipc::Request::CaptureCapabilities => {
+            let capabilities = app.driver.dmabuf_capabilities();
+            halley_ipc::Response::CaptureCapabilities(halley_ipc::CaptureCapabilities {
+                main_device: capabilities.main_device().map(|device| device as u64),
+                dmabuf_formats: capabilities
+                    .formats()
+                    .iter()
+                    .map(|format| halley_ipc::DmabufFormat {
+                        fourcc: format.code as u32,
+                        modifier: format.modifier.into(),
+                    })
+                    .collect(),
+            })
+        }
     };
     let _ = reply.send(response, Vec::new());
 }

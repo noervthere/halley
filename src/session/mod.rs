@@ -6,7 +6,7 @@ use calloop::LoopHandle;
 use calloop::timer::{TimeoutAction, Timer};
 use halley_config::Action;
 use halley_core::camera::Camera;
-use smithay::utils::Rectangle;
+use smithay::utils::{Logical, Rectangle};
 use smithay::wayland::seat::WaylandFocus;
 
 use crate::wayland;
@@ -17,6 +17,7 @@ mod cursor;
 mod focus;
 pub(crate) mod gesture;
 mod input;
+pub(crate) use input::{cluster_owns_focus, sync_cluster_activation_focus};
 mod lifecycle;
 pub(crate) mod opening;
 pub(crate) mod output;
@@ -179,13 +180,16 @@ fn install_overlay_timer<D: SessionDriver>(
 ) -> Result<(), Box<dyn std::error::Error>> {
     handle
         .insert_source(
-            Timer::from_duration(Duration::from_millis(50)),
+            Timer::from_duration(Duration::from_millis(8)),
             |_, _, session| {
                 let now = crate::frame_clock::monotonic_now();
-                if session.overlays.wakeup(now) || session.clusters.bloom_wakeup(now) {
+                let overlays_changed = session.overlays.wakeup(now);
+                let bloom_changed = session.clusters.bloom_wakeup(now);
+                let interactions_changed = input::wakeup_cluster_interactions(session, now);
+                if overlays_changed || bloom_changed || interactions_changed {
                     session.request_redraw();
                 }
-                TimeoutAction::ToDuration(Duration::from_millis(50))
+                TimeoutAction::ToDuration(Duration::from_millis(8))
             },
         )
         .map(|_| ())
@@ -345,6 +349,7 @@ fn toggle_focused_fullscreen<D: SessionDriver>(session: &mut Session<D>, output:
         .cloned();
     cancel_grab_for_surface(session, &focused);
     let entering = !session.fullscreen.is_fullscreen_or_pending(&focused);
+    let cluster_restore = cluster_presentation_restore(session, &focused, now, entering);
     if entering {
         displace_fullscreen_on_output(session, &output_name, &focused);
     }
@@ -380,6 +385,14 @@ fn toggle_focused_fullscreen<D: SessionDriver>(session: &mut Session<D>, output:
             configure_field_geometry(session, restore);
         }
     }
+    if !entering && let Some(restore) = cluster_restore.as_ref() {
+        session.fullscreen.override_restore_from_cluster(
+            &focused,
+            restore.geometry,
+            restore.output.clone(),
+            restore.presentation_output,
+        );
+    }
     if let Some(toplevel) = window.toplevel() {
         if entering {
             session
@@ -390,6 +403,14 @@ fn toggle_focused_fullscreen<D: SessionDriver>(session: &mut Session<D>, output:
         }
     } else {
         crate::xwayland::set_window_fullscreen(session, &window, entering);
+    }
+    if entering && let Some(restore) = cluster_restore {
+        session.fullscreen.override_restore_from_cluster(
+            &focused,
+            restore.geometry,
+            restore.output,
+            restore.presentation_output,
+        );
     }
     if let (Some(restore), Some(field_geometry)) = (field_restore, field_geometry) {
         session.fullscreen.override_restore_from_field(
@@ -453,6 +474,35 @@ fn displace_fullscreen_on_output<D: SessionDriver>(
         }
         session.fullscreen.remove(&surface);
         session.render.fullscreen_textures.remove(&surface);
+    }
+}
+
+pub(crate) fn forget_destroyed_cluster_member<D: SessionDriver>(
+    session: &mut Session<D>,
+    id: halley_core::field::NodeId,
+) {
+    let work_area = session
+        .nodes
+        .record(id)
+        .and_then(|record| {
+            session
+                .wayland
+                .space
+                .outputs()
+                .find(|output| output.name() == record.output)
+        })
+        .map(|output| smithay::desktop::layer_map_for_output(output).non_exclusive_zone());
+    if let Some(work_area) = work_area {
+        session.clusters.forget_destroyed_member_animated(
+            &mut session.nodes.field,
+            id,
+            work_area,
+            crate::frame_clock::monotonic_now(),
+        );
+    } else {
+        session
+            .clusters
+            .forget_destroyed_member(&mut session.nodes.field, id);
     }
 }
 
@@ -522,19 +572,27 @@ fn toggle_field_maximize<D: SessionDriver>(
         )
             .into(),
     );
+    let now = crate::frame_clock::monotonic_now();
+    let entering = !session.maximize.contains(&record.surface);
+    let cluster_restore = cluster_presentation_restore(session, &record.surface, now, entering);
     let inherited_restore = session.fullscreen.restore_placement(&record.surface);
     let Some(restore_geometry) = inherited_restore
         .as_ref()
         .map(|(geometry, _)| *geometry)
+        .or_else(|| cluster_restore.as_ref().map(|restore| restore.geometry))
         .or_else(|| session.wayland.space.element_geometry(&record.window))
     else {
         return false;
     };
     let restore_output = inherited_restore
         .and_then(|(_, output)| output)
+        .or_else(|| {
+            cluster_restore
+                .as_ref()
+                .map(|restore| restore.output.clone())
+        })
         .unwrap_or_else(|| output_name.clone());
 
-    let now = crate::frame_clock::monotonic_now();
     let handoff_output_rect = session
         .fullscreen
         .is_fullscreen_or_pending(&record.surface)
@@ -554,7 +612,6 @@ fn toggle_field_maximize<D: SessionDriver>(
         }
     }
     cancel_grab_for_surface(session, &record.surface);
-    let entering = !session.maximize.contains(&record.surface);
     if entering {
         displace_fullscreen_on_output(session, &output_name, &record.surface);
     }
@@ -590,10 +647,13 @@ fn toggle_field_maximize<D: SessionDriver>(
     }
     let change = session.maximize.toggle(
         &target_output,
-        record.surface.clone(),
-        restore_geometry,
-        restore_output,
+        crate::presentation::maximize::FieldRestore {
+            surface: record.surface.clone(),
+            geometry: restore_geometry,
+            output: restore_output,
+        },
         target,
+        cluster_restore.and_then(|restore| restore.presentation_output),
         now,
     );
     if let Some(handoff_geometry) = handoff_geometry {
@@ -621,6 +681,57 @@ fn toggle_field_maximize<D: SessionDriver>(
     pointer::reconcile_state(session);
     session.request_redraw();
     true
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ClusterPresentationRestore {
+    pub(crate) geometry: Rectangle<i32, Logical>,
+    pub(crate) output: String,
+    pub(crate) presentation_output: Option<Rectangle<i32, smithay::utils::Physical>>,
+}
+
+pub(crate) fn cluster_presentation_restore<D: SessionDriver>(
+    session: &Session<D>,
+    surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+    now: std::time::Duration,
+    entering: bool,
+) -> Option<ClusterPresentationRestore> {
+    let id = session.nodes.id_for_surface(surface)?;
+    let cluster = session.clusters.cluster_for_member(id)?;
+    let metadata = session.clusters.metadata(cluster)?;
+    (session.clusters.active_on(&metadata.output) == Some(cluster)).then_some(())?;
+    let output = session
+        .wayland
+        .space
+        .outputs()
+        .find(|output| output.name() == metadata.output)?;
+    let output_geometry = session.wayland.space.output_geometry(output)?;
+    let work_area = smithay::desktop::layer_map_for_output(output).non_exclusive_zone();
+    let target = session.clusters.workspace_surface_target_for(
+        id,
+        &metadata.output,
+        work_area,
+        output_geometry,
+    )?;
+    let window = session.nodes.record(id)?.window.clone();
+    let tiled = Rectangle::new(
+        (target.geometry.loc - output_geometry.loc).to_physical(1),
+        target.geometry.size.to_physical(1),
+    );
+    // Entry must start at the member's live, possibly animated tile. Exit
+    // must finish at the latest layout target rather than reusing the current
+    // fullscreen/maximized rectangle as its windowed endpoint.
+    let presented = Some(
+        entering
+            .then(|| presented_window_rect(session, &window, output, now))
+            .flatten()
+            .unwrap_or(tiled),
+    );
+    Some(ClusterPresentationRestore {
+        geometry: target.geometry,
+        output: metadata.output.clone(),
+        presentation_output: presented,
+    })
 }
 
 fn presented_window_rect<D: SessionDriver>(

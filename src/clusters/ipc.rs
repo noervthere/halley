@@ -39,10 +39,9 @@ fn summary<D: crate::session::SessionDriver>(
         },
         member_count: cluster.members().len(),
         active: session.clusters.active_on(&metadata.output) == Some(id),
-        focused: session
-            .nodes
-            .focused()
-            .is_some_and(|focused| cluster.contains(focused)),
+        focused: session.nodes.focused().is_some_and(|focused| {
+            cluster.contains(focused) || cluster.core_node() == Some(focused)
+        }),
     })
 }
 
@@ -149,10 +148,31 @@ pub fn handle_request<D: crate::session::SessionDriver>(
                 Ok(output) => output,
                 Err(message) => return halley_ipc::Response::Error(message),
             };
+            let target = session
+                .clusters
+                .clusters_for_output(&output)
+                .find_map(|(candidate_slot, id, _)| (candidate_slot == slot).then_some(id));
+            let owned_focus =
+                target.is_some_and(|id| crate::session::cluster_owns_focus(session, id));
             if session
                 .clusters
                 .activate_slot(&output, slot, crate::frame_clock::monotonic_now())
             {
+                let output_handle = session
+                    .wayland
+                    .space
+                    .outputs()
+                    .find(|candidate| candidate.name() == output)
+                    .cloned();
+                if let Some((id, output_handle)) = target.zip(output_handle) {
+                    crate::session::sync_cluster_activation_focus(
+                        session,
+                        &output_handle,
+                        id,
+                        owned_focus,
+                        smithay::utils::SERIAL_COUNTER.next_serial(),
+                    );
+                }
                 session.request_redraw();
                 halley_ipc::Response::Ack
             } else {

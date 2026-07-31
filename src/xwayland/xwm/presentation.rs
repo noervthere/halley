@@ -54,7 +54,22 @@ pub(super) fn set_external_fullscreen<D: SessionDriver>(
     let Some(window) = window_for_surface(session, surface) else {
         return;
     };
-    if compositor_fullscreen_should_raise(fullscreen, origin) {
+    let now = crate::frame_clock::monotonic_now();
+    let cluster_restore = window.wl_surface().and_then(|wl_surface| {
+        crate::session::cluster_presentation_restore(session, wl_surface.as_ref(), now, fullscreen)
+    });
+    if !fullscreen && let Some(restore) = cluster_restore.as_ref() {
+        session.fullscreen.override_restore_from_cluster(
+            window
+                .wl_surface()
+                .expect("managed X11 windows have a Wayland surface")
+                .as_ref(),
+            restore.geometry,
+            restore.output.clone(),
+            restore.presentation_output,
+        );
+    }
+    if compositor_fullscreen_should_raise(fullscreen, origin) && cluster_restore.is_none() {
         crate::window::raise_managed(&mut session.wayland, &window);
         session.xwayland.raise_window(&window);
     }
@@ -73,7 +88,6 @@ pub(super) fn set_external_fullscreen<D: SessionDriver>(
         crate::session::reconcile_pointer_constraints(session);
         return;
     }
-    let now = crate::frame_clock::monotonic_now();
     let opening = window.wl_surface().is_some_and(|wl_surface| {
         session
             .window_open_animations
@@ -131,6 +145,17 @@ pub(super) fn set_external_fullscreen<D: SessionDriver>(
             surface.window_id(),
         );
         settle_external_immediately(session, surface, &window, fullscreen, origin);
+    }
+    if fullscreen
+        && let Some(restore) = cluster_restore
+        && let Some(wl_surface) = window.wl_surface()
+    {
+        session.fullscreen.override_restore_from_cluster(
+            wl_surface.as_ref(),
+            restore.geometry,
+            restore.output,
+            restore.presentation_output,
+        );
     }
     crate::session::reconcile_pointer_constraints(session);
 }

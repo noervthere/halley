@@ -13,6 +13,7 @@ pub(super) fn sort_stack_groups(groups: &mut [StackGroup]) {
 pub(super) struct LiveWindowScene {
     pub(super) elements: Vec<SceneElement>,
     pub(super) cluster_depth: Option<usize>,
+    pub(super) cluster_exclusive: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -33,6 +34,8 @@ pub(super) struct LiveWindowContext<'a> {
     pub(super) fullscreen: &'a crate::wayland::fullscreen::FullscreenManager,
     pub(super) maximize: &'a crate::presentation::maximize::FieldMaximizeManager,
     pub(super) window_rules: &'a crate::window::rules::WindowRulesState,
+    pub(super) cluster_presentation_override: Option<crate::clusters::WindowPresentation>,
+    pub(super) instance_identity: Option<&'static str>,
 }
 
 /// Crossfade progress past which the captured textures stop contributing.
@@ -66,15 +69,17 @@ pub(super) fn live_window_elements(
         return Ok(LiveWindowScene {
             elements: Vec::new(),
             cluster_depth: None,
+            cluster_exclusive: false,
         });
     };
     let Some(window_surface) = window.wl_surface() else {
         return Ok(LiveWindowScene {
             elements: Vec::new(),
             cluster_depth: None,
+            cluster_exclusive: false,
         });
     };
-    let Some(visual) = window_visual_state(
+    let Some(visual) = window_visual_state_with_cluster_presentation(
         context.space,
         context.cameras,
         Some(context.clusters),
@@ -85,16 +90,19 @@ pub(super) fn live_window_elements(
         context.fullscreen,
         context.maximize,
         context.target_presentation_time,
+        context.cluster_presentation_override,
     ) else {
         return Ok(LiveWindowScene {
             elements: Vec::new(),
             cluster_depth: None,
+            cluster_exclusive: false,
         });
     };
     if visual.animated_rect.size.w == 0 || visual.animated_rect.size.h == 0 {
         return Ok(LiveWindowScene {
             elements: Vec::new(),
             cluster_depth: visual.cluster_depth,
+            cluster_exclusive: visual.cluster_exclusive,
         });
     }
 
@@ -295,7 +303,11 @@ pub(super) fn live_window_elements(
         if let Some(blur) = backdrop_blur_renderer.blur_element(
             renderer,
             &context.output.name(),
-            format!("window:{:?}", window_surface.id()),
+            format!(
+                "window:{:?}:{}",
+                window_surface.id(),
+                context.instance_identity.unwrap_or("canonical")
+            ),
             context.output_geometry.size,
             patches,
             context.blur,
@@ -355,7 +367,12 @@ pub(super) fn live_window_elements(
         };
         if let Some(shadow) = shadow_renderer.element(
             renderer,
-            format!("{}:window:{:?}", context.output.name(), window_surface.id()),
+            format!(
+                "{}:window:{:?}:{}",
+                context.output.name(),
+                window_surface.id(),
+                context.instance_identity.unwrap_or("canonical")
+            ),
             caster,
             caster_radius,
             chrome_alpha,
@@ -367,6 +384,7 @@ pub(super) fn live_window_elements(
     Ok(LiveWindowScene {
         elements,
         cluster_depth: visual.cluster_depth,
+        cluster_exclusive: visual.cluster_exclusive,
     })
 }
 

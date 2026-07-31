@@ -11,6 +11,7 @@ pub(super) struct ClusterElementContext<'a> {
     pub(super) shadow_config: halley_config::ShadowLayer,
     pub(super) shadow_renderer: &'a mut crate::render::effects::shadow::ShadowRenderer,
     pub(super) node_grab_active: bool,
+    pub(super) now: std::time::Duration,
     pub(super) node_renderer: &'a mut crate::render::node::NodeRenderer,
     pub(super) ui_text: &'a mut crate::render::text::UiTextRenderer,
 }
@@ -30,6 +31,7 @@ pub(super) fn cluster_elements(
         shadow_config,
         shadow_renderer,
         node_grab_active,
+        now,
         node_renderer,
         ui_text,
     } = context;
@@ -46,12 +48,21 @@ pub(super) fn cluster_elements(
     ];
     let mut groups = Vec::new();
     for (_, id, metadata) in clusters.clusters_for_output(&output.name()) {
-        let focused =
-            focused_node.is_some_and(|node| clusters.cluster_for_member(node) == Some(id));
+        let focused = focused_node.is_some_and(|node| {
+            clusters.cluster_for_member(node) == Some(id)
+                || clusters.cluster_for_core(node) == Some(id)
+        });
         let hovered = clusters.hovered_core() == Some(id);
+        let bloom_open = clusters.bloom_open_on_output(&output.name()) == Some(id);
         let highlighted = focused || hovered;
-        let center =
-            crate::nodes::screen_from_world(metadata.core_position, camera, output_geometry);
+        let core_position = clusters
+            .registry()
+            .cluster(id)
+            .and_then(|cluster| cluster.core_node())
+            .map_or(metadata.core_position, |core| {
+                nodes.landmark_position(core, metadata.core_position, now)
+            });
+        let center = crate::nodes::screen_from_world(core_position, camera, output_geometry);
         let local = center - output_geometry.loc;
         let side = crate::clusters::CORE_DIAMETER_PX.round() as i32;
         let destination = Rectangle::<i32, Physical>::new(
@@ -61,13 +72,19 @@ pub(super) fn cluster_elements(
         let ring = node_ring_color(nodes.config, decorations, highlighted);
         let fill = node_fill_color(nodes.config, ring);
         let mut elements = Vec::new();
-        let hover_mix = match (node_grab_active, nodes.config.show_labels) {
-            (true, halley_config::NodeDisplayPolicy::Hover) => clusters.label_hover_mix(id, false),
-            (true, _) | (_, halley_config::NodeDisplayPolicy::Off) => 0.0,
-            (false, halley_config::NodeDisplayPolicy::Hover) => {
-                clusters.label_hover_mix(id, hovered)
+        let hover_mix = if bloom_open {
+            0.0
+        } else {
+            match (node_grab_active, nodes.config.show_labels) {
+                (true, halley_config::NodeDisplayPolicy::Hover) => {
+                    clusters.label_hover_mix(id, false)
+                }
+                (true, _) | (_, halley_config::NodeDisplayPolicy::Off) => 0.0,
+                (false, halley_config::NodeDisplayPolicy::Hover) => {
+                    clusters.label_hover_mix(id, hovered)
+                }
+                (false, halley_config::NodeDisplayPolicy::Always) => 1.0,
             }
-            (false, halley_config::NodeDisplayPolicy::Always) => 1.0,
         };
         elements.extend(super::nodes::landmark_label_elements(
             renderer,

@@ -8,6 +8,7 @@ use smithay::input::pointer::AxisFrame;
 use smithay::output::Output;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point, Rectangle};
+use smithay::wayland::seat::WaylandFocus;
 use smithay::wayland::shell::wlr_layer::Layer;
 
 use crate::input::keybinds::WheelDirection;
@@ -355,10 +356,26 @@ fn window_under(
         context.space.output_geometry(output)?.loc.y as f64 + output_local.y,
     );
     let screen_location = Point::<f64, Logical>::from(screen_position);
+    let exclusive = crate::presentation::window::cluster_exclusive_presentation(
+        context.clusters,
+        context.nodes,
+        context.fullscreen,
+        context.maximize,
+        output,
+        context.space.output_geometry(output)?,
+        context.now,
+    )
+    .filter(|presentation| presentation.progress > 0.0);
 
     for window in context.space.elements().rev() {
         if !crate::wayland::window_is_on_output(window, output, context.primary) {
             continue;
+        }
+        if let Some(exclusive) = exclusive {
+            let member = exclusive_member_for_window(context.space, context.nodes, window);
+            if member != Some(exclusive.member) {
+                continue;
+            }
         }
         let Some(presentation) = WindowPresentation::for_window(
             context.space,
@@ -400,6 +417,27 @@ fn window_under(
         });
     }
     None
+}
+
+fn exclusive_member_for_window(
+    space: &Space<Window>,
+    nodes: &crate::nodes::NodesState,
+    window: &Window,
+) -> Option<halley_core::field::NodeId> {
+    window
+        .wl_surface()
+        .and_then(|surface| nodes.id_for_surface(surface.as_ref()))
+        .or_else(|| {
+            let owner = crate::wayland::window_presentation_owner(window)?;
+            let owner = space.elements().find(|candidate| {
+                candidate
+                    .x11_surface()
+                    .is_some_and(|surface| surface.window_id() == owner)
+            })?;
+            owner
+                .wl_surface()
+                .and_then(|surface| nodes.id_for_surface(surface.as_ref()))
+        })
 }
 
 /// Converts one backend scroll event into the complete Smithay/Wayland axis

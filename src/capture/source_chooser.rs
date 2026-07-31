@@ -32,6 +32,7 @@ pub struct SourceMenuLayout {
 pub struct SourceChooser {
     active: bool,
     source_types: u32,
+    has_category_menu: bool,
     phase: Option<SourcePhase>,
     output_name: String,
     output_geometry: Rectangle<i32, Logical>,
@@ -50,13 +51,25 @@ impl SourceChooser {
     ) {
         self.active = true;
         self.source_types = source_types;
-        self.phase = Some(SourcePhase::Menu);
+        let monitor = source_types & halley_ipc::SOURCE_MONITOR != 0;
+        let window = source_types & halley_ipc::SOURCE_WINDOW != 0;
+        self.has_category_menu = monitor && window;
+        self.phase = Some(match (monitor, window) {
+            (true, false) => SourcePhase::MonitorPick,
+            (false, true) => SourcePhase::WindowPick,
+            _ => SourcePhase::Menu,
+        });
         self.output_name = output_name;
         self.output_geometry = output_geometry;
         self.selected = if self.is_enabled(0) { 0 } else { 1 };
         self.hovered = Some(self.selected);
-        self.source = None;
-        self.source_geometry = None;
+        if self.phase == Some(SourcePhase::MonitorPick) {
+            self.source = Some(monitor_source(&self.output_name, self.output_geometry));
+            self.source_geometry = Some(self.output_geometry);
+        } else {
+            self.source = None;
+            self.source_geometry = None;
+        }
     }
 
     pub fn cancel(&mut self) {
@@ -97,6 +110,10 @@ impl SourceChooser {
 
     pub fn update_output_geometry(&mut self, geometry: Rectangle<i32, Logical>) {
         self.output_geometry = geometry;
+        if self.phase == Some(SourcePhase::MonitorPick) {
+            self.source = Some(monitor_source(&self.output_name, geometry));
+            self.source_geometry = Some(geometry);
+        }
     }
 
     pub fn hit_test(&self, position: Point<f64, Logical>) -> Option<usize> {
@@ -158,13 +175,18 @@ impl SourceChooser {
             SourceMode::Monitor => SourcePhase::MonitorPick,
             SourceMode::Window => SourcePhase::WindowPick,
         });
-        self.source = None;
-        self.source_geometry = None;
+        if mode == SourceMode::Monitor {
+            self.source = Some(monitor_source(&self.output_name, self.output_geometry));
+            self.source_geometry = Some(self.output_geometry);
+        } else {
+            self.source = None;
+            self.source_geometry = None;
+        }
         true
     }
 
     pub fn return_to_menu(&mut self) -> bool {
-        if !self.active || self.phase == Some(SourcePhase::Menu) {
+        if !self.active || !self.has_category_menu || self.phase == Some(SourcePhase::Menu) {
             return false;
         }
         self.phase = Some(SourcePhase::Menu);
@@ -204,6 +226,19 @@ impl SourceChooser {
             SourceMode::Monitor => self.monitor_available(),
             SourceMode::Window => self.window_available(),
         })
+    }
+}
+
+fn monitor_source(
+    output_name: &str,
+    geometry: Rectangle<i32, Logical>,
+) -> halley_ipc::CaptureSource {
+    halley_ipc::CaptureSource::Monitor {
+        name: output_name.to_string(),
+        x: geometry.loc.x,
+        y: geometry.loc.y,
+        width: geometry.size.w,
+        height: geometry.size.h,
     }
 }
 
@@ -267,8 +302,22 @@ mod tests {
         let mut chooser = SourceChooser::default();
         chooser.begin(halley_ipc::SOURCE_WINDOW, "DP-2".to_string(), output());
         assert_eq!(chooser.selected(), 1);
+        assert_eq!(chooser.phase(), Some(SourcePhase::WindowPick));
         assert!(!chooser.activate(SourceMode::Monitor));
-        assert!(chooser.activate(SourceMode::Window));
+        assert!(!chooser.activate(SourceMode::Window));
+        assert!(!chooser.return_to_menu());
+    }
+
+    #[test]
+    fn monitor_only_request_skips_the_category_menu() {
+        let mut chooser = SourceChooser::default();
+        chooser.begin(halley_ipc::SOURCE_MONITOR, "DP-2".to_string(), output());
+        assert_eq!(chooser.phase(), Some(SourcePhase::MonitorPick));
+        assert!(!chooser.return_to_menu());
+        assert!(matches!(
+            chooser.take_selected(),
+            Some(halley_ipc::CaptureSource::Monitor { name, .. }) if name == "DP-2"
+        ));
     }
 
     #[test]

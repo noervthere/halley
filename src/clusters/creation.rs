@@ -17,6 +17,7 @@ pub struct CreationState {
     pub selection_focus_char: usize,
     pub scroll_char: usize,
     pub dragging_selection: bool,
+    pub(crate) name_repeat: Option<NameRepeat>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -26,6 +27,14 @@ pub enum NameInput {
     MoveLeft,
     MoveRight,
     Character(char),
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct NameRepeat {
+    keycode: u32,
+    input: NameInput,
+    next_at: std::time::Duration,
+    interval: std::time::Duration,
 }
 
 fn char_len(value: &str) -> usize {
@@ -103,6 +112,7 @@ impl ClusterSystem {
             selection_focus_char: 0,
             scroll_char: 0,
             dragging_selection: false,
+            name_repeat: None,
         });
         true
     }
@@ -120,6 +130,7 @@ impl ClusterSystem {
         if creation.naming {
             creation.naming = false;
             creation.dragging_selection = false;
+            creation.name_repeat = None;
             return true;
         }
         self.creation = None;
@@ -161,6 +172,7 @@ impl ClusterSystem {
         creation.selection_focus_char = creation.caret_char;
         creation.scroll_char = 0;
         creation.dragging_selection = false;
+        creation.name_repeat = None;
         true
     }
 
@@ -216,6 +228,61 @@ impl ClusterSystem {
             NameInput::Character(_) => return false,
         }
         true
+    }
+
+    pub fn start_name_repeat(
+        &mut self,
+        keycode: u32,
+        input: NameInput,
+        now: std::time::Duration,
+        delay_ms: i32,
+        rate: i32,
+    ) {
+        let Some(creation) = self.creation.as_mut().filter(|creation| creation.naming) else {
+            return;
+        };
+        if rate <= 0 {
+            creation.name_repeat = None;
+            return;
+        }
+        let interval_ms = (1_000u64 / u64::try_from(rate).unwrap_or(1).max(1)).max(1);
+        creation.name_repeat = Some(NameRepeat {
+            keycode,
+            input,
+            next_at: now.saturating_add(std::time::Duration::from_millis(
+                u64::try_from(delay_ms).unwrap_or(0),
+            )),
+            interval: std::time::Duration::from_millis(interval_ms),
+        });
+    }
+
+    pub fn stop_name_repeat(&mut self, keycode: u32) {
+        if let Some(creation) = self.creation.as_mut()
+            && creation
+                .name_repeat
+                .is_some_and(|repeat| repeat.keycode == keycode)
+        {
+            creation.name_repeat = None;
+        }
+    }
+
+    pub fn repeat_name_input_if_due(&mut self, now: std::time::Duration) -> bool {
+        let Some(repeat) = self
+            .creation
+            .as_ref()
+            .and_then(|creation| creation.name_repeat)
+            .filter(|repeat| now >= repeat.next_at)
+        else {
+            return false;
+        };
+        let handled = self.edit_name(repeat.input);
+        if let Some(creation) = self.creation.as_mut()
+            && let Some(state) = creation.name_repeat.as_mut()
+            && state.keycode == repeat.keycode
+        {
+            state.next_at = state.next_at.saturating_add(state.interval);
+        }
+        handled
     }
 
     pub fn begin_name_selection(&mut self, caret_char: usize) -> bool {
@@ -326,8 +393,12 @@ impl ClusterSystem {
                 core_position,
             },
         );
-        if let Some(cluster) = self.registry.cluster_mut(id) {
-            cluster.set_collapsed(true);
+        let core = self
+            .registry
+            .collapse_cluster(field, id)
+            .ok_or_else(|| "could not create the cluster core".to_string())?;
+        if let Some(metadata) = self.metadata.get_mut(&id) {
+            metadata.core = Some(core);
         }
         Ok(id)
     }
@@ -403,6 +474,53 @@ mod tests {
         assert!(system.end_name_selection());
         assert!(system.edit_name(NameInput::Character('X')));
         assert_eq!(system.creation().expect("creation").name_buffer, "cXr");
+    }
+
+    #[test]
+    fn finishing_creation_keeps_a_real_focusable_core_identity() {
+        let mut field = Field::new();
+        let first =
+            field.spawn_surface("first", Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 100.0, y: 80.0 });
+        let second = field.spawn_surface(
+            "second",
+            Vec2 { x: 120.0, y: 0.0 },
+            Vec2 { x: 100.0, y: 80.0 },
+        );
+        let mut system = system();
+        system.begin_creation("DP-1".into());
+        system.toggle_creation_member(first, "DP-1");
+        system.toggle_creation_member(second, "DP-1");
+        system.begin_naming();
+
+        let cluster = system.finish_creation(&mut field).expect("cluster");
+        let core = system.core_node(cluster).expect("core identity");
+
+        assert_eq!(
+            field.node(core).expect("core node").state,
+            halley_core::field::NodeState::Core
+        );
+        assert_eq!(system.metadata(cluster).expect("metadata").core, Some(core));
+        assert_eq!(system.collapsed_core_landmarks()[0].1, core);
+    }
+
+    #[test]
+    fn configured_repeat_waits_for_delay_and_advances_at_the_configured_rate() {
+        let mut system = system();
+        assert!(system.begin_creation("DP-1".into()));
+        let creation = system.creation.as_mut().expect("creation");
+        creation.selected.insert(NodeId::new(1));
+        creation.name_buffer = "abcd".into();
+        assert!(system.begin_naming());
+        assert!(system.edit_name(NameInput::Backspace));
+        system.start_name_repeat(14, NameInput::Backspace, std::time::Duration::ZERO, 300, 20);
+
+        assert!(!system.repeat_name_input_if_due(std::time::Duration::from_millis(299)));
+        assert_eq!(system.creation().expect("creation").name_buffer, "");
+        assert!(system.repeat_name_input_if_due(std::time::Duration::from_millis(300)));
+        assert!(!system.repeat_name_input_if_due(std::time::Duration::from_millis(349)));
+        assert!(system.repeat_name_input_if_due(std::time::Duration::from_millis(350)));
+        system.stop_name_repeat(14);
+        assert!(!system.repeat_name_input_if_due(std::time::Duration::from_secs(2)));
     }
 
     #[test]

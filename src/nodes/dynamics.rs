@@ -267,6 +267,20 @@ pub(super) fn solve_static_swept(
     positions
 }
 
+/// Resolves one newly admitted landmark without displacing any established
+/// field body. Creation uses this before the core's first visible frame so a
+/// later physics tick cannot turn the initial overlap into a jump.
+pub(super) fn solve_new_landmark(
+    mut bodies: Vec<Body>,
+    landmark: NodeId,
+    desired: Vec2,
+) -> HashMap<NodeId, Vec2> {
+    for body in &mut bodies {
+        body.pinned = body.id != landmark;
+    }
+    solve_static(&bodies, Some((landmark, desired)))
+}
+
 pub(super) fn solve_physics(
     bodies: &[Body],
     velocities: &mut HashMap<NodeId, Vec2>,
@@ -501,6 +515,17 @@ mod tests {
         assert!(positions_are_legal(&bodies, &positions));
         assert!(positions[&NodeId::new(1)].x < 10.0);
         assert_eq!(positions[&NodeId::new(3)].x, 50.0);
+    }
+
+    #[test]
+    fn a_new_landmark_moves_away_without_displacing_existing_bodies() {
+        let window = body(1, BodyKind::Window, 0.0);
+        let node = body(2, BodyKind::Node, 0.0);
+        let positions =
+            solve_new_landmark(vec![window, node], NodeId::new(2), Vec2 { x: 0.0, y: 0.0 });
+
+        assert_eq!(positions[&NodeId::new(1)], Vec2 { x: 0.0, y: 0.0 });
+        assert_ne!(positions[&NodeId::new(2)], Vec2 { x: 0.0, y: 0.0 });
     }
 
     #[test]

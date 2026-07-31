@@ -99,12 +99,16 @@ impl FieldMaximizeManager {
     pub fn toggle(
         &mut self,
         output: &Output,
-        surface: WlSurface,
-        restore_geometry: Rectangle<i32, Logical>,
-        restore_output: String,
+        restore: FieldRestore,
         target_rect: Rectangle<i32, Logical>,
+        presentation_output: Option<Rectangle<i32, Physical>>,
         now: Duration,
     ) -> FieldMaximizeChange {
+        let FieldRestore {
+            surface,
+            geometry: restore_geometry,
+            output: restore_output,
+        } = restore;
         let output_name = output.name();
         match self.outputs.get_mut(&output_name) {
             Some(entry) if entry.surface == surface && entry.active => {
@@ -113,8 +117,10 @@ impl FieldMaximizeManager {
                 let (camera_progress, camera_velocity) =
                     motion_state(entry.camera_timeline, entry.active, now);
                 entry.active = false;
+                entry.restore_geometry = restore_geometry;
+                entry.restore_output = restore_output;
                 entry.presentation_windowed = None;
-                entry.presentation_output = None;
+                entry.presentation_output = presentation_output;
                 entry.window_timeline =
                     timeline(self.animations, now, window_progress, 0.0, window_velocity);
                 entry.camera_timeline =
@@ -131,9 +137,11 @@ impl FieldMaximizeManager {
                 let (camera_progress, camera_velocity) =
                     motion_state(entry.camera_timeline, entry.active, now);
                 entry.active = true;
+                entry.restore_geometry = restore_geometry;
+                entry.restore_output = restore_output;
                 entry.target_rect = target_rect;
                 entry.presentation_windowed = None;
-                entry.presentation_output = None;
+                entry.presentation_output = presentation_output;
                 entry.window_timeline =
                     timeline(self.animations, now, window_progress, 1.0, window_velocity);
                 entry.camera_timeline =
@@ -158,7 +166,7 @@ impl FieldMaximizeManager {
                     restore_output,
                     target_rect,
                     presentation_windowed: None,
-                    presentation_output: None,
+                    presentation_output,
                     active: true,
                     window_timeline: timeline(self.animations, now, 0.0, 1.0, 0.0),
                     camera_timeline: timeline(
@@ -184,7 +192,7 @@ impl FieldMaximizeManager {
                         restore_output,
                         target_rect,
                         presentation_windowed: None,
-                        presentation_output: None,
+                        presentation_output,
                         active: true,
                         window_timeline: timeline(self.animations, now, 0.0, 1.0, 0.0),
                         camera_timeline: timeline(self.animations, now, 0.0, 1.0, 0.0),

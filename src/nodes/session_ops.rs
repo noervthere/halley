@@ -63,11 +63,12 @@ fn dynamics_bodies<D: crate::session::SessionDriver>(
     session: &mut crate::session::Session<D>,
 ) -> Vec<dynamics::Body> {
     session.nodes.sync_from_space(&session.wayland.space);
-    session
+    let mut bodies = session
         .nodes
         .records()
         .filter(|record| {
             record.attached
+                && !session.clusters.is_member(record.id)
                 && (record.collapsed
                     || (!session.fullscreen.is_fullscreen_or_pending(&record.surface)
                         && !session.maximize.contains(&record.surface)))
@@ -107,7 +108,30 @@ fn dynamics_bodies<D: crate::session::SessionDriver>(
                 output: record.output.clone(),
             })
         })
-        .collect()
+        .collect::<Vec<_>>();
+    bodies.extend(session.clusters.collapsed_core_landmarks().into_iter().map(
+        |(_, id, output, pos, pinned)| {
+            let scale = session
+                .cameras
+                .get(&output)
+                .map(crate::presentation::camera::scale)
+                .unwrap_or(1.0)
+                .max(0.05);
+            dynamics::Body {
+                id,
+                kind: dynamics::BodyKind::Node,
+                pos,
+                half: Vec2 {
+                    x: crate::clusters::CORE_DIAMETER_PX * 0.5 / scale,
+                    y: crate::clusters::CORE_DIAMETER_PX * 0.5 / scale,
+                },
+                gap: session.nodes.landmarks.gap_px / scale,
+                pinned,
+                output,
+            }
+        },
+    ));
+    bodies
 }
 
 fn apply_dynamics_positions<D: crate::session::SessionDriver>(
@@ -115,6 +139,16 @@ fn apply_dynamics_positions<D: crate::session::SessionDriver>(
     positions: HashMap<NodeId, Vec2>,
     authority: Option<NodeId>,
 ) -> HashSet<String> {
+    let core_changes = positions
+        .iter()
+        .filter_map(|(id, position)| {
+            let cluster = session.clusters.cluster_for_core(*id)?;
+            let metadata = session.clusters.metadata(cluster)?;
+            ((position.x - metadata.core_position.x).abs() > 0.001
+                || (position.y - metadata.core_position.y).abs() > 0.001)
+                .then(|| (cluster, *id, *position, metadata.output.clone()))
+        })
+        .collect::<Vec<_>>();
     let changes = positions
         .into_iter()
         .filter_map(|(id, position)| {
@@ -135,6 +169,14 @@ fn apply_dynamics_positions<D: crate::session::SessionDriver>(
         })
         .collect::<Vec<_>>();
     let mut outputs = HashSet::new();
+    for (cluster, core, position, output) in core_changes {
+        if session.clusters.move_core(cluster, &output, position) {
+            if let Some(node) = session.nodes.field.node_mut(core) {
+                node.pos = position;
+            }
+            outputs.insert(output);
+        }
+    }
     for (id, position, collapsed, output, window, size) in changes {
         outputs.insert(output);
         if let Some(node) = session.nodes.field.node_mut(id) {
@@ -192,6 +234,56 @@ pub(crate) fn move_grabbed_body_rigid<D: crate::session::SessionDriver>(
         session.request_redraw();
     }
     changed
+}
+
+pub(crate) fn move_cluster_core_rigid<D: crate::session::SessionDriver>(
+    session: &mut crate::session::Session<D>,
+    cluster: halley_core::cluster::ClusterId,
+    desired: Vec2,
+) -> bool {
+    let Some(core) = session.clusters.core_node(cluster) else {
+        return false;
+    };
+    move_grabbed_body_rigid(session, core, desired)
+}
+
+pub(crate) fn resolve_new_cluster_core<D: crate::session::SessionDriver>(
+    session: &mut crate::session::Session<D>,
+    cluster: halley_core::cluster::ClusterId,
+) -> bool {
+    let Some(core) = session.clusters.core_node(cluster) else {
+        return false;
+    };
+    let Some(origin) = session
+        .clusters
+        .metadata(cluster)
+        .map(|metadata| metadata.core_position)
+    else {
+        return false;
+    };
+    let bodies = dynamics_bodies(session);
+    if !bodies.iter().any(|body| body.id == core) {
+        return false;
+    }
+    let positions = dynamics::solve_new_landmark(bodies, core, origin);
+    let Some(destination) = positions.get(&core).copied() else {
+        return false;
+    };
+    if (destination.x - origin.x).abs() <= 0.001 && (destination.y - origin.y).abs() <= 0.001 {
+        return false;
+    }
+    let changed = !apply_dynamics_positions(session, positions, Some(core)).is_empty();
+    if !changed {
+        return false;
+    }
+    session.nodes.start_landmark_slide(
+        core,
+        origin,
+        destination,
+        crate::frame_clock::monotonic_now(),
+    );
+    session.request_redraw();
+    true
 }
 
 pub(crate) fn tick_physics<D: crate::session::SessionDriver>(
@@ -312,18 +404,103 @@ pub fn close_focused_on_output<D: crate::session::SessionDriver>(
     session: &mut crate::session::Session<D>,
     output: Option<&str>,
 ) {
-    let id = match output {
-        Some(output) => session.nodes.focused_on_output(output),
-        None => session.nodes.focused(),
+    let belongs_to_output = |id: NodeId| {
+        output.is_none_or(|output| {
+            session
+                .nodes
+                .record(id)
+                .is_some_and(|record| record.output == output)
+                || session
+                    .clusters
+                    .cluster_for_core(id)
+                    .and_then(|cluster| session.clusters.metadata(cluster))
+                    .is_some_and(|metadata| metadata.output == output)
+        })
     };
-    let Some(record) = id.and_then(|id| session.nodes.record(id)) else {
+
+    // Active cluster members are intentionally hidden from the free-field
+    // node scene.  That made `NodesState::focused()` reject them even while
+    // their Wayland surface held keyboard focus, so CloseFocusedWindow could
+    // become a no-op -- most visibly for the final member of a cluster.  The
+    // live client focus is authoritative for real windows; logical focus is
+    // still authoritative for compositor-only core nodes.
+    let client_focused = session
+        .wayland
+        .focused_window
+        .as_ref()
+        .and_then(|surface| session.nodes.id_for_surface(surface))
+        .filter(|id| belongs_to_output(*id));
+    let logical_focused = session.nodes.focused().filter(|id| belongs_to_output(*id));
+    let output_focused = output.and_then(|output| session.nodes.focused_on_output(output));
+    let Some(id) = preferred_close_candidate(client_focused, logical_focused, output_focused)
+    else {
         return;
     };
-    if let Some(toplevel) = record.window.toplevel() {
-        toplevel.send_close();
-    } else {
-        crate::xwayland::close_window(&record.window);
+    let targets = session.clusters.close_targets_for_node(id);
+    for target in targets {
+        let Some(record) = session.nodes.record(target) else {
+            continue;
+        };
+        if let Some(toplevel) = record.window.toplevel() {
+            toplevel.send_close();
+        } else {
+            crate::xwayland::close_window(&record.window);
+        }
     }
+}
+
+fn preferred_close_candidate(
+    client_focused: Option<NodeId>,
+    logical_focused: Option<NodeId>,
+    output_focused: Option<NodeId>,
+) -> Option<NodeId> {
+    client_focused.or(logical_focused).or(output_focused)
+}
+
+pub(crate) fn displace_landmarks_for_new_window<D: crate::session::SessionDriver>(
+    session: &mut crate::session::Session<D>,
+    id: NodeId,
+) -> bool {
+    if session.clusters.is_member(id) {
+        return false;
+    }
+    let Some(position) = session.nodes.field.node(id).map(|node| node.pos) else {
+        return false;
+    };
+    let bodies = dynamics_bodies(session);
+    if !bodies.iter().any(|body| body.id == id) {
+        return false;
+    }
+    let now = crate::frame_clock::monotonic_now();
+    let landmarks = bodies
+        .iter()
+        .filter(|body| body.kind == dynamics::BodyKind::Node)
+        .map(|body| {
+            (
+                body.id,
+                body.pos,
+                session.nodes.landmark_position(body.id, body.pos, now),
+            )
+        })
+        .collect::<Vec<_>>();
+    session.nodes.physics_velocity.clear();
+    let positions = dynamics::solve_static_swept(bodies, id, position);
+    let changed = !apply_dynamics_positions(session, positions, Some(id)).is_empty();
+    if !changed {
+        return false;
+    }
+
+    for (landmark, old_target, from) in landmarks {
+        let Some(to) = session.nodes.field.node(landmark).map(|node| node.pos) else {
+            continue;
+        };
+        if (to.x - old_target.x).abs() <= 0.001 && (to.y - old_target.y).abs() <= 0.001 {
+            continue;
+        }
+        session.nodes.start_landmark_slide(landmark, from, to, now);
+    }
+    session.request_redraw();
+    true
 }
 
 pub fn collapse<D: crate::session::SessionDriver>(
@@ -805,4 +982,35 @@ pub fn tick_decay<D: crate::session::SessionDriver>(
         changed |= collapse(session, id, smithay::utils::SERIAL_COUNTER.next_serial());
     }
     changed
+}
+
+#[cfg(test)]
+mod close_tests {
+    use super::preferred_close_candidate;
+    use halley_core::field::NodeId;
+
+    #[test]
+    fn live_client_focus_wins_over_stale_logical_focus_for_cluster_members() {
+        let active_member = NodeId::new(1);
+        let stale_logical = NodeId::new(2);
+        let output_history = NodeId::new(3);
+
+        assert_eq!(
+            preferred_close_candidate(
+                Some(active_member),
+                Some(stale_logical),
+                Some(output_history),
+            ),
+            Some(active_member)
+        );
+    }
+
+    #[test]
+    fn logical_core_focus_is_used_when_no_client_surface_is_focused() {
+        let core = NodeId::new(4);
+        assert_eq!(
+            preferred_close_candidate(None, Some(core), Some(NodeId::new(5))),
+            Some(core)
+        );
+    }
 }

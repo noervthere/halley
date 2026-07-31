@@ -13,10 +13,11 @@ bottom bar:
 - **Monitor** enters monitor-picking mode.
 - **Window** enters window-picking mode.
 
-An unsupported entry remains visible but disabled, so it is clear why it
-cannot be selected. Use the pointer or Left/Right and Enter. Escape returns
-from a picking mode to the bottom bar; pressing Escape on the bar cancels the
-request.
+If the application already requests only monitors or only windows, Halley
+enters that picking mode directly and does not place a second source-category
+menu over the application's own chooser. Use the pointer or Left/Right and
+Enter. Escape returns from a picking mode to the bottom bar only for requests
+that support both source types; otherwise it cancels the request.
 
 Monitor and window picking dim everything outside the candidate. This is only
 chooser chrome and is never included in the resulting stream.
@@ -31,10 +32,23 @@ session and removes its PipeWire node.
 The portal supports hidden, embedded, and metadata cursor modes. The requesting
 application chooses the mode; no Halley configuration key is required.
 
-Halley currently negotiates mapped PipeWire memory for all streams. Its
-DMA-BUF implementation remains isolated in the codebase but is not advertised
-until explicit frame-completion synchronization is available; exposing
-unsynchronized DMA-BUFs can make consumers display stale or black frames.
+Halley prefers DMA-BUF buffers and acknowledges each capture only after the
+renderer fence signals. PipeWire therefore queues a frame only when its GPU
+work is complete; mapped shared memory remains a compatibility fallback.
+The portal queries the compositor's render device and supported modifiers
+before allocating, so nested/software sessions fall back safely and multi-GPU
+systems never guess a render node.
+
+PipeWire frames use the standard variable-framerate/max-framerate fields and
+carry header and full-damage metadata. DMA-BUF chunks remain explicitly
+nonempty even though their modifier-dependent allocation size is not expressed
+as `stride * height`; this matches the established wlr/Hyprland portal
+contract used by OBS.
+
+Capture is consumer-driven. A compositor frame is produced only when PipeWire
+requests a buffer, at the negotiated rate up to 60 frames per second. There is
+no continuously refreshed full-output CPU cache or per-frame compositor
+connection.
 
 ## Session routing
 
@@ -42,3 +56,8 @@ unsynchronized DMA-BUFs can make consumers display stale or black frames.
 `halley-portals.conf` routes the ScreenCast and Screenshot interfaces to
 `xdg-desktop-portal-halley`. Distribution packages install the matching D-Bus
 and systemd user-service files from `packaging/`.
+
+The compositor and portal use a versioned local capture protocol. When testing
+a newly built compositor in an existing graphical session, restart
+`xdg-desktop-portal-halley.service` as well; a portal process left running from
+an older build cannot serve captures for the new compositor.

@@ -49,15 +49,26 @@ pub(super) fn route_client<D: SessionDriver>(
     )?;
     let output_geometry = session.wayland.space.output_geometry(&route.output)?;
     let camera = session.cameras.get(&route.output.name())?;
-    if session
-        .nodes
-        .hit_test(
-            &route.output,
-            output_geometry,
-            camera,
-            Point::from(session.pointer.position()),
-        )
-        .is_some()
+    let cluster_exclusive = crate::presentation::window::cluster_exclusive_presentation(
+        &session.clusters,
+        &session.nodes,
+        &session.fullscreen,
+        &session.maximize,
+        &route.output,
+        output_geometry,
+        crate::frame_clock::monotonic_now(),
+    )
+    .is_some_and(|presentation| presentation.progress > 0.0);
+    if !cluster_exclusive
+        && session
+            .nodes
+            .hit_test(
+                &route.output,
+                output_geometry,
+                camera,
+                Point::from(session.pointer.position()),
+            )
+            .is_some()
     {
         let world = crate::input::grab::screen_to_world_on_output(
             session.pointer.position(),
@@ -115,6 +126,7 @@ fn route_and_update_client_focus<D: SessionDriver>(
         constraints::has_active_lock(session, &pointer),
     ) {
         if surface_changed {
+            reset_client_cursor_image(session);
             constraints::deactivate_before_pointer_focus_change(session, routed_surface);
         }
         pointer.motion(
@@ -128,6 +140,17 @@ fn route_and_update_client_focus<D: SessionDriver>(
         );
     }
     Some(route)
+}
+
+fn reset_client_cursor_image<D: SessionDriver>(session: &mut Session<D>) {
+    if let Some(previous) = session.cursor.reset_image() {
+        crate::cursor::surface::clear_outputs(&previous, &session.wayland.space);
+    }
+    crate::cursor::surface::refresh_outputs(
+        &session.cursor,
+        &session.wayland.space,
+        session.pointer.position(),
+    );
 }
 
 pub(super) fn route_for_motion<D: SessionDriver>(
@@ -166,6 +189,14 @@ pub(super) fn update_client_state<D: SessionDriver>(session: &mut Session<D>, ti
 
 pub(crate) fn release_for_compositor_warp<D: SessionDriver>(session: &mut Session<D>) {
     constraints::deactivate_before_pointer_focus_change(session, None);
+}
+
+pub(crate) fn recover_after_session_resume<D: SessionDriver>(session: &mut Session<D>) {
+    constraints::deactivate_before_pointer_focus_change(session, None);
+    reset_client_cursor_image(session);
+    session.cursor.set_override(None);
+    session.cursor_policy.pointer_activity();
+    session.request_redraw();
 }
 
 pub(super) fn reconcile_state<D: SessionDriver>(session: &mut Session<D>) {

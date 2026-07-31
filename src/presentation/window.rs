@@ -25,7 +25,14 @@ pub(crate) struct WindowVisualState {
     pub(crate) zoom_scale: f32,
     pub(crate) presentation_space: PresentationSpace,
     pub(crate) cluster_depth: Option<usize>,
+    pub(crate) cluster_exclusive: bool,
     inherited_presentation: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ClusterExclusivePresentation {
+    pub(crate) member: halley_core::field::NodeId,
+    pub(crate) progress: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,6 +51,39 @@ fn presentation_source_rect(
     output_local.unwrap_or_else(|| {
         crate::render::camera_rect(world.to_physical(1), camera_center, output_size, zoom_scale)
     })
+}
+
+pub(crate) fn cluster_exclusive_presentation(
+    clusters: &crate::clusters::ClusterSystem,
+    nodes: &crate::nodes::NodesState,
+    fullscreen: &crate::wayland::fullscreen::FullscreenManager,
+    maximize: &crate::presentation::maximize::FieldMaximizeManager,
+    output: &Output,
+    output_geometry: Rectangle<i32, Logical>,
+    now: std::time::Duration,
+) -> Option<ClusterExclusivePresentation> {
+    let cluster = clusters.active_on(&output.name())?;
+    clusters.member_ids(cluster).into_iter().find_map(|member| {
+        let surface = &nodes.record(member)?.surface;
+        let progress = fullscreen
+            .presentation(surface, output, now)
+            .map(|presentation| presentation.progress as f32)
+            .or_else(|| {
+                maximize
+                    .presentation(surface, output, output_geometry, now)
+                    .map(|presentation| presentation.progress as f32)
+            })?;
+        Some(ClusterExclusivePresentation { member, progress })
+    })
+}
+
+fn is_cluster_exclusive_window(
+    window_node: Option<halley_core::field::NodeId>,
+    presentation: Option<ClusterExclusivePresentation>,
+    has_cluster_override: bool,
+) -> bool {
+    !has_cluster_override
+        && presentation.is_some_and(|presentation| Some(presentation.member) == window_node)
 }
 
 impl WindowVisualState {
@@ -84,41 +124,85 @@ pub(crate) fn window_visual_state(
     maximize: &crate::presentation::maximize::FieldMaximizeManager,
     now: std::time::Duration,
 ) -> Option<WindowVisualState> {
+    window_visual_state_with_cluster_presentation(
+        space,
+        cameras,
+        clusters,
+        nodes,
+        window,
+        output,
+        window_open_animations,
+        fullscreen,
+        maximize,
+        now,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn window_visual_state_with_cluster_presentation(
+    space: &Space<Window>,
+    cameras: &OutputCameras,
+    clusters: Option<&crate::clusters::ClusterSystem>,
+    nodes: Option<&crate::nodes::NodesState>,
+    window: &Window,
+    output: &Output,
+    window_open_animations: &crate::animation::WindowOpenAnimations,
+    fullscreen: &crate::wayland::fullscreen::FullscreenManager,
+    maximize: &crate::presentation::maximize::FieldMaximizeManager,
+    now: std::time::Duration,
+    cluster_override: Option<crate::clusters::WindowPresentation>,
+) -> Option<WindowVisualState> {
     let output_geometry = space.output_geometry(output)?;
     let output_size = output_geometry.size.to_physical(1);
     let view = cameras.view(&output.name())?;
     let camera_center = crate::presentation::camera::global_center(view.center, output_geometry);
     let source_geometry = space.element_geometry(window)?;
     let window_surface = window.wl_surface()?;
-    let cluster_presentation = clusters
-        .zip(nodes)
-        .and_then(|(clusters, nodes)| {
-            nodes
-                .id_for_surface(window_surface.as_ref())
-                .map(|id| (clusters, id))
-        })
-        .map(|(clusters, id)| {
-            let core = clusters
-                .transition_cluster_on(&output.name(), now)
-                .and_then(|cluster| clusters.metadata(cluster))
-                .map(|metadata| {
-                    crate::nodes::screen_from_world(
-                        metadata.core_position,
-                        cameras
-                            .get(&output.name())
-                            .expect("an output view always has a backing camera"),
-                        output_geometry,
-                    ) - output_geometry.loc
-                });
-            clusters.window_presentation(
-                id,
-                &output.name(),
-                smithay::desktop::layer_map_for_output(output).non_exclusive_zone(),
-                core,
-                now,
-            )
-        })
-        .unwrap_or(crate::clusters::WindowPresentation::Field);
+    let window_node = nodes.and_then(|nodes| nodes.id_for_surface(window_surface.as_ref()));
+    let exclusive_presentation = clusters.zip(nodes).and_then(|(clusters, nodes)| {
+        cluster_exclusive_presentation(
+            clusters,
+            nodes,
+            fullscreen,
+            maximize,
+            output,
+            output_geometry,
+            now,
+        )
+    });
+    let cluster_exclusive = is_cluster_exclusive_window(
+        window_node,
+        exclusive_presentation,
+        cluster_override.is_some(),
+    );
+    let cluster_presentation = cluster_override.unwrap_or_else(|| {
+        clusters
+            .zip(nodes)
+            .and_then(|(clusters, _nodes)| window_node.map(|id| (clusters, id)))
+            .map(|(clusters, id)| {
+                let core = clusters
+                    .transition_cluster_on(&output.name(), now)
+                    .and_then(|cluster| clusters.metadata(cluster))
+                    .map(|metadata| {
+                        crate::nodes::screen_from_world(
+                            metadata.core_position,
+                            cameras
+                                .get(&output.name())
+                                .expect("an output view always has a backing camera"),
+                            output_geometry,
+                        ) - output_geometry.loc
+                    });
+                clusters.window_presentation(
+                    id,
+                    &output.name(),
+                    smithay::desktop::layer_map_for_output(output).non_exclusive_zone(),
+                    core,
+                    now,
+                )
+            })
+            .unwrap_or(crate::clusters::WindowPresentation::Field)
+    });
     let (cluster_rect, cluster_depth, cluster_alpha) = match cluster_presentation {
         crate::clusters::WindowPresentation::Hidden => return None,
         crate::clusters::WindowPresentation::Field => (None, None, 1.0),
@@ -188,7 +272,8 @@ pub(crate) fn window_visual_state(
     } else {
         view.scale
     };
-    let mut inherited_cluster_depth = cluster_depth;
+    let mut inherited_cluster_depth = cluster_depth.filter(|_| !cluster_exclusive);
+    let mut inherited_cluster_exclusive = cluster_exclusive;
 
     if let Some(owner_xid) = crate::wayland::window_presentation_owner(window)
         && let Some(owner) = space.elements().find(|candidate| {
@@ -196,7 +281,7 @@ pub(crate) fn window_visual_state(
                 .x11_surface()
                 .is_some_and(|surface| surface.window_id() == owner_xid)
         })
-        && let Some(owner_visual) = window_visual_state(
+        && let Some(owner_visual) = window_visual_state_with_cluster_presentation(
             space,
             cameras,
             clusters,
@@ -207,6 +292,7 @@ pub(crate) fn window_visual_state(
             fullscreen,
             maximize,
             now,
+            None,
         )
     {
         let source = source_geometry.to_physical(1);
@@ -222,6 +308,7 @@ pub(crate) fn window_visual_state(
         inherited_camera_center = owner_visual.camera_center;
         inherited_zoom_scale = owner_visual.zoom_scale;
         inherited_cluster_depth = owner_visual.cluster_depth;
+        inherited_cluster_exclusive = owner_visual.cluster_exclusive;
         presentation_space = owner_visual.presentation_space;
         inherited_presentation = true;
     }
@@ -238,6 +325,7 @@ pub(crate) fn window_visual_state(
         zoom_scale: inherited_zoom_scale,
         presentation_space,
         cluster_depth: inherited_cluster_depth,
+        cluster_exclusive: inherited_cluster_exclusive,
         inherited_presentation,
     })
 }
@@ -452,6 +540,32 @@ mod tests {
         visual: Rectangle<i32, Logical>,
     ) -> (Rectangle<f64, Logical>, Rectangle<f64, Logical>) {
         (source.to_f64(), visual.to_f64())
+    }
+
+    #[test]
+    fn exclusive_cluster_presentation_promotes_only_the_live_target() {
+        let target = halley_core::field::NodeId::new(4);
+        let sibling = halley_core::field::NodeId::new(5);
+        let presentation = Some(ClusterExclusivePresentation {
+            member: target,
+            progress: 0.5,
+        });
+
+        assert!(is_cluster_exclusive_window(
+            Some(target),
+            presentation,
+            false
+        ));
+        assert!(!is_cluster_exclusive_window(
+            Some(sibling),
+            presentation,
+            false
+        ));
+        assert!(!is_cluster_exclusive_window(
+            Some(target),
+            presentation,
+            true,
+        ));
     }
 
     #[test]

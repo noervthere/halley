@@ -412,6 +412,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
             runtime_config.field,
             runtime_config.animations,
         ),
+        wayland_titlebar_clicks: super::state::WaylandTitlebarClicks::default(),
         xwayland,
     };
     for output in outputs {
@@ -530,6 +531,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                         // clean rather than trusting whatever redraw states
                         // said before the switch.
                         Ok(()) => {
+                            super::pointer::recover_after_session_resume(app);
                             if let Some(outputs) = app.driver.pending_output_config.take() {
                                 apply_tty_output_config(app, &outputs);
                             }

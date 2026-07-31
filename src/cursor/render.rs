@@ -70,6 +70,31 @@ pub fn elements(
                     1.0,
                     Kind::Cursor,
                 );
+            // A cursor surface can remain alive while losing its committed
+            // buffer across a lock, VT switch, suspend, or client teardown.
+            // Treat that as stale client state and draw the themed arrow for
+            // this frame instead of allowing an empty surface tree to make the
+            // cursor disappear indefinitely.
+            if elements.is_empty() {
+                let frame = manager.default_frame(output.current_scale().integer_scale(), time);
+                let Some(position) =
+                    named_cursor_origin(output, output_geometry, pointer_position, &frame)
+                else {
+                    return Ok(Vec::new());
+                };
+                return Ok(vec![
+                    MemoryRenderBufferRenderElement::from_buffer(
+                        renderer,
+                        position,
+                        &frame.buffer,
+                        None,
+                        None,
+                        None,
+                        Kind::Cursor,
+                    )?
+                    .into(),
+                ]);
+            }
             Ok(elements.into_iter().map(Into::into).collect())
         }
     }

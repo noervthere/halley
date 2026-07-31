@@ -24,9 +24,12 @@ pub use session_ops::{
     reconcile_landmarks, reconcile_landmarks_at_scale, restore, restore_for_close,
     reveal_for_focus_cycle, tick_decay, toggle_focused_on_output,
 };
+pub(crate) use session_ops::{
+    displace_landmarks_for_new_window, move_cluster_core_rigid, move_grabbed_body_rigid,
+    resolve_new_cluster_core, set_collapsed_output, tick_physics,
+};
 #[cfg(test)]
 use session_ops::{minimal_reveal_delta, physics_frame_delta};
-pub(crate) use session_ops::{move_grabbed_body_rigid, set_collapsed_output, tick_physics};
 
 const OUTSIDE_THRESHOLD: f32 = 0.90;
 pub const NODE_DIAMETER_PX: f32 = 51.0;
@@ -376,8 +379,15 @@ impl NodesState {
     }
 
     pub fn focused(&self) -> Option<NodeId> {
-        self.focused
-            .filter(|id| self.records.get(id).is_some_and(|record| record.attached))
+        self.focused.filter(|id| {
+            self.records
+                .get(id)
+                .is_some_and(|record| record.attached && self.field.is_visible(*id))
+                || self
+                    .field
+                    .node(*id)
+                    .is_some_and(|node| node.state == NodeState::Core)
+        })
     }
 
     pub fn focused_on_output(&self, output: &str) -> Option<NodeId> {
@@ -393,7 +403,11 @@ impl NodesState {
                     .filter_map(|(id, focused_at)| {
                         self.records
                             .get(id)
-                            .filter(|record| record.attached && record.output == output)
+                            .filter(|record| {
+                                record.attached
+                                    && record.output == output
+                                    && self.field.is_visible(*id)
+                            })
                             .map(|_| (*focused_at, id.as_u64(), *id))
                     })
                     .max_by_key(|(focused_at, stable_id, _)| (*focused_at, *stable_id))
@@ -406,7 +420,15 @@ impl NodesState {
     }
 
     pub fn focus(&mut self, id: Option<NodeId>, now_ms: u64) -> bool {
-        let next = id.filter(|id| self.records.get(id).is_some_and(|record| record.attached));
+        let next = id.filter(|id| {
+            self.records
+                .get(id)
+                .is_some_and(|record| record.attached && self.field.is_visible(*id))
+                || self
+                    .field
+                    .node(*id)
+                    .is_some_and(|node| node.state == NodeState::Core)
+        });
         if self.focused == next {
             return false;
         }
@@ -476,9 +498,12 @@ impl NodesState {
     }
 
     pub fn collapsed_on_output(&self, output: &str) -> impl Iterator<Item = &NodeRecord> {
-        self.records
-            .values()
-            .filter(move |record| record.collapsed && record.attached && record.output == output)
+        self.records.values().filter(move |record| {
+            record.collapsed
+                && record.attached
+                && record.output == output
+                && self.field.is_visible(record.id)
+        })
     }
 
     pub fn set_hovered(&mut self, hovered: Option<NodeId>, now: Duration) -> bool {
@@ -571,13 +596,11 @@ impl NodesState {
         let icon_transition = self
             .collapsed_on_output(output)
             .any(|record| now.saturating_sub(record.collapsed_at) < Duration::from_millis(1_220));
-        let slide_transition = self.collapsed_on_output(output).any(|record| {
-            self.landmark_slides
-                .borrow()
-                .get(&record.id)
-                .is_some_and(|slide| {
-                    now.saturating_sub(slide.started) < Duration::from_millis(LANDMARK_SLIDE_MS)
-                })
+        // Cluster cores share the landmark slide track even though they do not
+        // have a `NodeRecord`. A slide is short, so redrawing every output while
+        // any landmark is moving is both cheap and keeps core motion alive.
+        let slide_transition = self.landmark_slides.borrow().values().any(|slide| {
+            now.saturating_sub(slide.started) < Duration::from_millis(LANDMARK_SLIDE_MS)
         });
         node_transition
             || hover_transition
@@ -979,7 +1002,7 @@ mod tests {
         nearest_free_window_rect, physics_frame_delta, release_lock_deadline,
         release_lock_is_active,
     };
-    use halley_core::field::{NodeId, Vec2};
+    use halley_core::field::{NodeId, NodeState, Vec2};
     use smithay::utils::{Logical, Rectangle};
     use std::time::Duration;
 
@@ -1066,6 +1089,49 @@ mod tests {
             Some(focused)
         );
         assert_eq!(logical_focus_after_collapse(None, collapsed, false), None);
+    }
+
+    #[test]
+    fn logical_cluster_core_can_hold_focus_without_a_window_record() {
+        let mut nodes = super::NodesState::new(&halley_config::RuntimeConfig::default());
+        let core =
+            nodes
+                .field
+                .spawn_surface("core", Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 48.0, y: 48.0 });
+        assert!(nodes.field.set_state(core, NodeState::Core));
+
+        assert!(nodes.focus(Some(core), 10));
+        assert_eq!(nodes.focused(), Some(core));
+    }
+
+    #[test]
+    fn cluster_core_landmark_slide_keeps_frames_running_without_a_window_record() {
+        let mut nodes = super::NodesState::new(&halley_config::RuntimeConfig::default());
+        nodes.animations_enabled = true;
+        nodes.animation.enabled = true;
+        let core = nodes.field.spawn_surface(
+            "core",
+            Vec2 { x: 200.0, y: 100.0 },
+            Vec2 { x: 48.0, y: 48.0 },
+        );
+        assert!(nodes.field.set_state(core, NodeState::Core));
+        let started = Duration::from_secs(1);
+        nodes.start_landmark_slide(
+            core,
+            Vec2 { x: 20.0, y: 10.0 },
+            Vec2 { x: 200.0, y: 100.0 },
+            started,
+        );
+
+        assert!(nodes.is_animating_on_output("DP-1", started));
+        assert_eq!(
+            nodes.landmark_position(core, Vec2 { x: 200.0, y: 100.0 }, started),
+            Vec2 { x: 20.0, y: 10.0 }
+        );
+        assert!(!nodes.is_animating_on_output(
+            "DP-1",
+            started + Duration::from_millis(super::LANDMARK_SLIDE_MS),
+        ));
     }
 
     #[test]
