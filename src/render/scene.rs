@@ -456,7 +456,7 @@ pub fn build(
         })
         .collect::<Result<Vec<_>, _>>()?;
     stack.extend(node_scene.groups);
-    stack.extend(cluster_elements(
+    let cluster_scene = cluster_elements(
         renderer,
         request.resources.cluster_renderer,
         ClusterElementContext {
@@ -468,8 +468,12 @@ pub fn build(
             decorations: request.visuals.decorations,
             shadow_config: request.visuals.shadows.node,
             shadow_renderer: request.resources.shadow_renderer,
+            node_renderer: request.resources.node_renderer,
+            ui_text: request.resources.ui_text,
         },
-    )?);
+    )?;
+    elements.extend(cluster_scene.overlay);
+    stack.extend(cluster_scene.groups);
     let context = LiveWindowContext {
         space: request.desktop.space,
         output,

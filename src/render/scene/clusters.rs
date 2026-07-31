@@ -1,5 +1,5 @@
 use super::*;
-use crate::render::scene::nodes::{node_fill_color, node_ring_color};
+use crate::render::scene::nodes::{contrast_text_rgb, node_fill_color, node_ring_color};
 
 pub(super) struct ClusterElementContext<'a> {
     pub(super) output: &'a Output,
@@ -10,13 +10,21 @@ pub(super) struct ClusterElementContext<'a> {
     pub(super) decorations: &'a halley_config::Decorations,
     pub(super) shadow_config: halley_config::ShadowLayer,
     pub(super) shadow_renderer: &'a mut crate::render::effects::shadow::ShadowRenderer,
+    pub(super) node_renderer: &'a mut crate::render::node::NodeRenderer,
+    pub(super) ui_text: &'a mut crate::render::text::UiTextRenderer,
+}
+
+#[derive(Default)]
+pub(super) struct ClusterScene {
+    pub(super) overlay: Vec<SceneElement>,
+    pub(super) groups: Vec<StackGroup>,
 }
 
 pub(super) fn cluster_elements(
     renderer: &mut GlesRenderer,
     cluster_renderer: &mut crate::clusters::render::ClusterRenderer,
     context: ClusterElementContext<'_>,
-) -> Result<Vec<StackGroup>, Box<dyn Error>> {
+) -> Result<ClusterScene, Box<dyn Error>> {
     let ClusterElementContext {
         output,
         output_geometry,
@@ -26,12 +34,31 @@ pub(super) fn cluster_elements(
         decorations,
         shadow_config,
         shadow_renderer,
+        node_renderer,
+        ui_text,
     } = context;
+    let overlay = creation_elements(
+        renderer,
+        output,
+        output_geometry,
+        clusters,
+        nodes,
+        cameras,
+        decorations,
+        node_renderer,
+        ui_text,
+    )?;
     if clusters.active_on(&output.name()).is_some() {
-        return Ok(Vec::new());
+        return Ok(ClusterScene {
+            overlay,
+            groups: Vec::new(),
+        });
     }
     let Some(camera) = cameras.get(&output.name()) else {
-        return Ok(Vec::new());
+        return Ok(ClusterScene {
+            overlay,
+            groups: Vec::new(),
+        });
     };
     let focused_node = nodes.focused();
     let icon_colors = [
@@ -93,7 +120,7 @@ pub(super) fn cluster_elements(
             elements,
         });
     }
-    Ok(groups)
+    Ok(ClusterScene { overlay, groups })
 }
 
 fn rgba(color: halley_config::BorderColor) -> [u8; 4] {
@@ -103,4 +130,115 @@ fn rgba(color: halley_config::BorderColor) -> [u8; 4] {
         (color.b.clamp(0.0, 1.0) * 255.0).round() as u8,
         255,
     ]
+}
+
+#[allow(clippy::too_many_arguments)]
+fn creation_elements(
+    renderer: &mut GlesRenderer,
+    output: &Output,
+    output_geometry: Rectangle<i32, Logical>,
+    clusters: &crate::clusters::ClusterSystem,
+    nodes: &crate::nodes::NodesState,
+    cameras: &crate::presentation::camera::OutputCameras,
+    decorations: &halley_config::Decorations,
+    node_renderer: &mut crate::render::node::NodeRenderer,
+    ui_text: &mut crate::render::text::UiTextRenderer,
+) -> Result<Vec<SceneElement>, Box<dyn Error>> {
+    let Some(creation) = clusters
+        .creation()
+        .filter(|creation| creation.output == output.name())
+    else {
+        return Ok(Vec::new());
+    };
+    let Some(camera) = cameras.get(&output.name()) else {
+        return Ok(Vec::new());
+    };
+    let scale = crate::presentation::camera::scale(camera);
+    let color = smithay::backend::renderer::Color32F::new(
+        decorations.border_color_focused.r,
+        decorations.border_color_focused.g,
+        decorations.border_color_focused.b,
+        0.96,
+    );
+    let mut foreground = Vec::new();
+    for id in &creation.selected {
+        let Some(node) = nodes.field.node(*id) else {
+            continue;
+        };
+        let center = crate::nodes::screen_from_world(node.pos, camera, output_geometry)
+            - output_geometry.loc;
+        let size = (
+            (node.intrinsic_size.x * scale).round().max(1.0) as i32,
+            (node.intrinsic_size.y * scale).round().max(1.0) as i32,
+        );
+        let rect = Rectangle::<i32, Physical>::new(
+            (center.x - size.0 / 2, center.y - size.1 / 2).into(),
+            size.into(),
+        );
+        foreground.extend(
+            crate::render::border_strips(rect, 4, color)
+                .into_iter()
+                .map(SceneElement::Border),
+        );
+    }
+
+    let (width, height, message) = if creation.naming {
+        let entered = if creation.name_buffer.is_empty() {
+            "Type a cluster name…".to_string()
+        } else {
+            format!("Name: {}_", creation.name_buffer)
+        };
+        (
+            520,
+            86,
+            format!("{entered}   •   Enter to save   •   Esc to cancel"),
+        )
+    } else {
+        (
+            580,
+            58,
+            format!(
+                "Click windows to select   •   Enter to name   •   Esc to cancel   •   {} selected",
+                creation.selected.len()
+            ),
+        )
+    };
+    let card = Rectangle::<i32, Physical>::new(
+        (
+            (output_geometry.size.w - width) / 2,
+            if creation.naming {
+                (output_geometry.size.h - height) / 2
+            } else {
+                output_geometry.size.h - height - 48
+            },
+        )
+            .into(),
+        (width, height).into(),
+    );
+    let fill = node_fill_color(
+        nodes.config,
+        (
+            decorations.border_color_focused.r,
+            decorations.border_color_focused.g,
+            decorations.border_color_focused.b,
+        ),
+    );
+    if let Some(text) = ui_text.element(
+        renderer,
+        (card.loc.x + 18, card.loc.y + (card.size.h - 18).max(0) / 2).into(),
+        &message,
+        2,
+        contrast_text_rgb(fill),
+        1.0,
+    )? {
+        foreground.push(SceneElement::UiText(text.element));
+    }
+    foreground.push(SceneElement::NodeLabel(node_renderer.label_element(
+        renderer,
+        card,
+        halley_config::NodeShape::Squircle,
+        fill,
+        0.97,
+    )?));
+    Ok(foreground)
 }
