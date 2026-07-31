@@ -26,6 +26,18 @@ pub(crate) struct WindowVisualState {
     inherited_presentation: bool,
 }
 
+fn presentation_source_rect(
+    output_local: Option<Rectangle<i32, Physical>>,
+    world: Rectangle<i32, Logical>,
+    camera_center: Point<f32, Physical>,
+    output_size: smithay::utils::Size<i32, Physical>,
+    zoom_scale: f32,
+) -> Rectangle<i32, Physical> {
+    output_local.unwrap_or_else(|| {
+        crate::render::camera_rect(world.to_physical(1), camera_center, output_size, zoom_scale)
+    })
+}
+
 impl WindowVisualState {
     pub(crate) fn maps_from_source(self) -> bool {
         self.inherited_presentation || self.fullscreen.is_some() || self.maximize.is_some()
@@ -84,23 +96,25 @@ pub(crate) fn window_visual_state(
         .flatten();
     let mut presentation_rect = fullscreen_presentation
         .map(|presentation| {
-            let windowed = presentation
-                .windowed_geometry
-                .map(|geometry| {
-                    crate::render::camera_rect(
-                        geometry.to_physical(1),
+            let windowed = presentation.windowed_geometry.map_or_else(
+                || presentation.fullscreen_rect(output_size),
+                |geometry| {
+                    presentation_source_rect(
+                        presentation.windowed_output_rect,
+                        geometry,
                         camera_center,
                         output_size,
                         view.scale,
                     )
-                })
-                .unwrap_or_else(|| presentation.fullscreen_rect(output_size));
+                },
+            );
             presentation.client_rect(windowed, output_size)
         })
         .or_else(|| {
             maximize_presentation.map(|presentation| {
-                let windowed = crate::render::camera_rect(
-                    presentation.windowed_rect.to_physical(1),
+                let windowed = presentation_source_rect(
+                    presentation.windowed_output_rect,
+                    presentation.windowed_rect,
                     camera_center,
                     output_size,
                     view.scale,
@@ -410,6 +424,23 @@ mod tests {
         assert_eq!(
             map_point(Point::from((960.0, 540.0)), visual, source),
             Point::from((512.0, 384.0))
+        );
+    }
+
+    #[test]
+    fn output_local_handoff_source_ignores_camera_motion() {
+        let output_local = Rectangle::<i32, Physical>::new((20, 30).into(), (1880, 1020).into());
+        let world = Rectangle::<i32, Logical>::new((400, 250).into(), (900, 700).into());
+
+        assert_eq!(
+            presentation_source_rect(
+                Some(output_local),
+                world,
+                Point::from((1400.0, 900.0)),
+                (1920, 1080).into(),
+                0.55,
+            ),
+            output_local
         );
     }
 

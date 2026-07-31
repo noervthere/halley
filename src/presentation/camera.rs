@@ -19,12 +19,18 @@ pub struct OutputView {
 pub struct FullscreenCameraFrame {
     pub center: Point<f32, Physical>,
     pub progress: f32,
+    pub desired: bool,
+    pub transition_active: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
 struct FullscreenCameraRestore {
     center: Vec2,
     view_size: Vec2,
+    handoff_from_center: Option<Vec2>,
+    handoff_from_view_size: Option<Vec2>,
+    handoff_target_center: Option<Vec2>,
+    handoff_target_view_size: Option<Vec2>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -38,6 +44,8 @@ struct FieldMaximizeCameraRestore {
     /// would pop the whole output on the handoff frame.
     from_center: Option<Vec2>,
     from_view_size: Option<Vec2>,
+    target_center: Option<Vec2>,
+    target_view_size: Option<Vec2>,
 }
 
 /// Independent camera state keyed by Smithay output name.
@@ -125,18 +133,33 @@ impl OutputCameras {
                     FullscreenCameraRestore {
                         center: camera.center,
                         view_size: camera.view_size,
+                        handoff_from_center: None,
+                        handoff_from_view_size: None,
+                        handoff_target_center: None,
+                        handoff_target_view_size: None,
                     },
                 );
                 let progress = frame.progress.clamp(0.0, 1.0);
-                camera.center = lerp_vec2(
-                    restore.center,
-                    Vec2 {
-                        x: frame.center.x,
-                        y: frame.center.y,
-                    },
-                    progress,
-                );
-                camera.view_size = lerp_vec2(restore.view_size, camera.base_size, progress);
+                if !frame.desired && restore.handoff_from_center.is_some() {
+                    restore.handoff_from_center = None;
+                    restore.handoff_from_view_size = None;
+                    restore.handoff_target_center =
+                        rebase_target(restore.center, camera.center, progress);
+                    restore.handoff_target_view_size =
+                        rebase_target(restore.view_size, camera.view_size, progress);
+                } else if frame.desired && !frame.transition_active && progress >= 1.0 {
+                    restore.handoff_from_center = None;
+                    restore.handoff_from_view_size = None;
+                }
+                let source_center = restore.handoff_from_center.unwrap_or(restore.center);
+                let source_view_size = restore.handoff_from_view_size.unwrap_or(restore.view_size);
+                let target_center = restore.handoff_target_center.unwrap_or(Vec2 {
+                    x: frame.center.x,
+                    y: frame.center.y,
+                });
+                let target_view_size = restore.handoff_target_view_size.unwrap_or(camera.base_size);
+                camera.center = lerp_vec2(source_center, target_center, progress);
+                camera.view_size = lerp_vec2(source_view_size, target_view_size, progress);
                 camera.target_center = camera.center;
                 camera.target_view_size = camera.view_size;
                 camera.pan_vel = Vec2 { x: 0.0, y: 0.0 };
@@ -180,6 +203,32 @@ impl OutputCameras {
                 view_size: restore.view_size,
                 from_center: Some(camera.center),
                 from_view_size: Some(camera.view_size),
+                target_center: Some(camera.center),
+                target_view_size: Some(camera.view_size),
+            },
+        );
+        true
+    }
+
+    /// Transfers a maximized camera straight to fullscreen without moving the
+    /// desktop underneath the window. The original pre-maximize snapshot
+    /// remains the restore endpoint for a later fullscreen exit.
+    pub fn handoff_field_maximize_to_fullscreen(&mut self, output_name: &str) -> bool {
+        let Some(camera) = self.cameras.get(output_name) else {
+            return false;
+        };
+        let Some(restore) = self.field_maximize.remove(output_name) else {
+            return false;
+        };
+        self.fullscreen.insert(
+            output_name.to_string(),
+            FullscreenCameraRestore {
+                center: restore.center,
+                view_size: restore.view_size,
+                handoff_from_center: Some(camera.center),
+                handoff_from_view_size: Some(camera.view_size),
+                handoff_target_center: Some(camera.center),
+                handoff_target_view_size: Some(camera.view_size),
             },
         );
         true
@@ -191,8 +240,17 @@ impl OutputCameras {
     /// The source is entry-only: progress runs backwards on un-maximize, so a
     /// stale one would walk the camera toward the retired fullscreen view and
     /// then snap to the restore snapshot when the track releases.
-    pub fn clear_field_maximize_handoff(&mut self, output_name: &str) {
+    pub fn clear_field_maximize_handoff(&mut self, output_name: &str, progress: Option<f32>) {
+        let Some(camera) = self.cameras.get(output_name).copied() else {
+            return;
+        };
         if let Some(restore) = self.field_maximize.get_mut(output_name) {
+            let progress = progress.unwrap_or(1.0).clamp(0.0, 1.0);
+            if restore.from_center.is_some() {
+                restore.target_center = rebase_target(restore.center, camera.center, progress);
+                restore.target_view_size =
+                    rebase_target(restore.view_size, camera.view_size, progress);
+            }
             restore.from_center = None;
             restore.from_view_size = None;
         }
@@ -217,16 +275,18 @@ impl OutputCameras {
                         view_size: camera.view_size,
                         from_center: None,
                         from_view_size: None,
+                        target_center: None,
+                        target_view_size: None,
                     });
                 let progress = progress.clamp(0.0, 1.0);
                 camera.center = lerp_vec2(
                     restore.from_center.unwrap_or(restore.center),
-                    restore.center,
+                    restore.target_center.unwrap_or(restore.center),
                     progress,
                 );
                 camera.view_size = lerp_vec2(
                     restore.from_view_size.unwrap_or(restore.view_size),
-                    camera.base_size,
+                    restore.target_view_size.unwrap_or(camera.base_size),
                     progress,
                 );
                 camera.target_center = camera.center;
@@ -255,6 +315,13 @@ fn lerp_vec2(from: Vec2, to: Vec2, progress: f32) -> Vec2 {
         x: from.x + (to.x - from.x) * progress,
         y: from.y + (to.y - from.y) * progress,
     }
+}
+
+fn rebase_target(restore: Vec2, current: Vec2, progress: f32) -> Option<Vec2> {
+    (progress > f32::EPSILON).then(|| Vec2 {
+        x: restore.x + (current.x - restore.x) / progress,
+        y: restore.y + (current.y - restore.y) / progress,
+    })
 }
 
 pub fn scale(camera: &Camera) -> f32 {
@@ -398,6 +465,8 @@ mod tests {
             Some(FullscreenCameraFrame {
                 center: Point::from((1100.0, 620.0)),
                 progress: 0.5,
+                desired: true,
+                transition_active: true,
             }),
         ));
         assert!(
@@ -421,6 +490,8 @@ mod tests {
             Some(FullscreenCameraFrame {
                 center: Point::from((1100.0, 620.0)),
                 progress: 1.0,
+                desired: true,
+                transition_active: false,
             }),
         );
         assert_eq!(cameras.view("DP-1").unwrap().scale, 1.0);
@@ -448,6 +519,8 @@ mod tests {
             Some(FullscreenCameraFrame {
                 center: Point::from((500.0, 400.0)),
                 progress: 1.0,
+                desired: true,
+                transition_active: false,
             }),
         );
         cameras.apply_fullscreen(
@@ -455,6 +528,8 @@ mod tests {
             Some(FullscreenCameraFrame {
                 center: Point::from((700.0, 600.0)),
                 progress: 1.0,
+                desired: true,
+                transition_active: false,
             }),
         );
         cameras.apply_fullscreen("DP-1", None);
@@ -463,5 +538,122 @@ mod tests {
             cameras.get("DP-1").unwrap().center,
             Vec2 { x: 300.0, y: 250.0 }
         );
+    }
+
+    #[test]
+    fn fullscreen_to_maximize_handoff_keeps_output_camera_fixed() {
+        let mut cameras = OutputCameras::default();
+        cameras.insert("DP-1".into(), Size::from((1920, 1080)));
+        let camera = cameras.get_mut("DP-1").unwrap();
+        camera.center = Vec2 { x: 700.0, y: 420.0 };
+        camera.view_size = Vec2 {
+            x: 3840.0,
+            y: 2160.0,
+        };
+        camera.target_center = camera.center;
+        camera.target_view_size = camera.view_size;
+        let restore = *camera;
+
+        cameras.apply_fullscreen(
+            "DP-1",
+            Some(FullscreenCameraFrame {
+                center: Point::from((1100.0, 620.0)),
+                progress: 1.0,
+                desired: true,
+                transition_active: false,
+            }),
+        );
+        let fullscreen = *cameras.get("DP-1").unwrap();
+        assert!(cameras.handoff_fullscreen_to_field_maximize("DP-1"));
+
+        for progress in [0.0, 0.5, 1.0] {
+            cameras.apply_field_maximize("DP-1", Some(progress));
+            let camera = cameras.get("DP-1").unwrap();
+            assert_eq!(camera.center, fullscreen.center);
+            assert_eq!(camera.view_size, fullscreen.view_size);
+        }
+
+        cameras.clear_field_maximize_handoff("DP-1", Some(1.0));
+        cameras.apply_field_maximize("DP-1", Some(0.5));
+        let midpoint = cameras.get("DP-1").unwrap();
+        assert_eq!(
+            midpoint.center,
+            lerp_vec2(restore.center, fullscreen.center, 0.5)
+        );
+        assert_eq!(
+            midpoint.view_size,
+            lerp_vec2(restore.view_size, fullscreen.view_size, 0.5)
+        );
+
+        cameras.apply_field_maximize("DP-1", Some(0.0));
+        let camera = cameras.get("DP-1").unwrap();
+        assert_eq!(camera.center, restore.center);
+        assert_eq!(camera.view_size, restore.view_size);
+    }
+
+    #[test]
+    fn maximize_to_fullscreen_handoff_keeps_output_camera_fixed() {
+        let mut cameras = OutputCameras::default();
+        cameras.insert("DP-1".into(), Size::from((1920, 1080)));
+        let camera = cameras.get_mut("DP-1").unwrap();
+        camera.center = Vec2 { x: 700.0, y: 420.0 };
+        camera.view_size = Vec2 {
+            x: 3840.0,
+            y: 2160.0,
+        };
+        camera.target_center = camera.center;
+        camera.target_view_size = camera.view_size;
+        let restore = *camera;
+
+        cameras.apply_field_maximize("DP-1", Some(1.0));
+        let maximized = *cameras.get("DP-1").unwrap();
+        assert!(cameras.handoff_field_maximize_to_fullscreen("DP-1"));
+
+        for (progress, transition_active) in [(0.0, true), (0.5, true), (1.0, false)] {
+            cameras.apply_fullscreen(
+                "DP-1",
+                Some(FullscreenCameraFrame {
+                    center: Point::from((1200.0, 700.0)),
+                    progress,
+                    desired: true,
+                    transition_active,
+                }),
+            );
+            let camera = cameras.get("DP-1").unwrap();
+            assert_eq!(camera.center, maximized.center);
+            assert_eq!(camera.view_size, maximized.view_size);
+        }
+
+        cameras.apply_fullscreen(
+            "DP-1",
+            Some(FullscreenCameraFrame {
+                center: Point::from((1200.0, 700.0)),
+                progress: 0.5,
+                desired: false,
+                transition_active: true,
+            }),
+        );
+        let midpoint = cameras.get("DP-1").unwrap();
+        assert_eq!(
+            midpoint.center,
+            lerp_vec2(restore.center, maximized.center, 0.5)
+        );
+        assert_eq!(
+            midpoint.view_size,
+            lerp_vec2(restore.view_size, maximized.view_size, 0.5)
+        );
+
+        cameras.apply_fullscreen(
+            "DP-1",
+            Some(FullscreenCameraFrame {
+                center: Point::from((1200.0, 700.0)),
+                progress: 0.0,
+                desired: false,
+                transition_active: false,
+            }),
+        );
+        let camera = cameras.get("DP-1").unwrap();
+        assert_eq!(camera.center, restore.center);
+        assert_eq!(camera.view_size, restore.view_size);
     }
 }

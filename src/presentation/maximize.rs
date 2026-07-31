@@ -14,6 +14,7 @@ pub struct FieldMaximizePresentation {
     pub progress: f64,
     pub transition_completion: f64,
     pub windowed_rect: Rectangle<i32, Logical>,
+    pub windowed_output_rect: Option<Rectangle<i32, Physical>>,
     pub target_rect: Rectangle<i32, Physical>,
 }
 
@@ -49,6 +50,11 @@ struct Entry {
     /// window will eventually restore to. Mirrors
     /// `FullscreenManager::presentation_windowed`.
     presentation_windowed: Option<Rectangle<i32, Logical>>,
+    /// Exact output-local rectangle occupied by a retiring fullscreen
+    /// presentation. Unlike `presentation_windowed`, this has already passed
+    /// through the old camera and must not be projected through the maximize
+    /// camera again.
+    presentation_output: Option<Rectangle<i32, Physical>>,
     active: bool,
     window_timeline: Option<MotionTimeline>,
     camera_timeline: Option<MotionTimeline>,
@@ -108,6 +114,7 @@ impl FieldMaximizeManager {
                     motion_state(entry.camera_timeline, entry.active, now);
                 entry.active = false;
                 entry.presentation_windowed = None;
+                entry.presentation_output = None;
                 entry.window_timeline =
                     timeline(self.animations, now, window_progress, 0.0, window_velocity);
                 entry.camera_timeline =
@@ -126,6 +133,7 @@ impl FieldMaximizeManager {
                 entry.active = true;
                 entry.target_rect = target_rect;
                 entry.presentation_windowed = None;
+                entry.presentation_output = None;
                 entry.window_timeline =
                     timeline(self.animations, now, window_progress, 1.0, window_velocity);
                 entry.camera_timeline =
@@ -150,6 +158,7 @@ impl FieldMaximizeManager {
                     restore_output,
                     target_rect,
                     presentation_windowed: None,
+                    presentation_output: None,
                     active: true,
                     window_timeline: timeline(self.animations, now, 0.0, 1.0, 0.0),
                     camera_timeline: timeline(
@@ -175,6 +184,7 @@ impl FieldMaximizeManager {
                         restore_output,
                         target_rect,
                         presentation_windowed: None,
+                        presentation_output: None,
                         active: true,
                         window_timeline: timeline(self.animations, now, 0.0, 1.0, 0.0),
                         camera_timeline: timeline(self.animations, now, 0.0, 1.0, 0.0),
@@ -212,6 +222,7 @@ impl FieldMaximizeManager {
                 windowed_rect: entry
                     .presentation_windowed
                     .unwrap_or(entry.restore_geometry),
+                windowed_output_rect: entry.presentation_output,
                 target_rect: Rectangle::new(
                     (entry.target_rect.loc - output_geometry.loc).to_physical(1),
                     entry.target_rect.size.to_physical(1),
@@ -230,6 +241,7 @@ impl FieldMaximizeManager {
         &mut self,
         surface: &WlSurface,
         fullscreen_geometry: Rectangle<i32, Logical>,
+        fullscreen_output_rect: Option<Rectangle<i32, Physical>>,
     ) {
         if let Some(entry) = self
             .outputs
@@ -237,6 +249,7 @@ impl FieldMaximizeManager {
             .find(|entry| &entry.surface == surface && entry.active)
         {
             entry.presentation_windowed = Some(fullscreen_geometry);
+            entry.presentation_output = fullscreen_output_rect;
         }
     }
 
@@ -505,6 +518,7 @@ mod tests {
             progress,
             transition_completion: progress,
             windowed_rect: Rectangle::new((100, 80).into(), (800, 600).into()),
+            windowed_output_rect: Some(fullscreen),
             target_rect: target,
         };
 

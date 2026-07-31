@@ -253,11 +253,25 @@ fn toggle_focused_fullscreen<D: SessionDriver>(session: &mut Session<D>, output:
     let window = record.window;
     let output_name =
         crate::wayland::window_output_name(&window).unwrap_or_else(|| record.output.clone());
+    let now = crate::frame_clock::monotonic_now();
+    let target_output = session
+        .wayland
+        .space
+        .outputs()
+        .find(|candidate| candidate.name() == output_name)
+        .cloned();
     cancel_grab_for_surface(session, &focused);
     let entering = !session.fullscreen.is_fullscreen_or_pending(&focused);
     if entering {
         displace_fullscreen_on_output(session, &output_name, &focused);
     }
+    let field_output_rect = (entering && session.maximize.contains(&focused))
+        .then(|| {
+            target_output
+                .as_ref()
+                .and_then(|output| presented_window_rect(session, &window, output, now))
+        })
+        .flatten();
     let field_restore = entering
         .then(|| session.maximize.take_output_restore(&output_name))
         .flatten();
@@ -267,7 +281,13 @@ fn toggle_focused_fullscreen<D: SessionDriver>(session: &mut Session<D>, output:
         .and_then(|_| session.wayland.space.element_geometry(&window));
     if let Some(restore) = field_restore.as_ref() {
         session.render.fullscreen_textures.remove(&restore.surface);
-        let _ = session.cameras.apply_field_maximize(&output_name, None);
+        let camera_handoff = restore.surface == focused
+            && session
+                .cameras
+                .handoff_field_maximize_to_fullscreen(&output_name);
+        if !camera_handoff {
+            let _ = session.cameras.apply_field_maximize(&output_name, None);
+        }
         if restore.surface == focused {
             session
                 .wayland
@@ -294,6 +314,7 @@ fn toggle_focused_fullscreen<D: SessionDriver>(session: &mut Session<D>, output:
             restore.geometry,
             restore.output,
             field_geometry,
+            field_output_rect,
         );
     }
     pointer::reconcile_state(session);
@@ -403,6 +424,12 @@ fn toggle_focused_field_maximize<D: SessionDriver>(session: &mut Session<D>, out
         .and_then(|(_, output)| output)
         .unwrap_or_else(|| output_name.clone());
 
+    let now = crate::frame_clock::monotonic_now();
+    let handoff_output_rect = session
+        .fullscreen
+        .is_fullscreen_or_pending(&record.surface)
+        .then(|| presented_window_rect(session, &record.window, &target_output, now))
+        .flatten();
     if session.maximize.animations_enabled() {
         let textures = &mut session.render.fullscreen_textures;
         let capture = session.driver.with_renderer(|renderer| {
@@ -417,7 +444,6 @@ fn toggle_focused_field_maximize<D: SessionDriver>(session: &mut Session<D>, out
         }
     }
     cancel_grab_for_surface(session, &record.surface);
-    let now = crate::frame_clock::monotonic_now();
     let entering = !session.maximize.contains(&record.surface);
     if entering {
         displace_fullscreen_on_output(session, &output_name, &record.surface);
@@ -447,7 +473,10 @@ fn toggle_focused_field_maximize<D: SessionDriver>(session: &mut Session<D>, out
         })
         .flatten();
     if handoff_geometry.is_none() {
-        session.cameras.clear_field_maximize_handoff(&output_name);
+        let camera_progress = session.maximize.camera_progress(&target_output, now);
+        session
+            .cameras
+            .clear_field_maximize_handoff(&output_name, camera_progress);
     }
     let change = session.maximize.toggle(
         &target_output,
@@ -458,9 +487,11 @@ fn toggle_focused_field_maximize<D: SessionDriver>(session: &mut Session<D>, out
         now,
     );
     if let Some(handoff_geometry) = handoff_geometry {
-        session
-            .maximize
-            .override_windowed_from_fullscreen(&record.surface, handoff_geometry);
+        session.maximize.override_windowed_from_fullscreen(
+            &record.surface,
+            handoff_geometry,
+            handoff_output_rect,
+        );
     }
     if let Some(displaced) = change.displaced.as_ref() {
         session
@@ -479,6 +510,25 @@ fn toggle_focused_field_maximize<D: SessionDriver>(session: &mut Session<D>, out
     );
     pointer::reconcile_state(session);
     session.request_redraw();
+}
+
+fn presented_window_rect<D: SessionDriver>(
+    session: &Session<D>,
+    window: &smithay::desktop::Window,
+    output: &smithay::output::Output,
+    now: std::time::Duration,
+) -> Option<Rectangle<i32, smithay::utils::Physical>> {
+    crate::presentation::window::window_visual_state(
+        &session.wayland.space,
+        &session.cameras,
+        window,
+        output,
+        &session.window_open_animations,
+        &session.fullscreen,
+        &session.maximize,
+        now,
+    )
+    .map(|visual| visual.animated_rect)
 }
 
 pub(crate) fn configure_field_geometry<D: SessionDriver>(

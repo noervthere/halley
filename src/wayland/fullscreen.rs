@@ -31,6 +31,10 @@ struct FullscreenWindow {
     target_output: String,
     restore: Option<WindowedPlacement>,
     presentation_windowed: Option<Rectangle<i32, Logical>>,
+    /// Exact output-local source retained across a mode-to-mode handoff. This
+    /// rectangle already includes the outgoing camera and must not be projected
+    /// through the incoming camera again.
+    presentation_output: Option<Rectangle<i32, Physical>>,
     fullscreen_size: Size<i32, Logical>,
     transition: Option<MotionTimeline>,
     external_pending: Option<ExternalPending>,
@@ -69,6 +73,7 @@ pub struct FullscreenPresentation {
     pub progress: f64,
     pub transition_completion: f64,
     pub windowed_geometry: Option<Rectangle<i32, Logical>>,
+    pub windowed_output_rect: Option<Rectangle<i32, Physical>>,
     pub fullscreen_size: Size<i32, Logical>,
 }
 
@@ -217,6 +222,7 @@ impl FullscreenManager {
                     })
                 }),
                 presentation_windowed: None,
+                presentation_output: None,
                 fullscreen_size: output_geometry.size,
                 transition: None,
                 external_pending: None,
@@ -276,6 +282,7 @@ impl FullscreenManager {
                 }
                 entry.presentation_windowed =
                     entry.restore.as_ref().map(|restore| restore.geometry);
+                entry.presentation_output = None;
                 (
                     entry.restore.as_ref().map(|restore| restore.geometry.size),
                     entry.active,
@@ -363,6 +370,7 @@ impl FullscreenManager {
                     output: super::window_output_name(&window),
                 }),
                 presentation_windowed: None,
+                presentation_output: None,
                 fullscreen_size: output_geometry.size,
                 transition: None,
                 external_pending: None,
@@ -476,6 +484,7 @@ impl FullscreenManager {
                 target_output: target_name.clone(),
                 restore: restore.clone(),
                 presentation_windowed: None,
+                presentation_output: None,
                 fullscreen_size: output_geometry.size,
                 transition: None,
                 external_pending: None,
@@ -520,6 +529,7 @@ impl FullscreenManager {
         let entry = self.windows.get_mut(&wl_surface)?;
         let geometry = entry.restore.as_ref()?.geometry;
         entry.presentation_windowed = Some(geometry);
+        entry.presentation_output = None;
         Some(begin_external_transaction(
             entry,
             false,
@@ -705,6 +715,7 @@ impl FullscreenManager {
                 output: Some(output.name()),
             });
             entry.presentation_windowed = Some(geometry);
+            entry.presentation_output = None;
         }
         retarget_visual(entry, self.animations, now, committed);
         entry.active = committed;
@@ -730,13 +741,14 @@ impl FullscreenManager {
             .transition
             .map(|transition| transition.completion_at(now))
             .unwrap_or(1.0);
-        fullscreen_presentation_is_visible(progress, entry.transition.is_some()).then_some(
+        fullscreen_presentation_is_visible(progress, entry_owns_presentation(entry)).then_some(
             FullscreenPresentation {
                 progress,
                 transition_completion,
                 windowed_geometry: entry
                     .presentation_windowed
                     .or_else(|| entry.restore.as_ref().map(|restore| restore.geometry)),
+                windowed_output_rect: entry.presentation_output,
                 fullscreen_size: entry.fullscreen_size,
             },
         )
@@ -785,7 +797,12 @@ impl FullscreenManager {
                     output_geometry.size.h as f32 / 2.0,
                 ))
             });
-        Some(FullscreenCameraFrame { center, progress })
+        Some(FullscreenCameraFrame {
+            center,
+            progress,
+            desired: entry.desired,
+            transition_active: entry.transition.is_some(),
+        })
     }
 
     pub fn covers_top(&self, _focused: Option<&WlSurface>, output: &Output, now: Duration) -> bool {
@@ -891,6 +908,7 @@ impl FullscreenManager {
         restore_geometry: Rectangle<i32, Logical>,
         restore_output: String,
         field_geometry: Rectangle<i32, Logical>,
+        field_output_rect: Option<Rectangle<i32, Physical>>,
     ) {
         if let Some(entry) = self.windows.get_mut(surface) {
             entry.restore = Some(WindowedPlacement {
@@ -899,6 +917,7 @@ impl FullscreenManager {
                 output: Some(restore_output),
             });
             entry.presentation_windowed = Some(field_geometry);
+            entry.presentation_output = field_output_rect;
         }
     }
 
@@ -1012,6 +1031,10 @@ fn fullscreen_presentation_is_visible(progress: f64, transition_active: bool) ->
     // one frame before the captured texture blend takes over (and once again
     // on exit immediately before cleanup), which reads as a fullscreen flash.
     transition_active || progress > 0.0
+}
+
+fn entry_owns_presentation(entry: &FullscreenWindow) -> bool {
+    entry.transition.is_some() || entry.desired != entry.active || entry.external_pending.is_some()
 }
 
 fn fullscreen_origin_allows_global_blur(origin: FullscreenOrigin) -> bool {
@@ -1281,6 +1304,7 @@ mod tests {
             target_output: "DP-1".to_string(),
             restore: None,
             presentation_windowed: None,
+            presentation_output: None,
             fullscreen_size: (1920, 1080).into(),
             transition: None,
             external_pending: None,
@@ -1429,6 +1453,20 @@ mod tests {
         assert!(fullscreen_presentation_is_visible(0.5, true));
         assert!(fullscreen_presentation_is_visible(1.0, false));
         assert!(!fullscreen_presentation_is_visible(0.0, false));
+    }
+
+    #[test]
+    fn pending_configure_keeps_the_outgoing_source_presented() {
+        let mut entry = test_entry(false);
+        entry.desired = true;
+
+        assert!(
+            entry_owns_presentation(&entry),
+            "the handoff source must survive until the client acknowledges fullscreen"
+        );
+
+        entry.active = true;
+        assert!(!entry_owns_presentation(&entry));
     }
 
     #[test]

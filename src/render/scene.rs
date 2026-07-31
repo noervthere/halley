@@ -717,6 +717,7 @@ mod tests {
             progress: 0.0,
             transition_completion: 0.0,
             windowed_geometry: None,
+            windowed_output_rect: None,
             fullscreen_size: (1920, 1080).into(),
         };
         let end = crate::wayland::fullscreen::FullscreenPresentation {
