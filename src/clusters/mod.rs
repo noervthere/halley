@@ -8,10 +8,15 @@ use halley_core::cluster::{ClusterId, ClusterRegistry};
 use halley_core::field::{Field, NodeId, Vec2};
 use smithay::utils::{Logical, Point, Rectangle};
 
+mod creation;
+mod ipc;
 mod membership;
 mod overflow;
 pub mod render;
 mod transition;
+
+pub use creation::{CreationState, NameInput};
+pub use ipc::handle_request;
 
 #[derive(Clone, Debug)]
 pub struct ClusterMetadata {
@@ -20,14 +25,6 @@ pub struct ClusterMetadata {
     pub layout: ClusterWorkspaceLayoutKind,
     pub core: Option<NodeId>,
     pub core_position: Vec2,
-}
-
-#[derive(Clone, Debug)]
-pub struct CreationState {
-    pub output: String,
-    pub selected: HashSet<NodeId>,
-    pub naming: bool,
-    pub name_buffer: String,
 }
 
 #[derive(Clone, Debug)]
@@ -108,139 +105,6 @@ impl ClusterSystem {
 
     pub fn active_on(&self, output: &str) -> Option<ClusterId> {
         self.active.get(output).copied()
-    }
-
-    pub fn creation(&self) -> Option<&CreationState> {
-        self.creation.as_ref()
-    }
-
-    pub fn accepts_modal_input(&self) -> bool {
-        self.creation.is_some()
-    }
-
-    pub fn begin_creation(&mut self, output: String) -> bool {
-        if self.creation.is_some() {
-            return false;
-        }
-        self.creation = Some(CreationState {
-            output,
-            selected: HashSet::new(),
-            naming: false,
-            name_buffer: String::new(),
-        });
-        true
-    }
-
-    pub fn cancel_creation(&mut self) -> bool {
-        self.creation.take().is_some()
-    }
-
-    pub fn toggle_creation_member(&mut self, id: NodeId, output: &str) -> bool {
-        let Some(creation) = self.creation.as_mut() else {
-            return false;
-        };
-        if creation.output != output || creation.naming || self.registry.is_cluster_member(id) {
-            return false;
-        }
-        if !creation.selected.remove(&id) {
-            creation.selected.insert(id);
-        }
-        true
-    }
-
-    pub fn begin_naming(&mut self) -> bool {
-        let Some(creation) = self.creation.as_mut() else {
-            return false;
-        };
-        if creation.selected.is_empty() || creation.naming {
-            return false;
-        }
-        creation.naming = true;
-        true
-    }
-
-    pub fn edit_name(&mut self, input: NameInput) -> bool {
-        let Some(creation) = self.creation.as_mut().filter(|creation| creation.naming) else {
-            return false;
-        };
-        match input {
-            NameInput::Backspace => {
-                creation.name_buffer.pop();
-            }
-            NameInput::Character(ch)
-                if !ch.is_control() && creation.name_buffer.chars().count() < 64 =>
-            {
-                creation.name_buffer.push(ch);
-            }
-            NameInput::Character(_) => return false,
-        }
-        true
-    }
-
-    pub fn finish_creation(&mut self, field: &mut Field) -> Result<ClusterId, String> {
-        let Some(creation) = self.creation.take() else {
-            return Err("cluster creation mode is not active".into());
-        };
-        if !creation.naming || creation.selected.is_empty() {
-            self.creation = Some(creation);
-            return Err("select at least one window and enter a name first".into());
-        }
-        let mut members = creation.selected.into_iter().collect::<Vec<_>>();
-        members.sort_by_key(|id| id.as_u64());
-        let positions = members
-            .iter()
-            .filter_map(|id| field.node(*id).map(|node| node.pos))
-            .collect::<Vec<_>>();
-        if positions.len() != members.len() {
-            return Err("a selected window disappeared before the cluster was created".into());
-        }
-        let id = self
-            .registry
-            .create_cluster(field, members)
-            .map_err(|error| format!("could not create cluster: {error:?}"))?;
-        let count = positions.len() as f32;
-        let core_position = positions
-            .into_iter()
-            .fold(Vec2 { x: 0.0, y: 0.0 }, |sum, position| Vec2 {
-                x: sum.x + position.x,
-                y: sum.y + position.y,
-            });
-        let core_position = Vec2 {
-            x: core_position.x / count,
-            y: core_position.y / count,
-        };
-        let slots = self.slots.entry(creation.output.clone()).or_default();
-        if slots.len() >= 10 {
-            self.registry.dissolve_cluster(field, id);
-            return Err(format!(
-                "output {} already has all 10 cluster slots assigned",
-                creation.output
-            ));
-        }
-        let slot = slots.len() + 1;
-        slots.push(id);
-        let name = creation.name_buffer.trim();
-        self.metadata.insert(
-            id,
-            ClusterMetadata {
-                name: if name.is_empty() {
-                    format!("Cluster {slot}")
-                } else {
-                    name.to_string()
-                },
-                output: creation.output,
-                layout: match self.config.default_layout {
-                    halley_config::ClusterLayout::Tiling => ClusterWorkspaceLayoutKind::Tiling,
-                    halley_config::ClusterLayout::Stacking => ClusterWorkspaceLayoutKind::Stacking,
-                },
-                core: None,
-                core_position,
-            },
-        );
-        if let Some(cluster) = self.registry.cluster_mut(id) {
-            cluster.set_collapsed(true);
-        }
-        Ok(id)
     }
 
     pub fn cycle_active_layout(&mut self, output: &str) -> bool {
@@ -616,163 +480,8 @@ impl ClusterSystem {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum NameInput {
-    Backspace,
-    Character(char),
-}
-
-fn output_context<D: crate::session::SessionDriver>(
-    session: &crate::session::Session<D>,
-    requested: Option<&str>,
-) -> Result<String, String> {
-    if let Some(output) = requested {
-        if session
-            .driver
-            .output_info()
-            .iter()
-            .any(|candidate| candidate.name == output)
-        {
-            return Ok(output.to_string());
-        }
-        return Err(format!("output {output:?} was not found"));
-    }
-    Ok(crate::wayland::focus::selected_output(&session.wayland)
-        .unwrap_or_else(|| session.driver.primary_output())
-        .name())
-}
-
 fn rect_center(rect: LayoutRect) -> (f32, f32) {
     (rect.x + rect.w * 0.5, rect.y + rect.h * 0.5)
-}
-
-fn summary<D: crate::session::SessionDriver>(
-    session: &crate::session::Session<D>,
-    id: ClusterId,
-) -> Option<halley_ipc::ClusterSummary> {
-    let cluster = session.clusters.registry.cluster(id)?;
-    let metadata = session.clusters.metadata(id)?;
-    Some(halley_ipc::ClusterSummary {
-        id: id.as_u64(),
-        slot: session.clusters.slot_of(&metadata.output, id),
-        name: metadata.name.clone(),
-        output: metadata.output.clone(),
-        layout: match metadata.layout {
-            ClusterWorkspaceLayoutKind::Tiling => halley_ipc::ClusterLayoutKind::Tiling,
-            ClusterWorkspaceLayoutKind::Stacking => halley_ipc::ClusterLayoutKind::Stacking,
-        },
-        member_count: cluster.members().len(),
-        active: session.clusters.active_on(&metadata.output) == Some(id),
-        focused: session
-            .nodes
-            .focused()
-            .is_some_and(|focused| cluster.contains(focused)),
-    })
-}
-
-pub fn handle_request<D: crate::session::SessionDriver>(
-    session: &mut crate::session::Session<D>,
-    request: halley_ipc::ClusterRequest,
-) -> halley_ipc::Response {
-    match request {
-        halley_ipc::ClusterRequest::List { output } => {
-            let outputs = match output {
-                Some(output) => match output_context(session, Some(&output)) {
-                    Ok(output) => vec![output],
-                    Err(message) => return halley_ipc::Response::Error(message),
-                },
-                None => session
-                    .driver
-                    .output_info()
-                    .into_iter()
-                    .map(|output| output.name)
-                    .collect(),
-            };
-            halley_ipc::Response::ClusterList(halley_ipc::ClusterListResponse {
-                outputs: outputs
-                    .into_iter()
-                    .map(|output| {
-                        let clusters = session
-                            .clusters
-                            .clusters_for_output(&output)
-                            .filter_map(|(_, id, _)| summary(session, id))
-                            .collect();
-                        halley_ipc::ClusterOutputGroup { output, clusters }
-                    })
-                    .collect(),
-            })
-        }
-        halley_ipc::ClusterRequest::Inspect { target, output } => {
-            let id = match target {
-                halley_ipc::ClusterTarget::Id(raw) => ClusterId::new(raw),
-                halley_ipc::ClusterTarget::Current => {
-                    let output = match output_context(session, output.as_deref()) {
-                        Ok(output) => output,
-                        Err(message) => return halley_ipc::Response::Error(message),
-                    };
-                    let Some(id) = session.clusters.active_on(&output) else {
-                        return halley_ipc::Response::Error(format!(
-                            "no active cluster on output {output}"
-                        ));
-                    };
-                    id
-                }
-            };
-            let Some(cluster) = session.clusters.registry.cluster(id) else {
-                return halley_ipc::Response::Error(format!(
-                    "cluster {} was not found",
-                    id.as_u64()
-                ));
-            };
-            let Some(summary) = summary(session, id) else {
-                return halley_ipc::Response::Error("cluster metadata is incomplete".into());
-            };
-            let members = cluster
-                .members()
-                .iter()
-                .filter_map(|id| crate::nodes::ipc::node_info(session, *id))
-                .collect();
-            halley_ipc::Response::ClusterInfo(halley_ipc::ClusterInfo {
-                summary,
-                core_node_id: cluster.core_node().map(NodeId::as_u64),
-                members,
-            })
-        }
-        halley_ipc::ClusterRequest::LayoutCycle { output } => {
-            let output = match output_context(session, output.as_deref()) {
-                Ok(output) => output,
-                Err(message) => return halley_ipc::Response::Error(message),
-            };
-            if session.clusters.cycle_active_layout(&output) {
-                session.request_redraw();
-                halley_ipc::Response::Ack
-            } else {
-                halley_ipc::Response::Error(format!("no active cluster on output {output}"))
-            }
-        }
-        halley_ipc::ClusterRequest::Slot { slot, output } => {
-            if !(1..=10).contains(&slot) {
-                return halley_ipc::Response::Error(format!(
-                    "cluster slot must be between 1 and 10, got {slot}"
-                ));
-            }
-            let output = match output_context(session, output.as_deref()) {
-                Ok(output) => output,
-                Err(message) => return halley_ipc::Response::Error(message),
-            };
-            if session
-                .clusters
-                .activate_slot(&output, slot, crate::frame_clock::monotonic_now())
-            {
-                session.request_redraw();
-                halley_ipc::Response::Ack
-            } else {
-                halley_ipc::Response::Error(format!(
-                    "no cluster exists in slot {slot} on output {output}"
-                ))
-            }
-        }
-    }
 }
 
 #[cfg(test)]
