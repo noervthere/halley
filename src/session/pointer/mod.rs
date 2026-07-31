@@ -227,6 +227,23 @@ pub(super) fn cursor_visible<D: SessionDriver>(session: &Session<D>) -> bool {
     )
 }
 
+pub(super) fn cursor_override<D: SessionDriver>(
+    session: &Session<D>,
+) -> Option<smithay::input::pointer::CursorIcon> {
+    interactive_overlay_cursor_override(
+        session.capture.is_active(),
+        session.clusters.accepts_modal_input(),
+    )
+}
+
+fn interactive_overlay_cursor_override(
+    capture_active: bool,
+    cluster_creation_active: bool,
+) -> Option<smithay::input::pointer::CursorIcon> {
+    (capture_active || cluster_creation_active)
+        .then_some(smithay::input::pointer::CursorIcon::Default)
+}
+
 fn interactive_overlay_forces_cursor(
     apogee_active: bool,
     capture_active: bool,
@@ -272,8 +289,8 @@ pub(super) fn apply_position_hint<D: SessionDriver>(
 mod tests {
     use super::{
         AbsoluteMotionPolicy, constraint_requires_stable_presentation, constraints,
-        cursor_presentation_visible, interactive_overlay_forces_cursor,
-        should_emit_absolute_motion,
+        cursor_presentation_visible, interactive_overlay_cursor_override,
+        interactive_overlay_forces_cursor, should_emit_absolute_motion,
     };
 
     #[test]
@@ -282,6 +299,15 @@ mod tests {
         assert!(interactive_overlay_forces_cursor(false, true, false));
         assert!(interactive_overlay_forces_cursor(false, false, true));
         assert!(!interactive_overlay_forces_cursor(false, false, false));
+    }
+
+    #[test]
+    fn interactive_text_overlay_replaces_a_hidden_client_cursor_image() {
+        assert_eq!(
+            interactive_overlay_cursor_override(false, true),
+            Some(smithay::input::pointer::CursorIcon::Default)
+        );
+        assert_eq!(interactive_overlay_cursor_override(false, false), None);
     }
 
     #[test]

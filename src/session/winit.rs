@@ -392,10 +392,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                 }
                 let position = app.pointer.position();
                 let show_cursor = super::pointer::cursor_visible(app);
-                let cursor_override = app
-                    .capture
-                    .is_active()
-                    .then_some(smithay::input::pointer::CursorIcon::Default);
+                let cursor_override = super::pointer::cursor_override(app);
                 crate::cursor::surface::refresh_outputs(&app.cursor, &app.wayland.space, position);
                 let cursor_animating = show_cursor
                     && app.cursor.current_is_animated_with_override(

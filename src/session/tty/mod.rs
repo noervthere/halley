@@ -865,10 +865,7 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
             .clusters
             .labels_animating_on_output(&output.name(), app.nodes.config.show_labels);
     let show_cursor = super::pointer::cursor_visible(app);
-    let cursor_override = app
-        .capture
-        .is_active()
-        .then_some(smithay::input::pointer::CursorIcon::Default);
+    let cursor_override = super::pointer::cursor_override(app);
     crate::cursor::surface::refresh_outputs(
         &app.cursor,
         &app.wayland.space,
