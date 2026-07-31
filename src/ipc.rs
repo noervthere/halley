@@ -312,6 +312,7 @@ pub fn handle_request<D: crate::session::SessionDriver>(
                 Err(message) => halley_ipc::Response::Error(message),
             }
         }
+        halley_ipc::Request::Cluster(request) => crate::clusters::handle_request(app, request),
     };
     let _ = reply.send(response, Vec::new());
 }

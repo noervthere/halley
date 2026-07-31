@@ -2,6 +2,7 @@ mod accessibility;
 mod animation;
 mod backend;
 mod capture;
+mod clusters;
 mod config;
 mod cursor;
 mod frame_clock;

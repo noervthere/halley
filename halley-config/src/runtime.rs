@@ -5,15 +5,15 @@ use std::path::Path;
 use rune_cfg::RuneConfig;
 
 use crate::{
-    Animations, Apogee, Autostart, Background, BackgroundParseError, Bearings, Cursor, Debug,
-    Decay, Decorations, Effects, EffectsParseError, Field, FieldParseError, FocusRingParseError,
-    FocusRings, Font, Input, InputParseError, Keybinds, LaunchConfigError, NodeParseError, Nodes,
-    OutputConfig, OutputParseError, OverlayParseError, Overlays, Physics, Screenshot, WindowRule,
-    WindowRuleParseError, parse_animations, parse_apogee, parse_autostart, parse_background,
-    parse_bearings, parse_cursor, parse_debug, parse_decay, parse_decorations, parse_effects,
-    parse_env, parse_field_checked, parse_focus_rings_checked, parse_font, parse_input,
-    parse_keybinds, parse_nodes_checked, parse_outputs_checked, parse_overlays_checked,
-    parse_physics, parse_screenshot, parse_window_rules,
+    Animations, Apogee, Autostart, Background, BackgroundParseError, Bearings, Clusters, Cursor,
+    Debug, Decay, Decorations, Effects, EffectsParseError, Field, FieldParseError,
+    FocusRingParseError, FocusRings, Font, Input, InputParseError, Keybinds, LaunchConfigError,
+    NodeParseError, Nodes, OutputConfig, OutputParseError, OverlayParseError, Overlays, Physics,
+    Screenshot, WindowRule, WindowRuleParseError, parse_animations, parse_apogee, parse_autostart,
+    parse_background, parse_bearings, parse_clusters, parse_cursor, parse_debug, parse_decay,
+    parse_decorations, parse_effects, parse_env, parse_field_checked, parse_focus_rings_checked,
+    parse_font, parse_input, parse_keybinds, parse_nodes_checked, parse_outputs_checked,
+    parse_overlays_checked, parse_physics, parse_screenshot, parse_window_rules,
 };
 
 /// One validated snapshot of every setting the running compositor currently
@@ -34,6 +34,7 @@ pub struct RuntimeConfig {
     pub animations: Animations,
     pub apogee: Apogee,
     pub bearings: Bearings,
+    pub clusters: Clusters,
     pub focus_rings: FocusRings,
     pub font: Font,
     pub physics: Physics,
@@ -169,6 +170,7 @@ pub fn parse_runtime_config(config: &RuneConfig) -> Result<RuntimeConfig, Runtim
         animations: parse_animations(config),
         apogee: parse_apogee(config),
         bearings: parse_bearings(config),
+        clusters: parse_clusters(config),
         focus_rings: parse_focus_rings_checked(config)?,
         font: parse_font(config),
         physics: parse_physics(config),

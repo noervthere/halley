@@ -240,6 +240,10 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
         overlays: crate::shell::overlay::OverlayManager::default(),
         overlay_config: runtime_config.overlays,
         nodes: crate::nodes::NodesState::new(&runtime_config),
+        clusters: crate::clusters::ClusterSystem::new(
+            runtime_config.clusters,
+            runtime_config.animations.cluster,
+        ),
         bearings: crate::shell::bearings::BearingsState::new(runtime_config.bearings),
         focus_cycle: crate::shell::focus_cycle::FocusCycleState::default(),
         pending_pointer_warp: None,

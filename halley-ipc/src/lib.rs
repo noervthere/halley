@@ -14,12 +14,13 @@ pub use codec::{
 };
 pub use types::{
     BearingsRequest, BearingsStatusResponse, CaptureBuffer, CaptureFrameRequest,
-    CaptureFrameResponse, CaptureSource, CursorMetadata, CursorMode, DmabufPlane, DpmsCommand,
-    HALLEY_IPC_VERSION, ModeInfo, NodeInfo, NodeKind, NodeListResponse, NodeMoveDirection,
-    NodeOutputGroup, NodeProtocolFamily, NodeRelationInfo, NodeRequest, NodeRole, NodeSelector,
-    NodeState, OutputInfo, OutputsResponse, RegisterDmabufRequest, Request, Response,
-    SOURCE_MONITOR, SOURCE_WINDOW, ScreenshotRequest, ScreenshotResponse, ScreenshotTarget,
-    SourceChooserRequest, SourceChooserResponse, VersionInfo,
+    CaptureFrameResponse, CaptureSource, ClusterInfo, ClusterLayoutKind, ClusterListResponse,
+    ClusterOutputGroup, ClusterRequest, ClusterSummary, ClusterTarget, CursorMetadata, CursorMode,
+    DmabufPlane, DpmsCommand, HALLEY_IPC_VERSION, ModeInfo, NodeInfo, NodeKind, NodeListResponse,
+    NodeMoveDirection, NodeOutputGroup, NodeProtocolFamily, NodeRelationInfo, NodeRequest,
+    NodeRole, NodeSelector, NodeState, OutputInfo, OutputsResponse, RegisterDmabufRequest, Request,
+    Response, SOURCE_MONITOR, SOURCE_WINDOW, ScreenshotRequest, ScreenshotResponse,
+    ScreenshotTarget, SourceChooserRequest, SourceChooserResponse, VersionInfo,
 };
 
 fn runtime_dir_from(base: impl AsRef<Path>) -> PathBuf {

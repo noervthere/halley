@@ -308,7 +308,7 @@ fn move_node<D: crate::session::SessionDriver>(
     true
 }
 
-fn node_info<D: crate::session::SessionDriver>(
+pub(crate) fn node_info<D: crate::session::SessionDriver>(
     session: &crate::session::Session<D>,
     id: NodeId,
 ) -> Option<halley_ipc::NodeInfo> {

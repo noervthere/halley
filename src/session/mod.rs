@@ -46,6 +46,11 @@ enum SessionControl {
     FocusCycle(halley_config::FocusCycleDirection),
     BearingsShow,
     BearingsToggle,
+    ClusterMode,
+    ClusterLayoutCycle,
+    ClusterSlot(u8),
+    ClusterTileFocus(halley_config::ClusterDirection),
+    ClusterTileSwap(halley_config::ClusterDirection),
 }
 
 #[derive(Clone, Copy)]
@@ -75,6 +80,11 @@ fn dispatch_action(
         Action::ToggleState => return SessionControl::ToggleState,
         Action::Apogee => return SessionControl::Apogee,
         Action::FocusCycle(direction) => return SessionControl::FocusCycle(direction),
+        Action::ClusterMode => return SessionControl::ClusterMode,
+        Action::ClusterLayoutCycle => return SessionControl::ClusterLayoutCycle,
+        Action::ClusterSlot(slot) => return SessionControl::ClusterSlot(slot),
+        Action::ClusterTileFocus(direction) => return SessionControl::ClusterTileFocus(direction),
+        Action::ClusterTileSwap(direction) => return SessionControl::ClusterTileSwap(direction),
         Action::BearingsShow => return SessionControl::BearingsShow,
         Action::BearingsToggle => return SessionControl::BearingsToggle,
         Action::OpenTerminal => match terminal_command {

@@ -32,6 +32,14 @@ pub enum FocusCycleDirection {
     Backward,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClusterDirection {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
 /// What a keybind does. Grows alongside whatever `halley-wl` actually wires
 /// up next. `ZoomIn` exists to walk back a `ZoomOut` one step at a time, but
 /// it's not a general "magnify past 1.0x" action - the 1.0x ceiling is
@@ -50,6 +58,11 @@ pub enum Action {
     BearingsShow,
     BearingsToggle,
     FocusCycle(FocusCycleDirection),
+    ClusterMode,
+    ClusterLayoutCycle,
+    ClusterSlot(u8),
+    ClusterTileFocus(ClusterDirection),
+    ClusterTileSwap(ClusterDirection),
     OpenTerminal,
     ZoomIn,
     ZoomOut,

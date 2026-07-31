@@ -199,6 +199,59 @@ pub struct NodeAnimation {
     pub duration_ms: u32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClusterTilingAnimation {
+    pub open_duration_ms: u32,
+    pub close_duration_ms: u32,
+    pub reflow_duration_ms: u32,
+    pub stagger_ms: u32,
+}
+
+impl Default for ClusterTilingAnimation {
+    fn default() -> Self {
+        Self {
+            open_duration_ms: 300,
+            close_duration_ms: 420,
+            reflow_duration_ms: 240,
+            stagger_ms: 55,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClusterStackingAnimation {
+    pub open_duration_ms: u32,
+    pub close_duration_ms: u32,
+    pub cycle_duration_ms: u32,
+}
+
+impl Default for ClusterStackingAnimation {
+    fn default() -> Self {
+        Self {
+            open_duration_ms: 240,
+            close_duration_ms: 360,
+            cycle_duration_ms: 220,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClusterAnimation {
+    pub enabled: bool,
+    pub tiling: ClusterTilingAnimation,
+    pub stacking: ClusterStackingAnimation,
+}
+
+impl Default for ClusterAnimation {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            tiling: ClusterTilingAnimation::default(),
+            stacking: ClusterStackingAnimation::default(),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MaximizeAnimation {
     pub enabled: bool,
@@ -243,6 +296,7 @@ pub struct Animations {
     pub fullscreen: FullscreenAnimation,
     pub maximize: MaximizeAnimation,
     pub node: NodeAnimation,
+    pub cluster: ClusterAnimation,
 }
 
 impl Default for Animations {
@@ -254,6 +308,7 @@ impl Default for Animations {
             fullscreen: FullscreenAnimation::default(),
             maximize: MaximizeAnimation::default(),
             node: NodeAnimation::default(),
+            cluster: ClusterAnimation::default(),
         }
     }
 }
@@ -346,6 +401,41 @@ pub fn parse_animations(config: &RuneConfig) -> Animations {
             enabled: config.get_or("animations.node.enabled", defaults.node.enabled),
             duration_ms: config.get_or("animations.node.duration-ms", defaults.node.duration_ms),
         },
+        cluster: ClusterAnimation {
+            enabled: config.get_or("animations.cluster.enabled", defaults.cluster.enabled),
+            tiling: ClusterTilingAnimation {
+                open_duration_ms: config.get_or(
+                    "animations.cluster.tiling.open-duration-ms",
+                    defaults.cluster.tiling.open_duration_ms,
+                ),
+                close_duration_ms: config.get_or(
+                    "animations.cluster.tiling.close-duration-ms",
+                    defaults.cluster.tiling.close_duration_ms,
+                ),
+                reflow_duration_ms: config.get_or(
+                    "animations.cluster.tiling.reflow-duration-ms",
+                    defaults.cluster.tiling.reflow_duration_ms,
+                ),
+                stagger_ms: config.get_or(
+                    "animations.cluster.tiling.stagger-ms",
+                    defaults.cluster.tiling.stagger_ms,
+                ),
+            },
+            stacking: ClusterStackingAnimation {
+                open_duration_ms: config.get_or(
+                    "animations.cluster.stacking.open-duration-ms",
+                    defaults.cluster.stacking.open_duration_ms,
+                ),
+                close_duration_ms: config.get_or(
+                    "animations.cluster.stacking.close-duration-ms",
+                    defaults.cluster.stacking.close_duration_ms,
+                ),
+                cycle_duration_ms: config.get_or(
+                    "animations.cluster.stacking.cycle-duration-ms",
+                    defaults.cluster.stacking.cycle_duration_ms,
+                ),
+            },
+        },
     }
 }
 
@@ -405,6 +495,7 @@ end
                 fullscreen: FullscreenAnimation::default(),
                 maximize: MaximizeAnimation::default(),
                 node: NodeAnimation::default(),
+                cluster: ClusterAnimation::default(),
             }
         );
     }

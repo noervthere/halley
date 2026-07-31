@@ -125,6 +125,7 @@ pub struct Session<D: SessionDriver> {
     pub overlays: crate::shell::overlay::OverlayManager,
     pub overlay_config: halley_config::Overlays,
     pub nodes: crate::nodes::NodesState,
+    pub clusters: crate::clusters::ClusterSystem,
     pub bearings: crate::shell::bearings::BearingsState,
     pub focus_cycle: crate::shell::focus_cycle::FocusCycleState,
     pub pending_pointer_warp: Option<WlSurface>,
@@ -358,6 +359,9 @@ impl<D: SessionDriver> Session<D> {
             .nodes
             .reload(config, crate::frame_clock::monotonic_now());
         let bearings_redraw = self.bearings.reload(config.bearings);
+        let clusters_redraw = self
+            .clusters
+            .reload(config.clusters, config.animations.cluster);
         let font_redraw = self.render.ui_text.reload_font(&config.font);
         self.apogee_config = config.apogee;
         self.decorations = config.decorations;
@@ -389,6 +393,7 @@ impl<D: SessionDriver> Session<D> {
         if redraw
             || nodes_redraw
             || bearings_redraw
+            || clusters_redraw
             || font_redraw
             || fullscreen_redraw
             || maximize_redraw

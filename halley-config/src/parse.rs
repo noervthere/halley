@@ -45,7 +45,34 @@ fn parse_modifier_key(s: &str) -> Option<ModifierKey> {
     }
 }
 
+fn parse_direction(value: &str) -> Option<crate::ClusterDirection> {
+    match value {
+        "left" => Some(crate::ClusterDirection::Left),
+        "right" => Some(crate::ClusterDirection::Right),
+        "up" => Some(crate::ClusterDirection::Up),
+        "down" => Some(crate::ClusterDirection::Down),
+        _ => None,
+    }
+}
+
 fn parse_action(s: &str) -> Action {
+    let words = s.split_whitespace().collect::<Vec<_>>();
+    if let ["cluster", "slot", slot] = words.as_slice()
+        && let Ok(slot) = slot.parse::<u8>()
+        && (1..=10).contains(&slot)
+    {
+        return Action::ClusterSlot(slot);
+    }
+    if let ["tile", "focus", direction] = words.as_slice()
+        && let Some(direction) = parse_direction(direction)
+    {
+        return Action::ClusterTileFocus(direction);
+    }
+    if let ["tile", "swap", direction] = words.as_slice()
+        && let Some(direction) = parse_direction(direction)
+    {
+        return Action::ClusterTileSwap(direction);
+    }
     match s {
         "quit" => Action::Quit,
         "close-focused" | "close_focused" | "close-window" | "close_window" => {
@@ -62,6 +89,10 @@ fn parse_action(s: &str) -> Action {
         "cycle-focus" | "cycle_focus" => Action::FocusCycle(crate::FocusCycleDirection::Forward),
         "cycle-focus-backward" | "cycle_focus_backward" => {
             Action::FocusCycle(crate::FocusCycleDirection::Backward)
+        }
+        "cluster-mode" | "cluster_mode" => Action::ClusterMode,
+        "cluster-layout cycle" | "cluster-layout-cycle" | "cluster_layout_cycle" => {
+            Action::ClusterLayoutCycle
         }
         "open-terminal" | "open_terminal" => Action::OpenTerminal,
         "zoom-in" | "zoom_in" => Action::ZoomIn,
@@ -257,6 +288,32 @@ end
             .unwrap();
         assert_eq!(zoom_reset.key, "click-middle");
         assert!(zoom_reset.modifiers.super_key);
+    }
+
+    #[test]
+    fn parses_cluster_actions() {
+        let kb = parse(
+            r#"
+keybinds:
+  mod "super"
+  "$var.mod+shift+c" "cluster-mode"
+  "$var.mod+l" "cluster-layout cycle"
+  "$var.mod+1" "cluster slot 1"
+  "$var.mod+left" "tile focus left"
+  "$var.mod+ctrl+right" "tile swap right"
+end
+"#,
+        );
+
+        for expected in [
+            Action::ClusterMode,
+            Action::ClusterLayoutCycle,
+            Action::ClusterSlot(1),
+            Action::ClusterTileFocus(crate::ClusterDirection::Left),
+            Action::ClusterTileSwap(crate::ClusterDirection::Right),
+        ] {
+            assert!(kb.binds.iter().any(|bind| bind.action == expected));
+        }
     }
 
     #[test]

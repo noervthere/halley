@@ -171,6 +171,31 @@ fn dispatch_action<D: SessionDriver>(
         super::SessionControl::FocusCycle(direction) => {
             crate::shell::focus_cycle::start_or_step(session, direction);
         }
+        super::SessionControl::ClusterMode => {
+            if let Some(output) = action_output
+                && session.clusters.begin_creation(output)
+            {
+                session.request_redraw();
+            }
+        }
+        super::SessionControl::ClusterLayoutCycle => {
+            if let Some(output) = action_output
+                && session.clusters.cycle_active_layout(&output)
+            {
+                session.request_redraw();
+            }
+        }
+        super::SessionControl::ClusterSlot(slot) => {
+            if let Some(output) = action_output
+                && session.clusters.activate_slot(&output, slot)
+            {
+                session.request_redraw();
+            }
+        }
+        super::SessionControl::ClusterTileFocus(_) | super::SessionControl::ClusterTileSwap(_) => {
+            // Directional layout commands are consumed once an active cluster
+            // workspace has produced its placement snapshot.
+        }
         super::SessionControl::BearingsShow => {
             let changed = match held_keycode {
                 Some(keycode) => session.bearings.show_while_held(keycode),

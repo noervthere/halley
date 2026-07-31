@@ -15,7 +15,7 @@ use smithay::wayland::shell::xdg::XdgToplevelSurfaceData;
 use smithay::wayland::shell::xdg::dialog::ToplevelDialogHint;
 
 mod dynamics;
-mod ipc;
+pub(crate) mod ipc;
 mod session_ops;
 
 pub use ipc::handle_request;

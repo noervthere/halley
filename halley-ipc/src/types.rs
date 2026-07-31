@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 /// the end of `Request`/`Response` silently breaks wire-compatibility with
 /// a differently-versioned build - worth remembering as this grows, not
 /// solved here (this first pass has nothing to negotiate against yet).
-pub const HALLEY_IPC_VERSION: u32 = 10;
+pub const HALLEY_IPC_VERSION: u32 = 11;
 
 /// A request from `halleyctl`, the portal backend, or another local client.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -35,6 +35,7 @@ pub enum Request {
         command: DpmsCommand,
         output: Option<String>,
     },
+    Cluster(ClusterRequest),
 }
 
 /// The compositor's reply to a `Request`.
@@ -51,6 +52,69 @@ pub enum Response {
     NodeInfo(NodeInfo),
     BearingsStatus(BearingsStatusResponse),
     ConfigPath(Option<String>),
+    ClusterList(ClusterListResponse),
+    ClusterInfo(ClusterInfo),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ClusterLayoutKind {
+    Tiling,
+    Stacking,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ClusterTarget {
+    Current,
+    Id(u64),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ClusterRequest {
+    List {
+        output: Option<String>,
+    },
+    Inspect {
+        target: ClusterTarget,
+        output: Option<String>,
+    },
+    LayoutCycle {
+        output: Option<String>,
+    },
+    Slot {
+        slot: u8,
+        output: Option<String>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClusterSummary {
+    pub id: u64,
+    pub slot: Option<u8>,
+    pub name: String,
+    pub output: String,
+    pub layout: ClusterLayoutKind,
+    pub member_count: usize,
+    pub active: bool,
+    pub focused: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClusterOutputGroup {
+    pub output: String,
+    pub clusters: Vec<ClusterSummary>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClusterListResponse {
+    pub outputs: Vec<ClusterOutputGroup>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ClusterInfo {
+    pub summary: ClusterSummary,
+    pub core_node_id: Option<u64>,
+    pub members: Vec<NodeInfo>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

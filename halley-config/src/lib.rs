@@ -4,6 +4,7 @@ pub mod background;
 pub mod bearings;
 pub mod bootstrap;
 pub mod chord;
+pub mod clusters;
 pub mod cursor;
 pub mod decorations;
 pub mod diagnostic;
@@ -25,9 +26,10 @@ pub mod terminal;
 pub mod zoom;
 
 pub use animations::{
-    AnimationCurve, AnimationMotion, Animations, EasingMotion, FullscreenAnimation,
-    MaximizeAnimation, NodeAnimation, SpringMotion, WindowCloseAnimation, WindowCloseAnimationType,
-    WindowOpenAnimation, WindowOpenAnimationType, load_animations, parse_animations,
+    AnimationCurve, AnimationMotion, Animations, ClusterAnimation, ClusterStackingAnimation,
+    ClusterTilingAnimation, EasingMotion, FullscreenAnimation, MaximizeAnimation, NodeAnimation,
+    SpringMotion, WindowCloseAnimation, WindowCloseAnimationType, WindowOpenAnimation,
+    WindowOpenAnimationType, load_animations, parse_animations,
 };
 pub use apogee::{Apogee, parse_apogee};
 pub use background::{
@@ -39,6 +41,9 @@ pub use bootstrap::{
     DEFAULT_CONFIG, bootstrap_default_config, bootstrap_default_config_at, config_path,
 };
 pub use chord::parse_chord;
+pub use clusters::{
+    ClusterBloomDirection, ClusterLayout, ClusterStacking, ClusterTiling, Clusters, parse_clusters,
+};
 pub use cursor::{Cursor, parse_cursor};
 pub use decorations::{BorderColor, Decorations, load_decorations, parse_decorations};
 pub use diagnostic::ConfigDiagnostic;
@@ -54,7 +59,8 @@ pub use input::{
     MouseSettings, ScrollMethod, ScrollPanMode, TapButtonMap, parse_input,
 };
 pub use keybinds::{
-    Action, DefaultTerminal, FocusCycleDirection, Keybind, Keybinds, ModifierKey, Modifiers,
+    Action, ClusterDirection, DefaultTerminal, FocusCycleDirection, Keybind, Keybinds, ModifierKey,
+    Modifiers,
 };
 pub use launch::{Autostart, LaunchConfigError, parse_autostart, parse_env};
 pub use nodes::{
