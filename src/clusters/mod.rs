@@ -54,6 +54,7 @@ pub struct ClusterSystem {
     slots: HashMap<String, Vec<ClusterId>>,
     active: HashMap<String, ClusterId>,
     transitions: HashMap<String, transition::WorkspaceTransition>,
+    reflows: HashMap<String, transition::ReflowTransition>,
     floating: HashSet<NodeId>,
     join_candidate: Option<JoinCandidate>,
     creation: Option<CreationState>,
@@ -72,6 +73,7 @@ impl ClusterSystem {
             slots: HashMap::new(),
             active: HashMap::new(),
             transitions: HashMap::new(),
+            reflows: HashMap::new(),
             floating: HashSet::new(),
             join_candidate: None,
             creation: None,
@@ -107,8 +109,16 @@ impl ClusterSystem {
         self.active.get(output).copied()
     }
 
-    pub fn cycle_active_layout(&mut self, output: &str) -> bool {
+    pub fn cycle_active_layout(
+        &mut self,
+        output: &str,
+        work_area: Rectangle<i32, Logical>,
+        now: Duration,
+    ) -> bool {
         let Some(id) = self.active_on(output) else {
+            return false;
+        };
+        let Some(before) = self.workspace_layout(id, work_area) else {
             return false;
         };
         let Some(metadata) = self.metadata.get_mut(&id) else {
@@ -118,6 +128,11 @@ impl ClusterSystem {
             ClusterWorkspaceLayoutKind::Tiling => ClusterWorkspaceLayoutKind::Stacking,
             ClusterWorkspaceLayoutKind::Stacking => ClusterWorkspaceLayoutKind::Tiling,
         };
+        let duration_ms = match metadata.layout {
+            ClusterWorkspaceLayoutKind::Tiling => self.animations.tiling.reflow_duration_ms,
+            ClusterWorkspaceLayoutKind::Stacking => self.animations.stacking.cycle_duration_ms,
+        };
+        self.begin_reflow(output, id, before, now, duration_ms);
         true
     }
 
@@ -125,12 +140,15 @@ impl ClusterSystem {
         &mut self,
         output: &str,
         direction: halley_config::FocusCycleDirection,
+        work_area: Rectangle<i32, Logical>,
+        now: Duration,
     ) -> Option<NodeId> {
         let id = self.active_on(output)?;
         if self.metadata(id)?.layout != ClusterWorkspaceLayoutKind::Stacking {
             return None;
         }
-        self.registry.cycle_cluster_stacking_members(
+        let before = self.workspace_layout(id, work_area)?;
+        let member = self.registry.cycle_cluster_stacking_members(
             id,
             match direction {
                 halley_config::FocusCycleDirection::Forward => {
@@ -140,7 +158,15 @@ impl ClusterSystem {
                     halley_core::cluster::layout::ClusterCycleDirection::Prev
                 }
             },
-        )
+        )?;
+        self.begin_reflow(
+            output,
+            id,
+            before,
+            now,
+            self.animations.stacking.cycle_duration_ms,
+        );
+        Some(member)
     }
 
     pub fn activate_slot(&mut self, output: &str, slot: u8, now: Duration) -> bool {
@@ -276,8 +302,15 @@ impl ClusterSystem {
                         .into(),
                 );
                 let visual = self.transition_visual(output, active, id, target, core, now);
+                let rect = visual.map_or_else(
+                    || {
+                        self.reflow_visual(output, active, id, target, now)
+                            .unwrap_or(target)
+                    },
+                    |visual| visual.rect,
+                );
                 WindowPresentation::Workspace {
-                    rect: visual.map_or(target, |visual| visual.rect),
+                    rect,
                     depth: placement.depth,
                     alpha: visual.map_or(1.0, |visual| visual.alpha),
                 }
@@ -335,8 +368,10 @@ impl ClusterSystem {
         current: Option<NodeId>,
         direction: halley_config::ClusterDirection,
         work_area: Rectangle<i32, Logical>,
+        now: Duration,
     ) -> Option<NodeId> {
         let id = self.active_on(output)?;
+        let before = self.workspace_layout(id, work_area)?;
         let current = current.or_else(|| self.first_member(id))?;
         let target = self.directional_tile_target(output, Some(current), direction, work_area)?;
         let mut members = self.registry.cluster(id)?.members().to_vec();
@@ -344,6 +379,13 @@ impl ClusterSystem {
         let target_index = members.iter().position(|member| *member == target)?;
         members.swap(current_index, target_index);
         self.registry.reorder_cluster_members(id, members).ok()?;
+        self.begin_reflow(
+            output,
+            id,
+            before,
+            now,
+            self.animations.tiling.reflow_duration_ms,
+        );
         Some(current)
     }
 
@@ -573,6 +615,7 @@ mod tests {
                 Some(ids[0]),
                 halley_config::ClusterDirection::Right,
                 work_area,
+                Duration::ZERO,
             ),
             Some(ids[0])
         );

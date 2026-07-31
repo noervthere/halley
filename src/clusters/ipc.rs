@@ -119,7 +119,20 @@ pub fn handle_request<D: crate::session::SessionDriver>(
                 Ok(output) => output,
                 Err(message) => return halley_ipc::Response::Error(message),
             };
-            if session.clusters.cycle_active_layout(&output) {
+            let work_area = session
+                .wayland
+                .space
+                .outputs()
+                .find(|candidate| candidate.name() == output)
+                .map(smithay::desktop::layer_map_for_output)
+                .map(|map| map.non_exclusive_zone());
+            if work_area.is_some_and(|work_area| {
+                session.clusters.cycle_active_layout(
+                    &output,
+                    work_area,
+                    crate::frame_clock::monotonic_now(),
+                )
+            }) {
                 session.request_redraw();
                 halley_ipc::Response::Ack
             } else {

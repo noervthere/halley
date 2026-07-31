@@ -75,6 +75,16 @@ fn output_at_pointer(
     Some((output, geometry))
 }
 
+fn work_area_for_output(
+    space: &Space<Window>,
+    output_name: &str,
+) -> Option<Rectangle<i32, Logical>> {
+    let output = space
+        .outputs()
+        .find(|output| output.name() == output_name)?;
+    Some(smithay::desktop::layer_map_for_output(output).non_exclusive_zone())
+}
+
 fn node_at_pointer<D: SessionDriver>(
     session: &Session<D>,
 ) -> Option<(halley_core::field::NodeId, Output)> {
@@ -166,9 +176,13 @@ fn navigate_cluster_tile<D: SessionDriver>(
     let work_area = smithay::desktop::layer_map_for_output(&output).non_exclusive_zone();
     let focused = session.nodes.focused();
     let target = if swap {
-        session
-            .clusters
-            .swap_directional_tile(output_name, focused, direction, work_area)
+        session.clusters.swap_directional_tile(
+            output_name,
+            focused,
+            direction,
+            work_area,
+            crate::frame_clock::monotonic_now(),
+        )
     } else {
         session
             .clusters
@@ -262,9 +276,15 @@ fn dispatch_action<D: SessionDriver>(
             crate::shell::apogee::toggle(session);
         }
         super::SessionControl::FocusCycle(direction) => {
-            let cluster_member = action_output
-                .as_deref()
-                .and_then(|output| session.clusters.cycle_stack(output, direction));
+            let cluster_member = action_output.as_deref().and_then(|output| {
+                let work_area = work_area_for_output(&session.wayland.space, output)?;
+                session.clusters.cycle_stack(
+                    output,
+                    direction,
+                    work_area,
+                    crate::frame_clock::monotonic_now(),
+                )
+            });
             if let Some(window) = cluster_member
                 .and_then(|id| session.nodes.record(id))
                 .map(|record| record.window.clone())
@@ -284,7 +304,12 @@ fn dispatch_action<D: SessionDriver>(
         }
         super::SessionControl::ClusterLayoutCycle => {
             if let Some(output) = action_output
-                && session.clusters.cycle_active_layout(&output)
+                && let Some(work_area) = work_area_for_output(&session.wayland.space, &output)
+                && session.clusters.cycle_active_layout(
+                    &output,
+                    work_area,
+                    crate::frame_clock::monotonic_now(),
+                )
             {
                 session.request_redraw();
             }
@@ -936,9 +961,12 @@ where
             && state == ButtonState::Pressed
             && !session.focus_cycle.is_open()
             && let Some((member, output)) = cluster_overflow_at_pointer(session)
-            && session
-                .clusters
-                .promote_overflow_member(&output.name(), member)
+            && session.clusters.promote_overflow_member(
+                &output.name(),
+                member,
+                smithay::desktop::layer_map_for_output(&output).non_exclusive_zone(),
+                crate::frame_clock::monotonic_now(),
+            )
         {
             wayland::focus::select_output(&mut session.wayland, &output);
             if let Some(window) = session

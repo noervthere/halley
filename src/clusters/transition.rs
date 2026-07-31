@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::time::Duration;
 
 use halley_core::cluster::ClusterId;
@@ -28,6 +29,14 @@ pub(super) struct WorkspaceTransition {
 pub(super) struct TransitionVisual {
     pub(super) rect: Rectangle<i32, Logical>,
     pub(super) alpha: f32,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct ReflowTransition {
+    cluster_id: ClusterId,
+    started_at: Duration,
+    duration: Duration,
+    from: HashMap<NodeId, Rectangle<i32, Logical>>,
 }
 
 impl ClusterSystem {
@@ -99,6 +108,10 @@ impl ClusterSystem {
         self.transitions
             .get(output)
             .is_some_and(|transition| self.transition_is_live(transition, now))
+            || self
+                .reflows
+                .get(output)
+                .is_some_and(|reflow| now.saturating_sub(reflow.started_at) < reflow.duration)
     }
 
     fn transition_is_live(&self, transition: &WorkspaceTransition, now: Duration) -> bool {
@@ -158,6 +171,72 @@ impl ClusterSystem {
             rect: lerp_rect(origin, target, progress),
             alpha: progress,
         })
+    }
+
+    pub(super) fn begin_reflow(
+        &mut self,
+        output: &str,
+        cluster_id: ClusterId,
+        before: halley_core::cluster::layout::ClusterWorkspaceLayoutResult,
+        now: Duration,
+        duration_ms: u32,
+    ) {
+        if !self.animations.enabled {
+            self.reflows.remove(output);
+            return;
+        }
+        let from = before
+            .placements
+            .into_iter()
+            .map(|placement| {
+                (
+                    placement.node_id,
+                    Rectangle::new(
+                        (
+                            placement.rect.x.round() as i32,
+                            placement.rect.y.round() as i32,
+                        )
+                            .into(),
+                        (
+                            placement.rect.w.round().max(1.0) as i32,
+                            placement.rect.h.round().max(1.0) as i32,
+                        )
+                            .into(),
+                    ),
+                )
+            })
+            .collect();
+        self.reflows.insert(
+            output.to_string(),
+            ReflowTransition {
+                cluster_id,
+                started_at: now,
+                duration: Duration::from_millis(u64::from(duration_ms.max(1))),
+                from,
+            },
+        );
+    }
+
+    pub(super) fn reflow_visual(
+        &self,
+        output: &str,
+        cluster_id: ClusterId,
+        member: NodeId,
+        target: Rectangle<i32, Logical>,
+        now: Duration,
+    ) -> Option<Rectangle<i32, Logical>> {
+        let reflow = self.reflows.get(output)?;
+        if reflow.cluster_id != cluster_id {
+            return None;
+        }
+        let elapsed = now.saturating_sub(reflow.started_at);
+        if elapsed >= reflow.duration {
+            return None;
+        }
+        let from = *reflow.from.get(&member)?;
+        let linear = (elapsed.as_secs_f32() / reflow.duration.as_secs_f32()).clamp(0.0, 1.0);
+        let eased = linear * linear * (3.0 - 2.0 * linear);
+        Some(lerp_rect(from, target, eased))
     }
 }
 

@@ -91,8 +91,17 @@ impl ClusterSystem {
 
     /// Promotes a queued tile into the last visible stack position. The
     /// master remains stable, which avoids an unrelated workspace reshuffle.
-    pub fn promote_overflow_member(&mut self, output: &str, member: NodeId) -> bool {
+    pub fn promote_overflow_member(
+        &mut self,
+        output: &str,
+        member: NodeId,
+        work_area: Rectangle<i32, Logical>,
+        now: std::time::Duration,
+    ) -> bool {
         let Some(active) = self.active_on(output) else {
+            return false;
+        };
+        let Some(before) = self.workspace_layout(active, work_area) else {
             return false;
         };
         let Some(cluster) = self.registry.cluster(active) else {
@@ -106,12 +115,22 @@ impl ClusterSystem {
             return false;
         }
         let visible_member = cluster.members()[visible_limit - 1];
-        self.registry.swap_cluster_overflow_member_with_visible(
+        let changed = self.registry.swap_cluster_overflow_member_with_visible(
             active,
             member,
             visible_member,
             self.config.tiling.max_stack,
-        )
+        );
+        if changed {
+            self.begin_reflow(
+                output,
+                active,
+                before,
+                now,
+                self.animations.tiling.reflow_duration_ms,
+            );
+        }
+        changed
     }
 }
 
@@ -160,7 +179,7 @@ mod tests {
             members[3..].to_vec()
         );
         let promoted = queue.items[1].node_id;
-        assert!(system.promote_overflow_member("DP-1", promoted));
+        assert!(system.promote_overflow_member("DP-1", promoted, work_area, Duration::ZERO,));
         assert_eq!(
             system.registry().cluster(cluster).unwrap().members()[2],
             promoted
