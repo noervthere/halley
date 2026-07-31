@@ -67,7 +67,7 @@ pub fn cycle_stacking_members(
     members: &mut [NodeId],
     direction: ClusterCycleDirection,
 ) -> Option<NodeId> {
-    if members.is_empty() {
+    if members.len() < 2 {
         return None;
     }
 
@@ -170,5 +170,20 @@ mod tests {
                 NodeId::new(0)
             ]
         );
+    }
+
+    #[test]
+    fn cycling_a_single_member_is_a_no_op() {
+        let mut members = ids(1);
+
+        assert_eq!(
+            cycle_stacking_members(&mut members, ClusterCycleDirection::Next),
+            None
+        );
+        assert_eq!(
+            cycle_stacking_members(&mut members, ClusterCycleDirection::Prev),
+            None
+        );
+        assert_eq!(members, ids(1));
     }
 }

@@ -134,10 +134,21 @@ pub(crate) fn cancel_grab_for_surface<D: SessionDriver>(
     surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
 ) {
     if crate::input::grab::belongs_to_surface(&session.grab, surface) {
-        session.grab = crate::input::grab::Grab::None;
-        session.cursor.set_override(None);
+        cancel_compositor_grab(session);
         crate::input::grab::forget_resize_anchor(&mut session.resize_anchor, surface);
     }
+}
+
+/// Cancels compositor-owned pointer state and its cluster-side presentation
+/// authority as one transaction. Modal overlays, session locking, and surface
+/// destruction all use this path so a held tile cannot remain floating.
+pub(crate) fn cancel_compositor_grab<D: SessionDriver>(session: &mut Session<D>) {
+    if matches!(&session.grab, crate::input::grab::Grab::ResizeWindow(_)) {
+        crate::input::grab::release_resize_anchor(&mut session.resize_anchor);
+    }
+    session.clusters.cancel_tiled_drag();
+    session.grab = crate::input::grab::Grab::None;
+    session.cursor.set_override(None);
 }
 
 pub(crate) use lifecycle::{finish_window_unmap, prepare_window_unmap};
@@ -1025,6 +1036,13 @@ pub(crate) fn begin_pointer_move<D: SessionDriver>(
     let id = window
         .wl_surface()
         .and_then(|surface| session.nodes.id_for_surface(surface.as_ref()));
+    let tiled_output = id.and_then(|id| {
+        let output = route.output.name();
+        session
+            .clusters
+            .begin_tiled_drag(&output, id)
+            .then_some(output)
+    });
     if let Some(id) = id {
         session.nodes.clear_direct_motion(id);
     }
@@ -1040,6 +1058,7 @@ pub(crate) fn begin_pointer_move<D: SessionDriver>(
     session.grab = crate::input::grab::Grab::MoveWindow {
         id,
         window: window.clone(),
+        tiled_output,
         screen_offset,
         last_world: center,
         last_update: crate::frame_clock::monotonic_now(),

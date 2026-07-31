@@ -172,7 +172,9 @@ resize behavior. Mod+left moves active windows and collapsed nodes; collapsed
 nodes can also be grabbed without Mod after crossing the 8 px click/drag
 threshold. Those built-ins remain the fallback when no exact configured chord
 matches. A bare left drag on the desktop background is always reserved for
-panning.
+panning. In an active tiling cluster, Mod+left temporarily lifts the held tile,
+reorders it live as the pointer crosses another tile, and smoothly returns it to
+the selected slot on release.
 
 Wheel binds apply only to a physical mouse wheel. High-resolution wheel input
 is accumulated to one action per complete notch. Touchpad/finger scrolling
@@ -224,11 +226,13 @@ hides them on the initiating key's release, even if Mod was released first.
 
 The default `Mod+Arrow` bindings focus directionally in a tiling cluster. In a
 stacking cluster, `Mod+Left` cycles forward and `Mod+Right` cycles backward;
-the vertical arrows are inert there. `Mod+Ctrl+Arrow` swaps the focused tile
-with its directional neighbour. `Mod+Shift+Arrow` works in either the Field or
-a cluster: it selects the adjacent monitor in that direction and focuses that
-monitor's most recently focused window. Monitor selection follows configured
-output geometry, so non-row layouts work without connector-specific bindings.
+`Alt+Tab` and `Alt+Shift+Tab` use that same stack cycle. The vertical arrows are
+inert there, and cycling a stack with fewer than two windows is a handled no-op.
+`Mod+Ctrl+Arrow` swaps the focused tile with its directional neighbour.
+`Mod+Shift+Arrow` works in either the Field or a cluster: it selects the adjacent
+monitor in that direction and focuses that monitor's most recently focused
+window. Monitor selection follows configured output geometry, so non-row
+layouts work without connector-specific bindings.
 `toggle-state` collapses the focused window to a node or restores
 it in one action; its default binding is `$var.mod+n`. Optional
 `node.click-collapsed-pan` camera movement begins in that same action and never

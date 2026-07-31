@@ -453,8 +453,7 @@ pub fn enter_secure_mode<D: SessionDriver>(session: &mut Session<D>) {
     if let Some(old_cursor) = old_cursor {
         crate::cursor::surface::clear_outputs(&old_cursor, &session.wayland.space);
     }
-    session.cursor.set_override(None);
-    session.grab = crate::input::grab::Grab::None;
+    crate::session::cancel_compositor_grab(session);
     session.resize_anchor = None;
     session.pending_pointer_warp = None;
     session.suppressed_buttons.clear();

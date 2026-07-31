@@ -483,6 +483,7 @@ pub(crate) fn wakeup_cluster_interactions<D: SessionDriver>(
         session.grab = crate::input::grab::Grab::MoveWindow {
             id: Some(member_id),
             window: record.window.clone(),
+            tiled_output: None,
             screen_offset,
             last_world: center,
             last_update: now,
@@ -536,12 +537,16 @@ fn navigate_cluster<D: SessionDriver>(
             (
                 Some(halley_core::cluster::layout::ClusterWorkspaceLayoutKind::Stacking),
                 Some(cycle_direction),
-            ) => session.clusters.cycle_stack(
+            ) => match session.clusters.cycle_stack(
                 output_name,
                 cycle_direction,
                 work_area,
                 crate::frame_clock::monotonic_now(),
-            ),
+            ) {
+                crate::clusters::StackCycleOutcome::Cycled(member) => Some(member),
+                crate::clusters::StackCycleOutcome::NotActive
+                | crate::clusters::StackCycleOutcome::Unchanged => None,
+            },
             (Some(halley_core::cluster::layout::ClusterWorkspaceLayoutKind::Stacking), _) => None,
             _ => {
                 session
@@ -734,23 +739,36 @@ fn dispatch_action<D: SessionDriver>(
             crate::shell::apogee::toggle(session);
         }
         super::SessionControl::FocusCycle(direction) => {
-            let cluster_member = action_output.as_deref().and_then(|output| {
-                let work_area = work_area_for_output(&session.wayland.space, output)?;
-                session.clusters.cycle_stack(
-                    output,
-                    direction,
-                    work_area,
-                    crate::frame_clock::monotonic_now(),
-                )
-            });
-            if let Some(window) = cluster_member
-                .and_then(|id| session.nodes.record(id))
-                .map(|record| record.window.clone())
-            {
-                super::focus_window(session, &window, SERIAL_COUNTER.next_serial());
-                session.request_redraw();
-            } else {
-                crate::shell::focus_cycle::start_or_step(session, direction);
+            let cluster_cycle = action_output.as_deref().map_or(
+                crate::clusters::StackCycleOutcome::NotActive,
+                |output| {
+                    let Some(work_area) = work_area_for_output(&session.wayland.space, output)
+                    else {
+                        return crate::clusters::StackCycleOutcome::NotActive;
+                    };
+                    session.clusters.cycle_stack(
+                        output,
+                        direction,
+                        work_area,
+                        crate::frame_clock::monotonic_now(),
+                    )
+                },
+            );
+            match cluster_cycle {
+                crate::clusters::StackCycleOutcome::Cycled(member) => {
+                    if let Some(window) = session
+                        .nodes
+                        .record(member)
+                        .map(|record| record.window.clone())
+                    {
+                        super::focus_window(session, &window, SERIAL_COUNTER.next_serial());
+                        session.request_redraw();
+                    }
+                }
+                crate::clusters::StackCycleOutcome::Unchanged => {}
+                crate::clusters::StackCycleOutcome::NotActive => {
+                    crate::shell::focus_cycle::start_or_step(session, direction);
+                }
             }
         }
         super::SessionControl::ClusterMode => {
@@ -1215,6 +1233,7 @@ where
         crate::input::grab::Grab::MoveWindow {
             id,
             window,
+            tiled_output,
             screen_offset,
             last_world,
             last_update,
@@ -1222,6 +1241,7 @@ where
         } => {
             let id = *id;
             let window = window.clone();
+            let tiled_output = tiled_output.clone();
             let screen_offset = *screen_offset;
             let previous = *last_world;
             let last_update = *last_update;
@@ -1229,7 +1249,14 @@ where
             if let Some((output, output_geometry)) =
                 output_at_pointer(&session.wayland.space, position_after)
             {
-                let Some(camera) = session.cameras.get(&output.name()) else {
+                let output_name = output.name();
+                if tiled_output
+                    .as_deref()
+                    .is_some_and(|expected| expected != output_name)
+                {
+                    return;
+                }
+                let Some(camera) = session.cameras.get(&output_name) else {
                     return;
                 };
                 let world = crate::input::grab::screen_to_world_on_output(
@@ -1243,7 +1270,6 @@ where
                     (world.x + world_offset.x).round() as i32,
                     (world.y + world_offset.y).round() as i32,
                 ));
-                let output_name = output.name();
                 let output_changed =
                     wayland::window_output_name(&window).as_deref() != Some(output_name.as_str());
                 wayland::set_window_output(&window, &output);
@@ -1269,10 +1295,29 @@ where
                     if !session.nodes.physics.enabled {
                         let _ = crate::nodes::move_grabbed_body_rigid(session, id, desired_center);
                     }
-                    if session
-                        .clusters
-                        .update_join_candidate(&output_name, id, desired_center, now)
-                    {
+                    let cluster_reordered = tiled_output.as_ref().is_some_and(|output_name| {
+                        let output_local = Point::<f64, Logical>::from((
+                            position_after.0 - f64::from(output_geometry.loc.x),
+                            position_after.1 - f64::from(output_geometry.loc.y),
+                        ));
+                        let work_area =
+                            smithay::desktop::layer_map_for_output(&output).non_exclusive_zone();
+                        session.clusters.move_tiled_drag_to_point(
+                            output_name,
+                            id,
+                            work_area,
+                            output_local,
+                            now,
+                        )
+                    });
+                    let join_candidate_changed = tiled_output.is_none()
+                        && session.clusters.update_join_candidate(
+                            &output_name,
+                            id,
+                            desired_center,
+                            now,
+                        );
+                    if cluster_reordered || join_candidate_changed {
                         session.request_redraw();
                     }
                 } else {
@@ -2030,24 +2075,57 @@ where
                 }
                 ButtonState::Released => {
                     let released_window = match &session.grab {
-                        crate::input::grab::Grab::MoveWindow { id, .. } => Some(*id),
+                        crate::input::grab::Grab::MoveWindow {
+                            id,
+                            window,
+                            tiled_output,
+                            ..
+                        } => Some((*id, window.clone(), tiled_output.clone())),
                         _ => None,
                     };
-                    if let Some(id) = released_window {
+                    if let Some((id, window, tiled_output)) = released_window {
                         let now = crate::frame_clock::monotonic_now();
                         if session.nodes.physics.enabled {
                             let _ = crate::nodes::tick_physics(session, now);
                         }
-                        let joined = id.and_then(|member| {
-                            session.clusters.commit_join_candidate(
-                                &mut session.nodes.field,
-                                member,
-                                now,
-                            )
+                        let tiled_release = tiled_output.as_ref().and_then(|output_name| {
+                            let output = session
+                                .wayland
+                                .space
+                                .outputs()
+                                .find(|output| output.name() == *output_name)?;
+                            let output_geometry = session.wayland.space.output_geometry(output)?;
+                            let geometry = session.wayland.space.element_geometry(&window)?;
+                            let work_area =
+                                smithay::desktop::layer_map_for_output(output).non_exclusive_zone();
+                            let origin =
+                                Rectangle::new(geometry.loc - output_geometry.loc, geometry.size);
+                            Some((output_name.clone(), work_area, origin))
                         });
+                        let joined = if tiled_output.is_none() {
+                            id.and_then(|member| {
+                                session.clusters.commit_join_candidate(
+                                    &mut session.nodes.field,
+                                    member,
+                                    now,
+                                )
+                            })
+                        } else {
+                            None
+                        };
                         session.grab = crate::input::grab::Grab::None;
                         session.cursor.set_override(None);
-                        if joined.is_some() {
+                        if let (Some(id), Some((output, work_area, origin))) = (id, tiled_release) {
+                            session
+                                .clusters
+                                .finish_tiled_drag(&output, id, work_area, origin, now);
+                            session.nodes.clear_direct_motion(id);
+                            super::reconcile_cluster_surfaces(session, &output);
+                            session.request_redraw();
+                        } else if tiled_output.is_some() {
+                            session.clusters.cancel_tiled_drag();
+                            session.request_redraw();
+                        } else if joined.is_some() {
                             if let Some(id) = id {
                                 session.nodes.clear_direct_motion(id);
                             }

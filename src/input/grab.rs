@@ -20,6 +20,9 @@ pub enum Grab {
     MoveWindow {
         id: Option<halley_core::field::NodeId>,
         window: Window,
+        /// The cluster output while a tiling member is temporarily floating
+        /// under pointer authority. Ordinary Field moves leave this unset.
+        tiled_output: Option<String>,
         screen_offset: Vec2,
         last_world: Vec2,
         last_update: Duration,

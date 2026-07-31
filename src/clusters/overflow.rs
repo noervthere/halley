@@ -457,16 +457,8 @@ impl ClusterSystem {
         output_local: Point<f64, Logical>,
     ) -> Option<NodeId> {
         let active = self.active_on(output)?;
-        self.workspace_layout(active, work_area)?
-            .placements
-            .into_iter()
-            .find_map(|placement| {
-                let rect = Rectangle::<f64, Logical>::new(
-                    (f64::from(placement.rect.x), f64::from(placement.rect.y)).into(),
-                    (f64::from(placement.rect.w), f64::from(placement.rect.h)).into(),
-                );
-                rect.contains(output_local).then_some(placement.node_id)
-            })
+        let layout = self.workspace_layout(active, work_area)?;
+        super::member_at_point(&layout, output_local)
     }
 
     /// Promotes a queued tile into the last visible stack position. The

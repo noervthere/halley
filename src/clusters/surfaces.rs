@@ -66,7 +66,10 @@ impl ClusterSystem {
         layout
             .placements
             .into_iter()
-            .filter(|placement| !self.floating.contains(&placement.node_id))
+            .filter(|placement| {
+                !self.floating.contains(&placement.node_id)
+                    && self.dragged_tile != Some(placement.node_id)
+            })
             .map(|placement| {
                 let local = Rectangle::<i32, Logical>::new(
                     (

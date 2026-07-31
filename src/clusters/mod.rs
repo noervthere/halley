@@ -53,6 +53,13 @@ pub enum WindowPresentation {
     },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StackCycleOutcome {
+    NotActive,
+    Unchanged,
+    Cycled(NodeId),
+}
+
 /// Owns every cluster-specific state transition. Field and Nodes remain
 /// unaware of membership, slots, workspace modes, naming, and presentation.
 pub struct ClusterSystem {
@@ -63,6 +70,7 @@ pub struct ClusterSystem {
     transitions: HashMap<String, transition::WorkspaceTransition>,
     reflows: HashMap<String, transition::ReflowTransition>,
     floating: HashSet<NodeId>,
+    dragged_tile: Option<NodeId>,
     join_candidate: Option<JoinCandidate>,
     hovered_core: Option<ClusterId>,
     bloom: bloom::BloomState,
@@ -89,6 +97,7 @@ impl ClusterSystem {
             transitions: HashMap::new(),
             reflows: HashMap::new(),
             floating: HashSet::new(),
+            dragged_tile: None,
             join_candidate: None,
             hovered_core: None,
             bloom: bloom::BloomState::default(),
@@ -305,13 +314,26 @@ impl ClusterSystem {
         direction: halley_config::FocusCycleDirection,
         work_area: Rectangle<i32, Logical>,
         now: Duration,
-    ) -> Option<NodeId> {
-        let id = self.active_on(output)?;
-        if self.metadata(id)?.layout != ClusterWorkspaceLayoutKind::Stacking {
-            return None;
+    ) -> StackCycleOutcome {
+        let Some(id) = self.active_on(output) else {
+            return StackCycleOutcome::NotActive;
+        };
+        if self.metadata(id).map(|metadata| metadata.layout)
+            != Some(ClusterWorkspaceLayoutKind::Stacking)
+        {
+            return StackCycleOutcome::NotActive;
         }
-        let before = self.workspace_layout(id, work_area)?;
-        let member = self.registry.cycle_cluster_stacking_members(
+        if self
+            .registry
+            .cluster(id)
+            .is_none_or(|cluster| cluster.members().len() < 2)
+        {
+            return StackCycleOutcome::Unchanged;
+        }
+        let Some(before) = self.workspace_layout(id, work_area) else {
+            return StackCycleOutcome::Unchanged;
+        };
+        let Some(member) = self.registry.cycle_cluster_stacking_members(
             id,
             match direction {
                 halley_config::FocusCycleDirection::Forward => {
@@ -321,7 +343,9 @@ impl ClusterSystem {
                     halley_core::cluster::layout::ClusterCycleDirection::Prev
                 }
             },
-        )?;
+        ) else {
+            return StackCycleOutcome::Unchanged;
+        };
         let direction = match direction {
             halley_config::FocusCycleDirection::Forward => {
                 halley_core::cluster::layout::ClusterCycleDirection::Next
@@ -330,9 +354,11 @@ impl ClusterSystem {
                 halley_core::cluster::layout::ClusterCycleDirection::Prev
             }
         };
-        let after = self.workspace_layout(id, work_area)?;
+        let Some(after) = self.workspace_layout(id, work_area) else {
+            return StackCycleOutcome::Unchanged;
+        };
         self.begin_stack_cycle_reflow(output, id, before, after, direction, now);
-        Some(member)
+        StackCycleOutcome::Cycled(member)
     }
 
     pub fn activate_slot(&mut self, output: &str, slot: u8, now: Duration) -> bool {
@@ -517,6 +543,9 @@ impl ClusterSystem {
         core: Option<Point<i32, Logical>>,
         now: Duration,
     ) -> WindowPresentation {
+        if self.dragged_tile == Some(id) {
+            return WindowPresentation::Field;
+        }
         let member_cluster = self.cluster_for_member(id);
         let active = self.active_on(output);
         let closing = self
@@ -684,6 +713,113 @@ impl ClusterSystem {
         Some(current)
     }
 
+    /// Gives one visible tiling member temporary pointer authority. The
+    /// workspace keeps its slot in the layout while presentation and client
+    /// sizing stop pinning the held window to that slot.
+    pub fn begin_tiled_drag(&mut self, output: &str, member: NodeId) -> bool {
+        let Some(cluster) = self.active_on(output) else {
+            return false;
+        };
+        if self.metadata(cluster).map(|metadata| metadata.layout)
+            != Some(ClusterWorkspaceLayoutKind::Tiling)
+            || self.floating.contains(&member)
+            || self.cluster_for_member(member) != Some(cluster)
+        {
+            return false;
+        }
+        self.dragged_tile = Some(member);
+        true
+    }
+
+    /// Reorders a held tile when the pointer enters another visible tile's
+    /// slot. Insertion matches the original Halley behavior: the held member
+    /// moves to the target index instead of exchanging two unrelated slots.
+    pub fn move_tiled_drag_to_point(
+        &mut self,
+        output: &str,
+        member: NodeId,
+        work_area: Rectangle<i32, Logical>,
+        output_local: Point<f64, Logical>,
+        now: Duration,
+    ) -> bool {
+        if self.dragged_tile != Some(member) {
+            return false;
+        }
+        let Some(cluster) = self.active_on(output) else {
+            return false;
+        };
+        let Some(before) = self.workspace_layout(cluster, work_area) else {
+            return false;
+        };
+        let Some(target) = member_at_point(&before, output_local) else {
+            return false;
+        };
+        if target == member {
+            return false;
+        }
+        let Some(mut members) = self
+            .registry
+            .cluster(cluster)
+            .map(|cluster| cluster.members().to_vec())
+        else {
+            return false;
+        };
+        let Some(from_index) = members.iter().position(|candidate| *candidate == member) else {
+            return false;
+        };
+        let Some(target_index) = members.iter().position(|candidate| *candidate == target) else {
+            return false;
+        };
+        let moved = members.remove(from_index);
+        members.insert(target_index.min(members.len()), moved);
+        if self
+            .registry
+            .reorder_cluster_members(cluster, members)
+            .is_err()
+        {
+            return false;
+        }
+        self.begin_reflow(
+            output,
+            cluster,
+            before,
+            now,
+            self.animations.tiling.reflow_duration_ms,
+        );
+        true
+    }
+
+    /// Returns a released tile to the layout from its actual pointer-owned
+    /// rectangle, avoiding a snap before the normal reflow takes over.
+    pub fn finish_tiled_drag(
+        &mut self,
+        output: &str,
+        member: NodeId,
+        work_area: Rectangle<i32, Logical>,
+        origin: Rectangle<i32, Logical>,
+        now: Duration,
+    ) -> bool {
+        if self.dragged_tile != Some(member) {
+            return false;
+        }
+        self.dragged_tile = None;
+        let Some(cluster) = self.active_on(output) else {
+            return false;
+        };
+        if self.cluster_for_member(member) != Some(cluster) {
+            return false;
+        }
+        let Some(before) = self.workspace_layout(cluster, work_area) else {
+            return false;
+        };
+        self.begin_reflow_with_origin(output, cluster, before, member, origin, now);
+        true
+    }
+
+    pub fn cancel_tiled_drag(&mut self) -> bool {
+        self.dragged_tile.take().is_some()
+    }
+
     fn workspace_layout(
         &self,
         id: ClusterId,
@@ -804,6 +940,9 @@ impl ClusterSystem {
     /// intentionally retained; only final surface destruction reaches here.
     pub fn forget_destroyed_member(&mut self, field: &mut Field, member: NodeId) -> bool {
         self.forget_surface_state(member);
+        if self.dragged_tile == Some(member) {
+            self.dragged_tile = None;
+        }
         if self
             .join_candidate
             .as_ref()
@@ -843,9 +982,7 @@ impl ClusterSystem {
     ) -> bool {
         let reflow = self.cluster_for_member(member).and_then(|cluster| {
             let metadata = self.metadata(cluster)?;
-            (self.active_on(&metadata.output) == Some(cluster)
-                && metadata.layout == ClusterWorkspaceLayoutKind::Tiling)
-                .then_some(())?;
+            (self.active_on(&metadata.output) == Some(cluster)).then_some(())?;
             let before = self.workspace_layout(cluster, work_area)?;
             let removed_was_visible = before
                 .placements
@@ -854,20 +991,34 @@ impl ClusterSystem {
             if !removed_was_visible {
                 return None;
             }
-            let promotion = before.queue_members.first().copied().and_then(|promoted| {
-                let origin = self
-                    .overflow_geometry(&metadata.output, work_area)?
-                    .items
-                    .into_iter()
-                    .find(|item| item.node_id == promoted)?
-                    .rect;
-                Some((promoted, origin))
-            });
-            Some((cluster, metadata.output.clone(), before, promotion))
+            let promotion = (metadata.layout == ClusterWorkspaceLayoutKind::Tiling)
+                .then(|| {
+                    before.queue_members.first().copied().and_then(|promoted| {
+                        let origin = self
+                            .overflow_geometry(&metadata.output, work_area)?
+                            .items
+                            .into_iter()
+                            .find(|item| item.node_id == promoted)?
+                            .rect;
+                        Some((promoted, origin))
+                    })
+                })
+                .flatten();
+            let duration_ms = match metadata.layout {
+                ClusterWorkspaceLayoutKind::Tiling => self.animations.tiling.reflow_duration_ms,
+                ClusterWorkspaceLayoutKind::Stacking => self.animations.stacking.cycle_duration_ms,
+            };
+            Some((
+                cluster,
+                metadata.output.clone(),
+                before,
+                promotion,
+                duration_ms,
+            ))
         });
         let changed = self.forget_destroyed_member(field, member);
         if changed
-            && let Some((cluster, output, before, promotion)) = reflow
+            && let Some((cluster, output, before, promotion, duration_ms)) = reflow
             && self.active_on(&output) == Some(cluster)
         {
             if let Some((promoted, origin)) = promotion
@@ -876,13 +1027,7 @@ impl ClusterSystem {
                 self.begin_reflow_with_origin(&output, cluster, before, promoted, origin, now);
                 self.overflow.reveal(&output, now);
             } else {
-                self.begin_reflow(
-                    &output,
-                    cluster,
-                    before,
-                    now,
-                    self.animations.tiling.reflow_duration_ms,
-                );
+                self.begin_reflow(&output, cluster, before, now, duration_ms);
             }
         }
         changed
@@ -922,9 +1067,71 @@ fn rect_center(rect: LayoutRect) -> (f32, f32) {
     (rect.x + rect.w * 0.5, rect.y + rect.h * 0.5)
 }
 
+fn member_at_point(
+    layout: &ClusterWorkspaceLayoutResult,
+    point: Point<f64, Logical>,
+) -> Option<NodeId> {
+    layout.placements.iter().find_map(|placement| {
+        let rect = Rectangle::<f64, Logical>::new(
+            (f64::from(placement.rect.x), f64::from(placement.rect.y)).into(),
+            (f64::from(placement.rect.w), f64::from(placement.rect.h)).into(),
+        );
+        rect.contains(point).then_some(placement.node_id)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_placement_rect(
+        placement: halley_core::cluster::layout::ClusterWorkspacePlacement,
+    ) -> Rectangle<i32, Logical> {
+        Rectangle::new(
+            (
+                placement.rect.x.round() as i32,
+                placement.rect.y.round() as i32,
+            )
+                .into(),
+            (
+                placement.rect.w.round().max(1.0) as i32,
+                placement.rect.h.round().max(1.0) as i32,
+            )
+                .into(),
+        )
+    }
+
+    fn active_test_cluster(
+        member_count: usize,
+        layout: ClusterWorkspaceLayoutKind,
+    ) -> (Field, ClusterSystem, ClusterId, Vec<NodeId>) {
+        let mut field = Field::new();
+        let members = (0..member_count)
+            .map(|index| {
+                field.spawn_surface(
+                    format!("W{index}"),
+                    Vec2 {
+                        x: index as f32 * 120.0,
+                        y: 0.0,
+                    },
+                    Vec2 { x: 100.0, y: 80.0 },
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut system = ClusterSystem::new(
+            halley_config::Clusters::default(),
+            halley_config::ClusterAnimation::default(),
+        );
+        assert!(system.begin_creation("DP-1".into()));
+        for member in &members {
+            assert!(system.toggle_creation_member(*member, "DP-1"));
+        }
+        assert!(system.begin_naming());
+        let cluster = system.finish_creation(&mut field).unwrap();
+        system.metadata.get_mut(&cluster).unwrap().layout = layout;
+        assert!(system.activate_slot("DP-1", 1, Duration::ZERO));
+        (field, system, cluster, members)
+    }
 
     #[test]
     fn creation_is_single_modal_state() {
@@ -1092,6 +1299,144 @@ mod tests {
         assert!(system.metadata(id).is_none());
         assert!(system.clusters_for_output("DP-1").next().is_none());
         assert!(system.active_on("DP-1").is_none());
+    }
+
+    #[test]
+    fn closing_the_front_stack_card_advances_the_next_card_smoothly() {
+        let (mut field, mut system, cluster, members) =
+            active_test_cluster(3, ClusterWorkspaceLayoutKind::Stacking);
+        let work_area = Rectangle::new((0, 0).into(), (1_000, 700).into());
+        let old_second = system
+            .workspace_layout(cluster, work_area)
+            .unwrap()
+            .placements
+            .into_iter()
+            .find(|placement| placement.node_id == members[1])
+            .map(test_placement_rect)
+            .unwrap();
+        let started = Duration::from_secs(2);
+
+        assert!(
+            system.forget_destroyed_member_animated(&mut field, members[0], work_area, started,)
+        );
+        let target = system
+            .workspace_layout(cluster, work_area)
+            .unwrap()
+            .placements
+            .into_iter()
+            .find(|placement| placement.node_id == members[1])
+            .map(test_placement_rect)
+            .unwrap();
+        assert_ne!(old_second, target);
+        assert_eq!(
+            system.window_presentation(members[1], "DP-1", work_area, None, started),
+            WindowPresentation::Workspace {
+                rect: old_second,
+                depth: 1,
+                alpha: 1.0,
+            }
+        );
+        let halfway = started
+            + Duration::from_millis(u64::from(system.animations.stacking.cycle_duration_ms / 2));
+        let WindowPresentation::Workspace { rect, .. } =
+            system.window_presentation(members[1], "DP-1", work_area, None, halfway)
+        else {
+            panic!("the promoted stack card should remain visible");
+        };
+        assert!(rect.loc.x < old_second.loc.x);
+        assert!(rect.loc.x > target.loc.x);
+    }
+
+    #[test]
+    fn cycling_a_single_card_stack_is_handled_without_animation() {
+        let (_field, mut system, cluster, members) =
+            active_test_cluster(1, ClusterWorkspaceLayoutKind::Stacking);
+        let member = members[0];
+        let work_area = Rectangle::new((0, 0).into(), (1_000, 700).into());
+
+        assert_eq!(
+            system.cycle_stack(
+                "DP-1",
+                halley_config::FocusCycleDirection::Forward,
+                work_area,
+                Duration::from_secs(1),
+            ),
+            StackCycleOutcome::Unchanged
+        );
+        assert!(!system.reflows.contains_key("DP-1"));
+        assert_eq!(
+            system.registry.cluster(cluster).unwrap().members(),
+            &[member]
+        );
+    }
+
+    #[test]
+    fn tiled_drag_floats_the_held_member_and_inserts_it_at_the_drop_slot() {
+        let (_field, mut system, cluster, members) =
+            active_test_cluster(3, ClusterWorkspaceLayoutKind::Tiling);
+        let work_area = Rectangle::new((0, 0).into(), (1_000, 700).into());
+        let target = system
+            .workspace_layout(cluster, work_area)
+            .unwrap()
+            .placements
+            .into_iter()
+            .find(|placement| placement.node_id == members[2])
+            .unwrap()
+            .rect;
+        let target_center = Point::<f64, Logical>::from((
+            f64::from(target.x + target.w * 0.5),
+            f64::from(target.y + target.h * 0.5),
+        ));
+
+        assert!(system.begin_tiled_drag("DP-1", members[0]));
+        assert_eq!(
+            system
+                .window_presentation(members[0], "DP-1", work_area, None, Duration::from_secs(1),),
+            WindowPresentation::Field
+        );
+        assert_eq!(
+            system
+                .workspace_surface_targets(
+                    "DP-1",
+                    work_area,
+                    Rectangle::new((0, 0).into(), (1_000, 700).into()),
+                )
+                .len(),
+            2
+        );
+        assert!(system.move_tiled_drag_to_point(
+            "DP-1",
+            members[0],
+            work_area,
+            target_center,
+            Duration::from_secs(1),
+        ));
+        assert_eq!(
+            system.registry.cluster(cluster).unwrap().members(),
+            &[members[1], members[2], members[0]]
+        );
+        assert!(!system.move_tiled_drag_to_point(
+            "DP-1",
+            members[0],
+            work_area,
+            target_center,
+            Duration::from_secs(1),
+        ));
+
+        let release = Rectangle::new((320, 180).into(), (400, 300).into());
+        assert!(system.finish_tiled_drag(
+            "DP-1",
+            members[0],
+            work_area,
+            release,
+            Duration::from_secs(2),
+        ));
+        let WindowPresentation::Workspace { rect, .. } =
+            system.window_presentation(members[0], "DP-1", work_area, None, Duration::from_secs(2))
+        else {
+            panic!("the released member should return to its tile");
+        };
+        assert_eq!(rect, release);
     }
 
     #[test]

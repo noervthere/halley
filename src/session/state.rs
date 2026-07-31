@@ -301,8 +301,7 @@ impl<D: SessionDriver> Session<D> {
         if !self.overlays.show_exit(crate::frame_clock::monotonic_now()) {
             return;
         }
-        self.grab = Grab::None;
-        self.cursor.set_override(None);
+        super::cancel_compositor_grab(self);
         super::gesture::cancel_all(self);
         super::touch::cancel_all(self);
         self.request_redraw();

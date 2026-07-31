@@ -759,11 +759,7 @@ fn begin_modal_capture<D: SessionDriver>(session: &mut Session<D>) {
             .nodes
             .lock_released_window(id, crate::frame_clock::monotonic_now());
     }
-    if matches!(&session.grab, crate::input::grab::Grab::ResizeWindow(_)) {
-        crate::input::grab::release_resize_anchor(&mut session.resize_anchor);
-    }
-    session.grab = crate::input::grab::Grab::None;
-    session.cursor.set_override(None);
+    crate::session::cancel_compositor_grab(session);
     crate::session::note_pointer_activity(session);
     let keyboard = session
         .seat
