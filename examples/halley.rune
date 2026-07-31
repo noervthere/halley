@@ -518,6 +518,10 @@ clusters:
 
   # Draw the restored old-Halley cluster glyph inside each circular core.
   show-icons true
+
+  # Rest the pointer on a collapsed cluster core for 1.7 seconds to reveal
+  # its member windows as a circular bloom. Tokens begin above the core;
+  # choose "clockwise" or "counter-clockwise" for their ordering direction.
   bloom-direction "clockwise"
 
   tiling:

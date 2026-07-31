@@ -340,7 +340,7 @@ pub(super) fn fit_ui_text(
     Ok((String::new(), (0, 0).into()))
 }
 
-pub(super) fn node_ring_color(
+pub(crate) fn node_ring_color(
     config: halley_config::Nodes,
     decorations: &halley_config::Decorations,
     hovered: bool,
@@ -363,7 +363,7 @@ pub(super) fn node_ring_color(
     (color.r, color.g, color.b)
 }
 
-pub(super) fn node_fill_color(
+pub(crate) fn node_fill_color(
     config: halley_config::Nodes,
     ring: (f32, f32, f32),
 ) -> (f32, f32, f32) {
@@ -387,7 +387,7 @@ pub(super) fn label_fill_color(fill: (f32, f32, f32), ring: (f32, f32, f32)) -> 
     )
 }
 
-pub(super) fn contrast_text_rgb(fill: (f32, f32, f32)) -> [u8; 3] {
+pub(crate) fn contrast_text_rgb(fill: (f32, f32, f32)) -> [u8; 3] {
     let luminance = fill.0 * 0.2126 + fill.1 * 0.7152 + fill.2 * 0.0722;
     let rgb = if luminance >= 0.45 {
         (0.08, 0.10, 0.12)

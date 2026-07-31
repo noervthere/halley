@@ -863,6 +863,9 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
         .is_animating_on_output(&output.name(), target_presentation_time)
         || app
             .clusters
+            .bloom_is_animating_on_output(&output.name(), target_presentation_time)
+        || app
+            .clusters
             .labels_animating_on_output(&output.name(), app.nodes.config.show_labels);
     let show_cursor = super::pointer::cursor_visible(app);
     let cursor_override = super::pointer::cursor_override(app);

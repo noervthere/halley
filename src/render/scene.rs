@@ -34,6 +34,8 @@ use overview::{
 };
 use windows::{LiveWindowContext, StackGroup, live_window_elements, sort_stack_groups};
 
+pub(crate) use nodes::{contrast_text_rgb, node_fill_color, node_ring_color};
+
 #[cfg(test)]
 use capture_ui::{capture_picker_elements, dashed_border_rects, inner_border_rects};
 #[cfg(test)]
@@ -501,6 +503,22 @@ pub fn build(
             ui_text: request.resources.ui_text,
         },
     )?;
+    let cluster_bloom = super::overlays::cluster_bloom::elements(
+        renderer,
+        super::overlays::cluster_bloom::BloomElementContext {
+            output,
+            output_geometry,
+            clusters: request.desktop.clusters,
+            nodes: request.desktop.nodes,
+            cameras: request.desktop.cameras,
+            decorations: request.visuals.decorations,
+            now: request.frame.target_presentation_time,
+            cluster_renderer: request.resources.cluster_renderer,
+            node_renderer: request.resources.node_renderer,
+            ui_text: request.resources.ui_text,
+        },
+    )?;
+    elements.extend(cluster_bloom);
     let cluster_overflow = super::overlays::cluster_overflow::elements(
         renderer,
         super::overlays::cluster_overflow::OverflowElementContext {

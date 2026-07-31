@@ -181,7 +181,8 @@ fn install_overlay_timer<D: SessionDriver>(
         .insert_source(
             Timer::from_duration(Duration::from_millis(50)),
             |_, _, session| {
-                if session.overlays.wakeup(crate::frame_clock::monotonic_now()) {
+                let now = crate::frame_clock::monotonic_now();
+                if session.overlays.wakeup(now) || session.clusters.bloom_wakeup(now) {
                     session.request_redraw();
                 }
                 TimeoutAction::ToDuration(Duration::from_millis(50))

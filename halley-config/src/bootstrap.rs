@@ -140,6 +140,7 @@ mod tests {
             "duration-ms 240",
             "damping-ratio 1.0",
             "stiffness 800.0",
+            "bloom-direction \"clockwise\"",
         ] {
             assert!(
                 DEFAULT_CONFIG.contains(expected),

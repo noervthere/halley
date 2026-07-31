@@ -383,6 +383,9 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                     .is_animating_on_output(&output.name(), target_presentation_time)
                     || app
                         .clusters
+                        .bloom_is_animating_on_output(&output.name(), target_presentation_time)
+                    || app
+                        .clusters
                         .labels_animating_on_output(&output.name(), app.nodes.config.show_labels);
                 if fullscreen_animating || maximize_animating || cluster_animating {
                     super::pointer::update_client_state(

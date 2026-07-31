@@ -39,6 +39,7 @@ pub struct ClusterCoreElement {
     border: (f32, f32, f32, f32),
     fill: (f32, f32, f32, f32),
     fill_alpha: f32,
+    element_alpha: f32,
 }
 
 #[derive(Debug)]
@@ -54,6 +55,18 @@ impl ClusterRenderer {
         border_rgb: (f32, f32, f32),
         fill_rgb: (f32, f32, f32),
         opacity: f32,
+    ) -> Result<ClusterCoreElement, Box<dyn Error>> {
+        self.core_with_alpha(renderer, destination, border_rgb, fill_rgb, opacity, 1.0)
+    }
+
+    pub fn core_with_alpha(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        destination: Rectangle<i32, Physical>,
+        border_rgb: (f32, f32, f32),
+        fill_rgb: (f32, f32, f32),
+        opacity: f32,
+        alpha: f32,
     ) -> Result<ClusterCoreElement, Box<dyn Error>> {
         self.ensure(renderer, [[255; 4]; 2])?;
         let resources = self.resources.as_ref().expect("resources ensured above");
@@ -84,6 +97,7 @@ impl ClusterRenderer {
             border: (border_rgb.0, border_rgb.1, border_rgb.2, 3.0 / 26.0),
             fill: (fill_rgb.0, fill_rgb.1, fill_rgb.2, 1.0),
             fill_alpha: opacity.clamp(0.0, 1.0),
+            element_alpha: alpha.clamp(0.0, 1.0),
         })
     }
 
@@ -222,7 +236,7 @@ impl Element for ClusterCoreElement {
     }
 
     fn alpha(&self) -> f32 {
-        1.0
+        self.element_alpha
     }
 
     fn kind(&self) -> Kind {
@@ -247,7 +261,7 @@ impl RenderElement<GlesRenderer> for ClusterCoreElement {
             damage,
             opaque_regions,
             Transform::Normal,
-            1.0,
+            self.element_alpha,
             Some(&self.program),
             &[
                 Uniform::new("node_color", self.border),

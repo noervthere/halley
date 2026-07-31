@@ -906,10 +906,7 @@ where
                 }
             }
         }
-        crate::input::grab::Grab::MoveClusterCore {
-            id,
-            screen_offset,
-        } => {
+        crate::input::grab::Grab::MoveClusterCore { id, screen_offset } => {
             let id = *id;
             let screen_offset = *screen_offset;
             if let Some((output, output_geometry)) =
@@ -1013,12 +1010,11 @@ where
             super::focus::focus_node_from_hover(session, *id, output, SERIAL_COUNTER.next_serial());
         }
         let hovered = hovered_node.map(|(id, _)| id);
-        let node_changed = session
-            .nodes
-            .set_hovered(hovered, crate::frame_clock::monotonic_now());
+        let now = crate::frame_clock::monotonic_now();
+        let node_changed = session.nodes.set_hovered(hovered, now);
         let cluster_changed = session
             .clusters
-            .set_hovered_core(hovered_cluster.map(|(id, _)| id));
+            .set_hovered_core(hovered_cluster.map(|(id, _)| id), now);
         if node_changed || cluster_changed {
             session.request_redraw();
         }
@@ -1060,9 +1056,7 @@ where
                 crate::input::grab::Grab::PendingClusterCore { id, output, .. } => {
                     let id = *id;
                     let output_name = output.clone();
-                    session
-                        .suppressed_buttons
-                        .release_is_suppressed(BTN_LEFT);
+                    session.suppressed_buttons.release_is_suppressed(BTN_LEFT);
                     session.grab = crate::input::grab::Grab::None;
                     session.cursor.set_override(None);
                     if session.clusters.activate(
@@ -1087,9 +1081,7 @@ where
                     return;
                 }
                 crate::input::grab::Grab::MoveClusterCore { .. } => {
-                    session
-                        .suppressed_buttons
-                        .release_is_suppressed(BTN_LEFT);
+                    session.suppressed_buttons.release_is_suppressed(BTN_LEFT);
                     session.grab = crate::input::grab::Grab::None;
                     session.cursor.set_override(None);
                     session.request_redraw();
@@ -1211,7 +1203,10 @@ where
                 x: center.x as f32 - position_after.0 as f32,
                 y: center.y as f32 - position_after.1 as f32,
             };
-            session.clusters.set_hovered_core(None);
+            session.clusters.close_bloom(&output.name());
+            session
+                .clusters
+                .set_hovered_core(None, crate::frame_clock::monotonic_now());
             session.grab = crate::input::grab::Grab::PendingClusterCore {
                 id,
                 output: output.name(),

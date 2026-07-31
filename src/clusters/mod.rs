@@ -9,6 +9,7 @@ use halley_core::cluster::{ClusterId, ClusterRegistry};
 use halley_core::field::{Field, NodeId, Vec2};
 use smithay::utils::{Logical, Point, Rectangle};
 
+mod bloom;
 mod creation;
 mod ipc;
 mod membership;
@@ -62,6 +63,7 @@ pub struct ClusterSystem {
     floating: HashSet<NodeId>,
     join_candidate: Option<JoinCandidate>,
     hovered_core: Option<ClusterId>,
+    bloom: bloom::BloomState,
     label_hover: RefCell<HashMap<ClusterId, f32>>,
     creation: Option<CreationState>,
     surfaces: surfaces::WorkspaceSurfaceState,
@@ -84,6 +86,7 @@ impl ClusterSystem {
             floating: HashSet::new(),
             join_candidate: None,
             hovered_core: None,
+            bloom: bloom::BloomState::default(),
             label_hover: RefCell::new(HashMap::new()),
             creation: None,
             surfaces: surfaces::WorkspaceSurfaceState::default(),
@@ -123,11 +126,15 @@ impl ClusterSystem {
         self.hovered_core
     }
 
-    pub fn set_hovered_core(&mut self, hovered: Option<ClusterId>) -> bool {
+    pub fn set_hovered_core(&mut self, hovered: Option<ClusterId>, now: Duration) -> bool {
         if self.hovered_core == hovered {
             return false;
         }
         self.hovered_core = hovered;
+        let metadata = &self.metadata;
+        self.bloom.set_hovered(hovered, now, |id| {
+            metadata.get(&id).map(|metadata| metadata.output.clone())
+        });
         true
     }
 
@@ -135,7 +142,10 @@ impl ClusterSystem {
         if self.active.values().any(|active| *active == id) {
             return false;
         }
-        let Some(previous_output) = self.metadata.get(&id).map(|metadata| metadata.output.clone())
+        let Some(previous_output) = self
+            .metadata
+            .get(&id)
+            .map(|metadata| metadata.output.clone())
         else {
             return false;
         };
@@ -261,6 +271,8 @@ impl ClusterSystem {
         else {
             return false;
         };
+        self.close_bloom(output);
+        self.set_hovered_core(None, now);
         if self.active_on(output) == Some(id) {
             self.active.remove(output);
             self.registry.deactivate_cluster_workspace(id);
@@ -283,6 +295,8 @@ impl ClusterSystem {
         {
             return false;
         }
+        self.close_bloom(output);
+        self.set_hovered_core(None, now);
         if self.active_on(output) == Some(id) {
             self.active.remove(output);
             self.registry.deactivate_cluster_workspace(id);
@@ -613,6 +627,7 @@ impl ClusterSystem {
             self.hovered_core = None;
         }
         self.label_hover.borrow_mut().remove(&id);
+        self.bloom.remove_cluster(id);
         let output = self.metadata.remove(&id).map(|metadata| metadata.output);
         if let Some(output) = output {
             if let Some(slots) = self.slots.get_mut(&output) {
@@ -702,7 +717,7 @@ mod tests {
             ),
             None
         );
-        assert!(system.set_hovered_core(Some(id)));
+        assert!(system.set_hovered_core(Some(id), Duration::ZERO));
         assert!(system.labels_animating_on_output("DP-1", halley_config::NodeDisplayPolicy::Hover));
         assert!(system.label_hover_mix(id, true) > 0.0);
     }
@@ -735,11 +750,17 @@ mod tests {
         assert!(system.move_core(id, "DP-2", Vec2 { x: 50.0, y: 60.0 }));
         assert_eq!(system.metadata(id).unwrap().output, "DP-2");
         assert_eq!(
-            system.clusters_for_output("DP-1").next().map(|(_, id, _)| id),
+            system
+                .clusters_for_output("DP-1")
+                .next()
+                .map(|(_, id, _)| id),
             None
         );
         assert_eq!(
-            system.clusters_for_output("DP-2").next().map(|(_, id, _)| id),
+            system
+                .clusters_for_output("DP-2")
+                .next()
+                .map(|(_, id, _)| id),
             Some(id)
         );
 
