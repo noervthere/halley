@@ -232,6 +232,17 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
                     &mapped,
                     self.start_time.elapsed().as_millis() as u64,
                 );
+                if let Some(id) = self.nodes.id_for_surface(&mapped)
+                    && let Some(output) = self.nodes.record(id).map(|record| record.output.clone())
+                    && self.clusters.admit_mapped_window(
+                        &mut self.nodes.field,
+                        &output,
+                        id,
+                        rule.cluster_participation,
+                    )
+                {
+                    self.request_redraw();
+                }
                 let remains_collapsed = self
                     .nodes
                     .id_for_surface(&mapped)

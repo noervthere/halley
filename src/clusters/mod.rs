@@ -43,6 +43,7 @@ pub struct ClusterSystem {
     metadata: HashMap<ClusterId, ClusterMetadata>,
     slots: HashMap<String, Vec<ClusterId>>,
     active: HashMap<String, ClusterId>,
+    floating: HashSet<NodeId>,
     creation: Option<CreationState>,
     config: halley_config::Clusters,
     animations: halley_config::ClusterAnimation,
@@ -58,6 +59,7 @@ impl ClusterSystem {
             metadata: HashMap::new(),
             slots: HashMap::new(),
             active: HashMap::new(),
+            floating: HashSet::new(),
             creation: None,
             config,
             animations,
@@ -309,6 +311,34 @@ impl ClusterSystem {
         self.registry.cluster_id_for_member(id)
     }
 
+    pub fn admit_mapped_window(
+        &mut self,
+        field: &mut Field,
+        output: &str,
+        member: NodeId,
+        participation: halley_config::WindowClusterParticipation,
+    ) -> bool {
+        let Some(active) = self.active_on(output) else {
+            return false;
+        };
+        if self.registry.is_cluster_member(member) {
+            return false;
+        }
+        match participation {
+            halley_config::WindowClusterParticipation::Float => self.floating.insert(member),
+            halley_config::WindowClusterParticipation::Layout => {
+                self.floating.remove(&member);
+                let result = if self.config.tiling.new_on_top {
+                    self.registry
+                        .add_member_to_cluster_front(field, active, member)
+                } else {
+                    self.registry.add_member_to_cluster(field, active, member)
+                };
+                result.is_ok()
+            }
+        }
+    }
+
     pub fn window_presentation(
         &self,
         id: NodeId,
@@ -323,6 +353,9 @@ impl ClusterSystem {
                 WindowPresentation::Field
             };
         };
+        if self.floating.contains(&id) {
+            return WindowPresentation::Field;
+        }
         if member_cluster != Some(active) {
             return WindowPresentation::Hidden;
         }
@@ -493,6 +526,7 @@ impl ClusterSystem {
     /// intentionally retained; only final surface destruction reaches here.
     pub fn forget_destroyed_member(&mut self, field: &mut Field, member: NodeId) -> bool {
         let Some(id) = self.registry.cluster_id_for_member(member) else {
+            self.floating.remove(&member);
             if let Some(creation) = self.creation.as_mut() {
                 creation.selected.remove(&member);
             }
@@ -507,6 +541,7 @@ impl ClusterSystem {
         ) {
             self.remove_cluster_metadata(id);
         }
+        self.floating.remove(&member);
         if let Some(creation) = self.creation.as_mut() {
             creation.selected.remove(&member);
         }
@@ -786,5 +821,34 @@ mod tests {
             Some(ids[0])
         );
         assert_eq!(system.registry().cluster(cluster).unwrap().master(), ids[1]);
+
+        let joined = field.spawn_surface(
+            "joined",
+            Vec2 { x: 0.0, y: 0.0 },
+            Vec2 { x: 100.0, y: 80.0 },
+        );
+        assert!(system.admit_mapped_window(
+            &mut field,
+            "DP-1",
+            joined,
+            halley_config::WindowClusterParticipation::Layout,
+        ));
+        assert!(system.registry().cluster(cluster).unwrap().contains(joined));
+
+        let floating = field.spawn_surface(
+            "floating",
+            Vec2 { x: 0.0, y: 0.0 },
+            Vec2 { x: 100.0, y: 80.0 },
+        );
+        assert!(system.admit_mapped_window(
+            &mut field,
+            "DP-1",
+            floating,
+            halley_config::WindowClusterParticipation::Float,
+        ));
+        assert_eq!(
+            system.window_presentation(floating, "DP-1", work_area),
+            WindowPresentation::Field
+        );
     }
 }

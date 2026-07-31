@@ -427,6 +427,16 @@ fn admit_window<D: SessionDriver>(session: &mut Session<D>, xid: u32) {
             wl_surface.as_ref(),
             session.start_time.elapsed().as_millis() as u64,
         );
+        if let Some(id) = session.nodes.id_for_surface(wl_surface.as_ref())
+            && session.clusters.admit_mapped_window(
+                &mut session.nodes.field,
+                &output.name(),
+                id,
+                rule.cluster_participation,
+            )
+        {
+            session.request_redraw();
+        }
         crate::nodes::reconcile_landmarks(session, Some(&output.name()));
         crate::session::closing::mapped(session, wl_surface.as_ref());
     }
