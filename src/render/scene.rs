@@ -496,12 +496,20 @@ pub fn build(
             decorations: request.visuals.decorations,
             shadow_config: request.visuals.shadows.node,
             shadow_renderer: request.resources.shadow_renderer,
-            node_renderer: request.resources.node_renderer,
-            ui_text: request.resources.ui_text,
         },
     )?;
-    elements.extend(cluster_scene.overlay);
-    stack.extend(cluster_scene.groups);
+    let cluster_overflow = super::overlays::cluster_overflow::elements(
+        renderer,
+        output,
+        request.desktop.clusters,
+        request.desktop.nodes,
+        request.overlays.overlay_config,
+        request.visuals.decorations,
+        request.resources.node_renderer,
+        request.resources.ui_text,
+    )?;
+    elements.extend(cluster_overflow);
+    stack.extend(cluster_scene);
     let context = LiveWindowContext {
         space: request.desktop.space,
         output,
