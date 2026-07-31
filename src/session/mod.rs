@@ -884,6 +884,9 @@ pub(crate) fn sync_keyboard_focus<D: SessionDriver>(
     let active_x11_window = focused
         .as_ref()
         .and_then(crate::xwayland::KeyboardFocusTarget::x11_window_id);
+    if let Some(focused) = focused.as_ref() {
+        focused.acknowledge_attention();
+    }
     pointer::prepare_keyboard_focus_change(session, next_constraint_root.as_ref());
     keyboard.set_focus(session, focused, serial);
     session.xwayland.sync_active_window(active_x11_window);

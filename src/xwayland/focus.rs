@@ -35,6 +35,20 @@ impl KeyboardFocusTarget {
         }
     }
 
+    pub fn acknowledge_attention(&self) {
+        let Self::X11(surface) = self else {
+            return;
+        };
+        if surface.demands_attention()
+            && let Err(err) = surface.set_demands_attention(false)
+        {
+            eventline::warn!(
+                "xwayland: failed to acknowledge attention xid={}: {err}",
+                surface.window_id()
+            );
+        }
+    }
+
     fn target<D: SessionDriver>(&self) -> &dyn KeyboardTarget<Session<D>> {
         match self {
             Self::Wayland(surface) => surface,
