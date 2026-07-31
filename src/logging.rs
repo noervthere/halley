@@ -1,4 +1,5 @@
 use std::fmt::Write as _;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use eventline::{LogLevel, LogPolicy, RunHeader};
 use tracing::Level;
@@ -68,18 +69,24 @@ fn init_smithay_bridge() {
 
 struct EventlineLayer;
 
+static UNKNOWN_X11_ASSOCIATIONS: AtomicU64 = AtomicU64::new(0);
+
 impl<S: tracing::Subscriber> Layer<S> for EventlineLayer {
     fn on_event(
         &self,
         event: &tracing::Event<'_>,
         _ctx: tracing_subscriber::layer::Context<'_, S>,
     ) {
-        let mut message = String::new();
-        event.record(&mut MessageVisitor(&mut message));
+        let mut fields = EventFields::default();
+        event.record(&mut fields);
+        let message = fields.finish();
         if message.is_empty() {
             return;
         }
         let target = event.metadata().target();
+        if repeated_smithay_warning(target, &message) {
+            return;
+        }
         match *event.metadata().level() {
             Level::ERROR => eventline::error!("{target}: {message}"),
             Level::WARN if known_benign_smithay_warning(target, &message) => {
@@ -101,17 +108,78 @@ fn known_benign_smithay_warning(target: &str, message: &str) -> bool {
         && message == "Unable to become drm master, assuming unprivileged mode"
 }
 
-/// Pulls out just the `message` field. Structured fields are dropped on
-/// purpose: the DRM events worth reading put everything in the message, and
-/// rendering the rest would bloat lines that already run long.
-struct MessageVisitor<'a>(&'a mut String);
+/// Keep Smithay's structured context. Its XWM failure event puts the useful
+/// `id` and `err` values in fields rather than in `message`.
+#[derive(Default)]
+struct EventFields {
+    message: String,
+    fields: Vec<(String, String)>,
+}
 
-impl tracing::field::Visit for MessageVisitor<'_> {
-    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-        if field.name() == "message" {
-            let _ = write!(self.0, "{value:?}");
+impl EventFields {
+    fn finish(self) -> String {
+        let mut rendered = self.message;
+        for (name, value) in self.fields {
+            if !rendered.is_empty() {
+                rendered.push(' ');
+            }
+            let _ = write!(rendered, "{name}={value}");
+        }
+        rendered
+    }
+
+    fn record_value(&mut self, field: &tracing::field::Field, value: String) {
+        match field.name() {
+            "message" => self.message = value,
+            name if name.starts_with("log.") => {}
+            name => self.fields.push((name.to_string(), value)),
         }
     }
+}
+
+impl tracing::field::Visit for EventFields {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        self.record_value(field, format!("{value:?}"));
+    }
+
+    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        self.record_value(field, format!("{value:?}"));
+    }
+
+    fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
+        self.record_value(field, value.to_string());
+    }
+
+    fn record_i64(&mut self, field: &tracing::field::Field, value: i64) {
+        self.record_value(field, value.to_string());
+    }
+
+    fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
+        self.record_value(field, value.to_string());
+    }
+
+    fn record_f64(&mut self, field: &tracing::field::Field, value: f64) {
+        self.record_value(field, value.to_string());
+    }
+}
+
+fn repeated_smithay_warning(target: &str, message: &str) -> bool {
+    if target != "smithay::wayland::xwayland_shell"
+        || !message.starts_with("Unknown X11 window associated to wl_surface in commit hook")
+    {
+        return false;
+    }
+
+    let count = UNKNOWN_X11_ASSOCIATIONS.fetch_add(1, Ordering::Relaxed) + 1;
+    if count == 1 {
+        return false;
+    }
+    if count.is_power_of_two() {
+        eventline::warn!(
+            "{target}: suppressed repeated unknown X11 surface associations count={count}"
+        );
+    }
+    true
 }
 
 pub fn flush() {
@@ -123,7 +191,7 @@ pub fn flush() {
 
 #[cfg(test)]
 mod tests {
-    use super::known_benign_smithay_warning;
+    use super::{EventFields, known_benign_smithay_warning};
 
     #[test]
     fn only_the_known_new_kernel_drm_fallback_is_downgraded() {
@@ -139,5 +207,21 @@ mod tests {
             "smithay::backend::drm",
             "Unable to become drm master, assuming unprivileged mode"
         ));
+    }
+
+    #[test]
+    fn structured_fields_are_retained_after_the_message() {
+        let fields = EventFields {
+            message: "Failed to handle X11 event".to_string(),
+            fields: vec![
+                ("id".to_string(), "3".to_string()),
+                ("err".to_string(), "BadWindow(42)".to_string()),
+            ],
+        };
+
+        assert_eq!(
+            fields.finish(),
+            "Failed to handle X11 event id=3 err=BadWindow(42)"
+        );
     }
 }

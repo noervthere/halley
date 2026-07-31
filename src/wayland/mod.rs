@@ -16,6 +16,7 @@ pub mod wlr_screencopy;
 pub mod xdg_shell;
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
 use smithay::desktop::{LayerSurface, PopupManager, Space, Window};
@@ -383,7 +384,13 @@ impl ClientData for ClientState {
     fn disconnected(&self, client_id: ClientId, reason: DisconnectReason) {
         match reason {
             DisconnectReason::ConnectionClosed => {
-                eventline::debug!("wayland client {client_id:?} disconnected");
+                static CLOSED_CLIENTS: AtomicU64 = AtomicU64::new(0);
+                let count = CLOSED_CLIENTS.fetch_add(1, Ordering::Relaxed) + 1;
+                if count == 1 || count.is_multiple_of(256) {
+                    eventline::debug!(
+                        "wayland clients disconnected normally count={count} latest={client_id:?}"
+                    );
+                }
             }
             DisconnectReason::ProtocolError(error) => {
                 eventline::warn!(

@@ -2,16 +2,20 @@ mod theme;
 mod visibility;
 
 pub(crate) mod render;
+pub(crate) mod snapshot;
 pub(crate) mod surface;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Duration;
 
+use smithay::backend::allocator::Fourcc;
+use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
 use smithay::input::pointer::{CursorIcon, CursorImageStatus};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::utils::IsAlive;
+use smithay::utils::{IsAlive, Transform};
 use xcursor::CursorTheme;
 
 pub(crate) use theme::CursorFrame;
@@ -21,7 +25,21 @@ pub(crate) use visibility::{TimerDirective, Visibility};
 pub(crate) enum RenderCursor {
     Hidden,
     Named(Rc<CursorFrame>),
-    Surface(WlSurface),
+    Surface {
+        surface: WlSurface,
+        snapshot: Option<Rc<CursorSurfaceSnapshot>>,
+    },
+}
+
+pub(crate) struct CursorSurfaceSnapshot {
+    pub surface: WlSurface,
+    pub buffer: MemoryRenderBuffer,
+    pub metadata_bgra: Arc<[u8]>,
+    pub width: u32,
+    pub height: u32,
+    pub scale: i32,
+    pub(crate) format: Fourcc,
+    pub(crate) transform: Transform,
 }
 
 /// Resolves and caches cursor icons independently of the presentation
@@ -35,6 +53,7 @@ pub struct CursorManager {
     image: CursorImageStatus,
     override_icon: Option<CursorIcon>,
     cache: RefCell<HashMap<(CursorIcon, i32), Rc<PreparedCursor>>>,
+    surface_snapshot: RefCell<Option<Rc<CursorSurfaceSnapshot>>>,
 }
 
 impl CursorManager {
@@ -47,6 +66,7 @@ impl CursorManager {
             image: CursorImageStatus::default_named(),
             override_icon: None,
             cache: RefCell::new(HashMap::new()),
+            surface_snapshot: RefCell::new(None),
         }
     }
 
@@ -87,6 +107,7 @@ impl CursorManager {
             _ => None,
         };
         self.image = image;
+        self.surface_snapshot.get_mut().take();
         previous
     }
 
@@ -109,6 +130,7 @@ impl CursorManager {
             return false;
         }
         self.image = CursorImageStatus::default_named();
+        self.surface_snapshot.get_mut().take();
         true
     }
 
@@ -131,7 +153,16 @@ impl CursorManager {
                 RenderCursor::Named(self.frame(*icon, output_scale, time))
             }
             CursorImageStatus::Surface(surface) if surface.alive() => {
-                RenderCursor::Surface(surface.clone())
+                let snapshot = self
+                    .surface_snapshot
+                    .borrow()
+                    .as_ref()
+                    .filter(|snapshot| snapshot.surface == *surface)
+                    .cloned();
+                RenderCursor::Surface {
+                    surface: surface.clone(),
+                    snapshot,
+                }
             }
             CursorImageStatus::Surface(_) => {
                 RenderCursor::Named(self.default_frame(output_scale, time))
@@ -171,6 +202,10 @@ impl CursorManager {
         }
         self.override_icon = icon;
         true
+    }
+
+    pub(crate) fn surface_snapshot(&self) -> &RefCell<Option<Rc<CursorSurfaceSnapshot>>> {
+        &self.surface_snapshot
     }
 
     fn prepared(&self, icon: CursorIcon, output_scale: i32) -> Rc<PreparedCursor> {

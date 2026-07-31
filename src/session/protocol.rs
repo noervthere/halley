@@ -181,6 +181,7 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
     }
 
     fn commit(&mut self, surface: &WlSurface) {
+        crate::cursor::snapshot::prepare_commit(&self.cursor, surface);
         wayland::compositor::prepare_commit::<Self>(surface);
         let root = wayland::compositor::root_surface(surface);
         let rule_window = self

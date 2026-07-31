@@ -52,7 +52,7 @@ pub fn elements(
                 .into(),
             ])
         }
-        RenderCursor::Surface(surface) => {
+        RenderCursor::Surface { surface, snapshot } => {
             let Some(position) = surface_cursor_origin(
                 output,
                 output_geometry,
@@ -61,6 +61,20 @@ pub fn elements(
             ) else {
                 return Ok(Vec::new());
             };
+            if let Some(snapshot) = snapshot {
+                return Ok(vec![
+                    MemoryRenderBufferRenderElement::from_buffer(
+                        renderer,
+                        position.to_f64(),
+                        &snapshot.buffer,
+                        None,
+                        None,
+                        None,
+                        Kind::Cursor,
+                    )?
+                    .into(),
+                ]);
+            }
             let elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
                 render_elements_from_surface_tree(
                     renderer,
