@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::error::Error;
 
 use halley_core::field::NodeId;
+use smithay::backend::renderer::Texture;
 use smithay::backend::renderer::element::Id;
 use smithay::backend::renderer::element::texture::TextureRenderElement;
 use smithay::backend::renderer::gles::{GlesRenderer, GlesTexture};
@@ -27,6 +28,15 @@ pub struct OverlayPreviewCache {
 }
 
 impl OverlayPreviewCache {
+    /// Returns the captured texture dimensions without exposing renderer cache
+    /// internals to overlay layout code.
+    pub fn source_dimensions(&self, id: NodeId) -> Option<(i32, i32)> {
+        self.entries.get(&id).map(|entry| {
+            let size = entry.texture.texture.size();
+            (size.w, size.h)
+        })
+    }
+
     pub fn mark_dirty(&mut self, id: NodeId) {
         self.dirty.insert(id);
     }

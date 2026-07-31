@@ -36,7 +36,7 @@ use windows::{LiveWindowContext, StackGroup, live_window_elements, sort_stack_gr
 use capture_ui::{capture_picker_elements, dashed_border_rects, inner_border_rects};
 #[cfg(test)]
 use overview::{
-    apogee_caption_rect, apogee_transition_visuals, aspect_fit_rect, outset_physical,
+    apogee_caption_rect, apogee_transition_visuals, aspect_fit_rect, outset_physical, outset_rect,
     preview_content_radius, sort_apogee_tiles,
 };
 
@@ -618,6 +618,19 @@ mod tests {
             aspect_fit_rect(bounds, 900, 1_600),
             Rectangle::new((65, 20).into(), (90, 160).into())
         );
+    }
+
+    #[test]
+    fn focus_cycle_chrome_tracks_a_centered_thin_preview() {
+        let slot = Rectangle::<i32, Physical>::new((40, 20).into(), (300, 240).into());
+        let available = Rectangle::new((46, 26).into(), (288, 228).into());
+        let body = aspect_fit_rect(available, 600, 1_600);
+        let chrome = outset_rect(body, 6);
+
+        assert_eq!(body.loc.x + body.size.w / 2, slot.loc.x + slot.size.w / 2);
+        assert_eq!(chrome.loc.x, body.loc.x - 6);
+        assert_eq!(chrome.size.w, body.size.w + 12);
+        assert!(chrome.size.w < slot.size.w);
     }
 
     #[test]

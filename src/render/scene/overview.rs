@@ -381,7 +381,7 @@ pub(super) fn focus_cycle_elements(
         let selected = distance < 0.45;
         let distance_step = distance.round().clamp(0.0, 2.0) as i32;
         let pad = if distance_step >= 2 { 4 } else { 6 };
-        let body = Rectangle::<i32, Physical>::new(
+        let body_bounds = Rectangle::<i32, Physical>::new(
             (card.loc.x + pad, card.loc.y + pad).into(),
             (
                 (card.size.w - pad * 2).max(1),
@@ -389,6 +389,11 @@ pub(super) fn focus_cycle_elements(
             )
                 .into(),
         );
+        let (source_width, source_height) = overlay_previews
+            .source_dimensions(id)
+            .unwrap_or((record.geometry.size.w, record.geometry.size.h));
+        let body = aspect_fit_rect(body_bounds, source_width, source_height);
+        let card = outset_rect(body, pad);
 
         // Top-right monitor badge, over the preview.
         let monitor = truncate_chars(&record.output, 10);
@@ -727,6 +732,20 @@ pub(super) fn aspect_fit_rect(
         )
             .into(),
         (width, height).into(),
+    )
+}
+
+pub(super) fn outset_rect(
+    body: Rectangle<i32, Physical>,
+    padding: i32,
+) -> Rectangle<i32, Physical> {
+    Rectangle::new(
+        (body.loc.x - padding, body.loc.y - padding).into(),
+        (
+            body.size.w + padding.saturating_mul(2),
+            body.size.h + padding.saturating_mul(2),
+        )
+            .into(),
     )
 }
 
