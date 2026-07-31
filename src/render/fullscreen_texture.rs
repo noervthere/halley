@@ -255,8 +255,12 @@ impl RenderElement<GlesRenderer> for FullscreenBlendElement {
         opaque_regions: &[Rectangle<i32, Physical>],
         _cache: Option<&UserDataMap>,
     ) -> Result<(), GlesError> {
-        frame.with_context(|gl| unsafe {
+        let (previous_active_texture, previous_texture_1) = frame.with_context(|gl| unsafe {
+            let mut active_texture = 0_i32;
+            gl.GetIntegerv(ffi::ACTIVE_TEXTURE, &mut active_texture);
             gl.ActiveTexture(ffi::TEXTURE1);
+            let mut texture_1 = 0_i32;
+            gl.GetIntegerv(ffi::TEXTURE_BINDING_2D, &mut texture_1);
             gl.BindTexture(ffi::TEXTURE_2D, self.next.tex_id());
             gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_MIN_FILTER, ffi::LINEAR as i32);
             gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_MAG_FILTER, ffi::LINEAR as i32);
@@ -270,7 +274,8 @@ impl RenderElement<GlesRenderer> for FullscreenBlendElement {
                 ffi::TEXTURE_WRAP_T,
                 ffi::CLAMP_TO_EDGE as i32,
             );
-            gl.ActiveTexture(ffi::TEXTURE0);
+            gl.ActiveTexture(active_texture as u32);
+            (active_texture, texture_1)
         })?;
 
         let result = frame.render_texture_from_to(
@@ -292,8 +297,8 @@ impl RenderElement<GlesRenderer> for FullscreenBlendElement {
 
         frame.with_context(|gl| unsafe {
             gl.ActiveTexture(ffi::TEXTURE1);
-            gl.BindTexture(ffi::TEXTURE_2D, 0);
-            gl.ActiveTexture(ffi::TEXTURE0);
+            gl.BindTexture(ffi::TEXTURE_2D, previous_texture_1 as u32);
+            gl.ActiveTexture(previous_active_texture as u32);
         })?;
         result
     }

@@ -34,7 +34,9 @@ pub(super) fn append_compositor_overlay_blur(
         if let Some(blur) = backdrop_blur_renderer.blur_element(
             renderer,
             &output.name(),
-            style.identity,
+            crate::render::effects::backdrop_blur::BlurIdentity::Overlay(
+                style.identity.to_string(),
+            ),
             style.output_size,
             patches,
             style.blur,
@@ -213,7 +215,9 @@ pub(super) fn append_surface_backdrop_blur(
     if let Some(blur) = backdrop_blur_renderer.blur_element(
         renderer,
         &output.name(),
-        format!("layer:{:?}", surface.id()),
+        crate::render::effects::backdrop_blur::BlurIdentity::Layer(Id::from_wayland_resource(
+            surface,
+        )),
         output_size,
         patches,
         blur_config,

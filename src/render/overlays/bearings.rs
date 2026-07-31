@@ -314,7 +314,7 @@ pub fn elements(
     if let Some(blur) = backdrop_blur_renderer.blur_element(
         renderer,
         &output_name,
-        "bearings",
+        crate::render::effects::backdrop_blur::BlurIdentity::Overlay("bearings".to_string()),
         output_geometry.size,
         blur_patches,
         blur_config,

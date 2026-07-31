@@ -86,6 +86,10 @@ pub fn build(
     output_geometry: Rectangle<i32, Logical>,
     request: RenderRequest<'_>,
 ) -> Result<Vec<SceneElement>, Box<dyn Error>> {
+    request
+        .resources
+        .backdrop_blur_renderer
+        .begin_scene(&output.name());
     if request.desktop.session_lock.active() {
         let scale = Scale::from(output.current_scale().fractional_scale());
         let mut elements = request

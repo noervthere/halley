@@ -303,11 +303,10 @@ pub(super) fn live_window_elements(
         if let Some(blur) = backdrop_blur_renderer.blur_element(
             renderer,
             &context.output.name(),
-            format!(
-                "window:{:?}:{}",
-                window_surface.id(),
-                context.instance_identity.unwrap_or("canonical")
-            ),
+            crate::render::effects::backdrop_blur::BlurIdentity::Window {
+                surface: Id::from_wayland_resource(window_surface.as_ref()),
+                instance: context.instance_identity.unwrap_or("canonical").to_string(),
+            },
             context.output_geometry.size,
             patches,
             context.blur,

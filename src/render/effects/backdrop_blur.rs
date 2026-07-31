@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::rc::Rc;
@@ -46,7 +46,18 @@ struct BlurTextures {
 
 struct OutputResources {
     textures: Rc<RefCell<BlurTextures>>,
-    ids: HashMap<String, Id>,
+    ids: HashMap<BlurIdentity, Id>,
+    scene_identities: HashSet<BlurIdentity>,
+}
+
+/// Stable identity of one logical framebuffer-effect stack position. A
+/// Wayland render-element `Id` is used where possible because protocol object
+/// numbers are only unique within one client and formatted IDs can alias.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum BlurIdentity {
+    Window { surface: Id, instance: String },
+    Layer(Id),
+    Overlay(String),
 }
 
 #[derive(Default)]
@@ -70,11 +81,17 @@ pub struct BackdropBlurElement {
 }
 
 impl BackdropBlurRenderer {
+    pub fn begin_scene(&mut self, output: &str) {
+        if let Some(resources) = self.outputs.get_mut(output) {
+            resources.scene_identities.clear();
+        }
+    }
+
     pub fn blur_element(
         &mut self,
         renderer: &mut GlesRenderer,
         output: &str,
-        identity: impl Into<String>,
+        identity: BlurIdentity,
         size: Size<i32, Logical>,
         patches: Vec<BlurPatch>,
         config: halley_config::Blur,
@@ -104,6 +121,7 @@ impl BackdropBlurRenderer {
                         OutputResources {
                             textures,
                             ids: HashMap::new(),
+                            scene_identities: HashSet::new(),
                         },
                     );
                 }
@@ -112,7 +130,11 @@ impl BackdropBlurRenderer {
         let resources = self.outputs.get_mut(output).expect("inserted above");
         let programs = self.programs.as_ref().expect("ensured above");
         debug_assert_eq!(programs.context, context);
-        let identity = identity.into();
+        if !resources.scene_identities.insert(identity.clone()) {
+            return Err(
+                format!("duplicate backdrop blur identity in one scene: {identity:?}").into(),
+            );
+        }
         let id = resources
             .ids
             .entry(identity)
@@ -342,7 +364,13 @@ impl RenderElement<GlesRenderer> for BackdropBlurElement {
         let mut textures = self.textures.borrow_mut();
         let size = textures.size;
         frame.with_context(|gl| unsafe {
-            while gl.GetError() != ffi::NO_ERROR {}
+            let mut prior_error = gl.GetError();
+            while prior_error != ffi::NO_ERROR {
+                eventline::error!(
+                    "gles: error present before backdrop capture code=0x{prior_error:04x}"
+                );
+                prior_error = gl.GetError();
+            }
             let mut current_draw_fbo = 0_i32;
             let mut current_read_fbo = 0_i32;
             gl.GetIntegerv(ffi::DRAW_FRAMEBUFFER_BINDING, &mut current_draw_fbo);
@@ -512,6 +540,38 @@ fn composite_patch(
             Uniform::new("noise", noise.clamp(0.0, 0.25)),
         ],
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use smithay::backend::renderer::element::Id;
+
+    use super::BlurIdentity;
+
+    #[test]
+    fn typed_identities_do_not_alias_across_scene_roles() {
+        let surface = Id::new();
+        let identities = [
+            BlurIdentity::Layer(surface.clone()),
+            BlurIdentity::Window {
+                surface,
+                instance: "canonical".to_string(),
+            },
+            BlurIdentity::Overlay("canonical".to_string()),
+        ];
+
+        assert_eq!(identities.into_iter().collect::<HashSet<_>>().len(), 3);
+    }
+
+    #[test]
+    fn a_stack_position_keeps_the_same_identity_across_frames() {
+        assert_eq!(
+            BlurIdentity::Overlay("shell-overlay".to_string()),
+            BlurIdentity::Overlay("shell-overlay".to_string())
+        );
+    }
 }
 
 fn blur_offset(radius: f32) -> f32 {
