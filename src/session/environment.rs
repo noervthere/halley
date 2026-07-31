@@ -104,7 +104,7 @@ pub fn activate_session(wayland_display: &OsStr, cursor: &halley_config::Cursor)
             .arg("--user")
             .arg("reset-failed")
             .arg("xdg-desktop-portal-gtk.service");
-        run("portal failure reset", &mut reset_failed);
+        run_optional("portal failure reset", &mut reset_failed);
 
         let mut restart = Command::new("systemctl");
         restart
@@ -171,6 +171,23 @@ fn run(label: &str, command: &mut Command) {
     match command.status() {
         Ok(status) if status.success() => eventline::debug!("{label}: complete"),
         Ok(status) => eventline::warn!("{label}: exited with {status}"),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            eventline::debug!("{label}: helper unavailable")
+        }
+        Err(err) => eventline::warn!("{label}: {err}"),
+    }
+}
+
+/// Runs best-effort integration cleanup where a missing/inactive optional
+/// desktop component is an expected state, not a compositor warning.
+fn run_optional(label: &str, command: &mut Command) {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    match command.status() {
+        Ok(status) if status.success() => eventline::debug!("{label}: complete"),
+        Ok(status) => eventline::debug!("{label}: optional helper exited with {status}"),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             eventline::debug!("{label}: helper unavailable")
         }

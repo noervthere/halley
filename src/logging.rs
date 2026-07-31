@@ -82,12 +82,23 @@ impl<S: tracing::Subscriber> Layer<S> for EventlineLayer {
         let target = event.metadata().target();
         match *event.metadata().level() {
             Level::ERROR => eventline::error!("{target}: {message}"),
+            Level::WARN if known_benign_smithay_warning(target, &message) => {
+                eventline::debug!("{target}: {message}")
+            }
             Level::WARN => eventline::warn!("{target}: {message}"),
             // `info` and below land in the file only. The console is pinned to
             // `Info`, and a per-modeset connector list has no business there.
             _ => eventline::debug!("{target}: {message}"),
         }
     }
+}
+
+fn known_benign_smithay_warning(target: &str, message: &str) -> bool {
+    // Smithay deliberately continues after this legacy drmSetMaster call:
+    // current kernels authorize the modesetting fd without it. A genuine
+    // permission/output failure still surfaces from DrmDevice/output setup.
+    target == "smithay::backend::drm::device::fd"
+        && message == "Unable to become drm master, assuming unprivileged mode"
 }
 
 /// Pulls out just the `message` field. Structured fields are dropped on
@@ -107,5 +118,26 @@ pub fn flush() {
     if let Err(err) = eventline::flush() {
         eventline::error!("failed to flush logging: {err}");
         let _ = eventline::flush();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::known_benign_smithay_warning;
+
+    #[test]
+    fn only_the_known_new_kernel_drm_fallback_is_downgraded() {
+        assert!(known_benign_smithay_warning(
+            "smithay::backend::drm::device::fd",
+            "Unable to become drm master, assuming unprivileged mode"
+        ));
+        assert!(!known_benign_smithay_warning(
+            "smithay::backend::drm::device::fd",
+            "Failed to drop drm master state"
+        ));
+        assert!(!known_benign_smithay_warning(
+            "smithay::backend::drm",
+            "Unable to become drm master, assuming unprivileged mode"
+        ));
     }
 }

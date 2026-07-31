@@ -546,9 +546,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
         })
         .expect("failed to insert drm notifier");
 
-    eventline::info!(
-        "dispatching - switch to this VT to see a solid color fill the screen, press the Quit chord to exit"
-    );
+    eventline::info!("session ready: outputs active; use the configured Quit chord to exit");
     event_loop
         .run(None, &mut app, |app| {
             app.reap_autostart();
