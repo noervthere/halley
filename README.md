@@ -50,6 +50,7 @@ References:
 - [Managed-window rules](docs/window-rules.md)
 - [Screen sharing and the desktop portal](docs/portal.md)
 - [Wayland protocol support](docs/wayland-protocols.md)
+- [XWayland policy and conformance baseline](docs/xwayland.md)
 - [Fonts](docs/fonts.md)
 - [Animations](docs/animations.md)
 - [Window decorations](docs/decorations.md)

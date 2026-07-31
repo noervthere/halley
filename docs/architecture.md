@@ -21,8 +21,9 @@ state do not share implementation files.
 - `capture` owns screenshot selection, a separate portal source-chooser state
   machine, pixel capture, and screencast buffers. Screenshot and portal chrome
   have independent render modules and share only capture icon assets.
-- `wayland` and `xwayland` own protocol transactions. XWayland managed-window
-  lifecycle, override-redirect policy, and presentation policy are separate.
+- `wayland` and `xwayland` own protocol transactions. XWayland control
+  properties, managed state, configure constraints, lifecycle,
+  override-redirect policy, and presentation policy are separate.
 - `animation` owns pure timelines. Rendering consumes animation output but
   animation code does not know about GLES or backends.
 - `halley-cli` separates command parsing, help, response presentation,
@@ -45,9 +46,9 @@ a category below 8.
 
 | Category | Score | Evidence |
 | --- | ---: | --- |
-| Cohesion | 9.0 | Shell, presentation, capture, backend TTY, XWayland, window rules/routing, and background rendering have dedicated ownership boundaries |
-| Coupling | 8.6 | Both backends share one scene request; rule consumers share one resolved policy; renderer resources cross the boundary as one aggregate and background input as one typed request |
-| Maintainability | 8.7 | Typed/validated config, documented compatibility behavior, cached failure paths, focused unit tests, workspace regression tests, formatting, build, and strict clippy gates |
+| Cohesion | 9.1 | Shell, presentation, capture, backend TTY, XWayland control/state/configure policy, window rules/routing, and background rendering have dedicated ownership boundaries |
+| Coupling | 8.7 | Both backends share one scene request; rule consumers share one resolved policy; Smithay retains XWM event ownership while Halley adds only a property-policy boundary |
+| Maintainability | 8.9 | Typed/validated config, documented protocol invariants, bounded diagnostics, focused pure tests, nested X11 checks, workspace regression tests, formatting, build, and strict clippy gates |
 
 The remaining large orchestration files are `session/input.rs`,
 `wayland/fullscreen.rs`, `render/scene.rs`, and the TTY session/backend
