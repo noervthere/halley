@@ -923,7 +923,20 @@ where
                     x: pointer_world.x + offset.x,
                     y: pointer_world.y + offset.y,
                 };
-                if session.clusters.move_core(id, &output.name(), desired) {
+                let output_name = output.name();
+                let output_changed = session
+                    .clusters
+                    .metadata(id)
+                    .is_some_and(|metadata| metadata.output != output_name);
+                let members = if output_changed {
+                    session.clusters.member_ids(id)
+                } else {
+                    Vec::new()
+                };
+                if session.clusters.move_core(id, &output_name, desired) {
+                    for member in members {
+                        crate::nodes::set_collapsed_output(session, member, &output);
+                    }
                     session.request_redraw();
                 }
             }

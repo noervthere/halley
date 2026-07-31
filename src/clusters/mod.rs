@@ -319,6 +319,13 @@ impl ClusterSystem {
         self.registry.cluster_id_for_member(id)
     }
 
+    pub fn member_ids(&self, id: ClusterId) -> Vec<NodeId> {
+        self.registry
+            .cluster(id)
+            .map(|cluster| cluster.members().to_vec())
+            .unwrap_or_default()
+    }
+
     pub fn active_layout_for_member(&self, id: NodeId) -> Option<ClusterWorkspaceLayoutKind> {
         let cluster = self.cluster_for_member(id)?;
         let metadata = self.metadata(cluster)?;
