@@ -519,11 +519,12 @@ pub fn build(
         maximize: request.desktop.maximize,
         window_rules: request.desktop.window_rules,
     };
+    let mut live_windows = Vec::new();
     for (stack_index, window) in request.desktop.space.elements().enumerate() {
         if !crate::wayland::window_is_on_output(window, output, primary_output) {
             continue;
         }
-        let window_elements = live_window_elements(
+        let window_scene = live_window_elements(
             renderer,
             window,
             context,
@@ -532,14 +533,29 @@ pub fn build(
             request.resources.shadow_renderer,
             request.resources.window_decoration_renderer,
         )?;
-        if !window_elements.is_empty() {
-            stack.push(StackGroup {
-                stack_index,
-                order: u64::MAX,
-                elements: window_elements,
-            });
+        if !window_scene.elements.is_empty() {
+            live_windows.push((stack_index, window_scene));
         }
     }
+    // A cluster workspace is one coherent stack. Preserve its position
+    // relative to non-cluster windows at the topmost member's existing Space
+    // slot, then use the layout's explicit depth for member overlap.
+    let cluster_anchor = live_windows
+        .iter()
+        .filter_map(|(stack_index, scene)| scene.cluster_depth.map(|_| *stack_index))
+        .max();
+    stack.extend(live_windows.into_iter().map(|(stack_index, window_scene)| {
+        StackGroup {
+            stack_index: window_scene
+                .cluster_depth
+                .and(cluster_anchor)
+                .unwrap_or(stack_index),
+            order: window_scene
+                .cluster_depth
+                .map_or(u64::MAX, |depth| depth as u64),
+            elements: window_scene.elements,
+        }
+    }));
     sort_stack_groups(&mut stack);
     elements.extend(stack.into_iter().rev().flat_map(|group| group.elements));
 

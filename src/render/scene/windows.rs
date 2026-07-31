@@ -10,6 +10,11 @@ pub(super) fn sort_stack_groups(groups: &mut [StackGroup]) {
     groups.sort_by_key(|group| (group.stack_index, group.order));
 }
 
+pub(super) struct LiveWindowScene {
+    pub(super) elements: Vec<SceneElement>,
+    pub(super) cluster_depth: Option<usize>,
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct LiveWindowContext<'a> {
     pub(super) space: &'a smithay::desktop::Space<smithay::desktop::Window>,
@@ -56,12 +61,18 @@ pub(super) fn live_window_elements(
     backdrop_blur_renderer: &mut crate::render::effects::backdrop_blur::BackdropBlurRenderer,
     shadow_renderer: &mut crate::render::effects::shadow::ShadowRenderer,
     window_decoration_renderer: &mut crate::render::window_decoration::WindowDecorationRenderer,
-) -> Result<Vec<SceneElement>, Box<dyn Error>> {
+) -> Result<LiveWindowScene, Box<dyn Error>> {
     let Some(location) = context.space.element_location(window) else {
-        return Ok(Vec::new());
+        return Ok(LiveWindowScene {
+            elements: Vec::new(),
+            cluster_depth: None,
+        });
     };
     let Some(window_surface) = window.wl_surface() else {
-        return Ok(Vec::new());
+        return Ok(LiveWindowScene {
+            elements: Vec::new(),
+            cluster_depth: None,
+        });
     };
     let Some(visual) = window_visual_state(
         context.space,
@@ -75,10 +86,16 @@ pub(super) fn live_window_elements(
         context.maximize,
         context.target_presentation_time,
     ) else {
-        return Ok(Vec::new());
+        return Ok(LiveWindowScene {
+            elements: Vec::new(),
+            cluster_depth: None,
+        });
     };
     if visual.animated_rect.size.w == 0 || visual.animated_rect.size.h == 0 {
-        return Ok(Vec::new());
+        return Ok(LiveWindowScene {
+            elements: Vec::new(),
+            cluster_depth: visual.cluster_depth,
+        });
     }
 
     let mut elements = Vec::new();
@@ -347,7 +364,10 @@ pub(super) fn live_window_elements(
             elements.push(SceneElement::Shadow(shadow));
         }
     }
-    Ok(elements)
+    Ok(LiveWindowScene {
+        elements,
+        cluster_depth: visual.cluster_depth,
+    })
 }
 
 #[cfg(test)]

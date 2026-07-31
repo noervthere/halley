@@ -24,6 +24,7 @@ pub(crate) struct WindowVisualState {
     pub(crate) camera_center: Point<f32, Physical>,
     pub(crate) zoom_scale: f32,
     pub(crate) presentation_space: PresentationSpace,
+    pub(crate) cluster_depth: Option<usize>,
     inherited_presentation: bool,
 }
 
@@ -118,11 +119,11 @@ pub(crate) fn window_visual_state(
             )
         })
         .unwrap_or(crate::clusters::WindowPresentation::Field);
-    let (cluster_rect, cluster_alpha) = match cluster_presentation {
+    let (cluster_rect, cluster_depth, cluster_alpha) = match cluster_presentation {
         crate::clusters::WindowPresentation::Hidden => return None,
-        crate::clusters::WindowPresentation::Field => (None, 1.0),
-        crate::clusters::WindowPresentation::Workspace { rect, alpha, .. } => {
-            (Some(rect.to_physical(1)), alpha)
+        crate::clusters::WindowPresentation::Field => (None, None, 1.0),
+        crate::clusters::WindowPresentation::Workspace { rect, depth, alpha } => {
+            (Some(rect.to_physical(1)), Some(depth), alpha)
         }
     };
     let mut camera_rect = cluster_rect.unwrap_or_else(|| {
@@ -187,6 +188,7 @@ pub(crate) fn window_visual_state(
     } else {
         view.scale
     };
+    let mut inherited_cluster_depth = cluster_depth;
 
     if let Some(owner_xid) = crate::wayland::window_presentation_owner(window)
         && let Some(owner) = space.elements().find(|candidate| {
@@ -219,6 +221,7 @@ pub(crate) fn window_visual_state(
         opening_alpha = owner_visual.opening_alpha;
         inherited_camera_center = owner_visual.camera_center;
         inherited_zoom_scale = owner_visual.zoom_scale;
+        inherited_cluster_depth = owner_visual.cluster_depth;
         presentation_space = owner_visual.presentation_space;
         inherited_presentation = true;
     }
@@ -234,6 +237,7 @@ pub(crate) fn window_visual_state(
         camera_center: inherited_camera_center,
         zoom_scale: inherited_zoom_scale,
         presentation_space,
+        cluster_depth: inherited_cluster_depth,
         inherited_presentation,
     })
 }
