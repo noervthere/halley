@@ -249,6 +249,13 @@ pub fn configure_window(
     xwm::configure_window(window, geometry);
 }
 
+pub fn constrain_window_size(
+    window: &smithay::desktop::Window,
+    requested: Size<i32, Logical>,
+) -> Size<i32, Logical> {
+    xwm::constrain_window_size(window, requested)
+}
+
 pub fn set_window_fullscreen<D: SessionDriver>(
     session: &mut Session<D>,
     window: &smithay::desktop::Window,

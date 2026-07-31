@@ -491,6 +491,10 @@ pub(crate) fn configure_window(window: &Window, geometry: Rectangle<i32, Logical
     let Some(surface) = window.x11_surface() else {
         return;
     };
+    let geometry = Rectangle::new(
+        geometry.loc,
+        super::configure::constrain_surface_size(surface, geometry.size),
+    );
     if let Err(err) = surface.configure(geometry) {
         eventline::warn!("xwayland: failed to configure window geometry: {err}");
     }

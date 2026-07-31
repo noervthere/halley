@@ -47,6 +47,18 @@ fn sync_allowed_actions<D: SessionDriver>(session: &Session<D>, surface: &X11Sur
     }
 }
 
+fn sync_urgency(surface: &X11Surface) {
+    if !surface.hints().is_some_and(|hints| hints.urgent) || surface.demands_attention() {
+        return;
+    }
+    if let Err(err) = surface.set_demands_attention(true) {
+        eventline::warn!(
+            "xwayland: failed to apply WM_HINTS urgency xid={}: {err}",
+            surface.window_id()
+        );
+    }
+}
+
 pub(super) fn forget_window<D: SessionDriver>(session: &mut Session<D>, surface: &X11Surface) {
     session
         .xwayland
@@ -126,6 +138,7 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
         }
         transition_icccm(self, &surface, WindowState::Normal);
         sync_allowed_actions(self, &surface);
+        sync_urgency(&surface);
         if initial_iconic {
             self.xwayland
                 .managed_states
@@ -217,8 +230,8 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
         &mut self,
         _xwm: XwmId,
         surface: X11Surface,
-        _x: Option<i32>,
-        _y: Option<i32>,
+        x: Option<i32>,
+        y: Option<i32>,
         width: Option<u32>,
         height: Option<u32>,
         _reorder: Option<Reorder>,
@@ -228,13 +241,11 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
         if surface.is_override_redirect() {
             return;
         }
-        let mut geometry = surface.geometry();
-        geometry.size.w = width
-            .and_then(|value| i32::try_from(value).ok())
-            .unwrap_or(geometry.size.w);
-        geometry.size.h = height
-            .and_then(|value| i32::try_from(value).ok())
-            .unwrap_or(geometry.size.h);
+        // Halley's field owns normal-window placement and stacking. Transient
+        // coordinates are honored by `requested_geometry`; denied coordinates
+        // and reorder requests still receive Smithay's synthetic
+        // ConfigureNotify for the final compositor-owned geometry.
+        let geometry = super::configure::requested_geometry(&surface, x, y, width, height);
         if let Err(err) = surface.configure(geometry) {
             eventline::warn!("xwayland: configure request failed: {err}");
         }
@@ -374,6 +385,9 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
         ) {
             refresh_override_redirect_owners(self);
         }
+        if property == WmWindowProperty::Hints {
+            sync_urgency(&surface);
+        }
         if matches!(property, WmWindowProperty::Class | WmWindowProperty::Title)
             && let Some(window) = window_for_surface(self, &surface)
         {
@@ -455,10 +469,9 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
                     .map(|wl_surface| wl_surface.into_owned())
             })
             .and_then(|wl_surface| self.nodes.id_for_surface(&wl_surface))
+            && crate::nodes::restore(self, id, SERIAL_COUNTER.next_serial())
         {
-            if crate::nodes::restore(self, id, SERIAL_COUNTER.next_serial()) {
-                transition_icccm(self, &surface, WindowState::Normal);
-            }
+            transition_icccm(self, &surface, WindowState::Normal);
         }
         self.request_redraw();
     }

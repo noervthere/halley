@@ -40,7 +40,6 @@ x11rb::atom_manager! {
         _NET_WM_ACTION_MAXIMIZE_HORZ,
         _NET_WM_ACTION_MAXIMIZE_VERT,
         _NET_WM_ACTION_FULLSCREEN,
-        _NET_WM_ACTION_CLOSE,
     }
 }
 
@@ -57,7 +56,6 @@ pub struct AllowedActions {
     pub minimize: bool,
     pub maximize: bool,
     pub fullscreen: bool,
-    pub close: bool,
 }
 
 impl Default for AllowedActions {
@@ -68,7 +66,6 @@ impl Default for AllowedActions {
             minimize: true,
             maximize: true,
             fullscreen: true,
-            close: true,
         }
     }
 }
@@ -170,9 +167,6 @@ impl X11Control {
         if actions.fullscreen {
             atoms.push(self.atoms._NET_WM_ACTION_FULLSCREEN);
         }
-        if actions.close {
-            atoms.push(self.atoms._NET_WM_ACTION_CLOSE);
-        }
         self.connection
             .change_property32(
                 PropMode::REPLACE,
@@ -255,7 +249,6 @@ fn publish_ewmh(
         atoms._NET_WM_ACTION_MAXIMIZE_HORZ,
         atoms._NET_WM_ACTION_MAXIMIZE_VERT,
         atoms._NET_WM_ACTION_FULLSCREEN,
-        atoms._NET_WM_ACTION_CLOSE,
     ];
     connection.change_property32(
         PropMode::REPLACE,

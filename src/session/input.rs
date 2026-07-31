@@ -1499,6 +1499,7 @@ where
                 let serial = toplevel.send_pending_configure();
                 crate::input::grab::note_resize_configure(&mut session.resize_anchor, serial);
             } else {
+                let size = crate::xwayland::constrain_window_size(&state.window, size);
                 let location = crate::input::grab::resize_location_after_commit(
                     state.handle,
                     state.start_rect.loc,

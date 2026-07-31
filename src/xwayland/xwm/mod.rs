@@ -21,6 +21,7 @@ use super::{
     OverrideRedirectPlacement, PendingOverrideRedirect, PendingWindow, SavedNormalSize,
     WindowIdentity,
 };
+mod configure;
 mod lifecycle;
 mod override_redirect;
 mod presentation;
@@ -406,6 +407,16 @@ fn admit_window<D: SessionDriver>(session: &mut Session<D>, xid: u32) {
         }
     }
 
+    let constrained_size = configure::constrain_surface_size(&surface, opening_size);
+    if constrained_size != opening_size && saved_maximize.is_none() {
+        location.x = location
+            .x
+            .saturating_add(opening_size.w.saturating_sub(constrained_size.w) / 2);
+        location.y = location
+            .y
+            .saturating_add(opening_size.h.saturating_sub(constrained_size.h) / 2);
+    }
+    opening_size = constrained_size;
     let opening_geometry = Rectangle::new(location, opening_size);
     if let Err(err) = surface.configure(opening_geometry) {
         eventline::warn!("xwayland: failed to prepare centered opening geometry: {err}");
@@ -516,6 +527,16 @@ fn output_for_geometry<D: SessionDriver>(
         .next()
         .cloned()
         .or_else(|| crate::wayland::focus::selected_output(&session.wayland).cloned())
+}
+
+pub(super) fn constrain_window_size(
+    window: &Window,
+    requested: Size<i32, Logical>,
+) -> Size<i32, Logical> {
+    window
+        .x11_surface()
+        .map(|surface| configure::constrain_surface_size(surface, requested))
+        .unwrap_or(requested)
 }
 
 #[cfg(test)]
