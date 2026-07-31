@@ -276,12 +276,20 @@ impl ClusterSystem {
         self.registry.cluster_id_for_member(id)
     }
 
+    pub fn active_layout_for_member(&self, id: NodeId) -> Option<ClusterWorkspaceLayoutKind> {
+        let cluster = self.cluster_for_member(id)?;
+        let metadata = self.metadata(cluster)?;
+        (self.active_on(&metadata.output) == Some(cluster)).then_some(metadata.layout)
+    }
+
     pub fn admit_mapped_window(
         &mut self,
         field: &mut Field,
         output: &str,
         member: NodeId,
         participation: halley_config::WindowClusterParticipation,
+        work_area: Rectangle<i32, Logical>,
+        now: Duration,
     ) -> bool {
         let Some(active) = self.active_on(output) else {
             return false;
@@ -293,13 +301,31 @@ impl ClusterSystem {
             halley_config::WindowClusterParticipation::Float => self.floating.insert(member),
             halley_config::WindowClusterParticipation::Layout => {
                 self.floating.remove(&member);
-                let result = if self.config.tiling.new_on_top {
-                    self.registry
-                        .add_member_to_cluster_front(field, active, member)
-                } else {
-                    self.registry.add_member_to_cluster(field, active, member)
+                let layout = self
+                    .metadata(active)
+                    .map(|metadata| metadata.layout)
+                    .unwrap_or(ClusterWorkspaceLayoutKind::Tiling);
+                let before = self.workspace_layout(active, work_area);
+                let result = match layout {
+                    ClusterWorkspaceLayoutKind::Stacking => self
+                        .registry
+                        .add_member_to_cluster_front(field, active, member),
+                    ClusterWorkspaceLayoutKind::Tiling if self.config.tiling.new_on_top => self
+                        .registry
+                        .add_member_to_cluster_front(field, active, member),
+                    ClusterWorkspaceLayoutKind::Tiling => {
+                        self.registry.add_member_to_cluster(field, active, member)
+                    }
                 };
-                result.is_ok()
+                if result.is_err() {
+                    return false;
+                }
+                if layout == ClusterWorkspaceLayoutKind::Stacking
+                    && let Some(before) = before
+                {
+                    self.begin_stack_insert_reflow(output, active, before, member, work_area, now);
+                }
+                true
             }
         }
     }
@@ -740,6 +766,8 @@ mod tests {
             "DP-1",
             joined,
             halley_config::WindowClusterParticipation::Layout,
+            work_area,
+            Duration::from_secs(2),
         ));
         assert!(system.registry().cluster(cluster).unwrap().contains(joined));
 
@@ -753,10 +781,69 @@ mod tests {
             "DP-1",
             floating,
             halley_config::WindowClusterParticipation::Float,
+            work_area,
+            Duration::from_secs(2),
         ));
         assert_eq!(
             system.window_presentation(floating, "DP-1", work_area, None, Duration::MAX),
             WindowPresentation::Field
         );
+    }
+
+    #[test]
+    fn stacking_admission_pushes_the_front_back_and_enters_from_the_left() {
+        let mut field = Field::new();
+        let first =
+            field.spawn_surface("first", Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 100.0, y: 80.0 });
+        let second = field.spawn_surface(
+            "second",
+            Vec2 { x: 120.0, y: 0.0 },
+            Vec2 { x: 100.0, y: 80.0 },
+        );
+        let mut system = ClusterSystem::new(
+            halley_config::Clusters::default(),
+            halley_config::ClusterAnimation::default(),
+        );
+        assert!(system.begin_creation("DP-1".into()));
+        assert!(system.toggle_creation_member(first, "DP-1"));
+        assert!(system.toggle_creation_member(second, "DP-1"));
+        assert!(system.begin_naming());
+        let cluster = system.finish_creation(&mut field).unwrap();
+        assert!(system.activate("DP-1", cluster, Duration::ZERO));
+        let work_area = Rectangle::new((0, 0).into(), (1_000, 700).into());
+        let inserted = field.spawn_surface(
+            "inserted",
+            Vec2 { x: 240.0, y: 0.0 },
+            Vec2 { x: 100.0, y: 80.0 },
+        );
+        let started = Duration::from_secs(2);
+
+        assert!(system.admit_mapped_window(
+            &mut field,
+            "DP-1",
+            inserted,
+            halley_config::WindowClusterParticipation::Layout,
+            work_area,
+            started,
+        ));
+        assert_eq!(
+            system.registry().cluster(cluster).unwrap().members()[0],
+            inserted
+        );
+        let target = system
+            .workspace_layout(cluster, work_area)
+            .unwrap()
+            .placements
+            .into_iter()
+            .find(|placement| placement.node_id == inserted)
+            .unwrap()
+            .rect;
+        let WindowPresentation::Workspace { rect, depth, .. } =
+            system.window_presentation(inserted, "DP-1", work_area, None, started)
+        else {
+            panic!("inserted stack member should be visible");
+        };
+        assert!(rect.loc.x < target.x.round() as i32);
+        assert_eq!(depth, 2);
     }
 }

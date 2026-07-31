@@ -433,6 +433,8 @@ fn admit_window<D: SessionDriver>(session: &mut Session<D>, xid: u32) {
                 &output.name(),
                 id,
                 rule.cluster_participation,
+                smithay::desktop::layer_map_for_output(&output).non_exclusive_zone(),
+                crate::frame_clock::monotonic_now(),
             )
         {
             session.request_redraw();
@@ -449,14 +451,20 @@ fn admit_window<D: SessionDriver>(session: &mut Session<D>, xid: u32) {
                 .map_or(initial_size, |restore| restore.geometry.size),
         ),
     );
-    let started = window.wl_surface().is_some_and(|wl_surface| {
-        crate::session::opening::start(
-            session,
-            wl_surface.into_owned(),
-            &output,
-            crate::frame_clock::monotonic_now(),
-        )
-    });
+    let stack_managed = window
+        .wl_surface()
+        .and_then(|surface| session.nodes.id_for_surface(surface.as_ref()))
+        .and_then(|id| session.clusters.active_layout_for_member(id))
+        == Some(halley_core::cluster::layout::ClusterWorkspaceLayoutKind::Stacking);
+    let started = !stack_managed
+        && window.wl_surface().is_some_and(|wl_surface| {
+            crate::session::opening::start(
+                session,
+                wl_surface.into_owned(),
+                &output,
+                crate::frame_clock::monotonic_now(),
+            )
+        });
     if saved_maximize.is_some() {
         if let Err(err) = surface.set_maximized(true) {
             eventline::warn!("xwayland: failed to retain remapped maximized state: {err}");

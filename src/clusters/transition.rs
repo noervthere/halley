@@ -185,33 +185,62 @@ impl ClusterSystem {
             self.reflows.remove(output);
             return;
         }
-        let from = before
-            .placements
-            .into_iter()
-            .map(|placement| {
-                (
-                    placement.node_id,
-                    Rectangle::new(
-                        (
-                            placement.rect.x.round() as i32,
-                            placement.rect.y.round() as i32,
-                        )
-                            .into(),
-                        (
-                            placement.rect.w.round().max(1.0) as i32,
-                            placement.rect.h.round().max(1.0) as i32,
-                        )
-                            .into(),
-                    ),
-                )
-            })
-            .collect();
+        let from = placement_rects(before);
         self.reflows.insert(
             output.to_string(),
             ReflowTransition {
                 cluster_id,
                 started_at: now,
                 duration: Duration::from_millis(u64::from(duration_ms.max(1))),
+                from,
+            },
+        );
+    }
+
+    pub(super) fn begin_stack_insert_reflow(
+        &mut self,
+        output: &str,
+        cluster_id: ClusterId,
+        before: halley_core::cluster::layout::ClusterWorkspaceLayoutResult,
+        inserted: NodeId,
+        work_area: Rectangle<i32, Logical>,
+        now: Duration,
+    ) {
+        if !self.animations.enabled {
+            self.reflows.remove(output);
+            return;
+        }
+        let mut from = placement_rects(before);
+        if let Some(target) = self
+            .workspace_layout(cluster_id, work_area)
+            .and_then(|layout| {
+                layout
+                    .placements
+                    .into_iter()
+                    .find(|placement| placement.node_id == inserted)
+            })
+        {
+            let target = placement_rect(target);
+            from.insert(
+                inserted,
+                Rectangle::new(
+                    (
+                        target.loc.x - (target.size.w as f32 * 0.55).round() as i32,
+                        target.loc.y,
+                    )
+                        .into(),
+                    target.size,
+                ),
+            );
+        }
+        self.reflows.insert(
+            output.to_string(),
+            ReflowTransition {
+                cluster_id,
+                started_at: now,
+                duration: Duration::from_millis(u64::from(
+                    self.animations.stacking.cycle_duration_ms.max(1),
+                )),
                 from,
             },
         );
@@ -238,6 +267,33 @@ impl ClusterSystem {
         let eased = linear * linear * (3.0 - 2.0 * linear);
         Some(lerp_rect(from, target, eased))
     }
+}
+
+fn placement_rects(
+    layout: halley_core::cluster::layout::ClusterWorkspaceLayoutResult,
+) -> HashMap<NodeId, Rectangle<i32, Logical>> {
+    layout
+        .placements
+        .into_iter()
+        .map(|placement| (placement.node_id, placement_rect(placement)))
+        .collect()
+}
+
+fn placement_rect(
+    placement: halley_core::cluster::layout::ClusterWorkspacePlacement,
+) -> Rectangle<i32, Logical> {
+    Rectangle::new(
+        (
+            placement.rect.x.round() as i32,
+            placement.rect.y.round() as i32,
+        )
+            .into(),
+        (
+            placement.rect.w.round().max(1.0) as i32,
+            placement.rect.h.round().max(1.0) as i32,
+        )
+            .into(),
+    )
 }
 
 fn lerp_rect(

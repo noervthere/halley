@@ -232,13 +232,27 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
                     &mapped,
                     self.start_time.elapsed().as_millis() as u64,
                 );
-                if let Some(id) = self.nodes.id_for_surface(&mapped)
-                    && let Some(output) = self.nodes.record(id).map(|record| record.output.clone())
+                let now = crate::frame_clock::monotonic_now();
+                let cluster_admission = self.nodes.id_for_surface(&mapped).and_then(|id| {
+                    let output = self.nodes.record(id)?.output.clone();
+                    let output_handle = self
+                        .wayland
+                        .space
+                        .outputs()
+                        .find(|candidate| candidate.name() == output)
+                        .cloned()?;
+                    let work_area =
+                        smithay::desktop::layer_map_for_output(&output_handle).non_exclusive_zone();
+                    Some((id, output, work_area))
+                });
+                if let Some((id, output, work_area)) = cluster_admission
                     && self.clusters.admit_mapped_window(
                         &mut self.nodes.field,
                         &output,
                         id,
                         rule.cluster_participation,
+                        work_area,
+                        now,
                     )
                 {
                     self.request_redraw();
@@ -268,7 +282,12 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
                     super::sync_keyboard_focus(self, SERIAL_COUNTER.next_serial());
                 } else {
                     super::closing::mapped(self, &mapped);
-                    if self.fullscreen.is_fullscreen_or_pending(&mapped) {
+                    let stack_managed = self
+                        .nodes
+                        .id_for_surface(&mapped)
+                        .and_then(|id| self.clusters.active_layout_for_member(id))
+                        == Some(halley_core::cluster::layout::ClusterWorkspaceLayoutKind::Stacking);
+                    if self.fullscreen.is_fullscreen_or_pending(&mapped) || stack_managed {
                         self.opening_origins.forget(&mapped);
                     } else if let Some(output) = super::opening::output_for_surface(self, &mapped) {
                         super::opening::start(
