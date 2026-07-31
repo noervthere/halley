@@ -447,6 +447,10 @@ impl<D: SessionDriver> XdgShellHandler for Session<D> {
         let preparation = super::prepare_window_unmap(self, surface.wl_surface());
         wayland::xdg_shell::toplevel_destroyed(&mut self.wayland, &surface);
         super::finish_window_unmap(self, preparation);
+        if let Some(id) = self.nodes.id_for_surface(surface.wl_surface()) {
+            self.clusters
+                .forget_destroyed_member(&mut self.nodes.field, id);
+        }
         if let Some(record) = self.nodes.remove_surface(surface.wl_surface()) {
             self.render.overlay_previews.remove(record.id);
         }

@@ -21,6 +21,11 @@ pub(super) fn forget_window<D: SessionDriver>(session: &mut Session<D>, surface:
         let preparation = crate::session::prepare_window_unmap(session, &wl_surface);
         session.wayland.space.unmap_elem(&window);
         crate::session::finish_window_unmap(session, preparation);
+        if let Some(id) = session.nodes.id_for_surface(&wl_surface) {
+            session
+                .clusters
+                .forget_destroyed_member(&mut session.nodes.field, id);
+        }
         if let Some(record) = session.nodes.remove_surface(&wl_surface) {
             session.render.overlay_previews.remove(record.id);
         }

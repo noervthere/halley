@@ -420,6 +420,46 @@ impl ClusterSystem {
         self.registry.cluster(id)?.members().first().copied()
     }
 
+    /// Removes one destroyed window from cluster bookkeeping before
+    /// `NodesState` discards its Field node. A remapped/unmapped window is
+    /// intentionally retained; only final surface destruction reaches here.
+    pub fn forget_destroyed_member(&mut self, field: &mut Field, member: NodeId) -> bool {
+        let Some(id) = self.registry.cluster_id_for_member(member) else {
+            if let Some(creation) = self.creation.as_mut() {
+                creation.selected.remove(&member);
+            }
+            return false;
+        };
+        let Some((_, effect)) = self.registry.remove_node_cluster_safe(field, member) else {
+            return false;
+        };
+        if matches!(
+            effect,
+            Some(halley_core::cluster::RemoveNodeClusterEffect::DissolvedCluster(_))
+        ) {
+            self.remove_cluster_metadata(id);
+        }
+        if let Some(creation) = self.creation.as_mut() {
+            creation.selected.remove(&member);
+        }
+        true
+    }
+
+    fn remove_cluster_metadata(&mut self, id: ClusterId) {
+        let output = self.metadata.remove(&id).map(|metadata| metadata.output);
+        if let Some(output) = output {
+            if let Some(slots) = self.slots.get_mut(&output) {
+                slots.retain(|candidate| *candidate != id);
+                if slots.is_empty() {
+                    self.slots.remove(&output);
+                }
+            }
+            if self.active.get(&output) == Some(&id) {
+                self.active.remove(&output);
+            }
+        }
+    }
+
     fn slot_of(&self, output: &str, id: ClusterId) -> Option<u8> {
         self.slots
             .get(output)?
@@ -596,5 +636,33 @@ mod tests {
         assert_eq!(system.creation().unwrap().output, "DP-1");
         assert!(system.cancel_creation());
         assert!(system.creation().is_none());
+    }
+
+    #[test]
+    fn destroyed_members_reflow_then_retire_cluster_metadata() {
+        let mut field = Field::new();
+        let a = field.spawn_surface("A", Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 100.0, y: 80.0 });
+        let b = field.spawn_surface("B", Vec2 { x: 200.0, y: 0.0 }, Vec2 { x: 100.0, y: 80.0 });
+        let mut system = ClusterSystem::new(
+            halley_config::Clusters::default(),
+            halley_config::ClusterAnimation::default(),
+        );
+        assert!(system.begin_creation("DP-1".into()));
+        assert!(system.toggle_creation_member(a, "DP-1"));
+        assert!(system.toggle_creation_member(b, "DP-1"));
+        assert!(system.begin_naming());
+        assert!(system.edit_name(NameInput::Character('W')));
+        let id = system.finish_creation(&mut field).unwrap();
+        assert!(system.activate_slot("DP-1", 1));
+
+        assert!(system.forget_destroyed_member(&mut field, a));
+        assert_eq!(system.registry().cluster(id).unwrap().members(), &[b]);
+        assert_eq!(system.active_on("DP-1"), Some(id));
+
+        assert!(system.forget_destroyed_member(&mut field, b));
+        assert!(system.registry().cluster(id).is_none());
+        assert!(system.metadata(id).is_none());
+        assert!(system.clusters_for_output("DP-1").next().is_none());
+        assert!(system.active_on("DP-1").is_none());
     }
 }
