@@ -18,6 +18,7 @@ use std::sync::{Arc, RwLock};
 use smithay::desktop::{LayerSurface, PopupManager, Space, Window};
 use smithay::output::Output;
 use smithay::reexports::wayland_server::DisplayHandle;
+use smithay::reexports::wayland_server::backend::GlobalId;
 use smithay::reexports::wayland_server::backend::{ClientData, ClientId, DisconnectReason};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point};
@@ -211,8 +212,8 @@ pub struct WaylandState {
     pub shm_state: ShmState,
     // Retained alongside the wl_output globals it serves.
     _output_manager_state: OutputManagerState,
-    // Read-only wlr-output-management snapshot used by desktop shells.
-    _wlr_output_management_state: wlr_output_management::State,
+    pub wlr_output_management_state: wlr_output_management::State,
+    output_globals: HashMap<String, GlobalId>,
     /// Clipboard (ctrl+c/ctrl+v) and drag-and-drop. Smithay owns the actual
     /// transfer - it hands the source client's fd straight to the receiving
     /// client - so this is only the global's state, with no compositor-side
@@ -293,6 +294,7 @@ impl WaylandState {
         shm_state: ShmState,
         output_manager_state: OutputManagerState,
         wlr_output_management_state: wlr_output_management::State,
+        output_globals: HashMap<String, GlobalId>,
         data_device_state: DataDeviceState,
         primary_selection_state: PrimarySelectionState,
         ext_data_control_state: DataControlState,
@@ -317,7 +319,8 @@ impl WaylandState {
             keyboard_shortcuts_inhibit_state,
             shm_state,
             _output_manager_state: output_manager_state,
-            _wlr_output_management_state: wlr_output_management_state,
+            wlr_output_management_state,
+            output_globals,
             data_device_state,
             primary_selection_state,
             ext_data_control_state,
@@ -331,6 +334,24 @@ impl WaylandState {
             focused_layer: None,
             focused_window: None,
             focused_output: None,
+        }
+    }
+
+    pub fn ensure_output_global<D>(&mut self, output: &Output)
+    where
+        D: smithay::reexports::wayland_server::GlobalDispatch<
+                smithay::reexports::wayland_server::protocol::wl_output::WlOutput,
+                smithay::wayland::output::WlOutputData,
+            > + 'static,
+    {
+        self.output_globals
+            .entry(output.name())
+            .or_insert_with(|| output.create_global::<D>(&self.display_handle));
+    }
+
+    pub fn disable_output_global<D: 'static>(&mut self, output: &Output) {
+        if let Some(global) = self.output_globals.remove(&output.name()) {
+            self.display_handle.disable_global::<D>(global);
         }
     }
 }

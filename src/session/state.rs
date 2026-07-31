@@ -33,6 +33,7 @@ use smithay::wayland::viewporter::ViewporterState;
 use smithay::wayland::virtual_keyboard::VirtualKeyboardManagerState;
 use smithay::wayland::xdg_activation::XdgActivationState;
 
+use super::output::{OutputChange, OutputConfiguration, OutputState};
 use crate::cursor::CursorManager;
 use crate::input::grab::{Grab, ResizeAnchor};
 use crate::input::pointer::{Pointer, WheelAccumulator};
@@ -55,6 +56,15 @@ pub trait SessionDriver: crate::ipc::OutputInfoSource + 'static {
     ) -> Option<&crate::backend::dmabuf::SurfaceDmabufFeedback>;
     fn request_redraw(&mut self, output: Option<&Output>);
     fn with_renderer<T>(&mut self, f: impl FnOnce(&mut GlesRenderer) -> T) -> T;
+    fn output_states(&self) -> Vec<OutputState>;
+    fn test_output_configuration(
+        &mut self,
+        configuration: &[OutputConfiguration],
+    ) -> Result<(), String>;
+    fn apply_output_configuration(
+        &mut self,
+        configuration: &[OutputConfiguration],
+    ) -> Result<Vec<OutputChange>, String>;
     fn register_drm_syncobj_source(
         &mut self,
         _client: Client,
@@ -205,6 +215,7 @@ impl<D: SessionDriver> Session<D> {
             ShmState::new::<Self>(&display_handle, vec![]),
             OutputManagerState::new_with_xdg_output::<Self>(&display_handle),
             crate::wayland::wlr_output_management::State::new::<Self>(&display_handle),
+            std::collections::HashMap::new(),
             DataDeviceState::new::<Self>(&display_handle),
             primary_selection_state,
             ext_data_control_state,

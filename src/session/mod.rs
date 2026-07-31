@@ -19,6 +19,7 @@ pub(crate) mod gesture;
 mod input;
 mod lifecycle;
 pub(crate) mod opening;
+pub(crate) mod output;
 pub(crate) mod pointer;
 mod protocol;
 mod spawn;

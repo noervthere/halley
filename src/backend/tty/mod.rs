@@ -27,8 +27,8 @@ use smithay::utils::DeviceFd;
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
 
 use self::output::{
-    OutputState, connector_name, connector_output_info, default_mode, drm_output_mode, output_diff,
-    output_target,
+    OutputState as HardwareOutputState, connector_name, connector_output_info, default_mode,
+    drm_output_mode, output_diff, output_target,
 };
 use super::{FrameSubmission, RenderOutcome, RenderRequest, RenderStatus, Renderable};
 use crate::render::scene::SceneElement;
@@ -86,6 +86,7 @@ struct DrmOutputEntry {
     dmabuf_feedback: Option<super::dmabuf::SurfaceDmabufFeedback>,
     pending: bool,
     dpms_enabled: bool,
+    enabled: bool,
 }
 
 #[derive(Debug)]
@@ -326,6 +327,7 @@ impl TtyBackend {
                         dmabuf_feedback,
                         pending: false,
                         dpms_enabled: true,
+                        enabled: true,
                     });
                 }
                 Err(err) => {
@@ -384,7 +386,7 @@ impl TtyBackend {
         self.drm_outputs
             .iter()
             .find(|entry| &entry.output == output)
-            .is_none_or(|entry| entry.dpms_enabled)
+            .is_none_or(|entry| entry.enabled && entry.dpms_enabled)
     }
 
     pub fn output_vrr_active(&self, output: &Output) -> bool {
@@ -395,7 +397,207 @@ impl TtyBackend {
     }
 
     pub fn any_output_dpms_enabled(&self) -> bool {
-        self.drm_outputs.iter().any(|entry| entry.dpms_enabled)
+        self.drm_outputs
+            .iter()
+            .any(|entry| entry.enabled && entry.dpms_enabled)
+    }
+
+    pub fn output_states(&self) -> Vec<crate::session::output::OutputState> {
+        self.drm_outputs
+            .iter()
+            .map(|entry| crate::session::output::OutputState {
+                output: entry.output.clone(),
+                enabled: entry.enabled,
+                mode: drm_output_mode(&entry.current_mode),
+                location: entry.output.current_location(),
+                transform: entry.output.current_transform(),
+                scale: entry.output.current_scale().fractional_scale(),
+                adaptive_sync: entry.configured_vrr != halley_config::Vrr::Off,
+                adaptive_sync_supported: vrr_is_supported(entry.vrr_support),
+            })
+            .collect()
+    }
+
+    pub fn test_output_configuration(
+        &mut self,
+        configuration: &[crate::session::output::OutputConfiguration],
+    ) -> Result<(), String> {
+        let current = self.output_states();
+        crate::session::output::validate_complete_configuration(&current, configuration)?;
+        for config in configuration {
+            let name = config.output.name();
+            let entry = self
+                .drm_outputs
+                .iter()
+                .find(|entry| entry.output == config.output)
+                .ok_or_else(|| format!("output {name:?} is not connected"))?;
+            if !entry
+                .connector
+                .modes()
+                .iter()
+                .any(|mode| drm_output_mode(mode) == config.mode)
+            {
+                return Err(format!(
+                    "output {name:?} requested an unadvertised DRM mode"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn apply_runtime_output_configuration(
+        &mut self,
+        configuration: &[crate::session::output::OutputConfiguration],
+    ) -> Result<Vec<crate::session::output::OutputChange>, String> {
+        self.test_output_configuration(configuration)?;
+        let before = self.output_states();
+        let snapshots = self
+            .drm_outputs
+            .iter()
+            .map(|entry| {
+                (
+                    entry.current_mode,
+                    entry.output.current_location(),
+                    entry.output.current_transform(),
+                    entry.configured_vrr,
+                    entry.enabled,
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let mut failure = None;
+        for config in configuration {
+            let index = self
+                .drm_outputs
+                .iter()
+                .position(|entry| entry.output == config.output)
+                .expect("configuration was validated against connected outputs");
+            let target_mode = self.drm_outputs[index]
+                .connector
+                .modes()
+                .iter()
+                .find(|mode| drm_output_mode(mode) == config.mode)
+                .copied()
+                .expect("configuration mode was validated");
+
+            if target_mode != self.drm_outputs[index].current_mode {
+                let result = {
+                    let renderer = &mut self.renderer;
+                    self.drm_outputs[index]
+                        .drm_output
+                        .use_mode::<GlesRenderer, SolidColorRenderElement>(
+                            target_mode,
+                            renderer,
+                            &DrmOutputRenderElements::default(),
+                        )
+                };
+                if let Err(err) = result {
+                    failure = Some(format!(
+                        "output {:?}: mode preflight failed: {err}",
+                        config.output.name()
+                    ));
+                    break;
+                }
+            }
+
+            if !config.enabled
+                && self.drm_outputs[index].enabled
+                && let Err(err) = self.drm_outputs[index]
+                    .drm_output
+                    .with_compositor(|compositor| compositor.clear())
+            {
+                failure = Some(format!(
+                    "output {:?}: failed to disable connector: {err}",
+                    config.output.name()
+                ));
+                break;
+            }
+
+            let entry = &mut self.drm_outputs[index];
+            entry.current_mode = target_mode;
+            entry.enabled = config.enabled;
+            entry.configured_vrr = if config.adaptive_sync {
+                halley_config::Vrr::On
+            } else {
+                halley_config::Vrr::Off
+            };
+            entry.output.change_current_state(
+                Some(config.mode),
+                Some(config.transform),
+                None,
+                Some(config.location),
+            );
+            let requested_vrr =
+                configured_vrr_target(entry.configured_vrr, false, entry.vrr_support);
+            set_entry_vrr(entry, requested_vrr);
+            entry.pending = false;
+        }
+
+        if let Some(error) = failure {
+            for (entry, snapshot) in self.drm_outputs.iter_mut().zip(&snapshots) {
+                let (mode, location, transform, vrr, enabled) = *snapshot;
+                if entry.current_mode != mode {
+                    let _ = entry
+                        .drm_output
+                        .use_mode::<GlesRenderer, SolidColorRenderElement>(
+                            mode,
+                            &mut self.renderer,
+                            &DrmOutputRenderElements::default(),
+                        );
+                }
+                entry.current_mode = mode;
+                entry.configured_vrr = vrr;
+                entry.enabled = enabled;
+                entry.output.change_current_state(
+                    Some(drm_output_mode(&mode)),
+                    Some(transform),
+                    None,
+                    Some(location),
+                );
+                set_entry_vrr(entry, configured_vrr_target(vrr, false, entry.vrr_support));
+                entry.pending = false;
+            }
+            return Err(error);
+        }
+
+        let after = self.output_states();
+        for entry in &mut self.drm_outputs {
+            let name = entry.output.name();
+            if let Some(info) = self
+                .ipc_output_info
+                .iter_mut()
+                .find(|info| info.name == name)
+            {
+                info.current_mode = entry
+                    .enabled
+                    .then(|| {
+                        entry
+                            .connector
+                            .modes()
+                            .iter()
+                            .position(|mode| *mode == entry.current_mode)
+                    })
+                    .flatten();
+                let location = entry.output.current_location();
+                info.offset_x = location.x;
+                info.offset_y = location.y;
+                info.vrr = crate::ipc::vrr_str(entry.configured_vrr).to_string();
+                info.vrr_active = entry.vrr_active && entry.enabled && entry.dpms_enabled;
+            }
+        }
+
+        Ok(before
+            .into_iter()
+            .zip(after)
+            .filter(|(before, after)| {
+                before.enabled != after.enabled
+                    || before.mode != after.mode
+                    || before.location != after.location
+                    || before.transform != after.transform
+                    || before.adaptive_sync != after.adaptive_sync
+            })
+            .map(|(before, after)| crate::session::output::OutputChange { before, after })
+            .collect())
     }
 
     pub fn apply_dpms(
@@ -554,32 +756,33 @@ impl TtyBackend {
         let mut changes = Vec::new();
 
         for index in 0..self.drm_outputs.len() {
-            let (target, diff) = {
+            let (target, diff, enable_changed) = {
                 let entry = &self.drm_outputs[index];
                 let configured = outputs_config
                     .iter()
                     .find(|cfg| cfg.name == entry.output.name());
                 let target = output_target(&entry.connector, configured);
                 let location = entry.output.current_location();
-                let current = OutputState {
+                let current = HardwareOutputState {
                     mode: drm_output_mode(&entry.current_mode),
                     offset: (location.x, location.y),
                     transform: entry.output.current_transform(),
                     vrr: entry.configured_vrr,
                 };
-                let requested = OutputState {
+                let requested = HardwareOutputState {
                     mode: drm_output_mode(&target.mode),
                     offset: target.offset,
                     transform: target.transform,
                     vrr: target.vrr,
                 };
-                (target, output_diff(current, requested))
+                (target, output_diff(current, requested), !entry.enabled)
             };
 
             if !(diff.mode_changed
                 || diff.offset_changed
                 || diff.transform_changed
-                || diff.vrr_changed)
+                || diff.vrr_changed
+                || enable_changed)
             {
                 continue;
             }
@@ -615,6 +818,7 @@ impl TtyBackend {
                 );
                 entry.current_mode = target.mode;
                 entry.configured_vrr = target.vrr;
+                entry.enabled = true;
                 if diff.mode_changed {
                     entry.vrr_support = query_vrr_support(
                         &entry.drm_output,
@@ -674,8 +878,11 @@ impl TtyBackend {
             changes.push(AppliedOutputChange {
                 output,
                 mode_changed: diff.mode_changed,
-                size_changed: diff.size_changed,
-                layout_changed: diff.size_changed || diff.offset_changed || diff.transform_changed,
+                size_changed: enable_changed || diff.size_changed,
+                layout_changed: enable_changed
+                    || diff.size_changed
+                    || diff.offset_changed
+                    || diff.transform_changed,
             });
         }
 
@@ -758,8 +965,8 @@ impl crate::ipc::OutputInfoSource for TtyBackend {
                 .find(|info| info.name == entry.output.name())
             {
                 info.vrr_supported = vrr_is_supported(entry.vrr_support);
-                info.vrr_active = entry.vrr_active && entry.dpms_enabled;
-                if !entry.dpms_enabled {
+                info.vrr_active = entry.vrr_active && entry.dpms_enabled && entry.enabled;
+                if !entry.dpms_enabled || !entry.enabled {
                     info.current_mode = None;
                 }
             }
@@ -780,7 +987,7 @@ impl Renderable for TtyBackend {
             .iter_mut()
             .find(|entry| &entry.output == output)
             .ok_or_else(|| format!("unknown tty output {:?}", output.name()))?;
-        if !entry.dpms_enabled {
+        if !entry.dpms_enabled || !entry.enabled {
             return Ok(RenderOutcome::new(RenderStatus::Skipped, None));
         }
         // DRM rejects a second commit while the previous page flip is still

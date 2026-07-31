@@ -64,6 +64,49 @@ impl SessionDriver for WinitDriver {
         f(self.backend.renderer())
     }
 
+    fn output_states(&self) -> Vec<super::output::OutputState> {
+        let output = self.backend.output();
+        vec![super::output::OutputState {
+            output: output.clone(),
+            enabled: true,
+            mode: output
+                .current_mode()
+                .expect("winit output always has a current mode"),
+            location: output.current_location(),
+            transform: output.current_transform(),
+            scale: output.current_scale().fractional_scale(),
+            adaptive_sync: false,
+            adaptive_sync_supported: false,
+        }]
+    }
+
+    fn test_output_configuration(
+        &mut self,
+        configuration: &[super::output::OutputConfiguration],
+    ) -> Result<(), String> {
+        let current = self.output_states();
+        super::output::validate_complete_configuration(&current, configuration)?;
+        let requested = &configuration[0];
+        let state = &current[0];
+        if !requested.enabled
+            || requested.mode != state.mode
+            || requested.location != state.location
+            || requested.transform != state.transform
+            || requested.adaptive_sync
+        {
+            return Err("the nested output is controlled by the host compositor".into());
+        }
+        Ok(())
+    }
+
+    fn apply_output_configuration(
+        &mut self,
+        configuration: &[super::output::OutputConfiguration],
+    ) -> Result<Vec<super::output::OutputChange>, String> {
+        self.test_output_configuration(configuration)?;
+        Ok(Vec::new())
+    }
+
     fn stop(&mut self) {
         self.exit = true;
     }
@@ -120,7 +163,6 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
     seat.add_pointer();
 
     let winit_backend = WinitBackend::new(backend);
-    let _output_global = winit_backend.output().create_global::<App>(&dh);
 
     let output_size = winit_backend.window_size();
     let mut cameras = crate::presentation::camera::OutputCameras::default();
@@ -131,7 +173,8 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
         exit: false,
         last_camera_tick: Instant::now(),
     };
-    let wayland = App::create_wayland_state(dh.clone(), &mut driver);
+    let mut wayland = App::create_wayland_state(dh.clone(), &mut driver);
+    wayland.ensure_output_global::<App>(driver.backend.output());
     let idle_notifier_state =
         smithay::wayland::idle_notify::IdleNotifierState::new(&dh, event_loop.handle());
     let presentation_state = smithay::wayland::presentation::PresentationState::new::<App>(
@@ -483,6 +526,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                     app,
                     app.start_time.elapsed().as_millis() as u32,
                 );
+                app.notify_output_management();
                 app.request_redraw();
             }
             WinitEvent::Input(event) => super::input::handle(app, &event, &socket_name),

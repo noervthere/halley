@@ -96,6 +96,40 @@ impl super::SessionDriver for TtyDriver {
         f(self.backend.renderer())
     }
 
+    fn output_states(&self) -> Vec<super::output::OutputState> {
+        self.backend.output_states()
+    }
+
+    fn test_output_configuration(
+        &mut self,
+        configuration: &[super::output::OutputConfiguration],
+    ) -> Result<(), String> {
+        self.backend.test_output_configuration(configuration)
+    }
+
+    fn apply_output_configuration(
+        &mut self,
+        configuration: &[super::output::OutputConfiguration],
+    ) -> Result<Vec<super::output::OutputChange>, String> {
+        let changes = self
+            .backend
+            .apply_runtime_output_configuration(configuration)?;
+        for change in &changes {
+            if change.before.mode != change.after.mode
+                && let Some(state) = self.output_frames.get_mut(&change.after.output)
+            {
+                state.replace_clock(
+                    self.backend
+                        .refresh_interval_for_output(&change.after.output),
+                );
+            }
+            if let Some(state) = self.output_frames.get_mut(&change.after.output) {
+                state.set_vrr(self.backend.output_vrr_active(&change.after.output));
+            }
+        }
+        Ok(changes)
+    }
+
     fn register_drm_syncobj_source(&mut self, client: Client, source: DrmSyncPointSource) -> bool {
         self.loop_handle
             .insert_source(source, move |_, _, app| {
@@ -211,10 +245,6 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
     seat.add_pointer();
 
     let outputs: Vec<_> = backend.outputs().cloned().collect();
-    let _output_globals: Vec<_> = outputs
-        .iter()
-        .map(|output| output.create_global::<TtyApp>(&dh))
-        .collect();
 
     // Smithay's `Output` is its stable identity handle and is the key used
     // throughout its own per-output state maps despite containing an Arc.
@@ -240,7 +270,10 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
         paused: false,
         pending_output_config: None,
     };
-    let wayland = TtyApp::create_wayland_state(dh.clone(), &mut driver);
+    let mut wayland = TtyApp::create_wayland_state(dh.clone(), &mut driver);
+    for output in &outputs {
+        wayland.ensure_output_global::<TtyApp>(output);
+    }
     let idle_notifier_state =
         smithay::wayland::idle_notify::IdleNotifierState::new(&dh, loop_handle.clone());
     let presentation_state = smithay::wayland::presentation::PresentationState::new::<TtyApp>(
@@ -702,6 +735,7 @@ fn apply_tty_output_config(app: &mut TtyApp, outputs_config: &[halley_config::Ou
     if output_changed {
         crate::wayland::session_lock::configure_surfaces(app);
         super::pointer::update_client_state(app, app.start_time.elapsed().as_millis() as u32);
+        app.notify_output_management();
     }
 }
 

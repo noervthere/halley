@@ -64,6 +64,12 @@ impl OutputCameras {
         self.insert(output_name, output_size);
     }
 
+    pub fn remove(&mut self, output_name: &str) {
+        self.cameras.remove(output_name);
+        self.fullscreen.remove(output_name);
+        self.field_maximize.remove(output_name);
+    }
+
     pub fn get(&self, output_name: &str) -> Option<&Camera> {
         self.cameras.get(output_name)
     }
