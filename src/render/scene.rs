@@ -16,12 +16,14 @@ use smithay::wayland::shell::wlr_layer::Layer;
 use super::RenderRequest;
 use crate::presentation::window::window_visual_state;
 mod capture_ui;
+mod clusters;
 mod effects;
 mod nodes;
 mod overview;
 mod windows;
 
 use capture_ui::capture_overlay_elements;
+use clusters::{ClusterElementContext, cluster_elements};
 use effects::{
     OverlayEffectStyle, append_compositor_overlay_blur, append_overlay_shadows,
     layer_surface_scene_elements,
@@ -56,6 +58,8 @@ render_elements! {
     FullscreenBlend=super::fullscreen_texture::FullscreenBlendElement,
     WindowBorder=super::window_decoration::RoundedBorderElement,
     RoundedClosing=super::window_decoration::RoundedTextureElement,
+    ClusterCore=crate::clusters::render::ClusterCoreElement,
+    ClusterIcon=crate::clusters::render::ClusterIconElement,
     Node=super::node::NodeRenderElement,
     NodeLabel=super::node::LabelRenderElement,
     NodeTexture=super::node::NodeTextureElement,
@@ -452,6 +456,20 @@ pub fn build(
         })
         .collect::<Result<Vec<_>, _>>()?;
     stack.extend(node_scene.groups);
+    stack.extend(cluster_elements(
+        renderer,
+        request.resources.cluster_renderer,
+        ClusterElementContext {
+            output,
+            output_geometry,
+            clusters: request.desktop.clusters,
+            nodes: request.desktop.nodes,
+            cameras: request.desktop.cameras,
+            decorations: request.visuals.decorations,
+            shadow_config: request.visuals.shadows.node,
+            shadow_renderer: request.resources.shadow_renderer,
+        },
+    )?);
     let context = LiveWindowContext {
         space: request.desktop.space,
         output,

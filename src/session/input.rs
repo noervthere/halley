@@ -90,6 +90,48 @@ fn node_at_pointer<D: SessionDriver>(
     Some((id, output))
 }
 
+fn cluster_at_pointer<D: SessionDriver>(
+    session: &Session<D>,
+) -> Option<(halley_core::cluster::ClusterId, Output)> {
+    let position = session.pointer.position();
+    let (output, geometry) = output_at_pointer(&session.wayland.space, position)?;
+    let camera = session.cameras.get(&output.name())?;
+    let id = session.clusters.core_hit_test(
+        &output.name(),
+        camera,
+        geometry,
+        Point::<f64, Logical>::from(position),
+    )?;
+    Some((id, output))
+}
+
+fn sync_cluster_activation_focus<D: SessionDriver>(
+    session: &mut Session<D>,
+    output: &Output,
+    id: halley_core::cluster::ClusterId,
+    serial: smithay::utils::Serial,
+) {
+    let Some(member) = session.clusters.first_member(id) else {
+        return;
+    };
+    if session.clusters.active_on(&output.name()) == Some(id) {
+        if let Some(window) = session
+            .nodes
+            .record(member)
+            .map(|record| record.window.clone())
+        {
+            super::focus_window(session, &window, serial);
+        }
+    } else {
+        crate::window::clear_focus(&mut session.wayland);
+        session.nodes.focus(
+            Some(member),
+            session.start_time.elapsed().as_millis() as u64,
+        );
+        super::sync_keyboard_focus(session, serial);
+    }
+}
+
 fn bearing_at_pointer<D: SessionDriver>(
     session: &Session<D>,
 ) -> Option<(halley_core::field::NodeId, Output)> {
@@ -197,9 +239,30 @@ fn dispatch_action<D: SessionDriver>(
             }
         }
         super::SessionControl::ClusterSlot(slot) => {
-            if let Some(output) = action_output
-                && session.clusters.activate_slot(&output, slot)
+            if let Some(output_name) = action_output
+                && session.clusters.activate_slot(&output_name, slot)
             {
+                if let Some(id) = session.clusters.active_on(&output_name).or_else(|| {
+                    session
+                        .clusters
+                        .clusters_for_output(&output_name)
+                        .find_map(|(candidate_slot, id, _)| (candidate_slot == slot).then_some(id))
+                }) {
+                    let output = session
+                        .wayland
+                        .space
+                        .outputs()
+                        .find(|candidate| candidate.name() == output_name)
+                        .cloned();
+                    if let Some(output) = output {
+                        sync_cluster_activation_focus(
+                            session,
+                            &output,
+                            id,
+                            SERIAL_COUNTER.next_serial(),
+                        );
+                    }
+                }
                 session.request_redraw();
             }
         }
@@ -801,6 +864,19 @@ where
             wayland::focus::select_output(&mut session.wayland, &route.output);
         }
         let mut intercepted = false;
+        if button == BTN_LEFT
+            && state == ButtonState::Pressed
+            && !session.focus_cycle.is_open()
+            && let Some((id, output)) = cluster_at_pointer(session)
+        {
+            wayland::focus::select_output(&mut session.wayland, &output);
+            if session.clusters.activate(&output.name(), id) {
+                sync_cluster_activation_focus(session, &output, id, serial);
+                session.suppressed_buttons.suppress(button);
+                session.request_redraw();
+                intercepted = true;
+            }
+        }
         if button == BTN_LEFT
             && state == ButtonState::Pressed
             && !session.focus_cycle.is_open()

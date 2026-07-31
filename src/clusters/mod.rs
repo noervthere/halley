@@ -5,7 +5,9 @@ use halley_core::cluster::layout::layout_cluster_workspace;
 use halley_core::cluster::tiling::Rect as LayoutRect;
 use halley_core::cluster::{ClusterId, ClusterRegistry};
 use halley_core::field::{Field, NodeId, Vec2};
-use smithay::utils::{Logical, Rectangle};
+use smithay::utils::{Logical, Point, Rectangle};
+
+pub mod render;
 
 #[derive(Clone, Debug)]
 pub struct ClusterMetadata {
@@ -383,6 +385,39 @@ impl ClusterSystem {
             .filter_map(|(index, id)| {
                 Some((u8::try_from(index + 1).ok()?, *id, self.metadata.get(id)?))
             })
+    }
+
+    pub fn core_hit_test(
+        &self,
+        output: &str,
+        camera: &halley_core::camera::Camera,
+        output_geometry: Rectangle<i32, Logical>,
+        screen: Point<f64, Logical>,
+    ) -> Option<ClusterId> {
+        if self.active_on(output).is_some() {
+            return None;
+        }
+        self.clusters_for_output(output)
+            .filter_map(|(_, id, metadata)| {
+                let center = crate::nodes::screen_from_world(
+                    metadata.core_position,
+                    camera,
+                    output_geometry,
+                );
+                let diameter = crate::nodes::NODE_DIAMETER_PX.round() as i32;
+                Rectangle::new(
+                    (center.x - diameter / 2, center.y - diameter / 2).into(),
+                    (diameter, diameter).into(),
+                )
+                .to_f64()
+                .contains(screen)
+                .then_some(id)
+            })
+            .max_by_key(|id| id.as_u64())
+    }
+
+    pub fn first_member(&self, id: ClusterId) -> Option<NodeId> {
+        self.registry.cluster(id)?.members().first().copied()
     }
 
     fn slot_of(&self, output: &str, id: ClusterId) -> Option<u8> {

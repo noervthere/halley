@@ -45,3 +45,6 @@ tracing-subscriber = { version = "0.3", default-features = false, features = [
 wayland-protocols-wlr = { version = "0.3.12", features = ["server"] }
 xcursor = "0.3"
 zbus = "5.16"
+
+[dev-dependencies]
+sha2 = "0.10"
