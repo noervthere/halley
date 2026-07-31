@@ -3,7 +3,7 @@
 //! Protocol validation and damage-wait queues live here. Scene composition
 //! remains in `capture`, while fence waiting remains a session-driver job.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -30,7 +30,19 @@ const VERSION: u32 = 3;
 
 pub struct State {
     _global: GlobalId,
-    queues: HashMap<ZwlrScreencopyManagerV1, Vec<Screencopy>>,
+    queues: HashMap<ZwlrScreencopyManagerV1, Queue>,
+}
+
+#[derive(Default)]
+struct Queue {
+    pending_frames: HashSet<ZwlrScreencopyFrameV1>,
+    copies: Vec<Screencopy>,
+}
+
+impl Queue {
+    fn is_empty(&self) -> bool {
+        self.pending_frames.is_empty() && self.copies.is_empty()
+    }
 }
 
 impl State {
@@ -45,12 +57,12 @@ impl State {
     }
 
     fn insert_manager(&mut self, manager: ZwlrScreencopyManagerV1) {
-        self.queues.insert(manager, Vec::new());
+        self.queues.insert(manager, Queue::default());
     }
 
     fn queue(&mut self, manager: &ZwlrScreencopyManagerV1, copy: Screencopy) {
         if let Some(queue) = self.queues.get_mut(manager) {
-            queue.push(copy);
+            queue.copies.push(copy);
         }
     }
 
@@ -58,9 +70,9 @@ impl State {
         let mut ready = Vec::new();
         for queue in self.queues.values_mut() {
             let mut index = 0;
-            while index < queue.len() {
-                if queue[index].output() == output {
-                    ready.push(queue.remove(index));
+            while index < queue.copies.len() {
+                if queue.copies[index].output() == output {
+                    ready.push(queue.copies.remove(index));
                 } else {
                     index += 1;
                 }
@@ -72,14 +84,15 @@ impl State {
 
     pub fn output_disabled(&mut self, output: &Output) {
         for queue in self.queues.values_mut() {
-            queue.retain(|copy| copy.output() != output);
+            queue.copies.retain(|copy| copy.output() != output);
         }
         self.cleanup();
     }
 
     fn remove_frame(&mut self, frame: &ZwlrScreencopyFrameV1) {
         for queue in self.queues.values_mut() {
-            queue.retain(|copy| copy.frame != *frame);
+            queue.pending_frames.remove(frame);
+            queue.copies.retain(|copy| copy.frame != *frame);
         }
         self.cleanup();
     }
@@ -244,6 +257,9 @@ impl<D: SessionDriver> Dispatch<ZwlrScreencopyManagerV1, (), Session<D>> for Ses
             );
             frame.buffer_done();
         }
+        if let Some(queue) = session.wayland.wlr_screencopy_state.queues.get_mut(manager) {
+            queue.pending_frames.insert(frame);
+        }
     }
 
     fn destroyed(
@@ -305,6 +321,9 @@ impl<D: SessionDriver> Dispatch<ZwlrScreencopyFrameV1, FrameData, Session<D>> fo
             with_damage,
             submitted: false,
         };
+        if let Some(queue) = session.wayland.wlr_screencopy_state.queues.get_mut(manager) {
+            queue.pending_frames.remove(frame);
+        }
 
         if with_damage {
             session.wayland.wlr_screencopy_state.queue(manager, copy);
