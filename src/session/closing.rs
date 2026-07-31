@@ -107,7 +107,7 @@ pub(crate) fn capture_window<D: SessionDriver>(session: &mut Session<D>, window:
         initial_destination: visual.animated_rect,
         anchor,
         stack_index,
-        start_alpha: visual.opening_alpha,
+        start_alpha: visual.opening_alpha * session.window_rules.opacity(&surface),
         retract_origin,
         border,
         content_radius,

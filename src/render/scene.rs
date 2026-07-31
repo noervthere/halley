@@ -450,6 +450,7 @@ pub fn build(
         window_open_animations: request.desktop.window_open_animations,
         fullscreen: request.desktop.fullscreen,
         maximize: request.desktop.maximize,
+        window_rules: request.desktop.window_rules,
     };
     for (stack_index, window) in request.desktop.space.elements().enumerate() {
         if !crate::wayland::window_is_on_output(window, output, primary_output) {

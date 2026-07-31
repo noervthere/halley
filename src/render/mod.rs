@@ -202,6 +202,7 @@ pub struct DesktopContext<'a> {
     pub fullscreen: &'a crate::wayland::fullscreen::FullscreenManager,
     pub maximize: &'a crate::presentation::maximize::FieldMaximizeManager,
     pub nodes: &'a crate::nodes::NodesState,
+    pub window_rules: &'a crate::window::rules::WindowRulesState,
     pub node_grab_active: bool,
 }
 

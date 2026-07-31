@@ -133,6 +133,7 @@ pub struct Session<D: SessionDriver> {
     pub input: halley_config::Input,
     pub decorations: halley_config::Decorations,
     pub effects: halley_config::Effects,
+    pub window_rules: crate::window::rules::WindowRulesState,
     pub cameras: OutputCameras,
     pub field_config: halley_config::Field,
     pub zoom: halley_config::Zoom,
@@ -342,8 +343,10 @@ impl<D: SessionDriver> Session<D> {
         if cursor_changed && self.publish_session_environment {
             super::environment::publish_cursor(&config.cursor);
         }
+        let window_rules_redraw = self.window_rules_reload_changes_visuals(&config.window_rules);
         let redraw = self.decorations != config.decorations
             || self.effects != config.effects
+            || window_rules_redraw
             || self.zoom != config.field.zoom
             || self.overlay_config != config.overlays
             || cursor_changed
@@ -388,6 +391,28 @@ impl<D: SessionDriver> Session<D> {
         {
             self.request_redraw();
         }
+    }
+
+    fn window_rules_reload_changes_visuals(&mut self, rules: &[halley_config::WindowRule]) -> bool {
+        self.window_rules.reload(rules.to_vec());
+        let windows = self
+            .wayland
+            .space
+            .elements()
+            .cloned()
+            .chain(self.wayland.collapsed.values().cloned())
+            .chain(self.wayland.unmapped.values().cloned())
+            .collect::<Vec<_>>();
+        let mut changed = false;
+        for window in windows {
+            let Some(surface) = window.wl_surface().map(|surface| surface.into_owned()) else {
+                continue;
+            };
+            let before = self.window_rules.applied(&surface);
+            let after = self.window_rules.track_window(&window);
+            changed |= before.opacity != after.opacity || before.blur != after.blur;
+        }
+        changed
     }
 
     pub fn cleanup_fullscreen(&mut self, now: std::time::Duration) -> bool {

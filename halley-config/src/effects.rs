@@ -27,6 +27,30 @@ pub struct Blur {
     pub noise: f32,
 }
 
+/// Resolves compositor-policy blur for one managed window.
+///
+/// Explicit client background-effect regions are separate: this policy only
+/// decides whether Halley adds a full-window backdrop blur of its own.
+pub fn window_blur_enabled(
+    blur: Blur,
+    rule_blur: Option<bool>,
+    opacity: f32,
+    excluded: bool,
+) -> bool {
+    if !blur.enabled || excluded {
+        return false;
+    }
+    match rule_blur {
+        Some(false) => false,
+        Some(true) => true,
+        None => match blur.windows {
+            ClientBlurMode::Off => false,
+            ClientBlurMode::Always => true,
+            ClientBlurMode::Auto => opacity < 0.999,
+        },
+    }
+}
+
 impl Default for Blur {
     fn default() -> Self {
         Self {
@@ -321,6 +345,20 @@ mod tests {
         assert_eq!(shadows.overlay.blur_radius, 24.0);
         assert_eq!(shadows.overlay.spread, 1.0);
         assert_eq!(shadows.overlay.color.a, 0x38 as f32 / 255.0);
+    }
+
+    #[test]
+    fn window_blur_respects_rule_precedence_and_auto_opacity() {
+        let blur = Blur {
+            enabled: true,
+            windows: ClientBlurMode::Auto,
+            ..Blur::default()
+        };
+        assert!(window_blur_enabled(blur, Some(true), 1.0, false));
+        assert!(!window_blur_enabled(blur, Some(false), 0.5, false));
+        assert!(window_blur_enabled(blur, None, 0.5, false));
+        assert!(!window_blur_enabled(blur, None, 1.0, false));
+        assert!(!window_blur_enabled(blur, Some(true), 0.5, true));
     }
 
     #[test]

@@ -376,6 +376,9 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
         input: applied_input,
         decorations: runtime_config.decorations,
         effects: runtime_config.effects,
+        window_rules: crate::window::rules::WindowRulesState::new(
+            runtime_config.window_rules.clone(),
+        ),
         cameras: crate::presentation::camera::OutputCameras::default(),
         field_config: runtime_config.field,
         zoom: runtime_config.field.zoom,
@@ -905,6 +908,7 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
                 fullscreen: &app.fullscreen,
                 maximize: &app.maximize,
                 nodes: &app.nodes,
+                window_rules: &app.window_rules,
                 node_grab_active: matches!(
                     &app.grab,
                     crate::input::grab::Grab::PendingNode { .. }
@@ -1014,7 +1018,9 @@ fn auto_vrr_eligible(app: &TtyApp, output: &Output, now: Duration) -> bool {
     {
         return false;
     }
-    app.fullscreen.has_stable_fullscreen_on_output(output, now)
+    app.fullscreen
+        .stable_fullscreen_surface_on_output(output, now)
+        .is_some_and(|surface| app.window_rules.opacity(surface) >= 0.999)
 }
 
 fn queue_estimated_vblank_timer(

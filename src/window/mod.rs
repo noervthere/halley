@@ -1,4 +1,5 @@
 pub(crate) mod routing;
+pub(crate) mod rules;
 
 use smithay::desktop::Window;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;

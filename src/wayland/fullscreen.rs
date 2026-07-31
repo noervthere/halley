@@ -816,8 +816,17 @@ impl FullscreenManager {
     }
 
     pub fn has_stable_fullscreen_on_output(&self, output: &Output, now: Duration) -> bool {
-        self.windows.values().any(|entry| {
-            entry.target_output == output.name()
+        self.stable_fullscreen_surface_on_output(output, now)
+            .is_some()
+    }
+
+    pub fn stable_fullscreen_surface_on_output(
+        &self,
+        output: &Output,
+        now: Duration,
+    ) -> Option<&WlSurface> {
+        self.windows.iter().find_map(|(surface, entry)| {
+            (entry.target_output == output.name()
                 && entry.origin != FullscreenOrigin::Maximize
                 && entry.desired
                 && entry.active
@@ -825,7 +834,8 @@ impl FullscreenManager {
                     || entry
                         .transition
                         .is_some_and(|transition| transition.is_finished_at(now)))
-                && entry.external_pending.is_none()
+                && entry.external_pending.is_none())
+            .then_some(surface)
         })
     }
 

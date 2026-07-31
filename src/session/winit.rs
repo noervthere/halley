@@ -248,6 +248,9 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
         input: applied_input,
         decorations: runtime_config.decorations,
         effects: runtime_config.effects,
+        window_rules: crate::window::rules::WindowRulesState::new(
+            runtime_config.window_rules.clone(),
+        ),
         cameras,
         field_config: runtime_config.field,
         zoom: runtime_config.field.zoom,
@@ -402,6 +405,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                             fullscreen: &app.fullscreen,
                             maximize: &app.maximize,
                             nodes: &app.nodes,
+                            window_rules: &app.window_rules,
                             node_grab_active: matches!(
                                 &app.grab,
                                 crate::input::grab::Grab::PendingNode { .. }

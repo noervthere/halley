@@ -183,15 +183,49 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
     fn commit(&mut self, surface: &WlSurface) {
         wayland::compositor::prepare_commit::<Self>(surface);
         let root = wayland::compositor::root_surface(surface);
+        let rule_window = self
+            .wayland
+            .space
+            .elements()
+            .find(|window| {
+                window
+                    .wl_surface()
+                    .is_some_and(|candidate| candidate.as_ref() == &root)
+            })
+            .or_else(|| self.wayland.unmapped.get(&root))
+            .or_else(|| self.wayland.collapsed.get(&root))
+            .cloned();
+        let rule = rule_window
+            .as_ref()
+            .map(|window| self.window_rules.track_window(window))
+            .unwrap_or_default();
+        if let Some(size) = rule.initial_size
+            && let Some(toplevel) = rule_window.as_ref().and_then(|window| window.toplevel())
+            && !toplevel.is_initial_configure_sent()
+        {
+            toplevel.with_pending_state(|pending| {
+                pending.size = Some(
+                    (
+                        i32::try_from(size.0).unwrap_or(i32::MAX).max(96),
+                        i32::try_from(size.1).unwrap_or(i32::MAX).max(72),
+                    )
+                        .into(),
+                );
+            });
+        }
         let unmap = wayland::xdg_shell::will_unmap(&self.wayland, &root)
             .then(|| super::prepare_window_unmap(self, &root));
         let primary_output = self.driver.primary_output().clone();
-        match wayland::compositor::commit(
+        let toplevel_commit = wayland::compositor::commit(
             &mut self.wayland,
             &self.cameras,
             &primary_output,
             surface,
-        ) {
+            rule,
+            smithay::utils::Point::from(self.pointer.position()),
+            self.field_config.gap,
+        );
+        match toplevel_commit.clone() {
             wayland::xdg_shell::ToplevelCommit::Mapped(mapped) => {
                 self.nodes.register_mapped(
                     &self.wayland.space,
@@ -244,9 +278,28 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
                 debug_assert_eq!(preparation.surface(), &unmapped);
                 super::finish_window_unmap(self, preparation);
                 self.nodes.mark_detached(&unmapped);
+                self.window_rules.forget(&unmapped);
                 super::sync_keyboard_focus(self, SERIAL_COUNTER.next_serial());
             }
             wayland::xdg_shell::ToplevelCommit::None => {}
+        }
+        if !matches!(
+            toplevel_commit,
+            wayland::xdg_shell::ToplevelCommit::Unmapped(_)
+        ) && let Some(window) = self
+            .wayland
+            .space
+            .elements()
+            .find(|window| {
+                window
+                    .wl_surface()
+                    .is_some_and(|candidate| candidate.as_ref() == &root)
+            })
+            .or_else(|| self.wayland.unmapped.get(&root))
+            .or_else(|| self.wayland.collapsed.get(&root))
+            .cloned()
+        {
+            self.window_rules.track_window(&window);
         }
         crate::cursor::surface::handle_commit(&self.cursor, surface, &root);
         crate::wayland::session_lock::surface_committed(self, surface);
@@ -390,6 +443,7 @@ impl<D: SessionDriver> XdgShellHandler for Session<D> {
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         super::closing::capture_surface(self, surface.wl_surface());
+        self.window_rules.forget(surface.wl_surface());
         let preparation = super::prepare_window_unmap(self, surface.wl_surface());
         wayland::xdg_shell::toplevel_destroyed(&mut self.wayland, &surface);
         super::finish_window_unmap(self, preparation);

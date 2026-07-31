@@ -25,6 +25,7 @@ pub(super) struct LiveWindowContext<'a> {
     pub(super) window_open_animations: &'a crate::animation::WindowOpenAnimations,
     pub(super) fullscreen: &'a crate::wayland::fullscreen::FullscreenManager,
     pub(super) maximize: &'a crate::presentation::maximize::FieldMaximizeManager,
+    pub(super) window_rules: &'a crate::window::rules::WindowRulesState,
 }
 
 /// Crossfade progress past which the captured textures stop contributing.
@@ -72,6 +73,12 @@ pub(super) fn live_window_elements(
 
     let mut elements = Vec::new();
     let managed = !crate::xwayland::is_override_redirect(window);
+    let rule_opacity = if managed {
+        context.window_rules.opacity(window_surface.as_ref())
+    } else {
+        1.0
+    };
+    let alpha = visual.opening_alpha * rule_opacity;
     let fullscreen_rounding = visual
         .fullscreen
         .map(|presentation| 1.0 - presentation.progress.clamp(0.0, 1.0))
@@ -84,12 +91,8 @@ pub(super) fn live_window_elements(
     let rounded = managed && content_radius > 0.0;
     let rounded_available = rounded && window_decoration_renderer.available(renderer);
     let surface_location = crate::render::window_surface_location(location, window.geometry());
-    let (popup_elements, surface_elements) = crate::render::window_surface_elements(
-        renderer,
-        window,
-        surface_location,
-        visual.opening_alpha,
-    );
+    let (popup_elements, surface_elements) =
+        crate::render::window_surface_elements(renderer, window, surface_location, alpha);
     elements.extend(popup_elements.into_iter().map(|surface_element| {
         let native_geometry = surface_element.geometry(Scale::from(1.0));
         let destination = if visual.maps_from_source() {
@@ -128,7 +131,7 @@ pub(super) fn live_window_elements(
             window,
             visual.animated_rect,
             completion,
-            visual.opening_alpha,
+            alpha,
             if rounded_available {
                 content_radius
             } else {
@@ -208,11 +211,16 @@ pub(super) fn live_window_elements(
             Rectangle::<i32, Physical>::from_size(context.output_geometry.size.to_physical(1));
         let mut requested =
             crate::wayland::background_effect::blur_rects(window_surface.as_ref(), surface_size);
+        let global_blur_allowed = context
+            .fullscreen
+            .allows_global_blur(window_surface.as_ref());
         let policy_blur = managed
-            && context
-                .fullscreen
-                .allows_global_blur(window_surface.as_ref())
-            && matches!(context.blur.windows, halley_config::ClientBlurMode::Always);
+            && halley_config::window_blur_enabled(
+                context.blur,
+                context.window_rules.blur(window_surface.as_ref()),
+                rule_opacity,
+                !global_blur_allowed,
+            );
         if requested.is_empty() && policy_blur {
             requested.push(Rectangle::from_size(surface_size));
         }
@@ -253,7 +261,7 @@ pub(super) fn live_window_elements(
                     .map(|rect| crate::render::effects::backdrop_blur::BlurPatch {
                         rect,
                         radius: 0.0,
-                        alpha: visual.opening_alpha,
+                        alpha,
                         clip: rounded_available.then_some((visual.animated_rect, content_radius)),
                     })
             })
@@ -271,7 +279,7 @@ pub(super) fn live_window_elements(
     }
 
     let is_focused = Some(window_surface.as_ref()) == context.focused;
-    let border_alpha = visual.opening_alpha * fullscreen_rounding as f32;
+    let border_alpha = alpha * fullscreen_rounding as f32;
     let border_color = crate::render::window_border_color(context.decorations, is_focused);
     let border_width = crate::render::window_decoration::scaled_metric(
         context.decorations.border_width_px,
@@ -325,7 +333,7 @@ pub(super) fn live_window_elements(
             format!("{}:window:{:?}", context.output.name(), window_surface.id()),
             caster,
             caster_radius,
-            visual.opening_alpha,
+            alpha,
             context.shadow_config,
         )? {
             elements.push(SceneElement::Shadow(shadow));

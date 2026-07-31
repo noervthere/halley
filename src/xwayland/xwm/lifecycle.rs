@@ -17,6 +17,7 @@ pub(super) fn forget_window<D: SessionDriver>(session: &mut Session<D>, surface:
     }
     crate::session::closing::capture_window(session, &window);
     if let Some(wl_surface) = window.wl_surface().map(|surface| surface.into_owned()) {
+        session.window_rules.forget(&wl_surface);
         let preparation = crate::session::prepare_window_unmap(session, &wl_surface);
         session.wayland.space.unmap_elem(&window);
         crate::session::finish_window_unmap(session, preparation);
@@ -291,7 +292,7 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
         self.request_redraw();
     }
 
-    fn property_notify(&mut self, _xwm: XwmId, _surface: X11Surface, property: WmWindowProperty) {
+    fn property_notify(&mut self, _xwm: XwmId, surface: X11Surface, property: WmWindowProperty) {
         if matches!(
             property,
             WmWindowProperty::Hints
@@ -300,6 +301,12 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
                 | WmWindowProperty::Pid
         ) {
             refresh_override_redirect_owners(self);
+        }
+        if matches!(property, WmWindowProperty::Class | WmWindowProperty::Title)
+            && let Some(window) = window_for_surface(self, &surface)
+        {
+            self.window_rules.track_window(&window);
+            self.request_redraw();
         }
     }
 

@@ -22,6 +22,9 @@ pub fn commit(
     cameras: &crate::presentation::camera::OutputCameras,
     primary_output: &Output,
     surface: &WlSurface,
+    rule: crate::window::rules::ResolvedWindowRule,
+    cursor_position: smithay::utils::Point<f64, smithay::utils::Logical>,
+    gap: f32,
 ) -> xdg_shell::ToplevelCommit {
     if is_sync_subsurface(surface) {
         return xdg_shell::ToplevelCommit::None;
@@ -51,7 +54,15 @@ pub fn commit(
         window.on_commit();
     }
 
-    xdg_shell::handle_commit(wayland, cameras, primary_output, &root)
+    xdg_shell::handle_commit(
+        wayland,
+        cameras,
+        primary_output,
+        &root,
+        rule,
+        cursor_position,
+        gap,
+    )
 }
 
 pub fn root_surface(surface: &WlSurface) -> WlSurface {

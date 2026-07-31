@@ -314,11 +314,24 @@ fn admit_window<D: SessionDriver>(session: &mut Session<D>, xid: u32) {
     };
     let saved_maximize = maximize_restore(&surface);
     let mut opening_size = OpeningPlacement::preferred_size(initial_size, window.geometry().size);
+    let rule = session.window_rules.track_window(&window);
+    if saved_maximize.is_none()
+        && let Some((width, height)) = rule.initial_size
+    {
+        opening_size = Size::from((
+            i32::try_from(width).unwrap_or(i32::MAX).max(96),
+            i32::try_from(height).unwrap_or(i32::MAX).max(72),
+        ));
+    }
     let initial_placement = crate::window::routing::initial_window_placement(
         &session.wayland,
         &session.cameras,
         session.driver.primary_output(),
+        Some(&window),
         opening_size,
+        rule.spawn_placement,
+        smithay::utils::Point::from(session.pointer.position()),
+        session.field_config.gap,
     );
     let mut output = initial_placement.output;
     let mut location = initial_placement.location;
@@ -337,7 +350,11 @@ fn admit_window<D: SessionDriver>(session: &mut Session<D>, xid: u32) {
                 &session.wayland,
                 &session.cameras,
                 session.driver.primary_output(),
+                Some(&window),
                 opening_size,
+                halley_config::WindowSpawnPlacement::Default,
+                smithay::utils::Point::from(session.pointer.position()),
+                session.field_config.gap,
             );
             output = placement.output;
             location = placement.location;
@@ -364,7 +381,11 @@ fn admit_window<D: SessionDriver>(session: &mut Session<D>, xid: u32) {
                 &session.wayland,
                 &session.cameras,
                 session.driver.primary_output(),
+                Some(&window),
                 opening_size,
+                rule.spawn_placement,
+                smithay::utils::Point::from(session.pointer.position()),
+                session.field_config.gap,
             );
             output = placement.output;
             location = placement.location;

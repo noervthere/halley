@@ -93,6 +93,9 @@ pub fn handle_commit(
     cameras: &OutputCameras,
     primary_output: &Output,
     surface: &WlSurface,
+    rule: crate::window::rules::ResolvedWindowRule,
+    cursor_position: smithay::utils::Point<f64, smithay::utils::Logical>,
+    gap: f32,
 ) -> ToplevelCommit {
     let has_buffer =
         with_renderer_surface_state(surface, |state| state.buffer().is_some()).unwrap_or(false);
@@ -157,7 +160,11 @@ pub fn handle_commit(
             wayland,
             cameras,
             primary_output,
+            Some(&window),
             window.geometry().size,
+            rule.spawn_placement,
+            cursor_position,
+            gap,
         );
         let location = wayland
             .unmapped_locations

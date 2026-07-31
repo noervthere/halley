@@ -44,7 +44,7 @@ pub use decorations::{BorderColor, Decorations, load_decorations, parse_decorati
 pub use diagnostic::ConfigDiagnostic;
 pub use effects::{
     Blur, BlurMethod, ClientBlurMode, Effects, EffectsParseError, ShadowColor, ShadowLayer,
-    Shadows, parse_effects,
+    Shadows, parse_effects, window_blur_enabled,
 };
 pub use field::{CloseRestorePan, Field, FieldParseError, parse_field, parse_field_checked};
 pub use font::{Font, parse_font};

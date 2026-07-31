@@ -69,6 +69,7 @@ pub fn save_region<D: SessionDriver>(
     let fullscreen = &session.fullscreen;
     let maximize = &session.maximize;
     let nodes = &session.nodes;
+    let window_rules = &session.window_rules;
     let bearings = &session.bearings;
     let overlays = &session.overlays;
     let overlay_config = &session.overlay_config;
@@ -98,6 +99,7 @@ pub fn save_region<D: SessionDriver>(
                             fullscreen,
                             maximize,
                             nodes,
+                            window_rules,
                             node_grab_active,
                         },
                         cursor: CursorContext {
@@ -316,6 +318,7 @@ where
     let fullscreen = &session.fullscreen;
     let maximize = &session.maximize;
     let nodes = &session.nodes;
+    let window_rules = &session.window_rules;
     let bearings = &session.bearings;
     let overlays = &session.overlays;
     let overlay_config = &session.overlay_config;
@@ -342,6 +345,7 @@ where
                     fullscreen,
                     maximize,
                     nodes,
+                    window_rules,
                     node_grab_active,
                 },
                 cursor: CursorContext {
