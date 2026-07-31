@@ -13,6 +13,7 @@ mod ipc;
 mod membership;
 mod overflow;
 pub mod render;
+mod surfaces;
 mod transition;
 
 pub use creation::{CreationState, NameInput};
@@ -58,6 +59,7 @@ pub struct ClusterSystem {
     floating: HashSet<NodeId>,
     join_candidate: Option<JoinCandidate>,
     creation: Option<CreationState>,
+    surfaces: surfaces::WorkspaceSurfaceState,
     config: halley_config::Clusters,
     animations: halley_config::ClusterAnimation,
 }
@@ -77,6 +79,7 @@ impl ClusterSystem {
             floating: HashSet::new(),
             join_candidate: None,
             creation: None,
+            surfaces: surfaces::WorkspaceSurfaceState::default(),
             config,
             animations,
         }
@@ -468,6 +471,7 @@ impl ClusterSystem {
     /// `NodesState` discards its Field node. A remapped/unmapped window is
     /// intentionally retained; only final surface destruction reaches here.
     pub fn forget_destroyed_member(&mut self, field: &mut Field, member: NodeId) -> bool {
+        self.forget_surface_state(member);
         if self
             .join_candidate
             .as_ref()

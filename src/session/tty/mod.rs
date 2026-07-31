@@ -804,6 +804,7 @@ fn redraw_queued_outputs(app: &mut TtyApp, loop_handle: &LoopHandle<'_, TtyApp>)
 
 fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_, TtyApp>) {
     let now = crate::frame_clock::monotonic_now();
+    super::reconcile_cluster_surfaces(app, &output.name());
     let (target_presentation_time, dt) = {
         let state = app
             .driver

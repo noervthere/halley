@@ -195,6 +195,76 @@ pub(crate) fn reconcile_pointer_constraints<D: SessionDriver>(session: &mut Sess
     pointer::reconcile_state(session);
 }
 
+/// Applies cluster workspace geometry at the client protocol boundary.
+///
+/// ClusterSystem owns the layout and deduplication; Session owns Smithay
+/// surfaces and X11 configure calls. Field remains unaware of workspace sizes.
+pub(crate) fn reconcile_cluster_surfaces<D: SessionDriver>(
+    session: &mut Session<D>,
+    output_name: &str,
+) {
+    let Some(output) = session
+        .wayland
+        .space
+        .outputs()
+        .find(|output| output.name() == output_name)
+        .cloned()
+    else {
+        return;
+    };
+    let Some(output_geometry) = session.wayland.space.output_geometry(&output) else {
+        return;
+    };
+    let work_area = smithay::desktop::layer_map_for_output(&output).non_exclusive_zone();
+    let targets =
+        session
+            .clusters
+            .workspace_surface_targets(output_name, work_area, output_geometry);
+    for target in targets {
+        let Some((window, surface, current)) = session.nodes.record(target.node_id).map(|record| {
+            (
+                record.window.clone(),
+                record.surface.clone(),
+                session
+                    .wayland
+                    .space
+                    .element_geometry(&record.window)
+                    .unwrap_or(record.geometry),
+            )
+        }) else {
+            continue;
+        };
+        if session.fullscreen.is_fullscreen_or_pending(&surface)
+            || session.maximize.contains(&surface)
+        {
+            continue;
+        }
+        if !session
+            .clusters
+            .prepare_surface_target(target.node_id, current, target.geometry)
+        {
+            continue;
+        }
+        crate::wayland::set_window_output(&window, &output);
+        session
+            .wayland
+            .space
+            .relocate_element(&window, target.geometry.loc);
+        if let Some(toplevel) = window.toplevel() {
+            toplevel.with_pending_state(|pending| {
+                pending.size = Some(target.geometry.size);
+                pending.bounds = Some(work_area.size);
+                crate::wayland::decoration::apply_tiled_hint(pending);
+            });
+            if toplevel.is_initial_configure_sent() {
+                toplevel.send_configure();
+            }
+        } else {
+            crate::xwayland::configure_window(&window, target.geometry);
+        }
+    }
+}
+
 pub(crate) fn has_active_pointer_confinement<D: SessionDriver>(session: &Session<D>) -> bool {
     pointer::has_active_confinement(session)
 }

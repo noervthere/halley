@@ -335,6 +335,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                 app.driver.last_camera_tick = now;
                 let output = app.driver.backend.output().clone();
                 let output_name = output.name();
+                super::reconcile_cluster_surfaces(app, &output_name);
                 let view_before = app.cameras.view(&output_name);
                 let mut animating = app.sync_fullscreen_camera(&output, target_presentation_time);
                 for camera in app.cameras.iter_mut() {
