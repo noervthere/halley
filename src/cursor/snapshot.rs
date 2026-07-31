@@ -121,7 +121,7 @@ fn copy_shm_cursor(buffer: &WlBuffer) -> Result<Option<ShmCursorCopy>, String> {
         if data.width <= 0 || data.height <= 0 || data.offset < 0 || data.stride <= 0 {
             return Err(format!("invalid geometry {data:?}"));
         }
-        let bytes_per_pixel = usize::from(bits_per_pixel / 8);
+        let bytes_per_pixel = bits_per_pixel / 8;
         let width = usize::try_from(data.width).map_err(|_| "width overflow")?;
         let height = usize::try_from(data.height).map_err(|_| "height overflow")?;
         let stride = usize::try_from(data.stride).map_err(|_| "stride overflow")?;

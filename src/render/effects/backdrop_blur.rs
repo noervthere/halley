@@ -542,6 +542,37 @@ fn composite_patch(
     )
 }
 
+fn blur_offset(radius: f32) -> f32 {
+    (radius / 16.0).clamp(0.6, 3.0)
+}
+
+fn blur_commit(patches: &[BlurPatch], config: halley_config::Blur) -> CommitCounter {
+    let mut hash = DefaultHasher::new();
+    config.passes.hash(&mut hash);
+    config.radius.to_bits().hash(&mut hash);
+    config.saturation.to_bits().hash(&mut hash);
+    config.noise.to_bits().hash(&mut hash);
+    for patch in patches {
+        patch.rect.loc.x.hash(&mut hash);
+        patch.rect.loc.y.hash(&mut hash);
+        patch.rect.size.w.hash(&mut hash);
+        patch.rect.size.h.hash(&mut hash);
+        patch.radius.to_bits().hash(&mut hash);
+        patch.alpha.to_bits().hash(&mut hash);
+        if let Some((clip, radius)) = patch.clip {
+            true.hash(&mut hash);
+            clip.loc.x.hash(&mut hash);
+            clip.loc.y.hash(&mut hash);
+            clip.size.w.hash(&mut hash);
+            clip.size.h.hash(&mut hash);
+            radius.to_bits().hash(&mut hash);
+        } else {
+            false.hash(&mut hash);
+        }
+    }
+    CommitCounter::from(hash.finish() as usize)
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
@@ -572,35 +603,4 @@ mod tests {
             BlurIdentity::Overlay("shell-overlay".to_string())
         );
     }
-}
-
-fn blur_offset(radius: f32) -> f32 {
-    (radius / 16.0).clamp(0.6, 3.0)
-}
-
-fn blur_commit(patches: &[BlurPatch], config: halley_config::Blur) -> CommitCounter {
-    let mut hash = DefaultHasher::new();
-    config.passes.hash(&mut hash);
-    config.radius.to_bits().hash(&mut hash);
-    config.saturation.to_bits().hash(&mut hash);
-    config.noise.to_bits().hash(&mut hash);
-    for patch in patches {
-        patch.rect.loc.x.hash(&mut hash);
-        patch.rect.loc.y.hash(&mut hash);
-        patch.rect.size.w.hash(&mut hash);
-        patch.rect.size.h.hash(&mut hash);
-        patch.radius.to_bits().hash(&mut hash);
-        patch.alpha.to_bits().hash(&mut hash);
-        if let Some((clip, radius)) = patch.clip {
-            true.hash(&mut hash);
-            clip.loc.x.hash(&mut hash);
-            clip.loc.y.hash(&mut hash);
-            clip.size.w.hash(&mut hash);
-            clip.size.h.hash(&mut hash);
-            radius.to_bits().hash(&mut hash);
-        } else {
-            false.hash(&mut hash);
-        }
-    }
-    CommitCounter::from(hash.finish() as usize)
 }
