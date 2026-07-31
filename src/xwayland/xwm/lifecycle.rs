@@ -1,4 +1,51 @@
+use super::state::WindowState;
 use super::*;
+use x11rb::properties::WmHintsState;
+
+pub(super) fn transition_icccm<D: SessionDriver>(
+    session: &mut Session<D>,
+    surface: &X11Surface,
+    state: WindowState,
+) {
+    let xid = surface.window_id();
+    session.xwayland.managed_states.transition(xid, state);
+    let Some(control) = session.xwayland.control.as_ref() else {
+        return;
+    };
+    let result = match state {
+        WindowState::Withdrawn => control.withdraw(xid),
+        WindowState::Normal => {
+            control.set_wm_state(xid, crate::xwayland::control::IcccmState::Normal)
+        }
+        WindowState::Iconic => {
+            control.set_wm_state(xid, crate::xwayland::control::IcccmState::Iconic)
+        }
+    };
+    if let Err(err) = result {
+        eventline::warn!("xwayland: failed ICCCM transition xid={xid} state={state:?}: {err}");
+    }
+}
+
+fn sync_allowed_actions<D: SessionDriver>(session: &Session<D>, surface: &X11Surface) {
+    let Some(control) = session.xwayland.control.as_ref() else {
+        return;
+    };
+    let fixed_size = surface
+        .min_size()
+        .zip(surface.max_size())
+        .is_some_and(|(minimum, maximum)| minimum == maximum);
+    let actions = crate::xwayland::control::AllowedActions {
+        resize: !fixed_size,
+        maximize: !fixed_size,
+        ..Default::default()
+    };
+    if let Err(err) = control.set_allowed_actions(surface.window_id(), actions) {
+        eventline::warn!(
+            "xwayland: failed to publish allowed actions xid={}: {err}",
+            surface.window_id()
+        );
+    }
+}
 
 pub(super) fn forget_window<D: SessionDriver>(session: &mut Session<D>, surface: &X11Surface) {
     session
@@ -40,7 +87,13 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
             .expect("XWM event delivered without an active XWM")
     }
 
-    fn new_window(&mut self, _xwm: XwmId, _window: X11Surface) {}
+    fn new_window(&mut self, _xwm: XwmId, window: X11Surface) {
+        let generation = self.xwayland.managed_states.register(window.window_id());
+        eventline::debug!(
+            "xwayland: registered managed window xid={} generation={generation}",
+            window.window_id()
+        );
+    }
 
     fn new_override_redirect_window(&mut self, _xwm: XwmId, window: X11Surface) {
         let xid = window.window_id();
@@ -63,9 +116,20 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
             return;
         }
         let initial_size = surface.geometry().size;
+        let initial_iconic = matches!(
+            surface.hints().and_then(|hints| hints.initial_state),
+            Some(WmHintsState::Iconic)
+        );
         if let Err(err) = surface.set_mapped(true) {
             eventline::warn!("xwayland: failed to map window: {err}");
             return;
+        }
+        transition_icccm(self, &surface, WindowState::Normal);
+        sync_allowed_actions(self, &surface);
+        if initial_iconic {
+            self.xwayland
+                .managed_states
+                .transition(surface.window_id(), WindowState::Iconic);
         }
         let window = Window::new_x11_window(surface.clone());
         self.xwayland.pending_windows.insert(
@@ -77,10 +141,11 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
             },
         );
         eventline::debug!(
-            "xwayland: map requested xid={} fullscreen={} maximized={} initial={}x{}",
+            "xwayland: map requested xid={} fullscreen={} maximized={} initial_iconic={} initial={}x{}",
             surface.window_id(),
             surface.is_fullscreen(),
             surface.is_maximized(),
+            initial_iconic,
             initial_size.w,
             initial_size.h
         );
@@ -125,6 +190,9 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
         {
             eventline::warn!("xwayland: failed to acknowledge unmap: {err}");
         }
+        // `set_mapped(false)` uses IconicState internally; delete WM_STATE
+        // afterwards because this path is an ICCCM withdrawal, not minimize.
+        transition_icccm(self, &surface, WindowState::Withdrawn);
         refresh_override_redirect_owners(self);
         crate::session::sync_keyboard_focus(self, SERIAL_COUNTER.next_serial());
         self.request_redraw();
@@ -139,6 +207,7 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
             .override_redirect_placements
             .remove(&surface.window_id());
         forget_window(self, &surface);
+        self.xwayland.managed_states.destroy(surface.window_id());
         refresh_override_redirect_owners(self);
         crate::session::sync_keyboard_focus(self, SERIAL_COUNTER.next_serial());
         self.request_redraw();
@@ -311,6 +380,9 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
             self.window_rules.track_window(&window);
             self.request_redraw();
         }
+        if property == WmWindowProperty::NormalHints {
+            sync_allowed_actions(self, &surface);
+        }
     }
 
     fn maximize_request(&mut self, _xwm: XwmId, surface: X11Surface) {
@@ -369,6 +441,8 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
             if let Err(err) = surface.set_hidden(false) {
                 eventline::warn!("xwayland: failed to reject minimize request: {err}");
             }
+        } else {
+            transition_icccm(self, &surface, WindowState::Iconic);
         }
         self.request_redraw();
     }
@@ -382,7 +456,9 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
             })
             .and_then(|wl_surface| self.nodes.id_for_surface(&wl_surface))
         {
-            let _ = crate::nodes::restore(self, id, SERIAL_COUNTER.next_serial());
+            if crate::nodes::restore(self, id, SERIAL_COUNTER.next_serial()) {
+                transition_icccm(self, &surface, WindowState::Normal);
+            }
         }
         self.request_redraw();
     }
@@ -394,6 +470,26 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
 
     fn unfullscreen_request(&mut self, _xwm: XwmId, surface: X11Surface) {
         leave_fullscreen(self, &surface, FullscreenRequestOrigin::Client);
+        self.request_redraw();
+    }
+
+    fn demands_attention_request(&mut self, _xwm: XwmId, surface: X11Surface) {
+        if let Err(err) = surface.set_demands_attention(true) {
+            eventline::warn!(
+                "xwayland: failed to set demands-attention xid={}: {err}",
+                surface.window_id()
+            );
+        }
+        self.request_redraw();
+    }
+
+    fn undemands_attention_request(&mut self, _xwm: XwmId, surface: X11Surface) {
+        if let Err(err) = surface.set_demands_attention(false) {
+            eventline::warn!(
+                "xwayland: failed to clear demands-attention xid={}: {err}",
+                surface.window_id()
+            );
+        }
         self.request_redraw();
     }
 
@@ -447,8 +543,8 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
         &mut self,
         _xwm: XwmId,
         surface: X11Surface,
-        _timestamp: u32,
-        _currently_active_window: Option<X11Surface>,
+        timestamp: u32,
+        currently_active_window: Option<X11Surface>,
     ) {
         if surface.is_override_redirect() {
             eventline::debug!(
@@ -457,7 +553,41 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
             );
             return;
         }
+        let focused_xid = self.wayland.focused_window.as_ref().and_then(|focused| {
+            self.wayland.space.elements().find_map(|window| {
+                (window.wl_surface().as_deref() == Some(focused))
+                    .then(|| window.x11_surface().map(|surface| surface.window_id()))
+                    .flatten()
+            })
+        });
+        let same_client_handoff = currently_active_window
+            .as_ref()
+            .is_some_and(|active| Some(active.window_id()) == focused_xid);
+        if !self
+            .xwayland
+            .managed_states
+            .accept_activation(timestamp, same_client_handoff)
+        {
+            if let Err(err) = surface.set_demands_attention(true) {
+                eventline::warn!(
+                    "xwayland: failed to mark rejected activation xid={}: {err}",
+                    surface.window_id()
+                );
+            }
+            eventline::debug!(
+                "xwayland: rejected stale activation xid={} timestamp={} active={focused_xid:?}",
+                surface.window_id(),
+                timestamp
+            );
+            return;
+        }
         if let Some(window) = window_for_surface(self, &surface) {
+            if let Err(err) = surface.set_demands_attention(false) {
+                eventline::warn!(
+                    "xwayland: failed to clear activation attention xid={}: {err}",
+                    surface.window_id()
+                );
+            }
             crate::session::focus_window(self, &window, SERIAL_COUNTER.next_serial());
             self.request_redraw();
         }
@@ -483,6 +613,24 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
 
     fn cleared_selection(&mut self, _xwm: XwmId, selection: SelectionTarget) {
         crate::xwayland::selection::clear(self, selection);
+    }
+
+    fn randr_primary_output_change(&mut self, _xwm: XwmId, output_name: Option<String>) {
+        let primary = self.driver.primary_output().clone();
+        let primary_name = primary.name();
+        if output_name.as_deref() == Some(primary_name.as_str()) {
+            return;
+        }
+        eventline::debug!(
+            "xwayland: restoring RandR primary output from {:?} to {}",
+            output_name,
+            primary_name
+        );
+        if let Some(xwm) = self.xwayland.xwm.as_mut()
+            && let Err(err) = xwm.set_randr_primary_output(Some(&primary))
+        {
+            eventline::warn!("xwayland: failed to restore RandR primary output: {err}");
+        }
     }
 
     fn disconnected(&mut self, _xwm: XwmId) {

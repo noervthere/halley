@@ -28,6 +28,13 @@ impl KeyboardFocusTarget {
         }
     }
 
+    pub fn x11_window_id(&self) -> Option<u32> {
+        match self {
+            Self::Wayland(_) => None,
+            Self::X11(surface) => Some(surface.window_id()),
+        }
+    }
+
     fn target<D: SessionDriver>(&self) -> &dyn KeyboardTarget<Session<D>> {
         match self {
             Self::Wayland(surface) => surface,

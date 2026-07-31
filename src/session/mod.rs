@@ -836,6 +836,7 @@ pub(crate) fn sync_keyboard_focus<D: SessionDriver>(
             .expect("keyboard capability added at seat setup");
         pointer::prepare_keyboard_focus_change(session, None);
         keyboard.set_focus(session, focused, serial);
+        session.xwayland.sync_active_window(None);
         return;
     }
     wayland::focus::refresh_selected_layer(&mut session.wayland);
@@ -880,8 +881,12 @@ pub(crate) fn sync_keyboard_focus<D: SessionDriver>(
         .as_ref()
         .and_then(|target| target.wl_surface().map(Cow::into_owned))
         .filter(|surface| session.wayland.focused_window.as_ref() == Some(surface));
+    let active_x11_window = focused
+        .as_ref()
+        .and_then(crate::xwayland::KeyboardFocusTarget::x11_window_id);
     pointer::prepare_keyboard_focus_change(session, next_constraint_root.as_ref());
     keyboard.set_focus(session, focused, serial);
+    session.xwayland.sync_active_window(active_x11_window);
     pointer::reconcile_state(session);
 }
 

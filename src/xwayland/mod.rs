@@ -1,3 +1,4 @@
+mod control;
 mod focus;
 mod lifecycle;
 mod selection;
@@ -64,6 +65,7 @@ pub struct State<D: SessionDriver> {
     shell_state: XWaylandShellState,
     _keyboard_grab_state: XWaylandKeyboardGrabState,
     xwm: Option<X11Wm>,
+    control: Option<control::X11Control>,
     display: Option<u32>,
     pending_windows: HashMap<u32, PendingWindow>,
     opening_placements: HashMap<u32, lifecycle::OpeningPlacement>,
@@ -72,6 +74,7 @@ pub struct State<D: SessionDriver> {
     pending_override_redirects: HashMap<u32, PendingOverrideRedirect>,
     override_redirect_placements: HashMap<u32, OverrideRedirectPlacement>,
     normal_sizes: HashMap<WindowIdentity, SavedNormalSize>,
+    managed_states: xwm::ManagedStateRegistry,
 }
 
 impl<D: SessionDriver> State<D> {
@@ -89,6 +92,7 @@ impl<D: SessionDriver> State<D> {
             shell_state: XWaylandShellState::new::<Session<D>>(display),
             _keyboard_grab_state: XWaylandKeyboardGrabState::new::<Session<D>>(display),
             xwm: None,
+            control: None,
             display: None,
             pending_windows: HashMap::new(),
             opening_placements: HashMap::new(),
@@ -97,6 +101,7 @@ impl<D: SessionDriver> State<D> {
             pending_override_redirects: HashMap::new(),
             override_redirect_placements: HashMap::new(),
             normal_sizes: HashMap::new(),
+            managed_states: xwm::ManagedStateRegistry::default(),
         }
     }
 
@@ -117,7 +122,17 @@ impl<D: SessionDriver> State<D> {
         }
     }
 
+    pub fn sync_active_window(&self, window: Option<u32>) {
+        let Some(control) = self.control.as_ref() else {
+            return;
+        };
+        if let Err(err) = control.set_active_window(window) {
+            eventline::warn!("xwayland: failed to publish active window {window:?}: {err}");
+        }
+    }
+
     fn clear(&mut self) {
+        self.control = None;
         for (_, pending) in self.pending_override_redirects.drain() {
             self.loop_handle.remove(pending.timer);
         }
@@ -128,6 +143,7 @@ impl<D: SessionDriver> State<D> {
         self.known_override_redirects.clear();
         self.override_redirect_placements.clear();
         self.normal_sizes.clear();
+        self.managed_states.clear();
     }
 }
 
@@ -164,9 +180,27 @@ where
                 x11_socket,
                 client.clone(),
             ) {
-                Ok(xwm) => {
+                Ok(mut xwm) => {
+                    if let Err(err) =
+                        xwm.set_randr_primary_output(Some(session.driver.primary_output()))
+                    {
+                        eventline::warn!(
+                            "xwayland: failed to publish initial RandR primary output: {err}"
+                        );
+                    }
                     session.xwayland.xwm = Some(xwm);
                     session.xwayland.display = Some(display_number);
+                    match control::X11Control::connect(display_number) {
+                        Ok(control) => {
+                            session.xwayland.control = Some(control);
+                            eventline::info!("xwayland: ICCCM/EWMH control connection ready");
+                        }
+                        Err(err) => {
+                            eventline::error!(
+                                "xwayland: failed to initialize ICCCM/EWMH control: {err}"
+                            );
+                        }
+                    }
                     let display = format!(":{display_number}");
                     if publish_environment {
                         crate::session::environment::activate_xwayland(OsStr::new(&display));

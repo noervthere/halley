@@ -24,11 +24,14 @@ use super::{
 mod lifecycle;
 mod override_redirect;
 mod presentation;
+mod state;
 
 use override_redirect::*;
 pub(super) use presentation::restore_maximized_window;
 use presentation::*;
 pub(super) use presentation::{configure_window, reconfigure_fullscreen, set_window_fullscreen};
+pub(super) use state::ManagedStateRegistry;
+use state::WindowState;
 
 #[derive(Clone, Debug)]
 struct MaximizeRestore {
@@ -306,6 +309,7 @@ fn admit_window<D: SessionDriver>(session: &mut Session<D>, xid: u32) {
         return;
     };
     let saved_maximize = maximize_restore(&surface);
+    let initially_iconic = session.xwayland.managed_states.state(xid) == WindowState::Iconic;
     let mut opening_size = OpeningPlacement::preferred_size(initial_size, window.geometry().size);
     let rule = session.window_rules.track_window(&window);
     if saved_maximize.is_none()
@@ -449,7 +453,8 @@ fn admit_window<D: SessionDriver>(session: &mut Session<D>, xid: u32) {
         .and_then(|surface| session.nodes.id_for_surface(surface.as_ref()))
         .and_then(|id| session.clusters.active_layout_for_member(id))
         == Some(halley_core::cluster::layout::ClusterWorkspaceLayoutKind::Stacking);
-    let started = !stack_managed
+    let started = !initially_iconic
+        && !stack_managed
         && window.wl_surface().is_some_and(|wl_surface| {
             crate::session::opening::start(
                 session,
@@ -473,7 +478,18 @@ fn admit_window<D: SessionDriver>(session: &mut Session<D>, xid: u32) {
             eventline::warn!("xwayland: failed to suppress initial maximized state: {err}");
         }
     }
-    if !surface.is_override_redirect() {
+    if initially_iconic {
+        let collapsed = window
+            .wl_surface()
+            .and_then(|surface| session.nodes.id_for_surface(surface.as_ref()))
+            .is_some_and(|id| crate::nodes::collapse(session, id, SERIAL_COUNTER.next_serial()));
+        if collapsed {
+            lifecycle::transition_icccm(session, &surface, WindowState::Iconic);
+        } else {
+            lifecycle::transition_icccm(session, &surface, WindowState::Normal);
+            crate::session::focus_window(session, &window, SERIAL_COUNTER.next_serial());
+        }
+    } else if !surface.is_override_redirect() {
         crate::session::focus_window(session, &window, SERIAL_COUNTER.next_serial());
     }
     refresh_override_redirect_owners(session);
