@@ -36,6 +36,8 @@ pub(super) fn route_client<D: SessionDriver>(
         crate::input::pointer::PointerRoutingContext {
             space: &session.wayland.space,
             cameras: &session.cameras,
+            clusters: &session.clusters,
+            nodes: &session.nodes,
             window_open_animations: &session.window_open_animations,
             primary: session.driver.primary_output(),
             fullscreen: &session.fullscreen,

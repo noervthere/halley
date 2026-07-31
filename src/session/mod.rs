@@ -225,6 +225,8 @@ pub(crate) fn warp_pointer_to_window_center<D: SessionDriver>(
     let Some(presentation) = crate::presentation::window::WindowPresentation::for_window(
         &session.wayland.space,
         &session.cameras,
+        Some(&session.clusters),
+        Some(&session.nodes),
         &session.window_open_animations,
         &session.fullscreen,
         &session.maximize,
@@ -531,6 +533,8 @@ fn presented_window_rect<D: SessionDriver>(
     crate::presentation::window::window_visual_state(
         &session.wayland.space,
         &session.cameras,
+        Some(&session.clusters),
+        Some(&session.nodes),
         window,
         output,
         &session.window_open_animations,

@@ -113,6 +113,8 @@ pub(super) fn surface_visual_center<D: SessionDriver>(
     if let Some(presentation) = crate::presentation::window::WindowPresentation::for_surface(
         &session.wayland.space,
         &session.cameras,
+        Some(&session.clusters),
+        Some(&session.nodes),
         session.driver.primary_output(),
         &session.window_open_animations,
         &session.fullscreen,

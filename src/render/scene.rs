@@ -457,6 +457,8 @@ pub fn build(
         output,
         output_geometry,
         cameras: request.desktop.cameras,
+        clusters: request.desktop.clusters,
+        nodes: request.desktop.nodes,
         target_presentation_time: request.frame.target_presentation_time,
         focused: request.desktop.focused,
         decorations: request.visuals.decorations,

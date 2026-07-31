@@ -16,6 +16,8 @@ pub(super) struct LiveWindowContext<'a> {
     pub(super) output: &'a Output,
     pub(super) output_geometry: Rectangle<i32, Logical>,
     pub(super) cameras: &'a crate::presentation::camera::OutputCameras,
+    pub(super) clusters: &'a crate::clusters::ClusterSystem,
+    pub(super) nodes: &'a crate::nodes::NodesState,
     pub(super) target_presentation_time: std::time::Duration,
     pub(super) focused:
         Option<&'a smithay::reexports::wayland_server::protocol::wl_surface::WlSurface>,
@@ -64,6 +66,8 @@ pub(super) fn live_window_elements(
     let Some(visual) = window_visual_state(
         context.space,
         context.cameras,
+        Some(context.clusters),
+        Some(context.nodes),
         window,
         context.output,
         context.window_open_animations,

@@ -1,8 +1,11 @@
 use std::collections::{HashMap, HashSet};
 
 use halley_core::cluster::layout::ClusterWorkspaceLayoutKind;
+use halley_core::cluster::layout::layout_cluster_workspace;
+use halley_core::cluster::tiling::Rect as LayoutRect;
 use halley_core::cluster::{ClusterId, ClusterRegistry};
-use halley_core::field::NodeId;
+use halley_core::field::{Field, NodeId, Vec2};
+use smithay::utils::{Logical, Rectangle};
 
 #[derive(Clone, Debug)]
 pub struct ClusterMetadata {
@@ -10,6 +13,7 @@ pub struct ClusterMetadata {
     pub output: String,
     pub layout: ClusterWorkspaceLayoutKind,
     pub core: Option<NodeId>,
+    pub core_position: Vec2,
 }
 
 #[derive(Clone, Debug)]
@@ -18,6 +22,16 @@ pub struct CreationState {
     pub selected: HashSet<NodeId>,
     pub naming: bool,
     pub name_buffer: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum WindowPresentation {
+    Field,
+    Hidden,
+    Workspace {
+        rect: Rectangle<i32, Logical>,
+        depth: usize,
+    },
 }
 
 /// Owns every cluster-specific state transition. Field and Nodes remain
@@ -79,6 +93,10 @@ impl ClusterSystem {
         self.creation.as_ref()
     }
 
+    pub fn accepts_modal_input(&self) -> bool {
+        self.creation.is_some()
+    }
+
     pub fn begin_creation(&mut self, output: String) -> bool {
         if self.creation.is_some() {
             return false;
@@ -96,6 +114,114 @@ impl ClusterSystem {
         self.creation.take().is_some()
     }
 
+    pub fn toggle_creation_member(&mut self, id: NodeId, output: &str) -> bool {
+        let Some(creation) = self.creation.as_mut() else {
+            return false;
+        };
+        if creation.output != output || creation.naming || self.registry.is_cluster_member(id) {
+            return false;
+        }
+        if !creation.selected.remove(&id) {
+            creation.selected.insert(id);
+        }
+        true
+    }
+
+    pub fn begin_naming(&mut self) -> bool {
+        let Some(creation) = self.creation.as_mut() else {
+            return false;
+        };
+        if creation.selected.is_empty() || creation.naming {
+            return false;
+        }
+        creation.naming = true;
+        true
+    }
+
+    pub fn edit_name(&mut self, input: NameInput) -> bool {
+        let Some(creation) = self.creation.as_mut().filter(|creation| creation.naming) else {
+            return false;
+        };
+        match input {
+            NameInput::Backspace => {
+                creation.name_buffer.pop();
+            }
+            NameInput::Character(ch)
+                if !ch.is_control() && creation.name_buffer.chars().count() < 64 =>
+            {
+                creation.name_buffer.push(ch);
+            }
+            NameInput::Character(_) => return false,
+        }
+        true
+    }
+
+    pub fn finish_creation(&mut self, field: &mut Field) -> Result<ClusterId, String> {
+        let Some(creation) = self.creation.take() else {
+            return Err("cluster creation mode is not active".into());
+        };
+        if !creation.naming || creation.selected.is_empty() {
+            self.creation = Some(creation);
+            return Err("select at least one window and enter a name first".into());
+        }
+        let mut members = creation.selected.into_iter().collect::<Vec<_>>();
+        members.sort_by_key(|id| id.as_u64());
+        let positions = members
+            .iter()
+            .filter_map(|id| field.node(*id).map(|node| node.pos))
+            .collect::<Vec<_>>();
+        if positions.len() != members.len() {
+            return Err("a selected window disappeared before the cluster was created".into());
+        }
+        let id = self
+            .registry
+            .create_cluster(field, members)
+            .map_err(|error| format!("could not create cluster: {error:?}"))?;
+        let count = positions.len() as f32;
+        let core_position = positions
+            .into_iter()
+            .fold(Vec2 { x: 0.0, y: 0.0 }, |sum, position| Vec2 {
+                x: sum.x + position.x,
+                y: sum.y + position.y,
+            });
+        let core_position = Vec2 {
+            x: core_position.x / count,
+            y: core_position.y / count,
+        };
+        let slots = self.slots.entry(creation.output.clone()).or_default();
+        if slots.len() >= 10 {
+            self.registry.dissolve_cluster(field, id);
+            return Err(format!(
+                "output {} already has all 10 cluster slots assigned",
+                creation.output
+            ));
+        }
+        let slot = slots.len() + 1;
+        slots.push(id);
+        let name = creation.name_buffer.trim();
+        self.metadata.insert(
+            id,
+            ClusterMetadata {
+                name: if name.is_empty() {
+                    format!("Cluster {slot}")
+                } else {
+                    name.to_string()
+                },
+                output: creation.output,
+                layout: match self.config.default_layout {
+                    halley_config::ClusterLayout::Tiling => ClusterWorkspaceLayoutKind::Tiling,
+                    halley_config::ClusterLayout::Stacking => ClusterWorkspaceLayoutKind::Stacking,
+                },
+                core: None,
+                core_position,
+            },
+        );
+        if let Some(cluster) = self.registry.cluster_mut(id) {
+            cluster.set_collapsed(true);
+        }
+        Ok(id)
+    }
+
     pub fn cycle_active_layout(&mut self, output: &str) -> bool {
         let Some(id) = self.active_on(output) else {
             return false;
@@ -108,6 +234,28 @@ impl ClusterSystem {
             ClusterWorkspaceLayoutKind::Stacking => ClusterWorkspaceLayoutKind::Tiling,
         };
         true
+    }
+
+    pub fn cycle_stack(
+        &mut self,
+        output: &str,
+        direction: halley_config::FocusCycleDirection,
+    ) -> Option<NodeId> {
+        let id = self.active_on(output)?;
+        if self.metadata(id)?.layout != ClusterWorkspaceLayoutKind::Stacking {
+            return None;
+        }
+        self.registry.cycle_cluster_stacking_members(
+            id,
+            match direction {
+                halley_config::FocusCycleDirection::Forward => {
+                    halley_core::cluster::layout::ClusterCycleDirection::Next
+                }
+                halley_config::FocusCycleDirection::Backward => {
+                    halley_core::cluster::layout::ClusterCycleDirection::Prev
+                }
+            },
+        )
     }
 
     pub fn activate_slot(&mut self, output: &str, slot: u8) -> bool {
@@ -131,6 +279,98 @@ impl ClusterSystem {
         true
     }
 
+    pub fn activate(&mut self, output: &str, id: ClusterId) -> bool {
+        if self
+            .metadata
+            .get(&id)
+            .is_none_or(|metadata| metadata.output != output)
+        {
+            return false;
+        }
+        if self.active_on(output) == Some(id) {
+            self.active.remove(output);
+            self.registry.deactivate_cluster_workspace(id);
+        } else {
+            if let Some(previous) = self.active.insert(output.to_string(), id) {
+                self.registry.deactivate_cluster_workspace(previous);
+            }
+            self.registry.activate_cluster_workspace(id);
+        }
+        true
+    }
+
+    pub fn is_member(&self, id: NodeId) -> bool {
+        self.registry.is_cluster_member(id)
+    }
+
+    pub fn cluster_for_member(&self, id: NodeId) -> Option<ClusterId> {
+        self.registry.cluster_id_for_member(id)
+    }
+
+    pub fn window_presentation(
+        &self,
+        id: NodeId,
+        output: &str,
+        work_area: Rectangle<i32, Logical>,
+    ) -> WindowPresentation {
+        let member_cluster = self.cluster_for_member(id);
+        let Some(active) = self.active_on(output) else {
+            return if member_cluster.is_some() {
+                WindowPresentation::Hidden
+            } else {
+                WindowPresentation::Field
+            };
+        };
+        if member_cluster != Some(active) {
+            return WindowPresentation::Hidden;
+        }
+        let Some(cluster) = self.registry.cluster(active) else {
+            return WindowPresentation::Hidden;
+        };
+        let Some(metadata) = self.metadata(active) else {
+            return WindowPresentation::Hidden;
+        };
+        let outer = self.config.tiling.gaps_outer_px.max(0.0);
+        let bounds = LayoutRect {
+            x: work_area.loc.x as f32 + outer,
+            y: work_area.loc.y as f32 + outer,
+            w: (work_area.size.w as f32 - outer * 2.0).max(1.0),
+            h: (work_area.size.h as f32 - outer * 2.0).max(1.0),
+        };
+        let limit = match metadata.layout {
+            ClusterWorkspaceLayoutKind::Tiling => self.config.tiling.max_stack,
+            ClusterWorkspaceLayoutKind::Stacking => self.config.stacking.max_visible,
+        };
+        let layout = layout_cluster_workspace(
+            metadata.layout,
+            bounds,
+            self.config.tiling.gaps_inner_px,
+            self.config.tiling.gaps_inner_px,
+            cluster.members(),
+            limit,
+        );
+        layout
+            .placements
+            .into_iter()
+            .find(|placement| placement.node_id == id)
+            .map(|placement| WindowPresentation::Workspace {
+                rect: Rectangle::new(
+                    (
+                        placement.rect.x.round() as i32,
+                        placement.rect.y.round() as i32,
+                    )
+                        .into(),
+                    (
+                        placement.rect.w.round().max(1.0) as i32,
+                        placement.rect.h.round().max(1.0) as i32,
+                    )
+                        .into(),
+                ),
+                depth: placement.depth,
+            })
+            .unwrap_or(WindowPresentation::Hidden)
+    }
+
     pub fn clusters_for_output(
         &self,
         output: &str,
@@ -152,6 +392,12 @@ impl ClusterSystem {
             .position(|candidate| *candidate == id)
             .and_then(|index| u8::try_from(index + 1).ok())
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NameInput {
+    Backspace,
+    Character(char),
 }
 
 fn output_context<D: crate::session::SessionDriver>(

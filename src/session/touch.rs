@@ -227,6 +227,8 @@ where
             let Some(presentation) = crate::presentation::window::WindowPresentation::for_surface(
                 &session.wayland.space,
                 &session.cameras,
+                Some(&session.clusters),
+                Some(&session.nodes),
                 session.driver.primary_output(),
                 &session.window_open_animations,
                 &session.fullscreen,
@@ -304,6 +306,8 @@ fn route<D: SessionDriver>(
         crate::input::pointer::PointerRoutingContext {
             space: &session.wayland.space,
             cameras: &session.cameras,
+            clusters: &session.clusters,
+            nodes: &session.nodes,
             window_open_animations: &session.window_open_animations,
             primary: session.driver.primary_output(),
             fullscreen: &session.fullscreen,

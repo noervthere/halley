@@ -67,6 +67,8 @@ fn inherited_visual_rects(
 pub(crate) fn window_visual_state(
     space: &Space<Window>,
     cameras: &OutputCameras,
+    clusters: Option<&crate::clusters::ClusterSystem>,
+    nodes: Option<&crate::nodes::NodesState>,
     window: &Window,
     output: &Output,
     window_open_animations: &crate::animation::WindowOpenAnimations,
@@ -80,12 +82,34 @@ pub(crate) fn window_visual_state(
     let camera_center = crate::presentation::camera::global_center(view.center, output_geometry);
     let source_geometry = space.element_geometry(window)?;
     let window_surface = window.wl_surface()?;
-    let mut camera_rect = crate::render::camera_rect(
-        source_geometry.to_physical(1),
-        camera_center,
-        output_size,
-        view.scale,
-    );
+    let cluster_presentation = clusters
+        .zip(nodes)
+        .and_then(|(clusters, nodes)| {
+            nodes
+                .id_for_surface(window_surface.as_ref())
+                .map(|id| (clusters, id))
+        })
+        .map(|(clusters, id)| {
+            clusters.window_presentation(
+                id,
+                &output.name(),
+                smithay::desktop::layer_map_for_output(output).non_exclusive_zone(),
+            )
+        })
+        .unwrap_or(crate::clusters::WindowPresentation::Field);
+    let cluster_rect = match cluster_presentation {
+        crate::clusters::WindowPresentation::Hidden => return None,
+        crate::clusters::WindowPresentation::Field => None,
+        crate::clusters::WindowPresentation::Workspace { rect, .. } => Some(rect.to_physical(1)),
+    };
+    let mut camera_rect = cluster_rect.unwrap_or_else(|| {
+        crate::render::camera_rect(
+            source_geometry.to_physical(1),
+            camera_center,
+            output_size,
+            view.scale,
+        )
+    });
     let opening_visual = window_open_animations
         .visual(window_surface.as_ref(), now, camera_rect)
         .unwrap_or_default();
@@ -100,7 +124,7 @@ pub(crate) fn window_visual_state(
                 || presentation.fullscreen_rect(output_size),
                 |geometry| {
                     presentation_source_rect(
-                        presentation.windowed_output_rect,
+                        presentation.windowed_output_rect.or(cluster_rect),
                         geometry,
                         camera_center,
                         output_size,
@@ -113,7 +137,7 @@ pub(crate) fn window_visual_state(
         .or_else(|| {
             maximize_presentation.map(|presentation| {
                 let windowed = presentation_source_rect(
-                    presentation.windowed_output_rect,
+                    presentation.windowed_output_rect.or(cluster_rect),
                     presentation.windowed_rect,
                     camera_center,
                     output_size,
@@ -125,9 +149,13 @@ pub(crate) fn window_visual_state(
         .unwrap_or(camera_rect);
     let mut animated_rect = opening_visual.transform_rect(presentation_rect, presentation_rect);
     let mut opening_alpha = opening_visual.alpha();
-    let mut inherited_presentation = false;
+    let mut inherited_presentation = cluster_rect.is_some();
     let mut inherited_camera_center = camera_center;
-    let mut inherited_zoom_scale = view.scale;
+    let mut inherited_zoom_scale = if cluster_rect.is_some() {
+        1.0
+    } else {
+        view.scale
+    };
 
     if let Some(owner_xid) = crate::wayland::window_presentation_owner(window)
         && let Some(owner) = space.elements().find(|candidate| {
@@ -138,6 +166,8 @@ pub(crate) fn window_visual_state(
         && let Some(owner_visual) = window_visual_state(
             space,
             cameras,
+            clusters,
+            nodes,
             owner,
             output,
             window_open_animations,
@@ -197,6 +227,8 @@ impl WindowPresentation {
     pub fn for_window(
         space: &Space<Window>,
         cameras: &OutputCameras,
+        clusters: Option<&crate::clusters::ClusterSystem>,
+        nodes: Option<&crate::nodes::NodesState>,
         window_open_animations: &crate::animation::WindowOpenAnimations,
         fullscreen: &crate::wayland::fullscreen::FullscreenManager,
         maximize: &crate::presentation::maximize::FieldMaximizeManager,
@@ -209,6 +241,8 @@ impl WindowPresentation {
         let visual = window_visual_state(
             space,
             cameras,
+            clusters,
+            nodes,
             window,
             output,
             window_open_animations,
@@ -259,6 +293,8 @@ impl WindowPresentation {
     pub fn for_surface(
         space: &Space<Window>,
         cameras: &OutputCameras,
+        clusters: Option<&crate::clusters::ClusterSystem>,
+        nodes: Option<&crate::nodes::NodesState>,
         primary: &Output,
         window_open_animations: &crate::animation::WindowOpenAnimations,
         fullscreen: &crate::wayland::fullscreen::FullscreenManager,
@@ -278,6 +314,8 @@ impl WindowPresentation {
         Self::for_window(
             space,
             cameras,
+            clusters,
+            nodes,
             window_open_animations,
             fullscreen,
             maximize,

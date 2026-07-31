@@ -147,6 +147,8 @@ fn owner_context<D: SessionDriver>(
     let presentation = WindowPresentation::for_surface(
         &session.wayland.space,
         &session.cameras,
+        Some(&session.clusters),
+        Some(&session.nodes),
         session.driver.primary_output(),
         &session.window_open_animations,
         &session.fullscreen,

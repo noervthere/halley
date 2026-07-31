@@ -412,6 +412,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                             fullscreen: &app.fullscreen,
                             maximize: &app.maximize,
                             nodes: &app.nodes,
+                            clusters: &app.clusters,
                             window_rules: &app.window_rules,
                             node_grab_active: matches!(
                                 &app.grab,

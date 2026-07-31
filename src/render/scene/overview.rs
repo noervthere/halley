@@ -76,6 +76,8 @@ pub(super) fn apogee_elements(
             window_visual_state(
                 space,
                 cameras,
+                None,
+                None,
                 &record.window,
                 output,
                 window_open_animations,

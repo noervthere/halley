@@ -43,6 +43,8 @@ pub struct PointerRoute {
 pub struct PointerRoutingContext<'a> {
     pub space: &'a Space<Window>,
     pub cameras: &'a OutputCameras,
+    pub clusters: &'a crate::clusters::ClusterSystem,
+    pub nodes: &'a crate::nodes::NodesState,
     pub window_open_animations: &'a crate::animation::WindowOpenAnimations,
     pub primary: &'a Output,
     pub fullscreen: &'a crate::wayland::fullscreen::FullscreenManager,
@@ -361,6 +363,8 @@ fn window_under(
         let Some(presentation) = WindowPresentation::for_window(
             context.space,
             context.cameras,
+            Some(context.clusters),
+            Some(context.nodes),
             context.window_open_animations,
             context.fullscreen,
             context.maximize,

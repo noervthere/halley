@@ -913,6 +913,7 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
                 fullscreen: &app.fullscreen,
                 maximize: &app.maximize,
                 nodes: &app.nodes,
+                clusters: &app.clusters,
                 window_rules: &app.window_rules,
                 node_grab_active: matches!(
                     &app.grab,

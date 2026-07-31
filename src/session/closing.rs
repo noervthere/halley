@@ -45,6 +45,8 @@ pub(crate) fn capture_window<D: SessionDriver>(session: &mut Session<D>, window:
     let Some(visual) = crate::presentation::window::window_visual_state(
         &session.wayland.space,
         &session.cameras,
+        Some(&session.clusters),
+        Some(&session.nodes),
         window,
         &output,
         &session.window_open_animations,

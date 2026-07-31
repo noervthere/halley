@@ -234,6 +234,8 @@ pub(super) fn opening_presentation_bounds<D: SessionDriver>(
     let presentation = crate::presentation::window::WindowPresentation::for_window(
         &session.wayland.space,
         &session.cameras,
+        Some(&session.clusters),
+        Some(&session.nodes),
         &session.window_open_animations,
         &session.fullscreen,
         &session.maximize,

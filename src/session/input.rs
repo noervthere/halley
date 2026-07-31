@@ -169,7 +169,18 @@ fn dispatch_action<D: SessionDriver>(
             crate::shell::apogee::toggle(session);
         }
         super::SessionControl::FocusCycle(direction) => {
-            crate::shell::focus_cycle::start_or_step(session, direction);
+            let cluster_member = action_output
+                .as_deref()
+                .and_then(|output| session.clusters.cycle_stack(output, direction));
+            if let Some(window) = cluster_member
+                .and_then(|id| session.nodes.record(id))
+                .map(|record| record.window.clone())
+            {
+                super::focus_window(session, &window, SERIAL_COUNTER.next_serial());
+                session.request_redraw();
+            } else {
+                crate::shell::focus_cycle::start_or_step(session, direction);
+            }
         }
         super::SessionControl::ClusterMode => {
             if let Some(output) = action_output
@@ -251,6 +262,11 @@ enum KeyboardOutcome {
     CaptureNext,
     CaptureIntercept,
     BearingsRelease,
+    ClusterAccept,
+    ClusterCancel,
+    ClusterBackspace,
+    ClusterCharacter(char),
+    ClusterIntercept,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -755,6 +771,29 @@ where
             }
         }
         let route = super::pointer::route_for_discrete_input(session, time);
+        if session.clusters.accepts_modal_input() {
+            if button == BTN_LEFT
+                && state == ButtonState::Pressed
+                && let Some(crate::input::pointer::PointerRoute {
+                    output,
+                    target: crate::input::pointer::PointerTarget::Window(window),
+                    ..
+                }) = route.as_ref()
+                && let Some(surface) = window.wl_surface()
+                && let Some(id) = session.nodes.id_for_surface(surface.as_ref())
+                && session.clusters.toggle_creation_member(id, &output.name())
+            {
+                wayland::focus::select_output(&mut session.wayland, output);
+                session.request_redraw();
+            }
+            if state == ButtonState::Pressed {
+                session.suppressed_buttons.suppress(button);
+            } else {
+                session.suppressed_buttons.release_is_suppressed(button);
+            }
+            super::pointer::finish_frame(session, &pointer_handle);
+            return;
+        }
         if button == BTN_LEFT
             && state == ButtonState::Pressed
             && let Some(route) = route.as_ref()
@@ -1052,6 +1091,26 @@ where
                         _ => FilterResult::Intercept(KeyboardOutcome::ExitIntercept),
                     };
                 }
+                if data.clusters.accepts_modal_input() {
+                    if state == KeyState::Released {
+                        return if release_is_suppressed {
+                            FilterResult::Intercept(KeyboardOutcome::ClusterIntercept)
+                        } else {
+                            FilterResult::Forward
+                        };
+                    }
+                    let sym = handle.modified_sym();
+                    let outcome = match sym {
+                        Keysym::Escape => KeyboardOutcome::ClusterCancel,
+                        Keysym::Return | Keysym::KP_Enter => KeyboardOutcome::ClusterAccept,
+                        Keysym::BackSpace => KeyboardOutcome::ClusterBackspace,
+                        _ => sym
+                            .key_char()
+                            .map(KeyboardOutcome::ClusterCharacter)
+                            .unwrap_or(KeyboardOutcome::ClusterIntercept),
+                    };
+                    return FilterResult::Intercept(outcome);
+                }
                 if state == KeyState::Released && data.bearings.is_show_key_held(keycode.raw()) {
                     return FilterResult::Intercept(KeyboardOutcome::BearingsRelease);
                 }
@@ -1189,6 +1248,57 @@ where
             Some(KeyboardOutcome::BearingsRelease) => {
                 if session.bearings.release_show_key(keycode.raw()) {
                     session.request_redraw();
+                }
+            }
+            Some(KeyboardOutcome::ClusterCancel) => {
+                session.suppressed_keys.suppress(keycode);
+                if session.clusters.cancel_creation() {
+                    session.request_redraw();
+                }
+            }
+            Some(KeyboardOutcome::ClusterAccept) => {
+                session.suppressed_keys.suppress(keycode);
+                if session
+                    .clusters
+                    .creation()
+                    .is_some_and(|creation| creation.naming)
+                {
+                    match session.clusters.finish_creation(&mut session.nodes.field) {
+                        Ok(_) => {
+                            crate::window::clear_focus(&mut session.wayland);
+                            session
+                                .nodes
+                                .focus(None, session.start_time.elapsed().as_millis() as u64);
+                            super::sync_keyboard_focus(session, SERIAL_COUNTER.next_serial());
+                        }
+                        Err(message) => eventline::warn!("clusters: {message}"),
+                    }
+                } else {
+                    session.clusters.begin_naming();
+                }
+                session.request_redraw();
+            }
+            Some(KeyboardOutcome::ClusterBackspace) => {
+                session.suppressed_keys.suppress(keycode);
+                if session
+                    .clusters
+                    .edit_name(crate::clusters::NameInput::Backspace)
+                {
+                    session.request_redraw();
+                }
+            }
+            Some(KeyboardOutcome::ClusterCharacter(ch)) => {
+                session.suppressed_keys.suppress(keycode);
+                if session
+                    .clusters
+                    .edit_name(crate::clusters::NameInput::Character(ch))
+                {
+                    session.request_redraw();
+                }
+            }
+            Some(KeyboardOutcome::ClusterIntercept) => {
+                if state == KeyState::Pressed {
+                    session.suppressed_keys.suppress(keycode);
                 }
             }
             Some(KeyboardOutcome::AccessibilityIntercept) => {}
