@@ -248,6 +248,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
         input: applied_input,
         decorations: runtime_config.decorations,
         effects: runtime_config.effects,
+        background: runtime_config.background.clone(),
         window_rules: crate::window::rules::WindowRulesState::new(
             runtime_config.window_rules.clone(),
         ),
@@ -370,6 +371,8 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                     app.bearings.tick(&output.name(), target_presentation_time);
                 let focus_cycle_animating = app.focus_cycle.tick(target_presentation_time);
                 let apogee_animating = crate::shell::apogee::tick(app, target_presentation_time);
+                let background_animating =
+                    app.background_animates_on_output(&output, target_presentation_time);
                 if fullscreen_animating || maximize_animating {
                     super::pointer::update_client_state(
                         app,
@@ -431,6 +434,11 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                             decorations: &app.decorations,
                             blur: app.effects.blur,
                             shadows: app.effects.shadows,
+                            background: &app.background,
+                            background_base: app
+                                .config_path
+                                .as_deref()
+                                .and_then(std::path::Path::parent),
                         },
                         resources: crate::render::resources::RenderResources::from(&mut app.render),
                     },
@@ -532,6 +540,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                     || bearings_animating
                     || focus_cycle_animating
                     || apogee_animating
+                    || background_animating
                     || app.overlays.animating(target_presentation_time)
                     || app.render.node_renderer.has_pending_icons()
                     || cursor_animating

@@ -133,6 +133,7 @@ pub struct Session<D: SessionDriver> {
     pub input: halley_config::Input,
     pub decorations: halley_config::Decorations,
     pub effects: halley_config::Effects,
+    pub background: halley_config::Background,
     pub window_rules: crate::window::rules::WindowRulesState,
     pub cameras: OutputCameras,
     pub field_config: halley_config::Field,
@@ -344,9 +345,11 @@ impl<D: SessionDriver> Session<D> {
             super::environment::publish_cursor(&config.cursor);
         }
         let window_rules_redraw = self.window_rules_reload_changes_visuals(&config.window_rules);
+        let background_redraw = self.background != config.background;
         let redraw = self.decorations != config.decorations
             || self.effects != config.effects
             || window_rules_redraw
+            || background_redraw
             || self.zoom != config.field.zoom
             || self.overlay_config != config.overlays
             || cursor_changed
@@ -359,6 +362,7 @@ impl<D: SessionDriver> Session<D> {
         self.apogee_config = config.apogee;
         self.decorations = config.decorations;
         self.effects = config.effects;
+        self.background = config.background.clone();
         self.field_config = config.field;
         self.overlay_config = config.overlays;
         self.zoom = config.field.zoom;
@@ -391,6 +395,21 @@ impl<D: SessionDriver> Session<D> {
         {
             self.request_redraw();
         }
+    }
+
+    pub fn background_animates_on_output(&self, output: &Output, now: std::time::Duration) -> bool {
+        if self.background.mode != halley_config::BackgroundMode::FieldShader
+            || !self.background.animated
+            || self.session_lock.active()
+        {
+            return false;
+        }
+        if self.apogee.is_active() {
+            return true;
+        }
+        self.fullscreen
+            .stable_fullscreen_surface_on_output(output, now)
+            .is_none_or(|surface| self.window_rules.opacity(surface) < 0.999)
     }
 
     fn window_rules_reload_changes_visuals(&mut self, rules: &[halley_config::WindowRule]) -> bool {

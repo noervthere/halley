@@ -1,5 +1,6 @@
 use halley_config::{Animations, Font};
 
+use super::background::BackgroundRenderer;
 use super::close::WindowCloseAnimations;
 use super::effects::backdrop_blur::BackdropBlurRenderer;
 use super::effects::shadow::ShadowRenderer;
@@ -16,6 +17,7 @@ use super::window_decoration::WindowDecorationRenderer;
 /// contains only presentation resources that must survive across frames.
 pub struct RenderState {
     pub(crate) window_close_animations: WindowCloseAnimations,
+    pub(crate) background_renderer: BackgroundRenderer,
     pub(crate) fullscreen_textures: FullscreenTextureTransitions,
     pub(crate) overlay_previews: OverlayPreviewCache,
     pub(crate) node_renderer: NodeRenderer,
@@ -31,6 +33,7 @@ pub struct RenderState {
 /// borrow independent caches without exposing many session-level fields.
 pub struct RenderResources<'a> {
     pub window_close_animations: &'a mut WindowCloseAnimations,
+    pub background_renderer: &'a mut BackgroundRenderer,
     pub fullscreen_textures: &'a mut FullscreenTextureTransitions,
     pub overlay_previews: &'a mut OverlayPreviewCache,
     pub node_renderer: &'a mut NodeRenderer,
@@ -44,6 +47,7 @@ impl<'a> From<&'a mut RenderState> for RenderResources<'a> {
     fn from(state: &'a mut RenderState) -> Self {
         Self {
             window_close_animations: &mut state.window_close_animations,
+            background_renderer: &mut state.background_renderer,
             fullscreen_textures: &mut state.fullscreen_textures,
             overlay_previews: &mut state.overlay_previews,
             node_renderer: &mut state.node_renderer,
@@ -59,6 +63,7 @@ impl RenderState {
     pub fn new(animations: Animations, font: &Font) -> Self {
         Self {
             window_close_animations: WindowCloseAnimations::new(animations),
+            background_renderer: BackgroundRenderer::default(),
             fullscreen_textures: FullscreenTextureTransitions::default(),
             overlay_previews: OverlayPreviewCache::default(),
             node_renderer: NodeRenderer::default(),

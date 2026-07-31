@@ -49,6 +49,7 @@ render_elements! {
     /// real-hardware sessions from drifting in z-order or visual policy.
     pub SceneElement<=GlesRenderer>;
     Cursor=crate::cursor::render::CursorRenderElement,
+    Background=super::background::BackgroundElement,
     Rescaled=super::rescale::RescaledElement,
     Cropped=CropRenderElement<super::rescale::RescaledElement>,
     RoundedCropped=CropRenderElement<super::window_decoration::RoundedSurfaceElement>,
@@ -176,6 +177,19 @@ pub fn build(
             super::layer_surface_elements(renderer, output, Layer::Background)
                 .into_iter()
                 .map(SceneElement::Layer),
+        );
+        append_background(
+            renderer,
+            request.resources.background_renderer,
+            BackgroundSceneRequest {
+                output,
+                output_geometry,
+                cameras: request.desktop.cameras,
+                config: request.visuals.background,
+                config_dir: request.visuals.background_base,
+                now: request.frame.target_presentation_time,
+            },
+            &mut elements,
         );
         let mut overlay_elements = super::overlays::shell::elements(
             renderer,
@@ -492,6 +506,19 @@ pub fn build(
         request.visuals.blur,
         request.resources.backdrop_blur_renderer,
     )?);
+    append_background(
+        renderer,
+        request.resources.background_renderer,
+        BackgroundSceneRequest {
+            output,
+            output_geometry,
+            cameras: request.desktop.cameras,
+            config: request.visuals.background,
+            config_dir: request.visuals.background_base,
+            now: request.frame.target_presentation_time,
+        },
+        &mut elements,
+    );
 
     let mut overlay_elements = super::overlays::shell::elements(
         renderer,
@@ -533,6 +560,47 @@ pub fn build(
     }
 
     Ok(elements)
+}
+
+struct BackgroundSceneRequest<'a> {
+    output: &'a Output,
+    output_geometry: Rectangle<i32, Logical>,
+    cameras: &'a crate::presentation::camera::OutputCameras,
+    config: &'a halley_config::Background,
+    config_dir: Option<&'a std::path::Path>,
+    now: std::time::Duration,
+}
+
+fn append_background(
+    renderer: &mut GlesRenderer,
+    background_renderer: &mut super::background::BackgroundRenderer,
+    request: BackgroundSceneRequest<'_>,
+    elements: &mut Vec<SceneElement>,
+) {
+    let output_name = request.output.name();
+    let Some(camera) = request.cameras.get(&output_name) else {
+        return;
+    };
+    let center = crate::presentation::camera::global_center(
+        smithay::utils::Point::from((camera.center.x, camera.center.y)),
+        request.output_geometry,
+    );
+    if let Some(background) = background_renderer.element(
+        renderer,
+        super::background::BackgroundRequest {
+            output_name: &output_name,
+            output_size: request.output_geometry.size.to_physical(1),
+            camera_center: center,
+            camera_size: (camera.view_size.x, camera.view_size.y),
+            now: request.now,
+            config: request.config,
+            config_dir: request.config_dir,
+        },
+    ) {
+        // Scene lists are front-to-back. Appending after the protocol
+        // background layer makes compositor backgrounds the absolute back.
+        elements.push(SceneElement::Background(background));
+    }
 }
 #[cfg(test)]
 mod tests {

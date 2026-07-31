@@ -1,4 +1,5 @@
 mod app_icon;
+pub mod background;
 pub mod close;
 pub mod effects;
 pub mod fullscreen_texture;
@@ -231,6 +232,8 @@ pub struct VisualContext<'a> {
     pub decorations: &'a Decorations,
     pub blur: halley_config::Blur,
     pub shadows: halley_config::Shadows,
+    pub background: &'a halley_config::Background,
+    pub background_base: Option<&'a std::path::Path>,
 }
 
 /// Complete input to one scene build, grouped by ownership boundary.
