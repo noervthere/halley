@@ -31,6 +31,11 @@ session and removes its PipeWire node.
 The portal supports hidden, embedded, and metadata cursor modes. The requesting
 application chooses the mode; no Halley configuration key is required.
 
+Halley currently negotiates mapped PipeWire memory for all streams. Its
+DMA-BUF implementation remains isolated in the codebase but is not advertised
+until explicit frame-completion synchronization is available; exposing
+unsynchronized DMA-BUFs can make consumers display stale or black frames.
+
 ## Session routing
 
 `XDG_CURRENT_DESKTOP` must include `Halley`, and the installed

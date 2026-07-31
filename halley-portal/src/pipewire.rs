@@ -20,6 +20,11 @@ use pipewire::stream::{StreamFlags, StreamListener, StreamRc};
 const CURSOR_META_SIZE: usize = std::mem::size_of::<spa_sys::spa_meta_cursor>()
     + std::mem::size_of::<spa_sys::spa_meta_bitmap>()
     + 256 * 256 * 4;
+// Halley's DMA-BUF capture path is retained for future explicit-sync work, but
+// it must not be negotiated until the producer can signal frame completion to
+// PipeWire. Mapped MemFd buffers are coherent when the process callback queues
+// them and are therefore the reliable default for every source/cursor mode.
+const ADVERTISE_DMABUF: bool = false;
 
 enum Command {
     Create {
@@ -261,9 +266,7 @@ fn create_stream(
         .map_err(|err| format!("register PipeWire listener: {err}"))?;
 
     let format_data = format_pod(width, height)?;
-    let allow_dmabuf = !matches!(source, halley_ipc::CaptureSource::Window { .. })
-        || cursor_mode != halley_ipc::CursorMode::Embedded;
-    let buffers_data = buffers_pod(width, height, allow_dmabuf)?;
+    let buffers_data = buffers_pod(width, height, ADVERTISE_DMABUF)?;
     let meta_data = meta_pod();
     let format = spa::pod::Pod::from_bytes(&format_data)
         .ok_or_else(|| "invalid PipeWire format POD".to_string())?;
@@ -513,9 +516,16 @@ mod tests {
     }
 
     #[test]
-    fn compatible_streams_offer_dmabuf_and_memfd() {
+    fn dmabuf_support_stays_isolated_for_explicit_enablement() {
         let data_types = buffer_data_types(true);
         assert_ne!(data_types & (1 << spa_sys::SPA_DATA_MemFd), 0);
         assert_ne!(data_types & (1 << spa_sys::SPA_DATA_DmaBuf), 0);
+    }
+
+    #[test]
+    fn production_negotiation_uses_only_coherent_mapped_buffers() {
+        let data_types = buffer_data_types(ADVERTISE_DMABUF);
+        assert_ne!(data_types & (1 << spa_sys::SPA_DATA_MemFd), 0);
+        assert_eq!(data_types & (1 << spa_sys::SPA_DATA_DmaBuf), 0);
     }
 }
