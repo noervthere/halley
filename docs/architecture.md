@@ -25,6 +25,9 @@ state do not share implementation files.
   lifecycle, override-redirect policy, and presentation policy are separate.
 - `animation` owns pure timelines. Rendering consumes animation output but
   animation code does not know about GLES or backends.
+- `halley-cli` separates command parsing, help, response presentation,
+  configuration diagnostics, and IPC transport. Node parsing has its own
+  command module; the executable entry point only dispatches typed actions.
 
 One `RenderState` owns persistent GPU caches. A frame crosses the
 session/render boundary through six contexts: frame, desktop, cursor, overlays,

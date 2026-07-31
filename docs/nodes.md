@@ -234,14 +234,21 @@ ambiguous. With no selector, commands use the focused node and otherwise fall
 back to the latest node. `--output` validates and limits selection to one
 connector.
 
-`list` groups nodes by output. `focus` restores a collapsed node or focuses an
-active one. `move` requests an 80-field-unit shift and then resolves the
-nearest legal landmark/window destination. `collapse` and `restore` explicitly
-set the selected node state and are idempotent; `toggle` inverts it. `close`
-sends the appropriate XDG or X11 close request without restoring first.
-`--json` is available for `list` and `info`.
+`list` groups nodes by output and marks the focused node with `*`, the latest
+node with `+`, and other nodes with `-`. Each text entry includes its state,
+application ID, role, protocol family, modal/parent relationships, child-popup
+count, focus/latest flags, field position, and size. `info` prints the same
+fields for one node. This makes the default output useful for beginners while
+leaving `--json` stable for scripts.
 
-This interface uses IPC protocol version 9. Keep `halleyctl` and the compositor
+`focus` restores a collapsed node or focuses an active one. `move` requests an
+80-field-unit shift and then resolves the nearest legal landmark/window
+destination. `collapse` and `restore` explicitly set the selected node state
+and are idempotent; `toggle` inverts it. `close` sends the appropriate XDG or
+X11 close request without restoring first. `--json` is available for `list`
+and `info`.
+
+This interface uses IPC protocol version 10. Keep `halleyctl` and the compositor
 from the same build because postcard enum variants are positional on the wire.
 
 Offscreen active windows and collapsed nodes are also available through
