@@ -32,10 +32,11 @@ use smithay::wayland::shell::wlr_layer::Layer;
 
 use crate::cursor::CursorManager;
 
-/// Cool, slightly-blue-leaning light gray - visible without being stark.
-/// Shared by both backends' drivers (session::tty, session::winit) so there's one
-/// definition instead of two independently-maintained literals.
-pub const CLEAR_COLOR: Color32F = Color32F::new(0.58, 0.64, 0.72, 1.0);
+/// Opaque black used only to clear pixels with no scene content.
+///
+/// `background.mode "none"` contributes no render element, so this is the
+/// resulting empty desktop rather than a compositor-enforced wallpaper.
+pub const CLEAR_COLOR: Color32F = Color32F::new(0.0, 0.0, 0.0, 1.0);
 /// Fail-closed backdrop used for every output while ext-session-lock-v1 owns
 /// the session, including outputs whose locker surface is not ready yet.
 pub const SESSION_LOCK_COLOR: Color32F = Color32F::new(0.0, 0.0, 0.0, 1.0);

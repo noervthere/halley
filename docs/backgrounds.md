@@ -8,6 +8,10 @@ background:
 end
 ```
 
+`none` creates no background render element. Pixels with no other scene
+content are simply cleared to opaque black; Halley does not enforce a
+wallpaper colour.
+
 The background is part of the shared renderer, so TTY, nested Winit,
 screenshots, screencopy, and Apogee use the same scene. It is always appended
 behind the protocol `background` layer. Windows, panels, overlays, capture UI,
@@ -28,7 +32,7 @@ end
 `fit` accepts:
 
 - `cover`: fill the output and crop the image's longer axis;
-- `contain`: show the whole image, centered over Halley's clear colour;
+- `contain`: show the whole image, centered with black around it;
 - `stretch`: resize independently on both axes.
 
 Relative paths resolve from the directory containing `halley.rune`. `~/`
@@ -69,7 +73,7 @@ may consume:
 The standard shader source must retain Smithay's `//_DEFINES` insertion marker.
 If a custom shader cannot be read or compiled, Halley logs the failure once and
 uses the bundled space shader. If an image or the bundled shader cannot be
-created by the active renderer, the normal clear colour remains visible
+created by the active renderer, plain black remains visible
 instead of failing the output frame.
 
 The old `gesso:` section and its field spellings remain accepted as

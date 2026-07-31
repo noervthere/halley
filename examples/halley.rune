@@ -353,9 +353,9 @@ end
 
 # The compositor background is the absolute back of the scene: protocol
 # background-layer surfaces, windows, panels, overlays, and the cursor all draw
-# above it. "none" keeps the normal clear colour and costs no render work.
+# above it. "none" creates no background and leaves empty pixels plain black.
 background:
-  mode "none" # "none", "classic", or "field-shader"
+  mode "none" # no background; also "classic" or "field-shader"
 
   # Classic image example. Relative paths resolve beside this config file.
   # mode "classic"
