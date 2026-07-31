@@ -752,6 +752,7 @@ where
         let dx = position_after.0 - press_screen.x;
         let dy = position_after.1 - press_screen.y;
         if dx.hypot(dy) >= NODE_DRAG_THRESHOLD_PX {
+            session.clusters.cancel_core_click();
             session.grab = crate::input::grab::Grab::MoveClusterCore {
                 id: *id,
                 screen_offset: *screen_offset,
@@ -1069,25 +1070,27 @@ where
                 crate::input::grab::Grab::PendingClusterCore { id, output, .. } => {
                     let id = *id;
                     let output_name = output.clone();
+                    let now = crate::frame_clock::monotonic_now();
                     session.suppressed_buttons.release_is_suppressed(BTN_LEFT);
                     session.grab = crate::input::grab::Grab::None;
                     session.cursor.set_override(None);
-                    if session.clusters.activate(
-                        &output_name,
-                        id,
-                        crate::frame_clock::monotonic_now(),
-                    ) {
-                        let output = {
-                            session
-                                .wayland
-                                .space
-                                .outputs()
-                                .find(|candidate| candidate.name() == output_name)
-                                .cloned()
-                        };
-                        if let Some(output) = output {
+                    let output = {
+                        session
+                            .wayland
+                            .space
+                            .outputs()
+                            .find(|candidate| candidate.name() == output_name)
+                            .cloned()
+                    };
+                    if session.clusters.register_core_click(id, now) {
+                        if session.clusters.activate(&output_name, id, now)
+                            && let Some(output) = output
+                        {
                             sync_cluster_activation_focus(session, &output, id, serial);
                         }
+                        session.request_redraw();
+                    } else if let Some(output) = output {
+                        sync_cluster_activation_focus(session, &output, id, serial);
                         session.request_redraw();
                     }
                     super::pointer::finish_frame(session, &pointer_handle);

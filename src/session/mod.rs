@@ -714,12 +714,13 @@ pub(crate) fn sync_keyboard_focus<D: SessionDriver>(
         session
             .nodes
             .focus_surface(&surface, session.start_time.elapsed().as_millis() as u64);
-    } else if session
-        .nodes
-        .focused()
-        .and_then(|id| session.nodes.record(id))
-        .is_some_and(|record| !record.collapsed)
-    {
+    } else if session.nodes.focused().is_some_and(|id| {
+        session
+            .nodes
+            .record(id)
+            .is_some_and(|record| !record.collapsed)
+            && session.clusters.cluster_for_member(id).is_none()
+    }) {
         session.nodes.focus(None, 0);
     }
     let focused = wayland::focus::current(
