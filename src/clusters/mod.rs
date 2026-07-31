@@ -11,6 +11,7 @@ use smithay::utils::{Logical, Point, Rectangle};
 mod membership;
 mod overflow;
 pub mod render;
+mod transition;
 
 #[derive(Clone, Debug)]
 pub struct ClusterMetadata {
@@ -44,6 +45,7 @@ pub enum WindowPresentation {
     Workspace {
         rect: Rectangle<i32, Logical>,
         depth: usize,
+        alpha: f32,
     },
 }
 
@@ -54,6 +56,7 @@ pub struct ClusterSystem {
     metadata: HashMap<ClusterId, ClusterMetadata>,
     slots: HashMap<String, Vec<ClusterId>>,
     active: HashMap<String, ClusterId>,
+    transitions: HashMap<String, transition::WorkspaceTransition>,
     floating: HashSet<NodeId>,
     join_candidate: Option<JoinCandidate>,
     creation: Option<CreationState>,
@@ -71,6 +74,7 @@ impl ClusterSystem {
             metadata: HashMap::new(),
             slots: HashMap::new(),
             active: HashMap::new(),
+            transitions: HashMap::new(),
             floating: HashSet::new(),
             join_candidate: None,
             creation: None,
@@ -275,7 +279,7 @@ impl ClusterSystem {
         )
     }
 
-    pub fn activate_slot(&mut self, output: &str, slot: u8) -> bool {
+    pub fn activate_slot(&mut self, output: &str, slot: u8, now: Duration) -> bool {
         let Some(id) = self
             .slots
             .get(output)
@@ -287,16 +291,18 @@ impl ClusterSystem {
         if self.active_on(output) == Some(id) {
             self.active.remove(output);
             self.registry.deactivate_cluster_workspace(id);
+            self.begin_transition(output, id, transition::TransitionKind::Closing, now);
         } else {
             if let Some(previous) = self.active.insert(output.to_string(), id) {
                 self.registry.deactivate_cluster_workspace(previous);
             }
             self.registry.activate_cluster_workspace(id);
+            self.begin_transition(output, id, transition::TransitionKind::Opening, now);
         }
         true
     }
 
-    pub fn activate(&mut self, output: &str, id: ClusterId) -> bool {
+    pub fn activate(&mut self, output: &str, id: ClusterId, now: Duration) -> bool {
         if self
             .metadata
             .get(&id)
@@ -307,11 +313,13 @@ impl ClusterSystem {
         if self.active_on(output) == Some(id) {
             self.active.remove(output);
             self.registry.deactivate_cluster_workspace(id);
+            self.begin_transition(output, id, transition::TransitionKind::Closing, now);
         } else {
             if let Some(previous) = self.active.insert(output.to_string(), id) {
                 self.registry.deactivate_cluster_workspace(previous);
             }
             self.registry.activate_cluster_workspace(id);
+            self.begin_transition(output, id, transition::TransitionKind::Opening, now);
         }
         true
     }
@@ -357,9 +365,20 @@ impl ClusterSystem {
         id: NodeId,
         output: &str,
         work_area: Rectangle<i32, Logical>,
+        core: Option<Point<i32, Logical>>,
+        now: Duration,
     ) -> WindowPresentation {
         let member_cluster = self.cluster_for_member(id);
-        let Some(active) = self.active_on(output) else {
+        let active = self.active_on(output);
+        let closing = self
+            .transitions
+            .get(output)
+            .filter(|transition| {
+                transition.kind == transition::TransitionKind::Closing
+                    && self.transition_cluster_on(output, now) == Some(transition.cluster_id)
+            })
+            .map(|transition| transition.cluster_id);
+        let Some(active) = active.or(closing) else {
             return if member_cluster.is_some() {
                 WindowPresentation::Hidden
             } else {
@@ -379,8 +398,8 @@ impl ClusterSystem {
             .placements
             .into_iter()
             .find(|placement| placement.node_id == id)
-            .map(|placement| WindowPresentation::Workspace {
-                rect: Rectangle::new(
+            .map(|placement| {
+                let target = Rectangle::new(
                     (
                         placement.rect.x.round() as i32,
                         placement.rect.y.round() as i32,
@@ -391,8 +410,13 @@ impl ClusterSystem {
                         placement.rect.h.round().max(1.0) as i32,
                     )
                         .into(),
-                ),
-                depth: placement.depth,
+                );
+                let visual = self.transition_visual(output, active, id, target, core, now);
+                WindowPresentation::Workspace {
+                    rect: visual.map_or(target, |visual| visual.rect),
+                    depth: placement.depth,
+                    alpha: visual.map_or(1.0, |visual| visual.alpha),
+                }
             })
             .unwrap_or(WindowPresentation::Hidden)
     }
@@ -736,7 +760,10 @@ pub fn handle_request<D: crate::session::SessionDriver>(
                 Ok(output) => output,
                 Err(message) => return halley_ipc::Response::Error(message),
             };
-            if session.clusters.activate_slot(&output, slot) {
+            if session
+                .clusters
+                .activate_slot(&output, slot, crate::frame_clock::monotonic_now())
+            {
                 session.request_redraw();
                 halley_ipc::Response::Ack
             } else {
@@ -780,7 +807,7 @@ mod tests {
         assert!(system.begin_naming());
         assert!(system.edit_name(NameInput::Character('W')));
         let id = system.finish_creation(&mut field).unwrap();
-        assert!(system.activate_slot("DP-1", 1));
+        assert!(system.activate_slot("DP-1", 1, Duration::ZERO));
 
         assert!(system.forget_destroyed_member(&mut field, a));
         assert_eq!(system.registry().cluster(id).unwrap().members(), &[b]);
@@ -819,7 +846,7 @@ mod tests {
         assert!(system.begin_naming());
         let cluster = system.finish_creation(&mut field).unwrap();
         system.metadata.get_mut(&cluster).unwrap().layout = ClusterWorkspaceLayoutKind::Tiling;
-        assert!(system.activate_slot("DP-1", 1));
+        assert!(system.activate_slot("DP-1", 1, Duration::ZERO));
         let work_area = Rectangle::new((0, 0).into(), (1_000, 700).into());
 
         assert_eq!(
@@ -867,7 +894,7 @@ mod tests {
             halley_config::WindowClusterParticipation::Float,
         ));
         assert_eq!(
-            system.window_presentation(floating, "DP-1", work_area),
+            system.window_presentation(floating, "DP-1", work_area, None, Duration::MAX),
             WindowPresentation::Field
         );
     }

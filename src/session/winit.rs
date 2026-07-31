@@ -377,7 +377,10 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                 let apogee_animating = crate::shell::apogee::tick(app, target_presentation_time);
                 let background_animating =
                     app.background_animates_on_output(&output, target_presentation_time);
-                if fullscreen_animating || maximize_animating {
+                let cluster_animating = app
+                    .clusters
+                    .is_animating_on_output(&output.name(), target_presentation_time);
+                if fullscreen_animating || maximize_animating || cluster_animating {
                     super::pointer::update_client_state(
                         app,
                         app.start_time.elapsed().as_millis() as u32,
@@ -546,6 +549,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                     || focus_cycle_animating
                     || apogee_animating
                     || background_animating
+                    || cluster_animating
                     || app.overlays.animating(target_presentation_time)
                     || app.render.node_renderer.has_pending_icons()
                     || cursor_animating

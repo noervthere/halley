@@ -90,17 +90,33 @@ pub(crate) fn window_visual_state(
                 .map(|id| (clusters, id))
         })
         .map(|(clusters, id)| {
+            let core = clusters
+                .transition_cluster_on(&output.name(), now)
+                .and_then(|cluster| clusters.metadata(cluster))
+                .map(|metadata| {
+                    crate::nodes::screen_from_world(
+                        metadata.core_position,
+                        cameras
+                            .get(&output.name())
+                            .expect("an output view always has a backing camera"),
+                        output_geometry,
+                    ) - output_geometry.loc
+                });
             clusters.window_presentation(
                 id,
                 &output.name(),
                 smithay::desktop::layer_map_for_output(output).non_exclusive_zone(),
+                core,
+                now,
             )
         })
         .unwrap_or(crate::clusters::WindowPresentation::Field);
-    let cluster_rect = match cluster_presentation {
+    let (cluster_rect, cluster_alpha) = match cluster_presentation {
         crate::clusters::WindowPresentation::Hidden => return None,
-        crate::clusters::WindowPresentation::Field => None,
-        crate::clusters::WindowPresentation::Workspace { rect, .. } => Some(rect.to_physical(1)),
+        crate::clusters::WindowPresentation::Field => (None, 1.0),
+        crate::clusters::WindowPresentation::Workspace { rect, alpha, .. } => {
+            (Some(rect.to_physical(1)), alpha)
+        }
     };
     let mut camera_rect = cluster_rect.unwrap_or_else(|| {
         crate::render::camera_rect(
@@ -148,7 +164,7 @@ pub(crate) fn window_visual_state(
         })
         .unwrap_or(camera_rect);
     let mut animated_rect = opening_visual.transform_rect(presentation_rect, presentation_rect);
-    let mut opening_alpha = opening_visual.alpha();
+    let mut opening_alpha = opening_visual.alpha() * cluster_alpha;
     let mut inherited_presentation = cluster_rect.is_some();
     let mut inherited_camera_center = camera_center;
     let mut inherited_zoom_scale = if cluster_rect.is_some() {

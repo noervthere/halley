@@ -117,6 +117,8 @@ impl ClusterSystem {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use halley_core::field::{Field, Vec2};
 
     use super::*;
@@ -145,7 +147,7 @@ mod tests {
         }
         assert!(system.begin_naming());
         let cluster = system.finish_creation(&mut field).unwrap();
-        assert!(system.activate("DP-1", cluster));
+        assert!(system.activate("DP-1", cluster, Duration::ZERO));
 
         let work_area = Rectangle::new((0, 0).into(), (1280, 720).into());
         let queue = system.overflow_layout("DP-1", work_area).unwrap();

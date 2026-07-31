@@ -291,7 +291,11 @@ fn dispatch_action<D: SessionDriver>(
         }
         super::SessionControl::ClusterSlot(slot) => {
             if let Some(output_name) = action_output
-                && session.clusters.activate_slot(&output_name, slot)
+                && session.clusters.activate_slot(
+                    &output_name,
+                    slot,
+                    crate::frame_clock::monotonic_now(),
+                )
             {
                 if let Some(id) = session.clusters.active_on(&output_name).or_else(|| {
                     session
@@ -955,7 +959,10 @@ where
             && let Some((id, output)) = cluster_at_pointer(session)
         {
             wayland::focus::select_output(&mut session.wayland, &output);
-            if session.clusters.activate(&output.name(), id) {
+            if session
+                .clusters
+                .activate(&output.name(), id, crate::frame_clock::monotonic_now())
+            {
                 sync_cluster_activation_focus(session, &output, id, serial);
                 session.suppressed_buttons.suppress(button);
                 session.request_redraw();

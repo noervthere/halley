@@ -857,6 +857,9 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
     let apogee_animating = crate::shell::apogee::tick(app, target_presentation_time);
     let background_animating = app.background_animates_on_output(output, target_presentation_time);
     let overlay_animating = app.overlays.animating(target_presentation_time);
+    let cluster_animating = app
+        .clusters
+        .is_animating_on_output(&output.name(), target_presentation_time);
     let show_cursor = super::pointer::cursor_visible(app);
     let cursor_override = app
         .capture
@@ -882,10 +885,11 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
         || apogee_animating
         || background_animating
         || overlay_animating
+        || cluster_animating
         || fullscreen_animating
         || maximize_animating
         || cursor_animating;
-    if (fullscreen_animating || maximize_animating) && pointer_is_on_output {
+    if (fullscreen_animating || maximize_animating || cluster_animating) && pointer_is_on_output {
         super::pointer::update_client_state(app, app.start_time.elapsed().as_millis() as u32);
     }
     let view_after = pointer_is_on_output
