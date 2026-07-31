@@ -15,62 +15,97 @@ pub(crate) struct InitialWindowPlacement {
     pub location: Point<i32, Logical>,
 }
 
+pub(crate) struct InitialWindowPlacementRequest<'a> {
+    pub wayland: &'a WaylandState,
+    pub cameras: &'a OutputCameras,
+    pub primary_output: &'a Output,
+    pub window: Option<&'a Window>,
+    pub window_size: Size<i32, Logical>,
+    pub placement: WindowSpawnPlacement,
+    pub cursor_position: Point<f64, Logical>,
+    pub gap: f32,
+}
+
 /// Resolves initial placement without moving any already-mapped window.
 pub(crate) fn initial_window_placement(
-    wayland: &WaylandState,
-    cameras: &OutputCameras,
-    primary_output: &Output,
-    window: Option<&Window>,
-    window_size: Size<i32, Logical>,
-    placement: WindowSpawnPlacement,
-    cursor_position: Point<f64, Logical>,
-    gap: f32,
+    request: InitialWindowPlacementRequest<'_>,
 ) -> InitialWindowPlacement {
-    let parent = window.and_then(|window| parent_window(wayland, window));
-    let focused = focused_window(wayland);
+    let parent = request
+        .window
+        .and_then(|window| parent_window(request.wayland, window));
+    let focused = focused_window(request.wayland);
     let adjacent_anchor = parent.as_ref().or(focused.as_ref());
     let preferred_anchor = parent.as_ref();
 
-    let mut output = match placement {
-        WindowSpawnPlacement::Cursor => wayland.space.output_under(cursor_position).next().cloned(),
+    let mut output = match request.placement {
+        WindowSpawnPlacement::Cursor => request
+            .wayland
+            .space
+            .output_under(request.cursor_position)
+            .next()
+            .cloned(),
         WindowSpawnPlacement::Center
         | WindowSpawnPlacement::Adjacent
         | WindowSpawnPlacement::App => preferred_anchor
             .as_ref()
             .or(adjacent_anchor.as_ref())
-            .and_then(|window| output_for_window(wayland, window)),
+            .and_then(|window| output_for_window(request.wayland, window)),
         WindowSpawnPlacement::Default | WindowSpawnPlacement::ViewportCenter => None,
     }
     .unwrap_or_else(|| {
-        crate::wayland::focus::output_for_new_surface(wayland, None, primary_output)
+        crate::wayland::focus::output_for_new_surface(request.wayland, None, request.primary_output)
     });
 
-    let camera_centered = || centered_location_for_size(wayland, cameras, &output, window_size);
-    let location = match placement {
+    let camera_centered = || {
+        centered_location_for_size(
+            request.wayland,
+            request.cameras,
+            &output,
+            request.window_size,
+        )
+    };
+    let location = match request.placement {
         WindowSpawnPlacement::Default | WindowSpawnPlacement::ViewportCenter => camera_centered(),
         WindowSpawnPlacement::Cursor => center_window(
-            Point::<f32, Physical>::from((cursor_position.x as f32, cursor_position.y as f32)),
-            window_size,
+            Point::<f32, Physical>::from((
+                request.cursor_position.x as f32,
+                request.cursor_position.y as f32,
+            )),
+            request.window_size,
         ),
         WindowSpawnPlacement::Center => preferred_anchor
             .as_ref()
-            .and_then(|window| wayland.space.element_geometry(window))
-            .map(|geometry| center_in_rect(geometry, window_size))
+            .and_then(|window| request.wayland.space.element_geometry(window))
+            .map(|geometry| center_in_rect(geometry, request.window_size))
             .unwrap_or_else(camera_centered),
         WindowSpawnPlacement::Adjacent => adjacent_anchor
             .as_ref()
-            .and_then(|anchor| adjacent_location(wayland, &output, anchor, window_size, gap))
+            .and_then(|anchor| {
+                adjacent_location(
+                    request.wayland,
+                    &output,
+                    anchor,
+                    request.window_size,
+                    request.gap,
+                )
+            })
             .unwrap_or_else(camera_centered),
         WindowSpawnPlacement::App => {
             if let Some(parent) = preferred_anchor.as_ref()
-                && let Some(geometry) = wayland.space.element_geometry(parent)
+                && let Some(geometry) = request.wayland.space.element_geometry(parent)
             {
-                center_in_rect(geometry, window_size)
+                center_in_rect(geometry, request.window_size)
             } else {
                 adjacent_anchor
                     .as_ref()
                     .and_then(|anchor| {
-                        adjacent_location(wayland, &output, anchor, window_size, gap)
+                        adjacent_location(
+                            request.wayland,
+                            &output,
+                            anchor,
+                            request.window_size,
+                            request.gap,
+                        )
                     })
                     .unwrap_or_else(camera_centered)
             }
@@ -79,12 +114,12 @@ pub(crate) fn initial_window_placement(
 
     // A parent or focused anchor can resolve an output after the initial
     // selection above. Keep the returned ownership and location coherent.
-    if let Some(anchor_output) = match placement {
+    if let Some(anchor_output) = match request.placement {
         WindowSpawnPlacement::Center | WindowSpawnPlacement::App => preferred_anchor.as_ref(),
         WindowSpawnPlacement::Adjacent => adjacent_anchor.as_ref(),
         _ => None,
     }
-    .and_then(|window| output_for_window(wayland, window))
+    .and_then(|window| output_for_window(request.wayland, window))
     {
         output = anchor_output;
     }

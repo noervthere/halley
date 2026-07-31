@@ -324,14 +324,16 @@ fn admit_window<D: SessionDriver>(session: &mut Session<D>, xid: u32) {
         ));
     }
     let initial_placement = crate::window::routing::initial_window_placement(
-        &session.wayland,
-        &session.cameras,
-        session.driver.primary_output(),
-        Some(&window),
-        opening_size,
-        rule.spawn_placement,
-        smithay::utils::Point::from(session.pointer.position()),
-        session.field_config.gap,
+        crate::window::routing::InitialWindowPlacementRequest {
+            wayland: &session.wayland,
+            cameras: &session.cameras,
+            primary_output: session.driver.primary_output(),
+            window: Some(&window),
+            window_size: opening_size,
+            placement: rule.spawn_placement,
+            cursor_position: smithay::utils::Point::from(session.pointer.position()),
+            gap: session.field_config.gap,
+        },
     );
     let mut output = initial_placement.output;
     let mut location = initial_placement.location;
@@ -347,14 +349,16 @@ fn admit_window<D: SessionDriver>(session: &mut Session<D>, xid: u32) {
             location = restore.geometry.loc;
         } else {
             let placement = crate::window::routing::initial_window_placement(
-                &session.wayland,
-                &session.cameras,
-                session.driver.primary_output(),
-                Some(&window),
-                opening_size,
-                halley_config::WindowSpawnPlacement::Default,
-                smithay::utils::Point::from(session.pointer.position()),
-                session.field_config.gap,
+                crate::window::routing::InitialWindowPlacementRequest {
+                    wayland: &session.wayland,
+                    cameras: &session.cameras,
+                    primary_output: session.driver.primary_output(),
+                    window: Some(&window),
+                    window_size: opening_size,
+                    placement: halley_config::WindowSpawnPlacement::Default,
+                    cursor_position: smithay::utils::Point::from(session.pointer.position()),
+                    gap: session.field_config.gap,
+                },
             );
             output = placement.output;
             location = placement.location;
@@ -378,14 +382,16 @@ fn admit_window<D: SessionDriver>(session: &mut Session<D>, xid: u32) {
                 recovered.h.clamp(1, output_size.h.max(1)),
             ));
             let placement = crate::window::routing::initial_window_placement(
-                &session.wayland,
-                &session.cameras,
-                session.driver.primary_output(),
-                Some(&window),
-                opening_size,
-                rule.spawn_placement,
-                smithay::utils::Point::from(session.pointer.position()),
-                session.field_config.gap,
+                crate::window::routing::InitialWindowPlacementRequest {
+                    wayland: &session.wayland,
+                    cameras: &session.cameras,
+                    primary_output: session.driver.primary_output(),
+                    window: Some(&window),
+                    window_size: opening_size,
+                    placement: rule.spawn_placement,
+                    cursor_position: smithay::utils::Point::from(session.pointer.position()),
+                    gap: session.field_config.gap,
+                },
             );
             output = placement.output;
             location = placement.location;
