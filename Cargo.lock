@@ -1192,6 +1192,7 @@ dependencies = [
 name = "halley-config"
 version = "0.1.0"
 dependencies = [
+ "regex",
  "rune-cfg",
 ]
 

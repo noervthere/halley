@@ -1,5 +1,6 @@
 pub mod animations;
 pub mod apogee;
+pub mod background;
 pub mod bearings;
 pub mod bootstrap;
 pub mod chord;
@@ -17,6 +18,7 @@ pub mod output;
 pub mod overlays;
 pub mod parse;
 pub mod physics;
+pub mod rules;
 pub mod runtime;
 pub mod screenshot;
 pub mod terminal;
@@ -28,6 +30,10 @@ pub use animations::{
     WindowOpenAnimation, WindowOpenAnimationType, load_animations, parse_animations,
 };
 pub use apogee::{Apogee, parse_apogee};
+pub use background::{
+    Background, BackgroundColor, BackgroundFit, BackgroundMode, BackgroundParseError,
+    parse_background,
+};
 pub use bearings::{Bearings, parse_bearings};
 pub use bootstrap::{
     DEFAULT_CONFIG, bootstrap_default_config, bootstrap_default_config_at, config_path,
@@ -66,6 +72,10 @@ pub use overlays::{
 };
 pub use parse::{ParseError, parse_keybinds};
 pub use physics::{Physics, parse_physics};
+pub use rules::{
+    WindowClusterParticipation, WindowRule, WindowRuleParseError, WindowRulePattern,
+    WindowSpawnPlacement, parse_window_rules,
+};
 pub use runtime::{
     RuntimeConfig, RuntimeConfigError, load_runtime_config_at, load_runtime_config_diagnostic_at,
     parse_runtime_config,

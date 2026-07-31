@@ -5,14 +5,15 @@ use std::path::Path;
 use rune_cfg::RuneConfig;
 
 use crate::{
-    Animations, Apogee, Autostart, Bearings, Cursor, Debug, Decay, Decorations, Effects,
-    EffectsParseError, Field, FieldParseError, FocusRingParseError, FocusRings, Font, Input,
-    InputParseError, Keybinds, LaunchConfigError, NodeParseError, Nodes, OutputConfig,
-    OutputParseError, OverlayParseError, Overlays, Physics, Screenshot, parse_animations,
-    parse_apogee, parse_autostart, parse_bearings, parse_cursor, parse_debug, parse_decay,
-    parse_decorations, parse_effects, parse_env, parse_field_checked, parse_focus_rings_checked,
-    parse_font, parse_input, parse_keybinds, parse_nodes_checked, parse_outputs_checked,
-    parse_overlays_checked, parse_physics, parse_screenshot,
+    Animations, Apogee, Autostart, Background, BackgroundParseError, Bearings, Cursor, Debug,
+    Decay, Decorations, Effects, EffectsParseError, Field, FieldParseError, FocusRingParseError,
+    FocusRings, Font, Input, InputParseError, Keybinds, LaunchConfigError, NodeParseError, Nodes,
+    OutputConfig, OutputParseError, OverlayParseError, Overlays, Physics, Screenshot, WindowRule,
+    WindowRuleParseError, parse_animations, parse_apogee, parse_autostart, parse_background,
+    parse_bearings, parse_cursor, parse_debug, parse_decay, parse_decorations, parse_effects,
+    parse_env, parse_field_checked, parse_focus_rings_checked, parse_font, parse_input,
+    parse_keybinds, parse_nodes_checked, parse_outputs_checked, parse_overlays_checked,
+    parse_physics, parse_screenshot, parse_window_rules,
 };
 
 /// One validated snapshot of every setting the running compositor currently
@@ -24,6 +25,8 @@ pub struct RuntimeConfig {
     pub autostart: Autostart,
     pub keybinds: Keybinds,
     pub decorations: Decorations,
+    pub background: Background,
+    pub window_rules: Vec<WindowRule>,
     pub field: Field,
     pub screenshot: Screenshot,
     pub cursor: Cursor,
@@ -54,6 +57,8 @@ pub enum RuntimeConfigError {
     Overlay(OverlayParseError),
     Effects(EffectsParseError),
     Field(FieldParseError),
+    Background(BackgroundParseError),
+    WindowRule(WindowRuleParseError),
 }
 
 impl fmt::Display for RuntimeConfigError {
@@ -69,6 +74,8 @@ impl fmt::Display for RuntimeConfigError {
             Self::Overlay(err) => write!(f, "{err}"),
             Self::Effects(err) => write!(f, "{err}"),
             Self::Field(err) => write!(f, "{err}"),
+            Self::Background(err) => write!(f, "{err}"),
+            Self::WindowRule(err) => write!(f, "{err}"),
         }
     }
 }
@@ -135,12 +142,26 @@ impl From<FieldParseError> for RuntimeConfigError {
     }
 }
 
+impl From<BackgroundParseError> for RuntimeConfigError {
+    fn from(value: BackgroundParseError) -> Self {
+        Self::Background(value)
+    }
+}
+
+impl From<WindowRuleParseError> for RuntimeConfigError {
+    fn from(value: WindowRuleParseError) -> Self {
+        Self::WindowRule(value)
+    }
+}
+
 pub fn parse_runtime_config(config: &RuneConfig) -> Result<RuntimeConfig, RuntimeConfigError> {
     Ok(RuntimeConfig {
         env: parse_env(config)?,
         autostart: parse_autostart(config)?,
         keybinds: parse_keybinds(config)?,
         decorations: parse_decorations(config),
+        background: parse_background(config)?,
+        window_rules: parse_window_rules(config)?,
         field: parse_field_checked(config)?,
         screenshot: parse_screenshot(config),
         cursor: parse_cursor(config),
