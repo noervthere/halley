@@ -564,6 +564,7 @@ pub fn collapse<D: crate::session::SessionDriver>(
     {
         eventline::warn!("xwayland: failed to mark collapsed window hidden: {err}");
     }
+    session.xwayland.set_window_iconic(&record.window);
     let collapse_origin = rect_center(geometry);
     let scale = session
         .cameras
@@ -656,6 +657,7 @@ fn restore_with_centering<D: crate::session::SessionDriver>(
     {
         eventline::warn!("xwayland: failed to clear restored window hidden state: {err}");
     }
+    session.xwayland.set_window_normal(&record.window);
     session.wayland.collapsed.remove(&record.surface);
     let now = crate::frame_clock::monotonic_now();
     let now_ms = session.start_time.elapsed().as_millis() as u64;

@@ -131,6 +131,38 @@ impl<D: SessionDriver> State<D> {
         }
     }
 
+    fn transition_surface(
+        &mut self,
+        surface: &smithay::xwayland::X11Surface,
+        state: xwm::WindowState,
+    ) {
+        let xid = surface.window_id();
+        self.managed_states.transition(xid, state);
+        let Some(control) = self.control.as_ref() else {
+            return;
+        };
+        let result = match state {
+            xwm::WindowState::Withdrawn => control.withdraw(xid),
+            xwm::WindowState::Normal => control.set_wm_state(xid, control::IcccmState::Normal),
+            xwm::WindowState::Iconic => control.set_wm_state(xid, control::IcccmState::Iconic),
+        };
+        if let Err(err) = result {
+            eventline::warn!("xwayland: failed ICCCM transition xid={xid} state={state:?}: {err}");
+        }
+    }
+
+    pub fn set_window_iconic(&mut self, window: &Window) {
+        if let Some(surface) = window.x11_surface() {
+            self.transition_surface(surface, xwm::WindowState::Iconic);
+        }
+    }
+
+    pub fn set_window_normal(&mut self, window: &Window) {
+        if let Some(surface) = window.x11_surface() {
+            self.transition_surface(surface, xwm::WindowState::Normal);
+        }
+    }
+
     fn clear(&mut self) {
         self.control = None;
         for (_, pending) in self.pending_override_redirects.drain() {
@@ -180,18 +212,17 @@ where
                 x11_socket,
                 client.clone(),
             ) {
-                Ok(mut xwm) => {
-                    if let Err(err) =
-                        xwm.set_randr_primary_output(Some(session.driver.primary_output()))
-                    {
-                        eventline::warn!(
-                            "xwayland: failed to publish initial RandR primary output: {err}"
-                        );
-                    }
+                Ok(xwm) => {
                     session.xwayland.xwm = Some(xwm);
                     session.xwayland.display = Some(display_number);
                     match control::X11Control::connect(display_number) {
                         Ok(control) => {
+                            let primary = session.driver.primary_output().name();
+                            if let Err(err) = control.set_randr_primary_output(&primary) {
+                                eventline::warn!(
+                                    "xwayland: failed to publish RandR primary output {primary}: {err}"
+                                );
+                            }
                             session.xwayland.control = Some(control);
                             eventline::info!("xwayland: ICCCM/EWMH control connection ready");
                         }

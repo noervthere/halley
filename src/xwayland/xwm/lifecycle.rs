@@ -2,30 +2,6 @@ use super::state::WindowState;
 use super::*;
 use x11rb::properties::WmHintsState;
 
-pub(super) fn transition_icccm<D: SessionDriver>(
-    session: &mut Session<D>,
-    surface: &X11Surface,
-    state: WindowState,
-) {
-    let xid = surface.window_id();
-    session.xwayland.managed_states.transition(xid, state);
-    let Some(control) = session.xwayland.control.as_ref() else {
-        return;
-    };
-    let result = match state {
-        WindowState::Withdrawn => control.withdraw(xid),
-        WindowState::Normal => {
-            control.set_wm_state(xid, crate::xwayland::control::IcccmState::Normal)
-        }
-        WindowState::Iconic => {
-            control.set_wm_state(xid, crate::xwayland::control::IcccmState::Iconic)
-        }
-    };
-    if let Err(err) = result {
-        eventline::warn!("xwayland: failed ICCCM transition xid={xid} state={state:?}: {err}");
-    }
-}
-
 fn sync_allowed_actions<D: SessionDriver>(session: &Session<D>, surface: &X11Surface) {
     let Some(control) = session.xwayland.control.as_ref() else {
         return;
@@ -136,7 +112,8 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
             eventline::warn!("xwayland: failed to map window: {err}");
             return;
         }
-        transition_icccm(self, &surface, WindowState::Normal);
+        self.xwayland
+            .transition_surface(&surface, WindowState::Normal);
         sync_allowed_actions(self, &surface);
         sync_urgency(&surface);
         if initial_iconic {
@@ -205,7 +182,8 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
         }
         // `set_mapped(false)` uses IconicState internally; delete WM_STATE
         // afterwards because this path is an ICCCM withdrawal, not minimize.
-        transition_icccm(self, &surface, WindowState::Withdrawn);
+        self.xwayland
+            .transition_surface(&surface, WindowState::Withdrawn);
         refresh_override_redirect_owners(self);
         crate::session::sync_keyboard_focus(self, SERIAL_COUNTER.next_serial());
         self.request_redraw();
@@ -455,8 +433,6 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
             if let Err(err) = surface.set_hidden(false) {
                 eventline::warn!("xwayland: failed to reject minimize request: {err}");
             }
-        } else {
-            transition_icccm(self, &surface, WindowState::Iconic);
         }
         self.request_redraw();
     }
@@ -469,9 +445,8 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
                     .map(|wl_surface| wl_surface.into_owned())
             })
             .and_then(|wl_surface| self.nodes.id_for_surface(&wl_surface))
-            && crate::nodes::restore(self, id, SERIAL_COUNTER.next_serial())
         {
-            transition_icccm(self, &surface, WindowState::Normal);
+            let _ = crate::nodes::restore(self, id, SERIAL_COUNTER.next_serial());
         }
         self.request_redraw();
     }
@@ -629,8 +604,7 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
     }
 
     fn randr_primary_output_change(&mut self, _xwm: XwmId, output_name: Option<String>) {
-        let primary = self.driver.primary_output().clone();
-        let primary_name = primary.name();
+        let primary_name = self.driver.primary_output().name();
         if output_name.as_deref() == Some(primary_name.as_str()) {
             return;
         }
@@ -639,8 +613,8 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
             output_name,
             primary_name
         );
-        if let Some(xwm) = self.xwayland.xwm.as_mut()
-            && let Err(err) = xwm.set_randr_primary_output(Some(&primary))
+        if let Some(control) = self.xwayland.control.as_ref()
+            && let Err(err) = control.set_randr_primary_output(&primary_name)
         {
             eventline::warn!("xwayland: failed to restore RandR primary output: {err}");
         }

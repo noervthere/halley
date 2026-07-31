@@ -3,6 +3,9 @@ use std::error::Error;
 
 use x11rb::NONE;
 use x11rb::connection::Connection;
+use x11rb::errors::ReplyError;
+use x11rb::protocol::ErrorKind;
+use x11rb::protocol::randr::ConnectionExt as _;
 use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as _, GetGeometryReply, PropMode, Window};
 use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as _;
@@ -121,9 +124,15 @@ impl X11Control {
     }
 
     pub fn withdraw(&self, window: Window) -> Result<(), Box<dyn Error>> {
-        self.connection
+        let result = self
+            .connection
             .delete_property(window, self.atoms.WM_STATE)?
-            .check()?;
+            .check();
+        if let Err(err) = result
+            && !matches!(err, ReplyError::X11Error(ref error) if error.error_kind == ErrorKind::Window)
+        {
+            return Err(err.into());
+        }
         Ok(())
     }
 
@@ -177,6 +186,26 @@ impl X11Control {
             )?
             .check()?;
         Ok(())
+    }
+
+    pub fn set_randr_primary_output(&self, output_name: &str) -> Result<(), Box<dyn Error>> {
+        let resources = self
+            .connection
+            .randr_get_screen_resources_current(self.root)?
+            .reply()?;
+        for output in resources.outputs {
+            let info = self
+                .connection
+                .randr_get_output_info(output, resources.config_timestamp)?
+                .reply()?;
+            if info.name == output_name.as_bytes() {
+                self.connection
+                    .randr_set_output_primary(self.root, output)?
+                    .check()?;
+                return Ok(());
+            }
+        }
+        Err(format!("RandR output {output_name:?} was not found").into())
     }
 }
 

@@ -31,8 +31,7 @@ use override_redirect::*;
 pub(super) use presentation::restore_maximized_window;
 use presentation::*;
 pub(super) use presentation::{configure_window, reconfigure_fullscreen, set_window_fullscreen};
-pub(super) use state::ManagedStateRegistry;
-use state::WindowState;
+pub(super) use state::{ManagedStateRegistry, WindowState};
 
 #[derive(Clone, Debug)]
 struct MaximizeRestore {
@@ -494,10 +493,10 @@ fn admit_window<D: SessionDriver>(session: &mut Session<D>, xid: u32) {
             .wl_surface()
             .and_then(|surface| session.nodes.id_for_surface(surface.as_ref()))
             .is_some_and(|id| crate::nodes::collapse(session, id, SERIAL_COUNTER.next_serial()));
-        if collapsed {
-            lifecycle::transition_icccm(session, &surface, WindowState::Iconic);
-        } else {
-            lifecycle::transition_icccm(session, &surface, WindowState::Normal);
+        if !collapsed {
+            session
+                .xwayland
+                .transition_surface(&surface, WindowState::Normal);
             crate::session::focus_window(session, &window, SERIAL_COUNTER.next_serial());
         }
     } else if !surface.is_override_redirect() {
