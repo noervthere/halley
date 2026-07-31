@@ -132,7 +132,7 @@ mod tests {
                 )
             }
         }
-        assert_eq!(kb.binds.len(), 30);
+        assert_eq!(kb.binds.len(), 42);
 
         let quit = kb.binds.iter().find(|b| b.action == Action::Quit).unwrap();
         assert!(quit.modifiers.super_key);
@@ -215,6 +215,43 @@ mod tests {
         assert!(backward.modifiers.alt);
         assert!(backward.modifiers.shift);
         assert_eq!(backward.key, "tab");
+
+        for (direction, key) in [
+            (Direction::Left, "left"),
+            (Direction::Right, "right"),
+            (Direction::Up, "up"),
+            (Direction::Down, "down"),
+        ] {
+            let focus = kb
+                .binds
+                .iter()
+                .find(|bind| bind.action == Action::ClusterTileFocus(direction))
+                .unwrap();
+            assert!(focus.modifiers.super_key);
+            assert!(!focus.modifiers.ctrl);
+            assert!(!focus.modifiers.shift);
+            assert_eq!(focus.key, key);
+
+            let swap = kb
+                .binds
+                .iter()
+                .find(|bind| bind.action == Action::ClusterTileSwap(direction))
+                .unwrap();
+            assert!(swap.modifiers.super_key);
+            assert!(swap.modifiers.ctrl);
+            assert!(!swap.modifiers.shift);
+            assert_eq!(swap.key, key);
+
+            let monitor = kb
+                .binds
+                .iter()
+                .find(|bind| bind.action == Action::MonitorFocus(direction))
+                .unwrap();
+            assert!(monitor.modifiers.super_key);
+            assert!(!monitor.modifiers.ctrl);
+            assert!(monitor.modifiers.shift);
+            assert_eq!(monitor.key, key);
+        }
 
         let term = kb
             .binds

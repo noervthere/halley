@@ -1,4 +1,4 @@
-use halley_config::{Action, DefaultTerminal, ModifierKey, parse_keybinds};
+use halley_config::{Action, DefaultTerminal, Direction, ModifierKey, parse_keybinds};
 use rune_cfg::RuneConfig;
 
 const EXAMPLE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../examples/halley.rune");
@@ -21,7 +21,7 @@ fn example_config_parses_end_to_end() {
             )
         }
     }
-    assert_eq!(keybinds.binds.len(), 30);
+    assert_eq!(keybinds.binds.len(), 42);
 
     let quit = keybinds
         .binds
@@ -83,6 +83,32 @@ fn example_config_parses_end_to_end() {
     assert_eq!(bearings_toggle.key, "z");
     assert!(bearings_toggle.modifiers.super_key);
     assert!(bearings_toggle.modifiers.shift);
+
+    let cluster_left = keybinds
+        .binds
+        .iter()
+        .find(|bind| bind.action == Action::ClusterTileFocus(Direction::Left))
+        .expect("cluster left-focus bind present");
+    assert_eq!(cluster_left.key, "left");
+    assert!(cluster_left.modifiers.super_key);
+
+    let tile_swap_down = keybinds
+        .binds
+        .iter()
+        .find(|bind| bind.action == Action::ClusterTileSwap(Direction::Down))
+        .expect("cluster down-swap bind present");
+    assert_eq!(tile_swap_down.key, "down");
+    assert!(tile_swap_down.modifiers.super_key);
+    assert!(tile_swap_down.modifiers.ctrl);
+
+    let monitor_right = keybinds
+        .binds
+        .iter()
+        .find(|bind| bind.action == Action::MonitorFocus(Direction::Right))
+        .expect("right monitor-focus bind present");
+    assert_eq!(monitor_right.key, "right");
+    assert!(monitor_right.modifiers.super_key);
+    assert!(monitor_right.modifiers.shift);
 
     let terminal = keybinds
         .binds

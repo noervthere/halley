@@ -196,7 +196,10 @@ resolving `keycode-N`.
 The built-in action strings are `quit`, `close-focused`, `toggle-fullscreen`,
 `maximize-focused`, `toggle-state`, `apogee`, `bearings-show`,
 `bearings-toggle`, `cycle-focus`, `cycle-focus-backward`, `open-terminal`,
-`zoom-in`, `zoom-out`, `zoom-reset`, and `screenshot`. `Alt+Tab` and
+`zoom-in`, `zoom-out`, `zoom-reset`, and `screenshot`. Parameterized actions
+also include `cluster-focus-DIRECTION`, `cluster-tile-swap-DIRECTION`, and
+`monitor-focus DIRECTION`, where `DIRECTION` is `left`, `right`, `up`, or
+`down`. `Alt+Tab` and
 `Alt+Shift+Tab` open and navigate the focus carousel; releasing Alt commits,
 focuses and raises the selected window, and moves the pointer to its final
 presentation center. A collapsed target restores first and receives one
@@ -218,6 +221,14 @@ hides them on the initiating key's release, even if Mod was released first.
 `Mod+Shift+Z` toggles the same UI persistently. See
 [Bearings](bearings.md) for layout, click behavior, configuration, and
 `halleyctl` controls.
+
+The default `Mod+Arrow` bindings focus directionally in a tiling cluster. In a
+stacking cluster, `Mod+Left` cycles forward and `Mod+Right` cycles backward;
+the vertical arrows are inert there. `Mod+Ctrl+Arrow` swaps the focused tile
+with its directional neighbour. `Mod+Shift+Arrow` works in either the Field or
+a cluster: it selects the adjacent monitor in that direction and focuses that
+monitor's most recently focused window. Monitor selection follows configured
+output geometry, so non-row layouts work without connector-specific bindings.
 `toggle-state` collapses the focused window to a node or restores
 it in one action; its default binding is `$var.mod+n`. Optional
 `node.click-collapsed-pan` camera movement begins in that same action and never

@@ -705,6 +705,13 @@ keybinds:
   "alt+tab" "cycle-focus"
   "alt+shift+tab" "cycle-focus-backward"
 
+  # Jump to the adjacent monitor and focus its most recently focused window.
+  # This works from both the Field and an open cluster workspace.
+  "$var.mod+shift+left" "monitor-focus left"
+  "$var.mod+shift+right" "monitor-focus right"
+  "$var.mod+shift+up" "monitor-focus up"
+  "$var.mod+shift+down" "monitor-focus down"
+
   # Create a cluster, switch the active cluster's layout, or open a numbered
   # cluster slot on the currently selected monitor. Press an open slot again
   # to return to the Field. Slot 10 uses 0, like a ten-key workspace row.
@@ -721,14 +728,19 @@ keybinds:
   "$var.mod+9" "cluster-slot-9"
   "$var.mod+0" "cluster-slot-10"
 
-  # Alt+Tab and Alt+Shift+Tab cycle forward/backward when a stacking cluster
-  # is open. Outside a stacking cluster they retain normal focus-cycle use.
-  #
-  # Directional tiling commands are available for custom bindings:
-  # "$var.mod+ctrl+left" "cluster-tile-focus-left"
-  # "$var.mod+ctrl+right" "cluster-tile-focus-right"
-  # "$var.mod+ctrl+shift+left" "cluster-tile-swap-left"
-  # "$var.mod+ctrl+shift+right" "cluster-tile-swap-right"
+  # Directional cluster navigation. In a tiling cluster all four arrows focus
+  # the nearest tile. In a stacking cluster Left cycles forward and Right
+  # cycles backward; Alt+Tab and Alt+Shift+Tab retain the same stack behavior.
+  "$var.mod+left" "cluster-focus-left"
+  "$var.mod+right" "cluster-focus-right"
+  "$var.mod+up" "cluster-focus-up"
+  "$var.mod+down" "cluster-focus-down"
+
+  # Reorder the focused tile with its nearest neighbour in that direction.
+  "$var.mod+ctrl+left" "cluster-tile-swap-left"
+  "$var.mod+ctrl+right" "cluster-tile-swap-right"
+  "$var.mod+ctrl+up" "cluster-tile-swap-up"
+  "$var.mod+ctrl+down" "cluster-tile-swap-down"
 
   # `open-terminal` uses `default-terminal` near the end of this section.
   "$var.mod+t" "open-terminal"
