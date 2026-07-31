@@ -105,6 +105,22 @@ fn cluster_at_pointer<D: SessionDriver>(
     Some((id, output))
 }
 
+fn cluster_overflow_at_pointer<D: SessionDriver>(
+    session: &Session<D>,
+) -> Option<(halley_core::field::NodeId, Output)> {
+    let position = session.pointer.position();
+    let (output, geometry) = output_at_pointer(&session.wayland.space, position)?;
+    let work_area = smithay::desktop::layer_map_for_output(&output).non_exclusive_zone();
+    let local = Point::<f64, Logical>::from((
+        position.0 - f64::from(geometry.loc.x),
+        position.1 - f64::from(geometry.loc.y),
+    ));
+    let member = session
+        .clusters
+        .overflow_hit_test(&output.name(), work_area, local)?;
+    Some((member, output))
+}
+
 fn sync_cluster_activation_focus<D: SessionDriver>(
     session: &mut Session<D>,
     output: &Output,
@@ -908,6 +924,27 @@ where
         if button == BTN_LEFT
             && state == ButtonState::Pressed
             && !session.focus_cycle.is_open()
+            && let Some((member, output)) = cluster_overflow_at_pointer(session)
+            && session
+                .clusters
+                .promote_overflow_member(&output.name(), member)
+        {
+            wayland::focus::select_output(&mut session.wayland, &output);
+            if let Some(window) = session
+                .nodes
+                .record(member)
+                .map(|record| record.window.clone())
+            {
+                super::focus_window(session, &window, serial);
+            }
+            session.suppressed_buttons.suppress(button);
+            session.request_redraw();
+            intercepted = true;
+        }
+        if button == BTN_LEFT
+            && state == ButtonState::Pressed
+            && !session.focus_cycle.is_open()
+            && !intercepted
             && let Some((id, output)) = cluster_at_pointer(session)
         {
             wayland::focus::select_output(&mut session.wayland, &output);

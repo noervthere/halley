@@ -7,6 +7,7 @@ use halley_core::cluster::{ClusterId, ClusterRegistry};
 use halley_core::field::{Field, NodeId, Vec2};
 use smithay::utils::{Logical, Point, Rectangle};
 
+mod overflow;
 pub mod render;
 
 #[derive(Clone, Debug)]
