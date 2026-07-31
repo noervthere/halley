@@ -1,7 +1,11 @@
 use crate::decay::DecayLevel;
 use crate::field::{Field, Node, NodeId, NodeState, Vec2, Visibility};
-use crate::tiling::{MasterStackLayout, Rect, layout_master_stack};
+use self::tiling::{MasterStackLayout, Rect, layout_master_stack};
 use std::collections::HashMap;
+
+pub mod layout;
+pub mod stacking;
+pub mod tiling;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ClusterId(u64);
@@ -567,10 +571,10 @@ impl ClusterRegistry {
     pub fn cycle_cluster_stacking_members(
         &mut self,
         id: ClusterId,
-        direction: crate::cluster_layout::ClusterCycleDirection,
+        direction: self::layout::ClusterCycleDirection,
     ) -> Option<NodeId> {
         let cluster = self.clusters.get_mut(&id)?;
-        crate::stacking::cycle_stacking_members(&mut cluster.members, direction)
+        self::stacking::cycle_stacking_members(&mut cluster.members, direction)
     }
 
     pub fn dissolve_cluster(&mut self, field: &mut Field, id: ClusterId) -> bool {
@@ -1127,7 +1131,7 @@ mod tests {
         let cid = r.create_cluster(&mut f, members.clone()).unwrap();
         let cluster = r.cluster(cid).unwrap();
         let layout = cluster.workspace_layout(
-            crate::tiling::Rect {
+            self::tiling::Rect {
                 x: 0.0,
                 y: 0.0,
                 w: 1000.0,

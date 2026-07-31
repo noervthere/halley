@@ -1,3 +1,5 @@
+//! Pure geometry for a cluster's master/stack tiling layout.
+
 use crate::field::NodeId;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
