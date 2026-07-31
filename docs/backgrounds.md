@@ -49,13 +49,14 @@ background:
   colour "#181a26"
   accent-colour "#8fa8d8"
   intensity 1.0
-  animated false
+  animated true
 end
 ```
 
 `shader "space"` uses the exact old-Halley space shader bundled with Halley.
 It maps through the current output camera, so panning and zooming stay spatially
-coherent. Set `animated true` to advance its time uniform. Halley requests
+coherent. `animated true` restores the old-Halley star-field motion; use
+`animated false` when a completely static field is preferred. Halley requests
 continued frames only while an animated field shader is visible; a settled,
 opaque fullscreen window suppresses that work and remains eligible for
 automatic VRR. Apogee continues the animation because its tiles intentionally

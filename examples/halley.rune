@@ -370,7 +370,8 @@ background:
   # colour "#181a26"
   # accent-colour "#8fa8d8"
   # intensity 1.0
-  # animated false
+  # Animate the old-Halley star field. Set false for a completely static field.
+  # animated true
 end
 
 # Managed-window rules are shared by native Wayland and XWayland windows.
