@@ -266,6 +266,34 @@ pub fn build(
         &mut bearings,
     )?;
     elements.extend(bearings);
+    let mut cluster_creation = super::overlays::cluster_creation::elements(
+        renderer,
+        request.resources.cluster_creation_overlay,
+        output,
+        output_geometry,
+        request.desktop.clusters.creation(),
+        request.desktop.nodes,
+        request.desktop.cameras,
+        request.cursor.cursor_position,
+        request.overlays.overlay_config,
+        request.visuals.decorations,
+        request.resources.node_renderer,
+        request.resources.ui_text,
+    )?;
+    append_compositor_overlay_blur(
+        renderer,
+        output,
+        OverlayEffectStyle {
+            output_size: output_geometry.size,
+            identity: "cluster-creation",
+            blur: request.visuals.blur,
+            shadow: request.visuals.shadows.overlay,
+        },
+        request.resources.backdrop_blur_renderer,
+        request.resources.shadow_renderer,
+        &mut cluster_creation,
+    )?;
+    elements.extend(cluster_creation);
     elements.extend(layer_surface_scene_elements(
         renderer,
         output,

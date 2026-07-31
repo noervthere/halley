@@ -6,6 +6,7 @@ use super::effects::backdrop_blur::BackdropBlurRenderer;
 use super::effects::shadow::ShadowRenderer;
 use super::fullscreen_texture::FullscreenTextureTransitions;
 use super::node::NodeRenderer;
+use super::overlays::cluster_creation::ClusterCreationOverlay;
 use super::overlays::preview::OverlayPreviewCache;
 use super::text::UiTextRenderer;
 use super::window_decoration::WindowDecorationRenderer;
@@ -21,6 +22,7 @@ pub struct RenderState {
     pub(crate) background_renderer: BackgroundRenderer,
     pub(crate) fullscreen_textures: FullscreenTextureTransitions,
     pub(crate) overlay_previews: OverlayPreviewCache,
+    pub(crate) cluster_creation_overlay: ClusterCreationOverlay,
     pub(crate) node_renderer: NodeRenderer,
     pub(crate) cluster_renderer: ClusterRenderer,
     pub(crate) window_decoration_renderer: WindowDecorationRenderer,
@@ -38,6 +40,7 @@ pub struct RenderResources<'a> {
     pub background_renderer: &'a mut BackgroundRenderer,
     pub fullscreen_textures: &'a mut FullscreenTextureTransitions,
     pub overlay_previews: &'a mut OverlayPreviewCache,
+    pub cluster_creation_overlay: &'a mut ClusterCreationOverlay,
     pub node_renderer: &'a mut NodeRenderer,
     pub cluster_renderer: &'a mut ClusterRenderer,
     pub window_decoration_renderer: &'a mut WindowDecorationRenderer,
@@ -53,6 +56,7 @@ impl<'a> From<&'a mut RenderState> for RenderResources<'a> {
             background_renderer: &mut state.background_renderer,
             fullscreen_textures: &mut state.fullscreen_textures,
             overlay_previews: &mut state.overlay_previews,
+            cluster_creation_overlay: &mut state.cluster_creation_overlay,
             node_renderer: &mut state.node_renderer,
             cluster_renderer: &mut state.cluster_renderer,
             window_decoration_renderer: &mut state.window_decoration_renderer,
@@ -70,6 +74,7 @@ impl RenderState {
             background_renderer: BackgroundRenderer::default(),
             fullscreen_textures: FullscreenTextureTransitions::default(),
             overlay_previews: OverlayPreviewCache::default(),
+            cluster_creation_overlay: ClusterCreationOverlay::default(),
             node_renderer: NodeRenderer::default(),
             cluster_renderer: ClusterRenderer::default(),
             window_decoration_renderer: WindowDecorationRenderer::default(),

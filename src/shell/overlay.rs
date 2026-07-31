@@ -148,6 +148,22 @@ impl OverlayManager {
         );
     }
 
+    pub fn show_error(
+        &mut self,
+        output: String,
+        message: impl Into<String>,
+        duration_ms: u64,
+        now: Duration,
+    ) {
+        self.show_notification(
+            output,
+            message.into(),
+            NotificationKind::Error,
+            duration_ms,
+            now,
+        );
+    }
+
     pub fn clear_config_error(&mut self, now: Duration) -> bool {
         let Some(notification) = self.notification.as_mut() else {
             return false;

@@ -158,6 +158,24 @@ fn sync_cluster_activation_focus<D: SessionDriver>(
     }
 }
 
+fn finish_cluster_creation<D: SessionDriver>(session: &mut Session<D>) -> bool {
+    match session.clusters.finish_creation(&mut session.nodes.field) {
+        Ok(_) => {
+            crate::window::clear_focus(&mut session.wayland);
+            session
+                .nodes
+                .focus(None, session.start_time.elapsed().as_millis() as u64);
+            super::sync_keyboard_focus(session, SERIAL_COUNTER.next_serial());
+            session.cursor.set_override(None);
+            true
+        }
+        Err(message) => {
+            eventline::warn!("clusters: {message}");
+            false
+        }
+    }
+}
+
 fn navigate_cluster_tile<D: SessionDriver>(
     session: &mut Session<D>,
     output_name: &str,
@@ -414,6 +432,9 @@ enum KeyboardOutcome {
     ClusterAccept,
     ClusterCancel,
     ClusterBackspace,
+    ClusterDelete,
+    ClusterMoveLeft,
+    ClusterMoveRight,
     ClusterCharacter(char),
     ClusterIntercept,
 }
@@ -610,6 +631,36 @@ where
     }
     let position_after = session.pointer.position();
     session.request_redraw();
+
+    if motion.is_some()
+        && let Some(output) = session
+            .clusters
+            .creation()
+            .filter(|creation| creation.naming)
+            .map(|creation| creation.output.clone())
+    {
+        let hit = session
+            .render
+            .cluster_creation_overlay
+            .hit_test(&output, position_after);
+        if let Some(crate::render::overlays::cluster_creation::CreationOverlayHit::InputCaret(
+            caret,
+        )) = hit
+        {
+            session.clusters.drag_name_selection(caret);
+        }
+        session.cursor.set_override(match hit {
+            Some(crate::render::overlays::cluster_creation::CreationOverlayHit::ConfirmButton) => {
+                Some(smithay::input::pointer::CursorIcon::Pointer)
+            }
+            Some(crate::render::overlays::cluster_creation::CreationOverlayHit::InputCaret(_)) => {
+                Some(smithay::input::pointer::CursorIcon::Text)
+            }
+            None => None,
+        });
+        super::pointer::finish_frame(session, &pointer_handle);
+        return;
+    }
 
     if motion.is_some()
         && let crate::input::grab::Grab::PendingNode {
@@ -928,6 +979,48 @@ where
         }
         let route = super::pointer::route_for_discrete_input(session, time);
         if session.clusters.accepts_modal_input() {
+            let naming_output = session
+                .clusters
+                .creation()
+                .filter(|creation| creation.naming)
+                .map(|creation| creation.output.clone());
+            if let Some(output) = naming_output {
+                if button == BTN_LEFT {
+                    match state {
+                        ButtonState::Pressed => {
+                            match session
+                                .render
+                                .cluster_creation_overlay
+                                .hit_test(&output, session.pointer.position())
+                            {
+                                Some(
+                                    crate::render::overlays::cluster_creation::CreationOverlayHit::ConfirmButton,
+                                ) => {
+                                    finish_cluster_creation(session);
+                                }
+                                Some(
+                                    crate::render::overlays::cluster_creation::CreationOverlayHit::InputCaret(caret),
+                                ) => {
+                                    session.clusters.begin_name_selection(caret);
+                                }
+                                None => {}
+                            }
+                            session.suppressed_buttons.suppress(button);
+                        }
+                        ButtonState::Released => {
+                            session.suppressed_buttons.release_is_suppressed(button);
+                            session.clusters.end_name_selection();
+                        }
+                    }
+                    session.request_redraw();
+                } else if state == ButtonState::Pressed {
+                    session.suppressed_buttons.suppress(button);
+                } else {
+                    session.suppressed_buttons.release_is_suppressed(button);
+                }
+                super::pointer::finish_frame(session, &pointer_handle);
+                return;
+            }
             if button == BTN_LEFT
                 && state == ButtonState::Pressed
                 && let Some(crate::input::pointer::PointerRoute {
@@ -1312,6 +1405,9 @@ where
                         Keysym::Escape => KeyboardOutcome::ClusterCancel,
                         Keysym::Return | Keysym::KP_Enter => KeyboardOutcome::ClusterAccept,
                         Keysym::BackSpace => KeyboardOutcome::ClusterBackspace,
+                        Keysym::Delete => KeyboardOutcome::ClusterDelete,
+                        Keysym::Left => KeyboardOutcome::ClusterMoveLeft,
+                        Keysym::Right => KeyboardOutcome::ClusterMoveRight,
                         _ => sym
                             .key_char()
                             .map(KeyboardOutcome::ClusterCharacter)
@@ -1460,7 +1556,8 @@ where
             }
             Some(KeyboardOutcome::ClusterCancel) => {
                 session.suppressed_keys.suppress(keycode);
-                if session.clusters.cancel_creation() {
+                if session.clusters.back_or_cancel_creation() {
+                    session.cursor.set_override(None);
                     session.request_redraw();
                 }
             }
@@ -1471,18 +1568,19 @@ where
                     .creation()
                     .is_some_and(|creation| creation.naming)
                 {
-                    match session.clusters.finish_creation(&mut session.nodes.field) {
-                        Ok(_) => {
-                            crate::window::clear_focus(&mut session.wayland);
-                            session
-                                .nodes
-                                .focus(None, session.start_time.elapsed().as_millis() as u64);
-                            super::sync_keyboard_focus(session, SERIAL_COUNTER.next_serial());
-                        }
-                        Err(message) => eventline::warn!("clusters: {message}"),
-                    }
-                } else {
-                    session.clusters.begin_naming();
+                    finish_cluster_creation(session);
+                } else if !session.clusters.begin_naming()
+                    && let Some(output) = session
+                        .clusters
+                        .creation()
+                        .map(|creation| creation.output.clone())
+                {
+                    session.overlays.show_error(
+                        output,
+                        "Not enough selections\nSelect at least one window",
+                        3_000,
+                        crate::frame_clock::monotonic_now(),
+                    );
                 }
                 session.request_redraw();
             }
@@ -1491,6 +1589,33 @@ where
                 if session
                     .clusters
                     .edit_name(crate::clusters::NameInput::Backspace)
+                {
+                    session.request_redraw();
+                }
+            }
+            Some(KeyboardOutcome::ClusterDelete) => {
+                session.suppressed_keys.suppress(keycode);
+                if session
+                    .clusters
+                    .edit_name(crate::clusters::NameInput::Delete)
+                {
+                    session.request_redraw();
+                }
+            }
+            Some(KeyboardOutcome::ClusterMoveLeft) => {
+                session.suppressed_keys.suppress(keycode);
+                if session
+                    .clusters
+                    .edit_name(crate::clusters::NameInput::MoveLeft)
+                {
+                    session.request_redraw();
+                }
+            }
+            Some(KeyboardOutcome::ClusterMoveRight) => {
+                session.suppressed_keys.suppress(keycode);
+                if session
+                    .clusters
+                    .edit_name(crate::clusters::NameInput::MoveRight)
                 {
                     session.request_redraw();
                 }
