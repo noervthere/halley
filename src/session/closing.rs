@@ -83,7 +83,9 @@ pub(crate) fn capture_window<D: SessionDriver>(session: &mut Session<D>, window:
         visual.zoom_scale,
     ) as f32
         * fullscreen_border_alpha;
-    let anchor = if visual.fullscreen.is_some() {
+    let anchor = if visual.presentation_space
+        == crate::presentation::window::PresentationSpace::OutputLocal
+    {
         crate::render::close::CloseAnchor::OutputLocal
     } else {
         crate::render::close::CloseAnchor::Windowed {

@@ -23,7 +23,14 @@ pub(crate) struct WindowVisualState {
     pub(crate) maximize: Option<crate::presentation::maximize::FieldMaximizePresentation>,
     pub(crate) camera_center: Point<f32, Physical>,
     pub(crate) zoom_scale: f32,
+    pub(crate) presentation_space: PresentationSpace,
     inherited_presentation: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PresentationSpace {
+    Field,
+    OutputLocal,
 }
 
 fn presentation_source_rect(
@@ -166,6 +173,14 @@ pub(crate) fn window_visual_state(
     let mut animated_rect = opening_visual.transform_rect(presentation_rect, presentation_rect);
     let mut opening_alpha = opening_visual.alpha() * cluster_alpha;
     let mut inherited_presentation = cluster_rect.is_some();
+    let mut presentation_space = if cluster_rect.is_some()
+        || fullscreen_presentation.is_some()
+        || maximize_presentation.is_some()
+    {
+        PresentationSpace::OutputLocal
+    } else {
+        PresentationSpace::Field
+    };
     let mut inherited_camera_center = camera_center;
     let mut inherited_zoom_scale = if cluster_rect.is_some() {
         1.0
@@ -204,6 +219,7 @@ pub(crate) fn window_visual_state(
         opening_alpha = owner_visual.opening_alpha;
         inherited_camera_center = owner_visual.camera_center;
         inherited_zoom_scale = owner_visual.zoom_scale;
+        presentation_space = owner_visual.presentation_space;
         inherited_presentation = true;
     }
 
@@ -217,6 +233,7 @@ pub(crate) fn window_visual_state(
         maximize: maximize_presentation,
         camera_center: inherited_camera_center,
         zoom_scale: inherited_zoom_scale,
+        presentation_space,
         inherited_presentation,
     })
 }

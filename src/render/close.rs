@@ -300,6 +300,7 @@ fn resolve_windowed_destination(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use smithay::output::{PhysicalProperties, Subpixel};
 
     #[test]
     fn close_policy_respects_master_local_and_zero_duration_killswitches() {
@@ -345,6 +346,42 @@ mod tests {
         assert_eq!(
             resolve_windowed_destination(initial, captured, current),
             Rectangle::new((75, 50).into(), (200, 150).into())
+        );
+    }
+
+    #[test]
+    fn output_local_ghost_keeps_its_captured_tile_when_the_camera_is_unavailable() {
+        let output = Output::new(
+            "DP-1".into(),
+            PhysicalProperties {
+                size: (600, 340).into(),
+                subpixel: Subpixel::Unknown,
+                make: "Halley".into(),
+                model: "Test".into(),
+                serial_number: "1".into(),
+            },
+        );
+        let initial = Rectangle::new((420, 80).into(), (640, 720).into());
+        let metadata = CloseSnapshotMetadata {
+            output_name: output.name(),
+            initial_destination: initial,
+            anchor: CloseAnchor::OutputLocal,
+            stack_index: 0,
+            start_alpha: 1.0,
+            retract_origin: None,
+            border: None,
+            content_radius: 0.0,
+            collapse_target: None,
+        };
+
+        assert_eq!(
+            destination_for(
+                &metadata,
+                &output,
+                Rectangle::new((0, 0).into(), (1_920, 1_080).into()),
+                &OutputCameras::default(),
+            ),
+            Some(initial)
         );
     }
 }
