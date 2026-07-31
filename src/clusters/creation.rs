@@ -67,6 +67,19 @@ fn replace_selection(creation: &mut CreationState, replacement: &str) {
     creation.scroll_char = creation.scroll_char.min(creation.caret_char);
 }
 
+fn next_default_name<'a>(
+    output: &str,
+    metadata: impl Iterator<Item = &'a ClusterMetadata>,
+) -> String {
+    let used = metadata
+        .filter(|cluster| cluster.output == output)
+        .filter_map(|cluster| cluster.name.strip_prefix("Cluster "))
+        .filter_map(|slot| slot.parse::<usize>().ok())
+        .collect::<HashSet<_>>();
+    let slot = (1..).find(|slot| !used.contains(slot)).unwrap_or(1);
+    format!("Cluster {slot}")
+}
+
 impl ClusterSystem {
     pub fn creation(&self) -> Option<&CreationState> {
         self.creation.as_ref()
@@ -127,15 +140,24 @@ impl ClusterSystem {
     }
 
     pub fn begin_naming(&mut self) -> bool {
+        let Some(output) = self
+            .creation
+            .as_ref()
+            .filter(|creation| !creation.selected.is_empty() && !creation.naming)
+            .map(|creation| creation.output.clone())
+        else {
+            return false;
+        };
+        let default_name = next_default_name(&output, self.metadata.values());
         let Some(creation) = self.creation.as_mut() else {
             return false;
         };
-        if creation.selected.is_empty() || creation.naming {
-            return false;
+        if creation.name_buffer.is_empty() {
+            creation.name_buffer = default_name;
         }
         creation.naming = true;
         creation.caret_char = char_len(&creation.name_buffer);
-        creation.selection_anchor_char = creation.caret_char;
+        creation.selection_anchor_char = 0;
         creation.selection_focus_char = creation.caret_char;
         creation.scroll_char = 0;
         creation.dragging_selection = false;
@@ -334,6 +356,10 @@ mod tests {
             .selected
             .insert(selected);
         assert!(system.begin_naming());
+        assert_eq!(
+            system.creation().expect("creation").name_buffer,
+            "Cluster 1"
+        );
         assert!(system.back_or_cancel_creation());
 
         let creation = system.creation().expect("selection remains active");
@@ -377,5 +403,45 @@ mod tests {
         assert!(system.end_name_selection());
         assert!(system.edit_name(NameInput::Character('X')));
         assert_eq!(system.creation().expect("creation").name_buffer, "cXr");
+    }
+
+    #[test]
+    fn naming_prefills_and_selects_the_first_unused_default_name() {
+        let mut system = system();
+        system.metadata.insert(
+            ClusterId::new(1),
+            ClusterMetadata {
+                name: "Cluster 1".into(),
+                output: "DP-1".into(),
+                layout: ClusterWorkspaceLayoutKind::Tiling,
+                core: None,
+                core_position: Vec2 { x: 0.0, y: 0.0 },
+            },
+        );
+        system.metadata.insert(
+            ClusterId::new(2),
+            ClusterMetadata {
+                name: "Cluster 3".into(),
+                output: "DP-1".into(),
+                layout: ClusterWorkspaceLayoutKind::Tiling,
+                core: None,
+                core_position: Vec2 { x: 0.0, y: 0.0 },
+            },
+        );
+        assert!(system.begin_creation("DP-1".into()));
+        system
+            .creation
+            .as_mut()
+            .expect("creation")
+            .selected
+            .insert(NodeId::new(7));
+
+        assert!(system.begin_naming());
+        let creation = system.creation().expect("creation");
+        assert_eq!(creation.name_buffer, "Cluster 2");
+        assert_eq!(
+            selection_range(creation),
+            Some((0, "Cluster 2".chars().count()))
+        );
     }
 }
