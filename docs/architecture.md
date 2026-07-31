@@ -18,7 +18,9 @@ state do not share implementation files.
   maintaining separate rule engines.
 - `shell` owns renderer-independent overlay, bearings, focus-cycle, and Apogee
   state. Their GLES presentation lives below `render`.
-- `capture` owns screenshot selection, pixel capture, and screencast buffers.
+- `capture` owns screenshot selection, a separate portal source-chooser state
+  machine, pixel capture, and screencast buffers. Screenshot and portal chrome
+  have independent render modules and share only capture icon assets.
 - `wayland` and `xwayland` own protocol transactions. XWayland managed-window
   lifecycle, override-redirect policy, and presentation policy are separate.
 - `animation` owns pure timelines. Rendering consumes animation output but

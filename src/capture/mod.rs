@@ -2,6 +2,7 @@ pub mod menu;
 pub mod picker;
 pub mod screencast;
 mod screenshot;
+pub mod source_chooser;
 
 use std::path::PathBuf;
 
@@ -14,12 +15,14 @@ use picker::RegionPicker;
 pub(crate) use screenshot::{capture_monitor_region_pixels, render_monitor_region_dmabuf};
 pub(crate) use screenshot::{capture_source_pixels, capture_surface_tree, render_source_dmabuf};
 pub use screenshot::{save_region, save_window};
+use source_chooser::{SourceChooser, SourceMode, SourcePhase};
 
 use crate::session::{Session, SessionDriver};
 
 #[derive(Default)]
 pub struct CaptureState {
     picker: RegionPicker,
+    source_chooser: SourceChooser,
     selection: Option<Selection>,
     pending: Option<PendingCapture>,
 }
@@ -32,11 +35,6 @@ enum Selection {
     },
     Window {
         surface: Option<WlSurface>,
-        geometry: Option<Rectangle<i32, Logical>>,
-    },
-    Source {
-        source_types: u32,
-        selected: Option<halley_ipc::CaptureSource>,
         geometry: Option<Rectangle<i32, Logical>>,
     },
 }
@@ -79,7 +77,8 @@ pub enum CaptureKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CapturePress {
     Consumed,
-    Activate(ScreenshotMode),
+    ActivateScreenshot(ScreenshotMode),
+    ActivateSource(SourceMode),
     Accept,
 }
 
@@ -94,21 +93,35 @@ pub enum CaptureOverlay<'a> {
         hovered: Option<usize>,
         window_available: bool,
     },
+    SourceMenu {
+        output_name: &'a str,
+        selected: usize,
+        hovered: Option<usize>,
+        monitor_available: bool,
+        window_available: bool,
+    },
 }
 
 impl CaptureState {
     pub fn is_active(&self) -> bool {
-        self.selection.is_some()
+        self.selection.is_some() || self.source_chooser.is_active()
     }
 
     pub fn kind(&self) -> Option<CaptureKind> {
+        if self.source_chooser.is_active() {
+            return Some(CaptureKind::Source);
+        }
         match self.selection.as_ref()? {
             Selection::Menu => Some(CaptureKind::Menu),
             Selection::Area => Some(CaptureKind::Area),
             Selection::Screen { .. } => Some(CaptureKind::Screen),
             Selection::Window { .. } => Some(CaptureKind::Window),
-            Selection::Source { .. } => Some(CaptureKind::Source),
         }
+    }
+
+    pub fn menu_is_active(&self) -> bool {
+        matches!(self.selection, Some(Selection::Menu))
+            || self.source_chooser.phase() == Some(SourcePhase::Menu)
     }
 
     pub fn overlay(&self) -> CaptureOverlay<'_> {
@@ -130,12 +143,23 @@ impl CaptureState {
                 .map(CaptureOverlay::Region)
                 .unwrap_or(CaptureOverlay::None),
             Some(Selection::Screen { geometry, .. }) => CaptureOverlay::Highlight(*geometry),
-            Some(Selection::Window { geometry, .. } | Selection::Source { geometry, .. }) => {
-                geometry
-                    .map(CaptureOverlay::Highlight)
-                    .unwrap_or(CaptureOverlay::None)
+            Some(Selection::Window { geometry, .. }) => geometry
+                .map(CaptureOverlay::Highlight)
+                .unwrap_or(CaptureOverlay::None),
+            None if self.source_chooser.phase() == Some(SourcePhase::Menu) => {
+                CaptureOverlay::SourceMenu {
+                    output_name: self.source_chooser.output_name(),
+                    selected: self.source_chooser.selected(),
+                    hovered: self.source_chooser.hovered(),
+                    monitor_available: self.source_chooser.monitor_available(),
+                    window_available: self.source_chooser.window_available(),
+                }
             }
-            None => CaptureOverlay::None,
+            None => self
+                .source_chooser
+                .selection_geometry()
+                .map(CaptureOverlay::Highlight)
+                .unwrap_or(CaptureOverlay::None),
         }
     }
 
@@ -213,17 +237,25 @@ impl CaptureState {
 
     fn begin_source(
         &mut self,
+        space: &Space<Window>,
+        preferred_output: Option<&str>,
         source_types: u32,
         pending: PendingCapture,
     ) -> Result<(), PendingCapture> {
         if self.pending.is_some() {
             return Err(pending);
         }
-        self.selection = Some(Selection::Source {
-            source_types,
-            selected: None,
-            geometry: None,
-        });
+        let output = preferred_output
+            .and_then(|name| space.outputs().find(|output| output.name() == name))
+            .or_else(|| space.outputs().next());
+        let Some(output) = output else {
+            return Err(pending);
+        };
+        let Some(geometry) = space.output_geometry(output) else {
+            return Err(pending);
+        };
+        self.source_chooser
+            .begin(source_types, output.name(), geometry);
         self.pending = Some(pending);
         Ok(())
     }
@@ -236,6 +268,14 @@ impl CaptureState {
         {
             self.picker.update_bounds(bounds);
         }
+        if self.source_chooser.is_active()
+            && let Some(output) = space
+                .outputs()
+                .find(|output| output.name() == self.source_chooser.output_name())
+            && let Some(geometry) = space.output_geometry(output)
+        {
+            self.source_chooser.update_output_geometry(geometry);
+        }
     }
 
     pub fn press(&mut self, position: (f64, f64)) -> Option<CapturePress> {
@@ -246,7 +286,7 @@ impl CaptureState {
                     .and_then(|menu| menu.hit_test(Point::from(position)))
                     .map(|index| ScreenshotMode::ALL[index]);
                 Some(
-                    mode.map(CapturePress::Activate)
+                    mode.map(CapturePress::ActivateScreenshot)
                         .unwrap_or(CapturePress::Consumed),
                 )
             }
@@ -254,6 +294,12 @@ impl CaptureState {
                 self.picker.press(Point::from(position));
                 Some(CapturePress::Consumed)
             }
+            CaptureKind::Source if self.source_chooser.phase() == Some(SourcePhase::Menu) => Some(
+                self.source_chooser
+                    .hit_test(Point::from(position))
+                    .map(|index| CapturePress::ActivateSource(SourceMode::ALL[index]))
+                    .unwrap_or(CapturePress::Consumed),
+            ),
             CaptureKind::Screen | CaptureKind::Window | CaptureKind::Source => {
                 Some(CapturePress::Accept)
             }
@@ -266,13 +312,14 @@ impl CaptureState {
                 .local_menu_mut()
                 .is_some_and(|menu| menu.hover(Point::from(position)));
         }
+        if self.source_chooser.phase() == Some(SourcePhase::Menu) {
+            return self.source_chooser.hover_menu(Point::from(position));
+        }
         match self.selection {
             Some(Selection::Area) => self.picker.motion(Point::from(position)),
-            Some(
-                Selection::Screen { .. } | Selection::Window { .. } | Selection::Source { .. },
-            ) => true,
+            Some(Selection::Screen { .. } | Selection::Window { .. }) => true,
             Some(Selection::Menu) => unreachable!("handled above"),
-            None => false,
+            None => self.source_chooser.is_active(),
         }
     }
 
@@ -280,25 +327,34 @@ impl CaptureState {
         match self.selection {
             Some(Selection::Menu) => true,
             Some(Selection::Area) => self.picker.release(),
-            Some(
-                Selection::Screen { .. } | Selection::Window { .. } | Selection::Source { .. },
-            ) => true,
-            None => false,
+            Some(Selection::Screen { .. } | Selection::Window { .. }) => true,
+            None => self.source_chooser.is_active(),
         }
     }
 
     pub fn move_menu_selection(&mut self, delta: i32) -> bool {
-        matches!(self.selection, Some(Selection::Menu))
-            && self
-                .local_menu_mut()
-                .is_some_and(|menu| menu.move_selection(delta))
+        if self.source_chooser.phase() == Some(SourcePhase::Menu) {
+            self.source_chooser.move_selection(delta)
+        } else {
+            matches!(self.selection, Some(Selection::Menu))
+                && self
+                    .local_menu_mut()
+                    .is_some_and(|menu| menu.move_selection(delta))
+        }
     }
 
     pub fn activate_selected_menu(&mut self, space: &Space<Window>) -> bool {
+        if self.source_chooser.phase() == Some(SourcePhase::Menu) {
+            return self.source_chooser.activate_selected();
+        }
         let Some(mode) = self.local_menu().map(ScreenshotMenu::selected_mode) else {
             return false;
         };
         self.activate_menu(mode, space)
+    }
+
+    pub fn activate_source(&mut self, mode: SourceMode) -> bool {
+        self.source_chooser.activate(mode)
     }
 
     pub fn activate_menu(&mut self, mode: ScreenshotMode, space: &Space<Window>) -> bool {
@@ -333,6 +389,9 @@ impl CaptureState {
     }
 
     pub fn return_to_menu(&mut self) -> bool {
+        if self.source_chooser.is_active() {
+            return self.source_chooser.return_to_menu();
+        }
         if matches!(self.selection, Some(Selection::Menu)) || self.local_menu().is_none() {
             return false;
         }
@@ -377,28 +436,18 @@ impl CaptureState {
         window: Option<(halley_ipc::CaptureSource, Rectangle<i32, Logical>)>,
         monitor_geometry: Rectangle<i32, Logical>,
     ) -> bool {
-        let Some(Selection::Source {
-            source_types,
-            selected,
-            geometry,
-        }) = self.selection.as_mut()
-        else {
-            return false;
-        };
-        let window_allowed = *source_types & halley_ipc::SOURCE_WINDOW != 0;
-        let monitor_allowed = *source_types & halley_ipc::SOURCE_MONITOR != 0;
-        let choice = window
-            .filter(|_| window_allowed)
-            .or_else(|| monitor_allowed.then_some((monitor, monitor_geometry)));
-        let (source, bounds) = choice
-            .map(|(source, bounds)| (Some(source), Some(bounds)))
-            .unwrap_or((None, None));
-        *selected = source;
-        *geometry = bounds;
-        true
+        self.source_chooser
+            .hover_source(monitor, window, monitor_geometry)
     }
 
     fn accept(&mut self) -> Option<AcceptedCapture> {
+        if self.source_chooser.is_active() {
+            let source = self.source_chooser.take_selected()?;
+            return Some(AcceptedCapture {
+                target: AcceptedTarget::Source(source),
+                pending: self.pending.take()?,
+            });
+        }
         let target = match self.selection.take()? {
             Selection::Menu => {
                 self.selection = Some(Selection::Menu);
@@ -414,14 +463,6 @@ impl CaptureState {
                 self.selection = Some(selection);
                 return None;
             }
-            Selection::Source {
-                selected: Some(source),
-                ..
-            } => AcceptedTarget::Source(source),
-            selection @ Selection::Source { selected: None, .. } => {
-                self.selection = Some(selection);
-                return None;
-            }
         };
         Some(AcceptedCapture {
             target,
@@ -433,6 +474,7 @@ impl CaptureState {
         if matches!(self.selection.take(), Some(Selection::Area)) {
             self.picker.cancel();
         }
+        self.source_chooser.cancel();
         self.pending.take()
     }
 
@@ -567,9 +609,14 @@ pub fn request_source<D: SessionDriver>(
         request_handle: request.request_handle,
         reply,
     };
-    if let Err(PendingCapture::Source { reply, .. }) =
-        session.capture.begin_source(supported, pending)
-    {
+    let preferred =
+        crate::wayland::focus::selected_output(&session.wayland).map(|output| output.name());
+    if let Err(PendingCapture::Source { reply, .. }) = session.capture.begin_source(
+        &session.wayland.space,
+        preferred.as_deref(),
+        supported,
+        pending,
+    ) {
         let _ = reply.send(
             halley_ipc::Response::Source(halley_ipc::SourceChooserResponse::Failed {
                 message: "another capture is already active".to_string(),

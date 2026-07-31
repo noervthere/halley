@@ -337,8 +337,13 @@ where
                         ButtonState::Pressed => {
                             session.suppressed_buttons.suppress(BTN_LEFT);
                             match session.capture.press(proposed_position) {
-                                Some(crate::capture::CapturePress::Activate(mode)) => {
+                                Some(crate::capture::CapturePress::ActivateScreenshot(mode)) => {
                                     if session.capture.activate_menu(mode, &session.wayland.space) {
+                                        update_capture_pointer(session, proposed_position);
+                                    }
+                                }
+                                Some(crate::capture::CapturePress::ActivateSource(mode)) => {
+                                    if session.capture.activate_source(mode) {
                                         update_capture_pointer(session, proposed_position);
                                     }
                                 }
@@ -1102,14 +1107,10 @@ where
                         Some(Keysym::Return | Keysym::KP_Enter) => {
                             FilterResult::Intercept(KeyboardOutcome::CaptureAccept)
                         }
-                        Some(Keysym::Left)
-                            if data.capture.kind() == Some(crate::capture::CaptureKind::Menu) =>
-                        {
+                        Some(Keysym::Left) if data.capture.menu_is_active() => {
                             FilterResult::Intercept(KeyboardOutcome::CapturePrevious)
                         }
-                        Some(Keysym::Right)
-                            if data.capture.kind() == Some(crate::capture::CaptureKind::Menu) =>
-                        {
+                        Some(Keysym::Right) if data.capture.menu_is_active() => {
                             FilterResult::Intercept(KeyboardOutcome::CaptureNext)
                         }
                         _ => FilterResult::Intercept(KeyboardOutcome::CaptureIntercept),
@@ -1193,7 +1194,7 @@ where
                 }
             }
             Some(KeyboardOutcome::CaptureAccept) => {
-                if session.capture.kind() == Some(crate::capture::CaptureKind::Menu) {
+                if session.capture.menu_is_active() {
                     if session
                         .capture
                         .activate_selected_menu(&session.wayland.space)
@@ -1253,6 +1254,9 @@ fn update_capture_pointer<D: SessionDriver>(session: &mut Session<D>, position: 
             if let Some((_, geometry)) = output_at_pointer(&session.wayland.space, position) {
                 session.capture.hover_screen(geometry);
             }
+        }
+        Some(crate::capture::CaptureKind::Source) if session.capture.menu_is_active() => {
+            session.capture.motion(position);
         }
         Some(crate::capture::CaptureKind::Source) => {
             let Some(route) = super::pointer::route_client(session) else {

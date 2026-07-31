@@ -50,7 +50,46 @@ pub(super) fn capture_overlay_elements(
         .map(SceneElement::CaptureOverlay)
         .collect()),
         crate::capture::CaptureOverlay::Menu { .. } => Ok(Vec::new()),
+        crate::capture::CaptureOverlay::SourceMenu {
+            output_name,
+            selected,
+            hovered,
+            monitor_available,
+            window_available,
+        } if output.name() == output_name => {
+            let mut elements = Vec::new();
+            elements.extend(
+                crate::render::overlays::source_chooser::menu_elements(
+                    renderer,
+                    node_renderer,
+                    output_geometry,
+                    selected,
+                    hovered,
+                    monitor_available,
+                    window_available,
+                    visuals,
+                )?
+                .into_iter()
+                .rev()
+                .map(SceneElement::SourceChooser),
+            );
+            elements.push(source_chooser_backdrop(output_geometry));
+            Ok(elements)
+        }
+        crate::capture::CaptureOverlay::SourceMenu { .. } => {
+            Ok(vec![source_chooser_backdrop(output_geometry)])
+        }
     }
+}
+
+fn source_chooser_backdrop(output: Rectangle<i32, Logical>) -> SceneElement {
+    SceneElement::Border(SolidColorRenderElement::new(
+        Id::new(),
+        Rectangle::from_size(output.size.to_physical(1)),
+        CommitCounter::default(),
+        crate::render::overlays::shell::backdrop_dim(0.45),
+        Kind::Unspecified,
+    ))
 }
 
 pub(super) fn capture_picker_elements(

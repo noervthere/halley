@@ -48,6 +48,7 @@ References:
 - [Compositor overlays and configuration notices](docs/overlays.md)
 - [Compositor backgrounds](docs/backgrounds.md)
 - [Managed-window rules](docs/window-rules.md)
+- [Screen sharing and the desktop portal](docs/portal.md)
 - [Wayland protocol support](docs/wayland-protocols.md)
 - [Fonts](docs/fonts.md)
 - [Animations](docs/animations.md)

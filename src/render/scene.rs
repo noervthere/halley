@@ -66,6 +66,7 @@ render_elements! {
         smithay::backend::renderer::gles::GlesTexture
     >,
     CaptureOverlay=super::overlays::capture::CaptureOverlayElement,
+    SourceChooser=super::overlays::source_chooser::SourceChooserElement,
     Border=SolidColorRenderElement,
     Layer=WaylandSurfaceRenderElement<GlesRenderer>,
 }
