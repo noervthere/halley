@@ -1,6 +1,6 @@
 use super::layout::{ClusterCycleDirection, ClusterWorkspacePlacement};
-use crate::field::NodeId;
 use super::tiling::Rect;
+use crate::field::NodeId;
 
 pub fn stacking_visible_limit(max_visible: usize) -> usize {
     if max_visible == 0 {

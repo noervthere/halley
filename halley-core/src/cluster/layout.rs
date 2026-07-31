@@ -1,6 +1,6 @@
-use crate::field::NodeId;
 use super::stacking::{layout_stacking_workspace, stacking_visible_limit};
 use super::tiling::Rect;
+use crate::field::NodeId;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ClusterWorkspaceLayoutKind {

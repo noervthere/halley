@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
-use crate::field::{Field, NodeId, NodeState, Vec2};
 use crate::cluster::tiling::Rect;
+use crate::field::{Field, NodeId, NodeState, Vec2};
 use crate::world::PortalDir;
 
 /// Current interaction target (separate from history).

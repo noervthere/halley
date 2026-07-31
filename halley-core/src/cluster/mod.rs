@@ -1,6 +1,6 @@
+use self::tiling::{MasterStackLayout, Rect, layout_master_stack};
 use crate::decay::DecayLevel;
 use crate::field::{Field, Node, NodeId, NodeState, Vec2, Visibility};
-use self::tiling::{MasterStackLayout, Rect, layout_master_stack};
 use std::collections::HashMap;
 
 pub mod layout;
