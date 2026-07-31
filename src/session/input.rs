@@ -752,7 +752,6 @@ where
         let dx = position_after.0 - press_screen.x;
         let dy = position_after.1 - press_screen.y;
         if dx.hypot(dy) >= NODE_DRAG_THRESHOLD_PX {
-            session.clusters.cancel_core_click();
             session.grab = crate::input::grab::Grab::MoveClusterCore {
                 id: *id,
                 screen_offset: *screen_offset,
@@ -1082,17 +1081,12 @@ where
                             .find(|candidate| candidate.name() == output_name)
                             .cloned()
                     };
-                    if session.clusters.register_core_click(id, now) {
-                        if session.clusters.activate(&output_name, id, now)
-                            && let Some(output) = output
-                        {
-                            sync_cluster_activation_focus(session, &output, id, serial);
-                        }
-                        session.request_redraw();
-                    } else if let Some(output) = output {
+                    if session.clusters.activate(&output_name, id, now)
+                        && let Some(output) = output
+                    {
                         sync_cluster_activation_focus(session, &output, id, serial);
-                        session.request_redraw();
                     }
+                    session.request_redraw();
                     super::pointer::finish_frame(session, &pointer_handle);
                     return;
                 }
@@ -1223,15 +1217,25 @@ where
             session
                 .clusters
                 .set_hovered_core(None, crate::frame_clock::monotonic_now());
-            session.grab = crate::input::grab::Grab::PendingClusterCore {
-                id,
-                output: output.name(),
-                press_screen: Point::<f64, Logical>::from(position_after),
-                screen_offset,
-            };
-            session
-                .cursor
-                .set_override(Some(smithay::input::pointer::CursorIcon::Grab));
+            let modifiers = session
+                .seat
+                .get_keyboard()
+                .expect("keyboard capability added at seat setup")
+                .modifier_state();
+            if crate::input::mod_key_held(&modifiers, session.keyboard.effective_mod) {
+                session.grab = crate::input::grab::Grab::MoveClusterCore { id, screen_offset };
+                session
+                    .cursor
+                    .set_override(Some(smithay::input::pointer::CursorIcon::Grabbing));
+            } else {
+                session.grab = crate::input::grab::Grab::PendingClusterCore {
+                    id,
+                    output: output.name(),
+                    press_screen: Point::<f64, Logical>::from(position_after),
+                    screen_offset,
+                };
+                session.cursor.set_override(None);
+            }
             session.suppressed_buttons.suppress(button);
             session.request_redraw();
             intercepted = true;

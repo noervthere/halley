@@ -22,7 +22,6 @@ pub use creation::{CreationState, NameInput};
 pub use ipc::handle_request;
 
 pub const CORE_DIAMETER_PX: f32 = 68.0;
-const CORE_DOUBLE_CLICK: Duration = Duration::from_millis(350);
 
 #[derive(Clone, Debug)]
 pub struct ClusterMetadata {
@@ -64,7 +63,6 @@ pub struct ClusterSystem {
     floating: HashSet<NodeId>,
     join_candidate: Option<JoinCandidate>,
     hovered_core: Option<ClusterId>,
-    last_core_click: Option<(ClusterId, Duration)>,
     bloom: bloom::BloomState,
     label_hover: RefCell<HashMap<ClusterId, f32>>,
     creation: Option<CreationState>,
@@ -88,7 +86,6 @@ impl ClusterSystem {
             floating: HashSet::new(),
             join_candidate: None,
             hovered_core: None,
-            last_core_click: None,
             bloom: bloom::BloomState::default(),
             label_hover: RefCell::new(HashMap::new()),
             creation: None,
@@ -171,20 +168,6 @@ impl ClusterSystem {
         metadata.output = output.to_string();
         metadata.core_position = position;
         true
-    }
-
-    /// Records a completed click and reports whether it completes the old
-    /// Halley 350 ms double-click gesture for the same core.
-    pub fn register_core_click(&mut self, id: ClusterId, now: Duration) -> bool {
-        let double_click = self.last_core_click.is_some_and(|(previous, at)| {
-            previous == id && now.saturating_sub(at) <= CORE_DOUBLE_CLICK
-        });
-        self.last_core_click = (!double_click).then_some((id, now));
-        double_click
-    }
-
-    pub fn cancel_core_click(&mut self) {
-        self.last_core_click = None;
     }
 
     pub fn label_hover_mix(&self, id: ClusterId, highlighted: bool) -> f32 {
@@ -791,24 +774,6 @@ mod tests {
         system.active.insert("DP-2".into(), id);
         assert!(!system.move_core(id, "DP-1", Vec2 { x: 0.0, y: 0.0 }));
         assert_eq!(system.metadata(id).unwrap().output, "DP-2");
-    }
-
-    #[test]
-    fn cluster_core_requires_two_clicks_inside_the_old_deadline() {
-        let mut system = ClusterSystem::new(
-            halley_config::Clusters::default(),
-            halley_config::ClusterAnimation::default(),
-        );
-        let first = ClusterId::new(1);
-        let second = ClusterId::new(2);
-
-        assert!(!system.register_core_click(first, Duration::from_millis(100)));
-        assert!(!system.register_core_click(second, Duration::from_millis(200)));
-        assert!(!system.register_core_click(first, Duration::from_millis(600)));
-        assert!(system.register_core_click(first, Duration::from_millis(900)));
-        assert!(!system.register_core_click(first, Duration::from_millis(901)));
-        system.cancel_core_click();
-        assert!(!system.register_core_click(first, Duration::from_millis(902)));
     }
 
     #[test]
