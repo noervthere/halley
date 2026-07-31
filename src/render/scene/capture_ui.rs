@@ -66,12 +66,7 @@ pub(super) fn capture_picker_elements(
             intersection.size.to_physical(1),
         )
     });
-    let dim = smithay::backend::renderer::Color32F::new(
-        visuals.fill.r,
-        visuals.fill.g,
-        visuals.fill.b,
-        0.38 * visuals.fill.a,
-    );
+    let dim = crate::render::overlays::shell::backdrop_dim(0.62);
     let accent = smithay::backend::renderer::Color32F::new(
         visuals.border.r,
         visuals.border.g,
@@ -206,4 +201,15 @@ pub(super) fn dashed_border_rects(rect: Rectangle<i32, Physical>) -> Vec<Rectang
     }
 
     strips
+}
+
+#[cfg(test)]
+mod dim_tests {
+    #[test]
+    fn screenshot_backdrop_uses_the_shell_dim_color() {
+        assert_eq!(
+            crate::render::overlays::shell::backdrop_dim(0.62).components(),
+            [0.02, 0.03, 0.05, 0.62]
+        );
+    }
 }

@@ -66,6 +66,10 @@ impl OverlayVisuals {
     }
 }
 
+pub const fn backdrop_dim(alpha: f32) -> Color32F {
+    Color32F::new(0.02, 0.03, 0.05, alpha)
+}
+
 const LIGHT_FILL: OverlayRgb = OverlayRgb {
     r: 0.92,
     g: 0.95,
@@ -346,7 +350,7 @@ fn exit_elements(
         Id::new(),
         screen,
         CommitCounter::default(),
-        Color32F::new(0.02, 0.03, 0.05, 0.62 * mix),
+        backdrop_dim(0.62 * mix),
         smithay::backend::renderer::element::Kind::Unspecified,
     )));
     Ok(())
