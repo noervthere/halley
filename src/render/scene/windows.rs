@@ -40,6 +40,12 @@ pub(super) struct LiveWindowContext<'a> {
 /// happens under the last pixels of motion, which is.
 const CROSSFADE_COMPLETE: f64 = 0.995;
 
+fn fullscreen_chrome_visibility(progress: Option<f64>) -> f32 {
+    progress
+        .map(|progress| 1.0 - progress.clamp(0.0, 1.0) as f32)
+        .unwrap_or(1.0)
+}
+
 pub(super) fn live_window_elements(
     renderer: &mut GlesRenderer,
     window: &smithay::desktop::Window,
@@ -79,15 +85,14 @@ pub(super) fn live_window_elements(
         1.0
     };
     let alpha = visual.opening_alpha * rule_opacity;
-    let fullscreen_rounding = visual
-        .fullscreen
-        .map(|presentation| 1.0 - presentation.progress.clamp(0.0, 1.0))
-        .unwrap_or(1.0);
+    let chrome_visibility =
+        fullscreen_chrome_visibility(visual.fullscreen.map(|presentation| presentation.progress));
+    let chrome_alpha = alpha * chrome_visibility;
     let content_radius = crate::render::window_decoration::scaled_metric(
         context.decorations.border_radius_px,
         visual.zoom_scale,
     ) as f32
-        * fullscreen_rounding as f32;
+        * chrome_visibility;
     let rounded = managed && content_radius > 0.0;
     let rounded_available = rounded && window_decoration_renderer.available(renderer);
     let surface_location = crate::render::window_surface_location(location, window.geometry());
@@ -279,13 +284,12 @@ pub(super) fn live_window_elements(
     }
 
     let is_focused = Some(window_surface.as_ref()) == context.focused;
-    let border_alpha = alpha * fullscreen_rounding as f32;
     let border_color = crate::render::window_border_color(context.decorations, is_focused);
     let border_width = crate::render::window_decoration::scaled_metric(
         context.decorations.border_width_px,
         visual.zoom_scale,
     );
-    if managed && border_width > 0 && border_alpha > 0.0 {
+    if managed && border_width > 0 && chrome_alpha > 0.0 {
         if rounded_available
             && let Some(border) = window_decoration_renderer.border_element(
                 renderer,
@@ -293,7 +297,7 @@ pub(super) fn live_window_elements(
                 border_width,
                 content_radius,
                 border_color,
-                border_alpha,
+                chrome_alpha,
             )
         {
             elements.push(SceneElement::WindowBorder(border));
@@ -302,14 +306,14 @@ pub(super) fn live_window_elements(
                 crate::render::border_strips(
                     visual.animated_rect,
                     border_width,
-                    border_color * border_alpha,
+                    border_color * chrome_alpha,
                 )
                 .into_iter()
                 .map(SceneElement::Border),
             );
         }
     }
-    if managed && visual.fullscreen.is_none() {
+    if managed && chrome_alpha > 0.0 {
         let border_outset = border_width.max(0);
         let caster = Rectangle::new(
             (
@@ -333,11 +337,30 @@ pub(super) fn live_window_elements(
             format!("{}:window:{:?}", context.output.name(), window_surface.id()),
             caster,
             caster_radius,
-            alpha,
+            chrome_alpha,
             context.shadow_config,
         )? {
             elements.push(SceneElement::Shadow(shadow));
         }
     }
     Ok(elements)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fullscreen_chrome_visibility;
+
+    #[test]
+    fn fullscreen_chrome_fades_without_a_cleanup_step() {
+        assert_eq!(fullscreen_chrome_visibility(None), 1.0);
+        assert_eq!(fullscreen_chrome_visibility(Some(0.0)), 1.0);
+        assert_eq!(fullscreen_chrome_visibility(Some(0.5)), 0.5);
+        assert_eq!(fullscreen_chrome_visibility(Some(1.0)), 0.0);
+    }
+
+    #[test]
+    fn fullscreen_chrome_visibility_clamps_motion_overshoot() {
+        assert_eq!(fullscreen_chrome_visibility(Some(-0.2)), 1.0);
+        assert_eq!(fullscreen_chrome_visibility(Some(1.2)), 0.0);
+    }
 }
