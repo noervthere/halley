@@ -215,6 +215,39 @@ fn navigate_cluster_tile<D: SessionDriver>(
     }
 }
 
+fn toggle_cluster_or_focused_node<D: SessionDriver>(
+    session: &mut Session<D>,
+    output_name: Option<&str>,
+    serial: smithay::utils::Serial,
+) {
+    let active = output_name.and_then(|output| {
+        session
+            .clusters
+            .active_on(output)
+            .map(|cluster| (output.to_string(), cluster))
+    });
+    if let Some((output_name, cluster)) = active
+        && session
+            .clusters
+            .activate(&output_name, cluster, crate::frame_clock::monotonic_now())
+    {
+        let output = {
+            session
+                .wayland
+                .space
+                .outputs()
+                .find(|output| output.name() == output_name)
+                .cloned()
+        };
+        if let Some(output) = output {
+            sync_cluster_activation_focus(session, &output, cluster, serial);
+        }
+        session.request_redraw();
+        return;
+    }
+    crate::nodes::toggle_focused_on_output(session, output_name, serial);
+}
+
 fn bearing_at_pointer<D: SessionDriver>(
     session: &Session<D>,
 ) -> Option<(halley_core::field::NodeId, Output)> {
@@ -285,7 +318,7 @@ fn dispatch_action<D: SessionDriver>(
         super::SessionControl::ToggleFieldMaximize => {
             super::toggle_focused_field_maximize(session, action_output.as_deref())
         }
-        super::SessionControl::ToggleState => crate::nodes::toggle_focused_on_output(
+        super::SessionControl::ToggleState => toggle_cluster_or_focused_node(
             session,
             action_output.as_deref(),
             SERIAL_COUNTER.next_serial(),
