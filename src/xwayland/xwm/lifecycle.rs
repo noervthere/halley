@@ -395,7 +395,35 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
         crate::session::begin_pointer_resize(self, &window, resize_handle(resize_edge), button);
     }
 
-    fn move_request(&mut self, _xwm: XwmId, _window: X11Surface, _button: u32) {}
+    fn move_request(&mut self, _xwm: XwmId, surface: X11Surface, button: u32) {
+        let Some(button) = evdev_button(button) else {
+            return;
+        };
+        let Some(pointer) = self.seat.get_pointer() else {
+            return;
+        };
+        let Some(start_data) = pointer.grab_start_data() else {
+            return;
+        };
+        if start_data.button != button {
+            return;
+        }
+        let Some(surface_root) = surface.wl_surface() else {
+            return;
+        };
+        let Some((focused, _)) = start_data.focus else {
+            return;
+        };
+        if crate::wayland::compositor::root_surface(&focused) != surface_root {
+            return;
+        }
+        let Some(window) = window_for_surface(self, &surface) else {
+            return;
+        };
+        if crate::session::begin_pointer_move(self, &window, SERIAL_COUNTER.next_serial()) {
+            self.request_redraw();
+        }
+    }
 
     fn active_window_request(
         &mut self,

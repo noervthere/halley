@@ -645,3 +645,116 @@ pub(crate) fn begin_pointer_resize<D: SessionDriver>(
         smithay::utils::SERIAL_COUNTER.next_serial(),
     )
 }
+
+/// Starts Halley's existing interactive window move from the current pointer
+/// route. Callers must validate any protocol serial before reaching here.
+///
+/// Keeping grab construction here gives compositor key bindings, xdg-shell,
+/// and XWayland one movement implementation without coupling protocol handlers
+/// to the input dispatch loop.
+pub(crate) fn begin_pointer_move<D: SessionDriver>(
+    session: &mut Session<D>,
+    window: &smithay::desktop::Window,
+    serial: smithay::utils::Serial,
+) -> bool {
+    if !crate::window::accepts_compositor_grab(window)
+        || window.wl_surface().is_some_and(|surface| {
+            session
+                .fullscreen
+                .is_fullscreen_or_pending(surface.as_ref())
+        })
+    {
+        return false;
+    }
+    let Some(route) = pointer::route_client(session) else {
+        return false;
+    };
+    if !matches!(
+        route.target,
+        crate::input::pointer::PointerTarget::Window(ref routed) if routed == window
+    ) {
+        return false;
+    }
+    let world = halley_core::field::Vec2 {
+        x: route.location.x as f32,
+        y: route.location.y as f32,
+    };
+    let Some(window_location) = session.wayland.space.element_location(window) else {
+        return false;
+    };
+    let Some(camera) = session.cameras.get(&route.output.name()) else {
+        return false;
+    };
+    let scale = crate::input::zoom::scale(camera);
+
+    let restore = window
+        .wl_surface()
+        .and_then(|surface| session.maximize.take_restore(surface.as_ref()));
+    let was_maximized = restore.is_some();
+    if let Some(restore) = restore.as_ref() {
+        session.render.fullscreen_textures.remove(&restore.surface);
+        configure_field_geometry(session, restore);
+        let _ = session
+            .cameras
+            .apply_field_maximize(&route.output.name(), None);
+    }
+
+    let screen_offset = if was_maximized {
+        let visual = route.visual_geometry.unwrap_or_else(|| {
+            session
+                .wayland
+                .space
+                .element_geometry(window)
+                .unwrap_or_else(|| window.geometry())
+        });
+        let source = restore
+            .as_ref()
+            .map(|restore| restore.geometry)
+            .or_else(|| session.wayland.space.element_geometry(window))
+            .unwrap_or_else(|| window.geometry());
+        let ratio_x = ((session.pointer.position().0 - f64::from(visual.loc.x))
+            / f64::from(visual.size.w.max(1)))
+        .clamp(0.0, 1.0);
+        let ratio_y = ((session.pointer.position().1 - f64::from(visual.loc.y))
+            / f64::from(visual.size.h.max(1)))
+        .clamp(0.0, 1.0);
+        halley_core::field::Vec2 {
+            x: -(source.size.w as f32 * ratio_x as f32) * scale,
+            y: -(source.size.h as f32 * ratio_y as f32) * scale,
+        }
+    } else {
+        halley_core::field::Vec2 {
+            x: (window_location.x as f32 - world.x) * scale,
+            y: (window_location.y as f32 - world.y) * scale,
+        }
+    };
+
+    focus::focus_window_from_pointer(session, window, serial);
+    let id = window
+        .wl_surface()
+        .and_then(|surface| session.nodes.id_for_surface(surface.as_ref()));
+    if let Some(id) = id {
+        session.nodes.clear_direct_motion(id);
+    }
+    let center = session
+        .wayland
+        .space
+        .element_geometry(window)
+        .map(|geometry| halley_core::field::Vec2 {
+            x: geometry.loc.x as f32 + geometry.size.w as f32 * 0.5,
+            y: geometry.loc.y as f32 + geometry.size.h as f32 * 0.5,
+        })
+        .unwrap_or(world);
+    session.grab = crate::input::grab::Grab::MoveWindow {
+        id,
+        window: window.clone(),
+        screen_offset,
+        last_world: center,
+        last_update: crate::frame_clock::monotonic_now(),
+        velocity: halley_core::field::Vec2 { x: 0.0, y: 0.0 },
+    };
+    session
+        .cursor
+        .set_override(Some(smithay::input::pointer::CursorIcon::Grabbing));
+    true
+}

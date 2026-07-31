@@ -476,6 +476,43 @@ impl<D: SessionDriver> XdgShellHandler for Session<D> {
         self.request_redraw();
     }
 
+    fn move_request(&mut self, surface: ToplevelSurface, seat: WlSeat, serial: Serial) {
+        let Some(seat) = Seat::<Self>::from_resource(&seat) else {
+            return;
+        };
+        let Some(pointer) = seat.get_pointer() else {
+            return;
+        };
+        if !pointer.has_grab(serial) {
+            return;
+        }
+        let Some(start_data) = pointer.grab_start_data() else {
+            return;
+        };
+        let Some((focused, _)) = start_data.focus else {
+            return;
+        };
+        if wayland::compositor::root_surface(&focused) != *surface.wl_surface() {
+            return;
+        }
+        let Some(window) = self
+            .wayland
+            .space
+            .elements()
+            .find(|window| {
+                window
+                    .wl_surface()
+                    .is_some_and(|candidate| candidate.as_ref() == surface.wl_surface())
+            })
+            .cloned()
+        else {
+            return;
+        };
+        if super::begin_pointer_move(self, &window, serial) {
+            self.request_redraw();
+        }
+    }
+
     fn maximize_request(&mut self, surface: ToplevelSurface) {
         // Ignore startup maximize hints. Honoring them during the first reveal
         // creates a monitor-sized configure/remap feedback loop in clients such
