@@ -235,9 +235,10 @@ mod tests {
     #[test]
     fn default_config_quit_resolves_to_alt_shift_e_under_winit() {
         let keybinds = Keybinds::default();
+        let configured_bind_count = keybinds.binds.len();
         let resolved = resolve_binds(&keybinds, BackendKind::Winit);
 
-        assert_eq!(resolved.len(), 30);
+        assert_eq!(resolved.len(), configured_bind_count);
         let quit = resolved
             .iter()
             .find(|bind| bind.action == Action::Quit)
@@ -254,9 +255,10 @@ mod tests {
     #[test]
     fn default_config_quit_resolves_to_super_shift_e_under_tty() {
         let keybinds = Keybinds::default();
+        let configured_bind_count = keybinds.binds.len();
         let resolved = resolve_binds(&keybinds, BackendKind::Tty);
 
-        assert_eq!(resolved.len(), 30);
+        assert_eq!(resolved.len(), configured_bind_count);
         let quit = resolved
             .iter()
             .find(|bind| bind.action == Action::Quit)
