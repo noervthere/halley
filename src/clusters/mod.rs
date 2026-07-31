@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::time::Duration;
 
 use halley_core::cluster::layout::ClusterWorkspaceLayoutKind;
 use halley_core::cluster::layout::{ClusterWorkspaceLayoutResult, layout_cluster_workspace};
@@ -7,6 +8,7 @@ use halley_core::cluster::{ClusterId, ClusterRegistry};
 use halley_core::field::{Field, NodeId, Vec2};
 use smithay::utils::{Logical, Point, Rectangle};
 
+mod membership;
 mod overflow;
 pub mod render;
 
@@ -27,6 +29,14 @@ pub struct CreationState {
     pub name_buffer: String,
 }
 
+#[derive(Clone, Debug)]
+struct JoinCandidate {
+    member: NodeId,
+    cluster_id: ClusterId,
+    output: String,
+    started_at: Duration,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum WindowPresentation {
     Field,
@@ -45,6 +55,7 @@ pub struct ClusterSystem {
     slots: HashMap<String, Vec<ClusterId>>,
     active: HashMap<String, ClusterId>,
     floating: HashSet<NodeId>,
+    join_candidate: Option<JoinCandidate>,
     creation: Option<CreationState>,
     config: halley_config::Clusters,
     animations: halley_config::ClusterAnimation,
@@ -61,6 +72,7 @@ impl ClusterSystem {
             slots: HashMap::new(),
             active: HashMap::new(),
             floating: HashSet::new(),
+            join_candidate: None,
             creation: None,
             config,
             animations,
@@ -526,6 +538,13 @@ impl ClusterSystem {
     /// `NodesState` discards its Field node. A remapped/unmapped window is
     /// intentionally retained; only final surface destruction reaches here.
     pub fn forget_destroyed_member(&mut self, field: &mut Field, member: NodeId) -> bool {
+        if self
+            .join_candidate
+            .as_ref()
+            .is_some_and(|candidate| candidate.member == member)
+        {
+            self.join_candidate = None;
+        }
         let Some(id) = self.registry.cluster_id_for_member(member) else {
             self.floating.remove(&member);
             if let Some(creation) = self.creation.as_mut() {

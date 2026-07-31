@@ -686,7 +686,14 @@ where
                     if !session.nodes.physics.enabled {
                         let _ = crate::nodes::move_grabbed_body_rigid(session, id, desired_center);
                     }
+                    if session
+                        .clusters
+                        .update_join_candidate(&output_name, id, desired_center, now)
+                    {
+                        session.request_redraw();
+                    }
                 } else {
+                    session.clusters.cancel_join_candidate();
                     session
                         .wayland
                         .space
@@ -1116,9 +1123,21 @@ where
                         if session.nodes.physics.enabled {
                             let _ = crate::nodes::tick_physics(session, now);
                         }
+                        let joined = id.and_then(|member| {
+                            session.clusters.commit_join_candidate(
+                                &mut session.nodes.field,
+                                member,
+                                now,
+                            )
+                        });
                         session.grab = crate::input::grab::Grab::None;
                         session.cursor.set_override(None);
-                        if session.nodes.physics.enabled
+                        if joined.is_some() {
+                            if let Some(id) = id {
+                                session.nodes.clear_direct_motion(id);
+                            }
+                            session.request_redraw();
+                        } else if session.nodes.physics.enabled
                             && let Some(id) = id
                         {
                             session.nodes.lock_released_window(id, now);

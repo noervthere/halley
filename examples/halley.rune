@@ -510,8 +510,9 @@ clusters:
   # master window beside a vertical stack). Mod+L changes the active cluster.
   default-layout "stacking"
 
-  # Reserved for drag-to-cluster interaction: a window must remain near a
-  # cluster core for this long and within this many logical pixels.
+  # While Mod-dragging a normal window, hold it near a cluster core for this
+  # long, then release to add it. Moving away or releasing early cancels the
+  # join. Distance is measured in the Field's logical coordinates.
   join-dwell-ms 2000
   join-distance-px 280.0
 
