@@ -230,17 +230,11 @@ it keeps panels and the existing stack visible. The compatibility action
 names `maximize_focused`, `toggle-maximize`, and `toggle_maximize` are
 equivalent.
 
-`toggle-fullscreen` and a client decoration's maximize button both enter the
-same Halley fullscreen presentation. The maximize button toggles that
-presentation off on its second press, including reversing an exit transition
-when pressed again. It never takes ownership of or cancels a fullscreen entered
-with `Mod+F`, a client fullscreen request, or an initial fullscreen hint.
-The presentation remains compositor-internal: an xdg decoration maximize
-request is configured with the standard `Maximized` state, while explicit
-fullscreen requests are configured with `Fullscreen`.
-Double-clicking a client titlebar follows the same maximize/unmaximize request
-path as its maximize button, toggling Halley's fullscreen presentation. The
-`maximize-focused` keybinding remains the separate field-maximize action.
+Like a conventional desktop, a client decoration's maximize button and a
+double-click on its titlebar both toggle Halley's field maximize. The client is
+configured with the standard `Maximized` state. `toggle-fullscreen`, explicit
+client fullscreen requests, and initial fullscreen hints remain the separate
+fullscreen path and are configured with `Fullscreen`.
 Top layer-shell
 surfaces are suppressed per fullscreen output, independent of pointer or
 keyboard focus on another monitor. Fullscreen also owns that output's complete
@@ -248,7 +242,7 @@ camera: zoom and pan ease to the window center and native 1.0 scale on the same
 transition, every window stacked above it uses that camera, and camera input
 remains locked until the pre-fullscreen monitor view has been restored.
 Global window blur configured as `effects.blur.windows "always"` remains active
-for `Mod+F` and decoration-maximize presentations. Client-requested fullscreen
+for `Mod+F` presentations. Client-requested fullscreen
 does not gain global blur, preserving its immersive composition fast path;
 an explicit client background-effect request is still honored.
 For X11 windows, entering or leaving fullscreen preserves the window's current

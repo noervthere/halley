@@ -395,62 +395,6 @@ pub(crate) fn restore_maximized_window<D: SessionDriver>(
     }
 }
 
-pub(super) fn maximize_window<D: SessionDriver>(session: &mut Session<D>, surface: &X11Surface) {
-    if session
-        .xwayland
-        .pending_windows
-        .contains_key(&surface.window_id())
-    {
-        if let Err(err) = surface.set_maximized(false) {
-            eventline::warn!("xwayland: failed to suppress initial maximized state: {err}");
-        }
-        return;
-    }
-    let maximize_origin_active = maximize_origin_active(surface);
-    let fullscreen_active = window_for_surface(session, surface)
-        .is_some_and(|window| session.fullscreen.external_desired_matches(&window, true));
-    match maximize_toggle_action(maximize_origin_active, fullscreen_active) {
-        MaximizeToggleAction::Exit => {
-            restore_window(session, surface);
-            return;
-        }
-        MaximizeToggleAction::Ignore => {
-            if let Err(err) = surface.set_maximized(false) {
-                eventline::warn!(
-                    "xwayland: ignored maximize while another fullscreen origin owns the window: {err}"
-                );
-            }
-            return;
-        }
-        MaximizeToggleAction::Enter => {}
-    }
-    let Some(window) = window_for_surface(session, surface) else {
-        return;
-    };
-    let restore_geometry = session
-        .wayland
-        .space
-        .element_geometry(&window)
-        .unwrap_or_else(|| surface.geometry());
-    remember_normal_size(session, surface, restore_geometry.size);
-    let mut maximize = surface
-        .user_data()
-        .get_or_insert_threadsafe(MaximizeFullscreen::default)
-        .0
-        .lock()
-        .expect("X11 maximize state lock poisoned");
-    maximize.active = true;
-    maximize.restore = Some(MaximizeRestore {
-        geometry: restore_geometry,
-        output: crate::wayland::window_output_name(&window),
-    });
-    drop(maximize);
-    if let Err(err) = surface.set_maximized(true) {
-        eventline::warn!("xwayland: failed to set maximized state: {err}");
-    }
-    enter_fullscreen(session, surface, FullscreenRequestOrigin::Maximize);
-}
-
 pub(super) fn restore_window<D: SessionDriver>(session: &mut Session<D>, surface: &X11Surface) {
     if session
         .xwayland
@@ -505,19 +449,6 @@ pub(super) fn restore_window<D: SessionDriver>(session: &mut Session<D>, surface
                 eventline::warn!("xwayland: failed to restore maximized geometry: {err}");
             }
         }
-    }
-}
-
-pub(super) fn maximize_toggle_action(
-    maximize_origin_active: bool,
-    fullscreen_active: bool,
-) -> MaximizeToggleAction {
-    if maximize_origin_active {
-        MaximizeToggleAction::Exit
-    } else if fullscreen_active {
-        MaximizeToggleAction::Ignore
-    } else {
-        MaximizeToggleAction::Enter
     }
 }
 

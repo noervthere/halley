@@ -47,8 +47,8 @@ Field maximize is separate from fullscreen:
   existing order;
 - it keeps the output camera center fixed, eases its scale to native 1.0, and
   locks pan and zoom only on that monitor until exit;
-- it does not set the client's Wayland/X11 maximized state, so decoration
-  maximize requests retain Halley's existing fullscreen behavior;
+- it sets the client's Wayland/X11 maximized state, so decoration buttons and
+  titlebar double-clicks remain synchronized with the compositor;
 - its presentation transform is shared by rendering, hit testing, popups,
   screenshots, and screencasts.
 

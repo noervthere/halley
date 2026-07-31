@@ -799,6 +799,11 @@ pub(crate) fn configure_field_geometry<D: SessionDriver>(
             toplevel.send_configure();
         }
     } else {
+        if let Some(surface) = window.x11_surface()
+            && let Err(err) = surface.set_maximized(session.maximize.contains(&request.surface))
+        {
+            eventline::warn!("xwayland: failed to synchronize field-maximized state: {err}");
+        }
         crate::xwayland::configure_window(&window, request.geometry);
     }
 }

@@ -64,13 +64,6 @@ impl FullscreenRequestOrigin {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum MaximizeToggleAction {
-    Enter,
-    Exit,
-    Ignore,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ExternalPresentationPolicy {
     Initial,
     Opening,
@@ -512,9 +505,9 @@ fn output_for_geometry<D: SessionDriver>(
 #[cfg(test)]
 mod tests {
     use super::{
-        ExternalPresentationPolicy, FullscreenRequestOrigin, MaximizeToggleAction,
-        OverrideRedirectIdentity, OverrideRedirectMapAdmission, OverrideRedirectStackAction,
-        compositor_fullscreen_should_raise, external_presentation_policy, maximize_toggle_action,
+        ExternalPresentationPolicy, FullscreenRequestOrigin, OverrideRedirectIdentity,
+        OverrideRedirectMapAdmission, OverrideRedirectStackAction,
+        compositor_fullscreen_should_raise, external_presentation_policy,
         override_redirect_map_admission, override_redirect_owner_rank,
         override_redirect_stack_action, recovery_window_size, size_fills_output,
     };
@@ -746,21 +739,5 @@ mod tests {
                 ExternalPresentationPolicy::Animated
             );
         }
-    }
-
-    #[test]
-    fn maximize_button_toggles_without_hijacking_other_fullscreen_origins() {
-        assert_eq!(
-            maximize_toggle_action(false, false),
-            MaximizeToggleAction::Enter
-        );
-        assert_eq!(
-            maximize_toggle_action(true, true),
-            MaximizeToggleAction::Exit
-        );
-        assert_eq!(
-            maximize_toggle_action(false, true),
-            MaximizeToggleAction::Ignore
-        );
     }
 }

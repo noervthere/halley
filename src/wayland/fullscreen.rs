@@ -151,36 +151,6 @@ impl FullscreenManager {
         self.request_with_origin(wayland, toplevel, None, FullscreenOrigin::Compositor);
     }
 
-    pub(crate) fn request_maximize(
-        &mut self,
-        wayland: &mut WaylandState,
-        toplevel: &ToplevelSurface,
-    ) {
-        if self
-            .windows
-            .get(toplevel.wl_surface())
-            .is_some_and(|entry| {
-                entry.origin != FullscreenOrigin::Maximize
-                    && (entry.active
-                        || entry.desired
-                        || entry.transition.is_some()
-                        || entry.external_pending.is_some())
-            })
-        {
-            // A maximize request has no direct effect while another fullscreen
-            // owner is active. Still send the configure required by xdg-shell.
-            send_required_configure(toplevel);
-            return;
-        }
-        self.request_with_origin(wayland, toplevel, None, FullscreenOrigin::Maximize);
-    }
-
-    pub(crate) fn has_origin(&self, surface: &WlSurface, origin: FullscreenOrigin) -> bool {
-        self.windows
-            .get(surface)
-            .is_some_and(|entry| entry.origin == origin)
-    }
-
     fn request_with_origin(
         &mut self,
         wayland: &mut WaylandState,

@@ -12,7 +12,7 @@ Current compositor-owned navigation includes:
   monitor;
 - shared [compositor overlays](docs/overlays.md), including configuration
   notices and exit confirmation;
-- output-local fullscreen, including decoration maximize buttons;
+- output-local fullscreen, separate from ordinary decoration maximize;
 - native screenshots, screencasting, and an XDG desktop portal backend.
 
 The canonical configuration is [examples/halley.rune](examples/halley.rune).

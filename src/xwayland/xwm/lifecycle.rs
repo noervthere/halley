@@ -322,7 +322,15 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
             surface.is_fullscreen(),
             maximize_origin_active(&surface),
         );
-        maximize_window(self, &surface);
+        let maximized = window_for_surface(self, &surface)
+            .and_then(|window| window.wl_surface().map(|surface| surface.into_owned()))
+            .is_some_and(|wl_surface| {
+                let _ = crate::session::set_surface_field_maximized(self, &wl_surface, true);
+                self.maximize.contains(&wl_surface)
+            });
+        if let Err(err) = surface.set_maximized(maximized) {
+            eventline::warn!("xwayland: failed to apply maximized state: {err}");
+        }
         self.request_redraw();
     }
 
@@ -335,7 +343,14 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
             surface.is_fullscreen(),
             maximize_origin_active(&surface),
         );
-        restore_window(self, &surface);
+        if let Some(wl_surface) = window_for_surface(self, &surface)
+            .and_then(|window| window.wl_surface().map(|surface| surface.into_owned()))
+        {
+            let _ = crate::session::set_surface_field_maximized(self, &wl_surface, false);
+        }
+        if let Err(err) = surface.set_maximized(false) {
+            eventline::warn!("xwayland: failed to clear maximized state: {err}");
+        }
         self.request_redraw();
     }
 

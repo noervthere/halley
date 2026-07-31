@@ -580,7 +580,7 @@ impl<D: SessionDriver> XdgShellHandler for Session<D> {
         // Ignore startup maximize hints. Honoring them during the first reveal
         // creates a monitor-sized configure/remap feedback loop in clients such
         // as Steam. A later decoration-button or title-bar request is deliberate
-        // and maps to a deliberate Halley presentation below.
+        // and maps to Halley's field-maximize presentation.
         if !surface.is_initial_configure_sent() {
             surface.with_pending_state(|state| {
                 state.states.unset(
@@ -597,52 +597,11 @@ impl<D: SessionDriver> XdgShellHandler for Session<D> {
             crate::nodes::restore(self, id, SERIAL_COUNTER.next_serial());
         }
         super::cancel_grab_for_surface(self, surface.wl_surface());
-        let cluster_restore = super::cluster_presentation_restore(
-            self,
-            surface.wl_surface(),
-            crate::frame_clock::monotonic_now(),
-            true,
-        );
-        self.fullscreen
-            .request_maximize(&mut self.wayland, &surface);
-        if let Some(restore) = cluster_restore {
-            self.fullscreen.override_restore_from_cluster(
-                surface.wl_surface(),
-                restore.geometry,
-                restore.output,
-                restore.presentation_output,
-            );
-        }
-        super::pointer::reconcile_state(self);
-        self.request_redraw();
+        super::set_surface_field_maximized(self, surface.wl_surface(), true);
     }
 
     fn unmaximize_request(&mut self, surface: ToplevelSurface) {
-        if self.maximize.contains(surface.wl_surface()) {
-            super::set_surface_field_maximized(self, surface.wl_surface(), false);
-        } else if self.fullscreen.has_origin(
-            surface.wl_surface(),
-            crate::wayland::fullscreen::FullscreenOrigin::Maximize,
-        ) {
-            if let Some(restore) = super::cluster_presentation_restore(
-                self,
-                surface.wl_surface(),
-                crate::frame_clock::monotonic_now(),
-                false,
-            ) {
-                self.fullscreen.override_restore_from_cluster(
-                    surface.wl_surface(),
-                    restore.geometry,
-                    restore.output,
-                    restore.presentation_output,
-                );
-            }
-            self.fullscreen.unrequest(&self.wayland, &surface);
-            super::pointer::reconcile_state(self);
-            self.request_redraw();
-        } else {
-            surface.send_configure();
-        }
+        super::set_surface_field_maximized(self, surface.wl_surface(), false);
     }
 
     fn minimize_request(&mut self, surface: ToplevelSurface) {
