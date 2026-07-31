@@ -91,9 +91,11 @@ mod tests {
         let first = surface(&mut field, "first", 80.0);
         let second = surface(&mut field, "second", 120.0);
         let joining = surface(&mut field, "joining", 500.0);
-        let mut config = halley_config::Clusters::default();
-        config.join_dwell_ms = 500;
-        config.join_distance_px = 100.0;
+        let config = halley_config::Clusters {
+            join_dwell_ms: 500,
+            join_distance_px: 100.0,
+            ..halley_config::Clusters::default()
+        };
         let mut system = ClusterSystem::new(config, halley_config::ClusterAnimation::default());
         assert!(system.begin_creation("DP-1".into()));
         assert!(system.toggle_creation_member(first, "DP-1"));

@@ -156,9 +156,14 @@ mod tests {
         let members = (0..7)
             .map(|index| surface(&mut field, &format!("window-{index}")))
             .collect::<Vec<_>>();
-        let mut config = halley_config::Clusters::default();
-        config.default_layout = halley_config::ClusterLayout::Tiling;
-        config.tiling.max_stack = 2;
+        let config = halley_config::Clusters {
+            default_layout: halley_config::ClusterLayout::Tiling,
+            tiling: halley_config::ClusterTiling {
+                max_stack: 2,
+                ..halley_config::ClusterTiling::default()
+            },
+            ..halley_config::Clusters::default()
+        };
         let mut system = ClusterSystem::new(config, halley_config::ClusterAnimation::default());
         system.begin_creation("DP-1".into());
         for member in &members {
