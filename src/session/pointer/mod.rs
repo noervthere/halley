@@ -214,7 +214,11 @@ pub(super) fn constrain_motion<D: SessionDriver>(
 }
 
 pub(super) fn cursor_visible<D: SessionDriver>(session: &Session<D>) -> bool {
-    if interactive_overlay_forces_cursor(session.apogee.is_active(), session.capture.is_active()) {
+    if interactive_overlay_forces_cursor(
+        session.apogee.is_active(),
+        session.capture.is_active(),
+        session.clusters.accepts_modal_input(),
+    ) {
         return true;
     }
     cursor_presentation_visible(
@@ -223,8 +227,12 @@ pub(super) fn cursor_visible<D: SessionDriver>(session: &Session<D>) -> bool {
     )
 }
 
-fn interactive_overlay_forces_cursor(apogee_active: bool, capture_active: bool) -> bool {
-    apogee_active || capture_active
+fn interactive_overlay_forces_cursor(
+    apogee_active: bool,
+    capture_active: bool,
+    cluster_creation_active: bool,
+) -> bool {
+    apogee_active || capture_active || cluster_creation_active
 }
 
 fn cursor_presentation_visible(policy_visible: bool, constraint_visible: bool) -> bool {
@@ -270,9 +278,10 @@ mod tests {
 
     #[test]
     fn interactive_overlays_force_the_cursor_visible() {
-        assert!(interactive_overlay_forces_cursor(true, false));
-        assert!(interactive_overlay_forces_cursor(false, true));
-        assert!(!interactive_overlay_forces_cursor(false, false));
+        assert!(interactive_overlay_forces_cursor(true, false, false));
+        assert!(interactive_overlay_forces_cursor(false, true, false));
+        assert!(interactive_overlay_forces_cursor(false, false, true));
+        assert!(!interactive_overlay_forces_cursor(false, false, false));
     }
 
     #[test]
