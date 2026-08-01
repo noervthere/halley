@@ -84,8 +84,9 @@ fn focus_window_with_raise<D: SessionDriver>(
 
 /// A stacking workspace has one keyboard-active card: its front member.
 /// Pointer hover, close succession, and generic activation must not revive a
-/// rear card merely because Smithay's underlying space order still mentions
-/// it. Transient/non-member windows are left alone so dialogs remain usable.
+/// rear layout card merely because Smithay's underlying space order still
+/// mentions it. Floating members and transient/non-member windows remain
+/// independently focusable.
 fn stacking_front_window<D: SessionDriver>(
     session: &Session<D>,
     requested: &Window,
@@ -95,9 +96,11 @@ fn stacking_front_window<D: SessionDriver>(
         .and_then(|surface| session.nodes.id_for_surface(surface.as_ref()))?;
     let cluster = session.clusters.cluster_for_member(requested_id)?;
     let metadata = session.clusters.metadata(cluster)?;
-    if metadata.layout != halley_core::cluster::layout::ClusterWorkspaceLayoutKind::Stacking
-        || session.clusters.active_on(&metadata.output) != Some(cluster)
-    {
+    if !should_redirect_to_stacking_front(
+        metadata.layout,
+        session.clusters.active_on(&metadata.output) == Some(cluster),
+        session.clusters.is_member_floating(requested_id),
+    ) {
         return None;
     }
     session
@@ -108,6 +111,7 @@ fn stacking_front_window<D: SessionDriver>(
         .find(|record| {
             record.attached
                 && !record.collapsed
+                && !session.clusters.is_member_floating(record.id)
                 && session
                     .wayland
                     .space
@@ -115,6 +119,16 @@ fn stacking_front_window<D: SessionDriver>(
                     .any(|mapped| mapped == &record.window)
         })
         .map(|record| record.window.clone())
+}
+
+fn should_redirect_to_stacking_front(
+    layout: halley_core::cluster::layout::ClusterWorkspaceLayoutKind,
+    cluster_active: bool,
+    requested_floating: bool,
+) -> bool {
+    layout == halley_core::cluster::layout::ClusterWorkspaceLayoutKind::Stacking
+        && cluster_active
+        && !requested_floating
 }
 
 pub(super) fn focus_node_from_hover<D: SessionDriver>(
@@ -258,7 +272,9 @@ fn hover_is_blocked<D: SessionDriver>(session: &Session<D>) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{FocusOrigin, should_raise};
+    use halley_core::cluster::layout::ClusterWorkspaceLayoutKind;
+
+    use super::{FocusOrigin, should_raise, should_redirect_to_stacking_front};
 
     #[test]
     fn only_pointer_clicks_consult_raise_on_click() {
@@ -268,5 +284,19 @@ mod tests {
         assert!(should_raise(FocusOrigin::Pointer, true));
         assert!(!should_raise(FocusOrigin::Hover, false));
         assert!(!should_raise(FocusOrigin::Hover, true));
+    }
+
+    #[test]
+    fn floating_member_bypasses_stacking_front_redirection() {
+        assert!(should_redirect_to_stacking_front(
+            ClusterWorkspaceLayoutKind::Stacking,
+            true,
+            false,
+        ));
+        assert!(!should_redirect_to_stacking_front(
+            ClusterWorkspaceLayoutKind::Stacking,
+            true,
+            true,
+        ));
     }
 }

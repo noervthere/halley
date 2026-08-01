@@ -905,6 +905,15 @@ mod tests {
     }
 
     #[test]
+    fn floating_member_stays_above_a_later_mapped_layout_member() {
+        let anchor = Some(8);
+        let floating = presentation_stack_key(1, Some(usize::MAX), anchor);
+        let later_layout_member = presentation_stack_key(8, Some(3), anchor);
+
+        assert!(floating > later_layout_member);
+    }
+
+    #[test]
     fn ordinary_windows_keep_their_space_stack_key() {
         assert_eq!(presentation_stack_key(4, None, Some(9)), (4, u64::MAX));
     }
