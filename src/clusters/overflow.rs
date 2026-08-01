@@ -232,7 +232,12 @@ impl ClusterSystem {
         self.metadata(active).is_some_and(|metadata| {
             metadata.layout == halley_core::cluster::layout::ClusterWorkspaceLayoutKind::Tiling
         }) && self.registry.cluster(active).is_some_and(|cluster| {
-            cluster.members().len() > self.config.tiling.max_stack.saturating_add(1)
+            cluster
+                .members()
+                .iter()
+                .filter(|member| !self.member_floats.is_floating(**member))
+                .count()
+                > self.config.tiling.max_stack.saturating_add(1)
         })
     }
 
@@ -485,23 +490,14 @@ impl ClusterSystem {
                     .find(|item| item.node_id == member)
                     .map(|item| item.rect)
             });
-        let Some(cluster) = self.registry.cluster(active) else {
-            return false;
-        };
-        let visible_limit = self.config.tiling.max_stack.saturating_add(1);
-        if self.config.tiling.max_stack == 0
-            || cluster.members().len() <= visible_limit
-            || !cluster.members()[visible_limit..].contains(&member)
-        {
+        if self.config.tiling.max_stack == 0 || !before.queue_members.contains(&member) {
             return false;
         }
-        let visible_member = cluster.members()[visible_limit - 1];
-        let changed = self.registry.swap_cluster_overflow_member_with_visible(
-            active,
-            member,
-            visible_member,
-            self.config.tiling.max_stack,
-        );
+        let Some(visible_member) = before.placements.last().map(|placement| placement.node_id)
+        else {
+            return false;
+        };
+        let changed = self.swap_nonfloating_members(active, member, visible_member);
         if changed {
             self.overflow.reveal(output, now);
             if let Some(origin) = origin {
@@ -533,6 +529,14 @@ impl ClusterSystem {
         let Some(before) = self.workspace_layout(active, work_area) else {
             return false;
         };
+        if !before.queue_members.contains(&overflow_member)
+            || !before
+                .placements
+                .iter()
+                .any(|placement| placement.node_id == visible_member)
+        {
+            return false;
+        }
         let origin = self
             .overflow_geometry(output, work_area)
             .and_then(|layout| {
@@ -542,12 +546,7 @@ impl ClusterSystem {
                     .find(|item| item.node_id == overflow_member)
                     .map(|item| item.rect)
             });
-        let changed = self.registry.swap_cluster_overflow_member_with_visible(
-            active,
-            overflow_member,
-            visible_member,
-            self.config.tiling.max_stack,
-        );
+        let changed = self.swap_nonfloating_members(active, overflow_member, visible_member);
         if changed {
             self.overflow.reveal(output, now);
             if let Some(origin) = origin {
@@ -575,16 +574,101 @@ impl ClusterSystem {
         let Some(active) = self.active_on(output) else {
             return false;
         };
-        let changed = self.registry.reorder_cluster_overflow_member(
-            active,
-            overflow_member,
-            target_overflow_index,
-            self.config.tiling.max_stack,
-        );
+        let Some(cluster) = self.registry.cluster(active) else {
+            return false;
+        };
+        if self.config.tiling.max_stack == 0 {
+            return false;
+        }
+        let mut layout_members = cluster
+            .members()
+            .iter()
+            .copied()
+            .filter(|member| !self.member_floats.is_floating(*member))
+            .collect::<Vec<_>>();
+        let visible_limit = self
+            .config
+            .tiling
+            .max_stack
+            .saturating_add(1)
+            .min(layout_members.len());
+        let Some(from) = layout_members
+            .iter()
+            .position(|member| *member == overflow_member)
+            .filter(|from| *from >= visible_limit)
+        else {
+            return false;
+        };
+        let queue_len = layout_members.len().saturating_sub(visible_limit);
+        if target_overflow_index >= queue_len {
+            return false;
+        }
+        let member = layout_members.remove(from);
+        let target = visible_limit + target_overflow_index;
+        layout_members.insert(target.min(layout_members.len()), member);
+        let changed = self.reorder_nonfloating_members(active, layout_members);
         if changed {
             self.overflow.reveal(output, now);
         }
         changed
+    }
+
+    fn swap_nonfloating_members(
+        &mut self,
+        cluster: halley_core::cluster::ClusterId,
+        first: NodeId,
+        second: NodeId,
+    ) -> bool {
+        let Some(mut members) = self
+            .registry
+            .cluster(cluster)
+            .map(|cluster| cluster.members().to_vec())
+        else {
+            return false;
+        };
+        let Some(first_index) = members.iter().position(|member| *member == first) else {
+            return false;
+        };
+        let Some(second_index) = members.iter().position(|member| *member == second) else {
+            return false;
+        };
+        if self.member_floats.is_floating(first) || self.member_floats.is_floating(second) {
+            return false;
+        }
+        members.swap(first_index, second_index);
+        self.registry
+            .reorder_cluster_members(cluster, members)
+            .is_ok()
+    }
+
+    fn reorder_nonfloating_members(
+        &mut self,
+        cluster: halley_core::cluster::ClusterId,
+        ordered: Vec<NodeId>,
+    ) -> bool {
+        let Some(mut members) = self
+            .registry
+            .cluster(cluster)
+            .map(|cluster| cluster.members().to_vec())
+        else {
+            return false;
+        };
+        let indices = members
+            .iter()
+            .enumerate()
+            .filter_map(|(index, member)| {
+                (!self.member_floats.is_floating(*member)).then_some(index)
+            })
+            .collect::<Vec<_>>();
+        if indices.len() != ordered.len() {
+            return false;
+        }
+        for (index, member) in indices.into_iter().zip(ordered) {
+            members[index] = member;
+        }
+        self.registry
+            .reorder_cluster_members(cluster, members)
+            .is_ok()
     }
 }
 
@@ -660,6 +744,68 @@ mod tests {
                 alpha: 1.0,
             }
         );
+    }
+
+    #[test]
+    fn overflow_order_ignores_cluster_floating_members() {
+        let mut field = Field::new();
+        let members = (0..4)
+            .map(|index| surface(&mut field, &format!("window-{index}")))
+            .collect::<Vec<_>>();
+        let config = halley_config::Clusters {
+            default_layout: halley_config::ClusterLayout::Tiling,
+            tiling: halley_config::ClusterTiling {
+                max_stack: 1,
+                ..halley_config::ClusterTiling::default()
+            },
+            ..halley_config::Clusters::default()
+        };
+        let mut system = ClusterSystem::new(config, halley_config::ClusterAnimation::default());
+        system.begin_creation("DP-1".into());
+        for member in &members {
+            system.toggle_creation_member(*member, "DP-1");
+        }
+        system.begin_naming();
+        let cluster = system.finish_creation(&mut field).unwrap();
+        system.activate("DP-1", cluster, Duration::ZERO);
+        let work_area = Rectangle::new((0, 0).into(), (1280, 720).into());
+        let floating = Rectangle::new((80, 60).into(), (500, 380).into());
+
+        assert_eq!(
+            system.toggle_member_floating("DP-1", members[0], work_area, floating, Duration::ZERO,),
+            Some(true)
+        );
+        assert!(system.has_overflow("DP-1"));
+        assert_eq!(
+            system
+                .workspace_layout(cluster, work_area)
+                .unwrap()
+                .queue_members,
+            vec![members[3]]
+        );
+        assert!(system.promote_overflow_member(
+            "DP-1",
+            members[3],
+            work_area,
+            Duration::from_secs(2),
+        ));
+        assert_eq!(
+            system.registry().cluster(cluster).unwrap().members(),
+            &[members[0], members[1], members[3], members[2]]
+        );
+        assert!(system.is_member_floating(members[0]));
+
+        assert_eq!(
+            system.toggle_member_floating(
+                "DP-1",
+                members[1],
+                work_area,
+                floating,
+                Duration::from_secs(4),
+            ),
+            Some(true)
+        );
+        assert!(!system.has_overflow("DP-1"));
     }
 
     #[test]

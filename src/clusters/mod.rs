@@ -563,6 +563,18 @@ impl ClusterSystem {
             self.begin_reflow_with_origin(output, cluster, before, member, origin, now);
             Some(false)
         } else {
+            let promotion = (self.metadata(cluster).map(|metadata| metadata.layout)
+                == Some(ClusterWorkspaceLayoutKind::Tiling))
+            .then(|| {
+                before.queue_members.first().copied().and_then(|promoted| {
+                    self.overflow_geometry(output, work_area)?
+                        .items
+                        .into_iter()
+                        .find(|item| item.node_id == promoted)
+                        .map(|item| (promoted, item.rect))
+                })
+            })
+            .flatten();
             self.member_floats.float(member, current_rect, work_area);
             let duration_ms = self
                 .metadata(cluster)
@@ -573,7 +585,12 @@ impl ClusterSystem {
                     }
                 })
                 .unwrap_or(self.animations.tiling.reflow_duration_ms);
-            self.begin_reflow(output, cluster, before, now, duration_ms);
+            if let Some((promoted, origin)) = promotion {
+                self.begin_reflow_with_origin(output, cluster, before, promoted, origin, now);
+                self.overflow.reveal(output, now);
+            } else {
+                self.begin_reflow(output, cluster, before, now, duration_ms);
+            }
             Some(true)
         }
     }
