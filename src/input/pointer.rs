@@ -356,7 +356,7 @@ fn window_under(
         context.space.output_geometry(output)?.loc.y as f64 + output_local.y,
     );
     let screen_location = Point::<f64, Logical>::from(screen_position);
-    let exclusive = crate::presentation::window::cluster_exclusive_presentation(
+    let exclusive = crate::presentation::window::cluster_exclusive_owner(
         context.clusters,
         context.nodes,
         context.fullscreen,
@@ -364,18 +364,17 @@ fn window_under(
         output,
         context.space.output_geometry(output)?,
         context.now,
-    )
-    .filter(|presentation| presentation.progress > 0.0);
+    );
 
     for window in context.space.elements().rev() {
         if !crate::wayland::window_is_on_output(window, output, context.primary) {
             continue;
         }
-        if let Some(exclusive) = exclusive {
-            let member = exclusive_member_for_window(context.space, context.nodes, window);
-            if member != Some(exclusive.member) {
-                continue;
-            }
+        if !exclusive_owner_allows_member(
+            exclusive.map(|owner| owner.member),
+            exclusive_member_for_window(context.space, context.nodes, window),
+        ) {
+            continue;
         }
         let Some(presentation) = WindowPresentation::for_window(
             context.space,
@@ -417,6 +416,13 @@ fn window_under(
         });
     }
     None
+}
+
+fn exclusive_owner_allows_member(
+    owner: Option<halley_core::field::NodeId>,
+    member: Option<halley_core::field::NodeId>,
+) -> bool {
+    owner.is_none_or(|owner| member == Some(owner))
 }
 
 fn exclusive_member_for_window(
@@ -544,7 +550,7 @@ mod tests {
 
     use super::{
         WheelAccumulator, axis_frame, axis_frame_filtered, clamp_to_outputs, desktop_bounds,
-        process_wheel_bindings, wheel_delta_v120, wheel_direction,
+        exclusive_owner_allows_member, process_wheel_bindings, wheel_delta_v120, wheel_direction,
     };
     use crate::input::keybinds::WheelDirection;
 
@@ -574,6 +580,17 @@ mod tests {
     }
 
     struct TestBackend;
+
+    #[test]
+    fn cluster_exclusive_owner_blocks_every_sibling_hit_target() {
+        let owner = halley_core::field::NodeId::new(7);
+        let sibling = halley_core::field::NodeId::new(8);
+
+        assert!(exclusive_owner_allows_member(Some(owner), Some(owner)));
+        assert!(!exclusive_owner_allows_member(Some(owner), Some(sibling)));
+        assert!(!exclusive_owner_allows_member(Some(owner), None));
+        assert!(exclusive_owner_allows_member(None, Some(sibling)));
+    }
 
     impl InputBackend for TestBackend {
         type Device = TestDevice;

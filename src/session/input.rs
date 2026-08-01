@@ -91,7 +91,7 @@ fn cluster_exclusive_on_output<D: SessionDriver>(
     geometry: Rectangle<i32, Logical>,
     now: std::time::Duration,
 ) -> bool {
-    crate::presentation::window::cluster_exclusive_presentation(
+    crate::presentation::window::cluster_exclusive_owner(
         &session.clusters,
         &session.nodes,
         &session.fullscreen,
@@ -100,7 +100,7 @@ fn cluster_exclusive_on_output<D: SessionDriver>(
         geometry,
         now,
     )
-    .is_some_and(|presentation| presentation.progress > 0.0)
+    .is_some()
 }
 
 fn node_at_pointer<D: SessionDriver>(

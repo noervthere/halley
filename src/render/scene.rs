@@ -153,7 +153,7 @@ pub fn build(
         .overlays
         .overlays
         .snapshot(&output.name(), request.frame.target_presentation_time);
-    let cluster_exclusive = crate::presentation::window::cluster_exclusive_presentation(
+    let cluster_exclusive = crate::presentation::window::cluster_exclusive_owner(
         request.desktop.clusters,
         request.desktop.nodes,
         request.desktop.fullscreen,
@@ -653,7 +653,7 @@ pub fn build(
             .rev()
             .flat_map(|(_, scene)| scene.elements)
             .collect::<Vec<_>>();
-        if exclusive.progress > 0.0 {
+        if exclusive.transition_progress > 0.0 {
             foreground.push(SceneElement::Border(SolidColorRenderElement::new(
                 Id::new(),
                 Rectangle::from_size(output_geometry.size.to_physical(1)),
@@ -662,7 +662,7 @@ pub fn build(
                     0.0,
                     0.0,
                     0.0,
-                    exclusive.progress.clamp(0.0, 1.0),
+                    exclusive.transition_progress.clamp(0.0, 1.0),
                 ),
                 Kind::Unspecified,
             )));
