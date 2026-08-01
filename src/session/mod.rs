@@ -1225,8 +1225,12 @@ pub(crate) fn begin_pointer_move<D: SessionDriver>(
         last_update: crate::frame_clock::monotonic_now(),
         velocity: halley_core::field::Vec2 { x: 0.0, y: 0.0 },
     };
+    // Some client-side title bars (notably DMS) request an interactive move
+    // immediately on press. A maximized window remains a plain click until
+    // motion crosses the threshold; only then does input.rs restore it and
+    // show the grabbing cursor. Ordinary window moves still begin immediately.
     session
         .cursor
-        .set_override(Some(smithay::input::pointer::CursorIcon::Grabbing));
+        .set_override((!was_maximized).then_some(smithay::input::pointer::CursorIcon::Grabbing));
     true
 }

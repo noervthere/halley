@@ -1303,6 +1303,9 @@ where
                 {
                     *maximize_restore = None;
                 }
+                session
+                    .cursor
+                    .set_override(Some(smithay::input::pointer::CursorIcon::Grabbing));
             }
             if let Some((output, output_geometry)) =
                 output_at_pointer(&session.wayland.space, position_after)
