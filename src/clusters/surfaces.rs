@@ -83,15 +83,14 @@ impl ClusterSystem {
         let Some(layout) = self.workspace_layout(cluster_id, work_area) else {
             return Vec::new();
         };
-        layout
+        let dragging = self.dragged_window.as_ref().map(|drag| drag.member);
+        let mut targets = layout
             .placements
             .into_iter()
             .filter(|placement| {
-                !self.floating.contains(&placement.node_id)
-                    && self
-                        .dragged_window
-                        .as_ref()
-                        .is_none_or(|drag| drag.member != placement.node_id)
+                !self.admission_floats.contains(&placement.node_id)
+                    && !self.member_floats.is_floating(placement.node_id)
+                    && dragging != Some(placement.node_id)
             })
             .map(|placement| {
                 let local = Rectangle::<i32, Logical>::new(
@@ -111,7 +110,20 @@ impl ClusterSystem {
                     geometry: Rectangle::new(output_geometry.loc + local.loc, local.size),
                 }
             })
-            .collect()
+            .collect::<Vec<_>>();
+        targets.extend(
+            self.member_ids(cluster_id)
+                .into_iter()
+                .filter(|member| dragging != Some(*member))
+                .filter_map(|member| {
+                    let local = self.member_floats.rect(member)?;
+                    Some(WorkspaceSurfaceTarget {
+                        node_id: member,
+                        geometry: Rectangle::new(output_geometry.loc + local.loc, local.size),
+                    })
+                }),
+        );
+        targets
     }
 
     pub(crate) fn prepare_surface_target(

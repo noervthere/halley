@@ -713,6 +713,7 @@ keybinds:
   # to return to the Field. Slot 10 uses 0, like a ten-key workspace row.
   "$var.mod+shift+c" "cluster-mode"
   "$var.mod+l" "cluster-layout-cycle"
+  "$var.mod+v" "cluster-toggle-float"
   "$var.mod+1" "cluster-slot-1"
   "$var.mod+2" "cluster-slot-2"
   "$var.mod+3" "cluster-slot-3"

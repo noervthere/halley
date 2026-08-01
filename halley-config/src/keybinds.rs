@@ -64,6 +64,7 @@ pub enum Action {
     FocusCycle(FocusCycleDirection),
     ClusterMode,
     ClusterLayoutCycle,
+    ClusterToggleFloat,
     ClusterSlot(u8),
     ClusterTileFocus(Direction),
     ClusterTileSwap(Direction),
@@ -132,7 +133,7 @@ mod tests {
                 )
             }
         }
-        assert_eq!(kb.binds.len(), 42);
+        assert_eq!(kb.binds.len(), 43);
 
         let quit = kb.binds.iter().find(|b| b.action == Action::Quit).unwrap();
         assert!(quit.modifiers.super_key);
@@ -171,6 +172,14 @@ mod tests {
             .unwrap();
         assert!(toggle_state.modifiers.super_key);
         assert_eq!(toggle_state.key, "n");
+
+        let cluster_float = kb
+            .binds
+            .iter()
+            .find(|b| b.action == Action::ClusterToggleFloat)
+            .unwrap();
+        assert!(cluster_float.modifiers.super_key);
+        assert_eq!(cluster_float.key, "v");
 
         let apogee = kb
             .binds

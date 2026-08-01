@@ -21,7 +21,7 @@ fn example_config_parses_end_to_end() {
             )
         }
     }
-    assert_eq!(keybinds.binds.len(), 42);
+    assert_eq!(keybinds.binds.len(), 43);
 
     let quit = keybinds
         .binds
@@ -65,6 +65,14 @@ fn example_config_parses_end_to_end() {
         .expect("toggle-state bind present");
     assert_eq!(toggle_state.key, "n");
     assert!(toggle_state.modifiers.super_key);
+
+    let cluster_float = keybinds
+        .binds
+        .iter()
+        .find(|b| b.action == Action::ClusterToggleFloat)
+        .expect("cluster-toggle-float bind present");
+    assert_eq!(cluster_float.key, "v");
+    assert!(cluster_float.modifiers.super_key);
 
     let bearings_show = keybinds
         .binds

@@ -11,6 +11,7 @@ use smithay::utils::{Logical, Point, Rectangle};
 
 mod bloom;
 mod creation;
+mod floating;
 mod ipc;
 mod membership;
 mod overflow;
@@ -99,7 +100,8 @@ pub struct ClusterSystem {
     active: HashMap<String, ClusterId>,
     transitions: HashMap<String, transition::WorkspaceTransition>,
     reflows: HashMap<String, transition::ReflowTransition>,
-    floating: HashSet<NodeId>,
+    admission_floats: HashSet<NodeId>,
+    member_floats: floating::ClusterFloatingState,
     dragged_window: Option<DraggedWindow>,
     join_candidate: Option<JoinCandidate>,
     hovered_core: Option<ClusterId>,
@@ -126,7 +128,8 @@ impl ClusterSystem {
             active: HashMap::new(),
             transitions: HashMap::new(),
             reflows: HashMap::new(),
-            floating: HashSet::new(),
+            admission_floats: HashSet::new(),
+            member_floats: floating::ClusterFloatingState::default(),
             dragged_window: None,
             join_candidate: None,
             hovered_core: None,
@@ -506,9 +509,76 @@ impl ClusterSystem {
     }
 
     pub fn active_layout_for_member(&self, id: NodeId) -> Option<ClusterWorkspaceLayoutKind> {
+        if self.member_floats.is_floating(id) {
+            return None;
+        }
         let cluster = self.cluster_for_member(id)?;
         let metadata = self.metadata(cluster)?;
         (self.active_on(&metadata.output) == Some(cluster)).then_some(metadata.layout)
+    }
+
+    pub fn is_member_floating(&self, member: NodeId) -> bool {
+        self.member_floats.is_floating(member)
+    }
+
+    /// Moves one member between the active cluster's layout and its
+    /// cluster-local floating layer without changing registry membership.
+    /// The returned boolean is the member's new floating state.
+    pub fn toggle_member_floating(
+        &mut self,
+        output: &str,
+        member: NodeId,
+        work_area: Rectangle<i32, Logical>,
+        current_rect: Rectangle<i32, Logical>,
+        now: Duration,
+    ) -> Option<bool> {
+        let cluster = self.active_on(output)?;
+        if self.cluster_for_member(member) != Some(cluster)
+            || self
+                .dragged_window
+                .as_ref()
+                .is_some_and(|drag| drag.member == member)
+        {
+            return None;
+        }
+        let before = self.workspace_layout(cluster, work_area)?;
+        self.surfaces.invalidate_target(member);
+        if let Some(origin) = self.member_floats.tile(member) {
+            self.begin_reflow_with_origin(output, cluster, before, member, origin, now);
+            Some(false)
+        } else {
+            self.member_floats.float(member, current_rect, work_area);
+            let duration_ms = self
+                .metadata(cluster)
+                .map(|metadata| match metadata.layout {
+                    ClusterWorkspaceLayoutKind::Tiling => self.animations.tiling.reflow_duration_ms,
+                    ClusterWorkspaceLayoutKind::Stacking => {
+                        self.animations.stacking.cycle_duration_ms
+                    }
+                })
+                .unwrap_or(self.animations.tiling.reflow_duration_ms);
+            self.begin_reflow(output, cluster, before, now, duration_ms);
+            Some(true)
+        }
+    }
+
+    pub fn update_member_floating_rect(
+        &mut self,
+        output: &str,
+        member: NodeId,
+        rect: Rectangle<i32, Logical>,
+        work_area: Rectangle<i32, Logical>,
+    ) -> bool {
+        let Some(cluster) = self.active_on(output) else {
+            return false;
+        };
+        if self.cluster_for_member(member) != Some(cluster)
+            || !self.member_floats.update(member, rect, work_area)
+        {
+            return false;
+        }
+        self.surfaces.invalidate_target(member);
+        true
     }
 
     pub fn admit_mapped_window(
@@ -527,9 +597,11 @@ impl ClusterSystem {
             return false;
         }
         match participation {
-            halley_config::WindowClusterParticipation::Float => self.floating.insert(member),
+            halley_config::WindowClusterParticipation::Float => {
+                self.admission_floats.insert(member)
+            }
             halley_config::WindowClusterParticipation::Layout => {
-                self.floating.remove(&member);
+                self.admission_floats.remove(&member);
                 let layout = self
                     .metadata(active)
                     .map(|metadata| metadata.layout)
@@ -617,11 +689,34 @@ impl ClusterSystem {
                 WindowPresentation::Field
             };
         };
-        if self.floating.contains(&id) {
+        if self.admission_floats.contains(&id) {
             return WindowPresentation::Field;
         }
         if member_cluster != Some(active) {
             return WindowPresentation::Hidden;
+        }
+        if let Some(target) = self.member_floats.rect(id) {
+            if let Some(visual) = self.transition_visual(output, active, id, target, core, now) {
+                return WindowPresentation::Workspace {
+                    rect: visual.rect,
+                    depth: usize::MAX,
+                    alpha: visual.alpha,
+                };
+            }
+            if let Some(visual) =
+                self.reflow_visual(output, active, id, Some((target, usize::MAX)), now)
+            {
+                return WindowPresentation::Workspace {
+                    rect: visual.rect,
+                    depth: visual.depth,
+                    alpha: visual.alpha,
+                };
+            }
+            return WindowPresentation::Workspace {
+                rect: target,
+                depth: usize::MAX,
+                alpha: 1.0,
+            };
         }
         // A member whose client geometry is still owned by its admission
         // transaction must retain the ordinary Field transform as well.
@@ -787,7 +882,32 @@ impl ClusterSystem {
         let Some(cluster) = self.active_on(output) else {
             return false;
         };
-        if self.floating.contains(&member) || self.cluster_for_member(member) != Some(cluster) {
+        if self.admission_floats.contains(&member)
+            || self.member_floats.is_floating(member)
+            || self.cluster_for_member(member) != Some(cluster)
+        {
+            return false;
+        }
+        self.surfaces.invalidate_target(member);
+        self.dragged_window = Some(DraggedWindow {
+            member,
+            presentation: Some((output.to_string(), rect)),
+        });
+        true
+    }
+
+    pub fn begin_floating_member_drag(
+        &mut self,
+        output: &str,
+        member: NodeId,
+        rect: Rectangle<i32, Logical>,
+    ) -> bool {
+        let Some(cluster) = self.active_on(output) else {
+            return false;
+        };
+        if self.cluster_for_member(member) != Some(cluster)
+            || !self.member_floats.is_floating(member)
+        {
             return false;
         }
         self.surfaces.invalidate_target(member);
@@ -909,7 +1029,7 @@ impl ClusterSystem {
         {
             return false;
         }
-        self.floating.remove(&member);
+        self.admission_floats.remove(&member);
         self.surfaces.invalidate_target(member);
         self.begin_reflow_with_origin(output, cluster, before, member, origin, now);
         true
@@ -1000,6 +1120,30 @@ impl ClusterSystem {
         true
     }
 
+    pub fn finish_floating_member_drag(
+        &mut self,
+        output: &str,
+        member: NodeId,
+        work_area: Rectangle<i32, Logical>,
+        rect: Rectangle<i32, Logical>,
+    ) -> bool {
+        if self.dragged_window.as_ref().map(|drag| drag.member) != Some(member) {
+            return false;
+        }
+        self.dragged_window = None;
+        let Some(cluster) = self.active_on(output) else {
+            return false;
+        };
+        if self.cluster_for_member(member) != Some(cluster)
+            || !self.member_floats.is_floating(member)
+        {
+            return false;
+        }
+        let changed = self.member_floats.update(member, rect, work_area);
+        self.surfaces.invalidate_target(member);
+        changed || self.member_floats.rect(member).is_some()
+    }
+
     pub fn cancel_window_drag(&mut self) -> bool {
         self.dragged_window.take().is_some()
     }
@@ -1022,12 +1166,18 @@ impl ClusterSystem {
             ClusterWorkspaceLayoutKind::Tiling => self.config.tiling.max_stack,
             ClusterWorkspaceLayoutKind::Stacking => self.config.stacking.max_visible,
         };
+        let layout_members = cluster
+            .members()
+            .iter()
+            .copied()
+            .filter(|member| !self.member_floats.is_floating(*member))
+            .collect::<Vec<_>>();
         Some(layout_cluster_workspace(
             metadata.layout,
             bounds,
             self.config.tiling.gaps_inner_px,
             self.config.tiling.gaps_inner_px,
-            cluster.members(),
+            &layout_members,
             limit,
         ))
     }
@@ -1139,7 +1289,8 @@ impl ClusterSystem {
             self.join_candidate = None;
         }
         let Some(id) = self.registry.cluster_id_for_member(member) else {
-            self.floating.remove(&member);
+            self.admission_floats.remove(&member);
+            self.member_floats.remove(member);
             if let Some(creation) = self.creation.as_mut() {
                 creation.selected.remove(&member);
             }
@@ -1154,7 +1305,8 @@ impl ClusterSystem {
         ) {
             self.remove_cluster_metadata(id);
         }
-        self.floating.remove(&member);
+        self.admission_floats.remove(&member);
+        self.member_floats.remove(member);
         if let Some(creation) = self.creation.as_mut() {
             creation.selected.remove(&member);
         }
@@ -1326,6 +1478,135 @@ mod tests {
         system.metadata.get_mut(&cluster).unwrap().layout = layout;
         assert!(system.activate_slot("DP-1", 1, Duration::ZERO));
         (field, system, cluster, members)
+    }
+
+    #[test]
+    fn member_float_preserves_membership_order_and_remembered_geometry() {
+        let (_field, mut system, cluster, members) =
+            active_test_cluster(3, ClusterWorkspaceLayoutKind::Tiling);
+        let work_area = Rectangle::new((0, 0).into(), (1_000, 700).into());
+        let original_order = system.registry.cluster(cluster).unwrap().members().to_vec();
+        let original_tile = system
+            .workspace_layout(cluster, work_area)
+            .unwrap()
+            .placements
+            .into_iter()
+            .find(|placement| placement.node_id == members[0])
+            .map(test_placement_rect)
+            .unwrap();
+        let floating_rect = Rectangle::new((240, 160).into(), (460, 340).into());
+
+        assert_eq!(
+            system.toggle_member_floating(
+                "DP-1",
+                members[0],
+                work_area,
+                floating_rect,
+                Duration::from_secs(2),
+            ),
+            Some(true)
+        );
+        assert!(system.is_member_floating(members[0]));
+        assert_eq!(
+            system.registry.cluster(cluster).unwrap().members(),
+            original_order
+        );
+        assert!(
+            system
+                .workspace_layout(cluster, work_area)
+                .unwrap()
+                .placements
+                .iter()
+                .all(|placement| placement.node_id != members[0])
+        );
+        assert_eq!(
+            system
+                .window_presentation(members[0], "DP-1", work_area, None, Duration::from_secs(2),),
+            WindowPresentation::Workspace {
+                rect: original_tile,
+                depth: usize::MAX,
+                alpha: 1.0,
+            }
+        );
+        assert_eq!(
+            system.window_presentation(
+                members[0],
+                "DP-1",
+                work_area,
+                None,
+                Duration::from_secs(20),
+            ),
+            WindowPresentation::Workspace {
+                rect: floating_rect,
+                depth: usize::MAX,
+                alpha: 1.0,
+            }
+        );
+
+        assert_eq!(
+            system.toggle_member_floating(
+                "DP-1",
+                members[0],
+                work_area,
+                floating_rect,
+                Duration::from_secs(20),
+            ),
+            Some(false)
+        );
+        assert!(!system.is_member_floating(members[0]));
+        assert_eq!(
+            system.registry.cluster(cluster).unwrap().members(),
+            original_order
+        );
+        let WindowPresentation::Workspace { rect, .. } = system.window_presentation(
+            members[0],
+            "DP-1",
+            work_area,
+            None,
+            Duration::from_secs(20),
+        ) else {
+            panic!("retiling member should remain visible");
+        };
+        assert_eq!(rect, floating_rect);
+
+        assert_eq!(
+            system.toggle_member_floating(
+                "DP-1",
+                members[0],
+                work_area,
+                original_tile,
+                Duration::from_secs(40),
+            ),
+            Some(true)
+        );
+        assert_eq!(
+            system.window_presentation(
+                members[0],
+                "DP-1",
+                work_area,
+                None,
+                Duration::from_secs(60),
+            ),
+            WindowPresentation::Workspace {
+                rect: floating_rect,
+                depth: usize::MAX,
+                alpha: 1.0,
+            }
+        );
+    }
+
+    #[test]
+    fn member_float_is_scoped_to_the_active_cluster() {
+        let (_field, mut system, _cluster, members) =
+            active_test_cluster(2, ClusterWorkspaceLayoutKind::Stacking);
+        let work_area = Rectangle::new((0, 0).into(), (1_000, 700).into());
+        let rect = Rectangle::new((100, 80).into(), (500, 400).into());
+
+        assert_eq!(
+            system.toggle_member_floating("DP-2", members[0], work_area, rect, Duration::ZERO,),
+            None
+        );
+        assert!(!system.is_member_floating(members[0]));
     }
 
     #[test]
@@ -1905,6 +2186,7 @@ mod tests {
             system.window_presentation(floating, "DP-1", work_area, None, Duration::MAX),
             WindowPresentation::Field
         );
+        assert_eq!(system.cluster_for_member(floating), None);
     }
 
     #[test]

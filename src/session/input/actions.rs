@@ -1,7 +1,7 @@
 use std::ffi::OsStr;
 
 use smithay::output::Output;
-use smithay::utils::SERIAL_COUNTER;
+use smithay::utils::{Rectangle, SERIAL_COUNTER};
 use smithay::wayland::seat::WaylandFocus;
 
 use super::{
@@ -28,6 +28,67 @@ pub(super) fn cluster_blocks_zoom(action: &halley_config::Action, active_cluster
                 | halley_config::Action::ZoomOut
                 | halley_config::Action::ZoomReset
         )
+}
+
+fn toggle_focused_cluster_float<D: SessionDriver>(
+    session: &mut Session<D>,
+    output_name: Option<&str>,
+) {
+    let Some(output_name) = output_name else {
+        return;
+    };
+    let Some(output) = session
+        .wayland
+        .space
+        .outputs()
+        .find(|output| output.name() == output_name)
+        .cloned()
+    else {
+        return;
+    };
+    let Some(record) = super::super::focused_window_record(session, Some(output_name)) else {
+        return;
+    };
+    let Some(cluster) = session.clusters.cluster_for_member(record.id) else {
+        return;
+    };
+    if session.clusters.active_on(output_name) != Some(cluster)
+        || session.fullscreen.is_fullscreen_or_pending(&record.surface)
+        || session.maximize.contains(&record.surface)
+        || crate::input::grab::belongs_to_surface(&session.interactions.grab, &record.surface)
+    {
+        return;
+    }
+    let Some(output_geometry) = session.wayland.space.output_geometry(&output) else {
+        return;
+    };
+    let now = crate::frame_clock::monotonic_now();
+    let current = super::super::presented_window_rect(session, &record.window, &output, now)
+        .map(|rect| rect.to_logical(1))
+        .or_else(|| {
+            session
+                .wayland
+                .space
+                .element_geometry(&record.window)
+                .map(|rect| Rectangle::new(rect.loc - output_geometry.loc, rect.size))
+        });
+    let Some(current) = current else {
+        return;
+    };
+    let work_area = smithay::desktop::layer_map_for_output(&output).non_exclusive_zone();
+    let Some(floating) =
+        session
+            .clusters
+            .toggle_member_floating(output_name, record.id, work_area, current, now)
+    else {
+        return;
+    };
+    super::super::reconcile_cluster_surfaces(session, output_name);
+    if floating {
+        crate::window::raise_managed(&mut session.wayland, &record.window);
+        session.xwayland.raise_window(&record.window);
+    }
+    session.request_redraw();
 }
 
 pub(super) fn dispatch<D: SessionDriver>(
@@ -140,6 +201,9 @@ pub(super) fn dispatch<D: SessionDriver>(
             {
                 session.request_redraw();
             }
+        }
+        super::super::SessionControl::ClusterToggleFloat => {
+            toggle_focused_cluster_float(session, action_output.as_deref());
         }
         super::super::SessionControl::ClusterSlot(slot) => {
             if let Some(output_name) = action_output {

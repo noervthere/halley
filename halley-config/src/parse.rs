@@ -133,6 +133,7 @@ fn parse_action(s: &str) -> Action {
         "cluster-layout cycle" | "cluster-layout-cycle" | "cluster_layout_cycle" => {
             Action::ClusterLayoutCycle
         }
+        "cluster-toggle-float" | "cluster_toggle_float" => Action::ClusterToggleFloat,
         "open-terminal" | "open_terminal" => Action::OpenTerminal,
         "zoom-in" | "zoom_in" => Action::ZoomIn,
         "zoom-out" | "zoom_out" => Action::ZoomOut,
@@ -337,6 +338,7 @@ keybinds:
   mod "super"
   "$var.mod+shift+c" "cluster-mode"
   "$var.mod+l" "cluster-layout cycle"
+  "$var.mod+v" "cluster-toggle-float"
   "$var.mod+1" "cluster slot 1"
   "$var.mod+left" "cluster-focus-left"
   "$var.mod+ctrl+right" "tile swap right"
@@ -348,6 +350,7 @@ end
         for expected in [
             Action::ClusterMode,
             Action::ClusterLayoutCycle,
+            Action::ClusterToggleFloat,
             Action::ClusterSlot(1),
             Action::ClusterTileFocus(crate::ClusterDirection::Left),
             Action::ClusterTileSwap(crate::ClusterDirection::Right),

@@ -54,6 +54,7 @@ enum SessionControl {
     BearingsToggle,
     ClusterMode,
     ClusterLayoutCycle,
+    ClusterToggleFloat,
     ClusterSlot(u8),
     ClusterTileFocus(halley_config::Direction),
     ClusterTileSwap(halley_config::Direction),
@@ -89,6 +90,7 @@ fn dispatch_action(
         Action::FocusCycle(direction) => return SessionControl::FocusCycle(direction),
         Action::ClusterMode => return SessionControl::ClusterMode,
         Action::ClusterLayoutCycle => return SessionControl::ClusterLayoutCycle,
+        Action::ClusterToggleFloat => return SessionControl::ClusterToggleFloat,
         Action::ClusterSlot(slot) => return SessionControl::ClusterSlot(slot),
         Action::ClusterTileFocus(direction) => return SessionControl::ClusterTileFocus(direction),
         Action::ClusterTileSwap(direction) => return SessionControl::ClusterTileSwap(direction),
@@ -322,7 +324,11 @@ pub(crate) fn reconcile_cluster_surfaces<D: SessionDriver>(
             toplevel.with_pending_state(|pending| {
                 pending.size = Some(target.geometry.size);
                 pending.bounds = Some(work_area.size);
-                crate::wayland::decoration::apply_tiled_hint(pending);
+                if session.clusters.is_member_floating(target.node_id) {
+                    crate::wayland::decoration::clear_tiled_hint(pending);
+                } else {
+                    crate::wayland::decoration::apply_tiled_hint(pending);
+                }
             });
             if toplevel.is_initial_configure_sent() {
                 toplevel.send_configure();
