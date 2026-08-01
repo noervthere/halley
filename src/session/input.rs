@@ -366,7 +366,7 @@ pub(crate) fn sync_cluster_activation_focus<D: SessionDriver>(
     collapsed_should_focus: bool,
     serial: smithay::utils::Serial,
 ) {
-    super::sync_cluster_camera(session, &output.name());
+    super::sync_cluster_camera(session, &output.name(), crate::frame_clock::monotonic_now());
     let Some(member) = session.clusters.first_member(id) else {
         return;
     };

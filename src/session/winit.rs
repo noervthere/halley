@@ -326,7 +326,8 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                 let output_name = output.name();
                 super::reconcile_cluster_surfaces(app, &output_name);
                 let view_before = app.cameras.view(&output_name);
-                let cluster_camera_changed = super::sync_cluster_camera(app, &output_name);
+                let cluster_camera_changed =
+                    super::sync_cluster_camera(app, &output_name, target_presentation_time);
                 let mut animating = cluster_camera_changed
                     | app.sync_fullscreen_camera(&output, target_presentation_time);
                 for camera in app.cameras.iter_mut() {

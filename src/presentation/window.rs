@@ -199,8 +199,8 @@ pub(crate) fn window_visual_state_with_cluster_presentation(
                         crate::nodes::screen_from_world(
                             metadata.core_position,
                             cameras
-                                .get(&output.name())
-                                .expect("an output view always has a backing camera"),
+                                .cluster_anchor_camera(&output.name())
+                                .expect("an output view always has a cluster anchor camera"),
                             output_geometry,
                         ) - output_geometry.loc
                     });

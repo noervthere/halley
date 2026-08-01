@@ -336,11 +336,16 @@ pub(crate) fn reconcile_cluster_surfaces<D: SessionDriver>(
 pub(crate) fn sync_cluster_camera<D: SessionDriver>(
     session: &mut Session<D>,
     output_name: &str,
+    now: Duration,
 ) -> bool {
-    session.cameras.set_cluster_active(
-        output_name,
-        session.clusters.active_on(output_name).is_some(),
-    )
+    let workspace_presented = session.clusters.active_on(output_name).is_some()
+        || session
+            .clusters
+            .transition_cluster_on(output_name, now)
+            .is_some();
+    session
+        .cameras
+        .set_cluster_active(output_name, workspace_presented)
 }
 
 pub(crate) fn has_active_pointer_confinement<D: SessionDriver>(session: &Session<D>) -> bool {
