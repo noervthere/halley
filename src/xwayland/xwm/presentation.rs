@@ -51,7 +51,7 @@ pub(super) fn set_external_fullscreen<D: SessionDriver>(
         }
         return;
     }
-    let Some(window) = window_for_surface(session, surface) else {
+    let Some(window) = window_for_surface(&session.wayland, &session.nodes, surface) else {
         return;
     };
     let now = crate::frame_clock::monotonic_now();
@@ -462,7 +462,7 @@ pub(super) fn restore_window<D: SessionDriver>(session: &mut Session<D>, surface
             restore
         });
     if let Some(restore) = restore {
-        let window = window_for_surface(session, surface);
+        let window = window_for_surface(&session.wayland, &session.nodes, surface);
         let fullscreen_active = window
             .as_ref()
             .is_some_and(|window| session.fullscreen.external_desired_matches(window, true));
@@ -471,7 +471,7 @@ pub(super) fn restore_window<D: SessionDriver>(session: &mut Session<D>, surface
             if let Some(output) = restore
                 .output
                 .as_deref()
-                .and_then(|name| output_named(session, name))
+                .and_then(|name| output_named(&session.wayland, name))
             {
                 crate::wayland::set_window_output(&window, &output);
             }

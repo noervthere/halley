@@ -38,7 +38,8 @@ pub(crate) fn capture_window<D: SessionDriver>(session: &mut Session<D>, window:
     if session.render.window_close_animations.has_pending(&surface) {
         return true;
     }
-    let Some(output) = output_for_window(session, window) else {
+    let Some(output) = output_for_window(&session.wayland, session.driver.primary_output(), window)
+    else {
         return false;
     };
     let now = crate::frame_clock::monotonic_now();
@@ -142,10 +143,12 @@ pub(crate) fn mapped<D: SessionDriver>(session: &mut Session<D>, surface: &WlSur
     session.render.window_close_animations.cancel(surface);
 }
 
-fn output_for_window<D: SessionDriver>(session: &Session<D>, window: &Window) -> Option<Output> {
-    let primary = session.driver.primary_output();
-    session
-        .wayland
+fn output_for_window(
+    wayland: &crate::wayland::WaylandState,
+    primary: &Output,
+    window: &Window,
+) -> Option<Output> {
+    wayland
         .space
         .outputs()
         .find(|output| crate::wayland::window_is_on_output(window, output, primary))

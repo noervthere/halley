@@ -15,11 +15,11 @@ use smithay::xwayland::xwm::XwmId;
 
 use crate::session::{Session, SessionDriver};
 
-pub fn allow_access<D: SessionDriver>(session: &Session<D>, xwm: XwmId) -> bool {
-    let Some(focused) = session.wayland.focused_window.as_ref() else {
+pub fn allow_access(wayland: &crate::wayland::WaylandState, xwm: XwmId) -> bool {
+    let Some(focused) = wayland.focused_window.as_ref() else {
         return false;
     };
-    session.wayland.space.elements().any(|window| {
+    wayland.space.elements().any(|window| {
         window
             .wl_surface()
             .is_some_and(|surface| surface.as_ref() == focused)

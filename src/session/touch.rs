@@ -76,7 +76,12 @@ where
             let Some(handle) = session.seat.get_touch() else {
                 return true;
             };
-            let Some(screen) = screen_position(session, event) else {
+            let Some(screen) = screen_position(
+                &session.settings.input,
+                &session.wayland,
+                session.driver.primary_output(),
+                event,
+            ) else {
                 return true;
             };
             let Some((surface, origin, _)) = session
@@ -112,7 +117,12 @@ where
             if !session.touch.targets.contains_key(&event.slot()) {
                 return true;
             }
-            let Some(screen) = screen_position(session, event) else {
+            let Some(screen) = screen_position(
+                &session.settings.input,
+                &session.wayland,
+                session.driver.primary_output(),
+                event,
+            ) else {
                 return true;
             };
             handle.motion(
@@ -155,7 +165,12 @@ where
     let Some(handle) = session.seat.get_touch() else {
         return;
     };
-    let Some(screen) = screen_position(session, event) else {
+    let Some(screen) = screen_position(
+        &session.settings.input,
+        &session.wayland,
+        session.driver.primary_output(),
+        event,
+    ) else {
         return;
     };
     let Some(route) = route(session, screen) else {
@@ -218,7 +233,12 @@ where
     let Some(target) = session.touch.targets.get(&event.slot()).cloned() else {
         return;
     };
-    let Some(screen) = screen_position(session, event) else {
+    let Some(screen) = screen_position(
+        &session.settings.input,
+        &session.wayland,
+        session.driver.primary_output(),
+        event,
+    ) else {
         return;
     };
     let location = match target.coordinates {
@@ -319,40 +339,33 @@ fn route<D: SessionDriver>(
     )
 }
 
-fn screen_position<D, B, E>(session: &Session<D>, event: &E) -> Option<Point<f64, Logical>>
+fn screen_position<B, E>(
+    input: &halley_config::Input,
+    wayland: &crate::wayland::WaylandState,
+    primary_output: &Output,
+    event: &E,
+) -> Option<Point<f64, Logical>>
 where
-    D: SessionDriver,
     B: InputBackend,
     E: AbsolutePositionEvent<B>,
 {
     let device_name = event.device().name();
-    let configured = session
-        .settings
-        .input
-        .settings_for_device(halley_config::DeviceKind::Touchscreen, device_name.as_ref());
+    let configured =
+        input.settings_for_device(halley_config::DeviceKind::Touchscreen, device_name.as_ref());
     let requested_output = configured.map_to_output.as_deref();
-    let mapped_output = requested_output.and_then(|name| {
-        session
-            .wayland
-            .space
-            .outputs()
-            .find(|output| output.name() == name)
-    });
+    let mapped_output = requested_output
+        .and_then(|name| wayland.space.outputs().find(|output| output.name() == name));
     if let Some(requested) = requested_output
         && mapped_output.is_none()
     {
         eventline::warn!(
             "input: touchscreen {device_name:?} requested unavailable output {requested:?}; using \
              {:?}",
-            session.driver.primary_output().name()
+            primary_output.name()
         );
     }
-    let output = mapped_output.unwrap_or_else(|| session.driver.primary_output());
-    transform_absolute_position(
-        event,
-        output,
-        session.wayland.space.output_geometry(output)?,
-    )
+    let output = mapped_output.unwrap_or(primary_output);
+    transform_absolute_position(event, output, wayland.space.output_geometry(output)?)
 }
 
 fn transform_absolute_position<B, E>(

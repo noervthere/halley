@@ -769,16 +769,18 @@ fn toggle_cluster_or_focused_node<D: SessionDriver>(
     crate::nodes::toggle_focused_on_output(session, output_name, serial);
 }
 
-fn bearing_at_pointer<D: SessionDriver>(
-    session: &Session<D>,
+fn bearing_at_pointer(
+    pointer: &crate::input::pointer::Pointer,
+    space: &Space<Window>,
+    bearings: &crate::shell::bearings::BearingsState,
 ) -> Option<(halley_core::field::NodeId, Output)> {
-    let position = session.pointer.position();
-    let (output, geometry) = output_at_pointer(&session.wayland.space, position)?;
+    let position = pointer.position();
+    let (output, geometry) = output_at_pointer(space, position)?;
     let local = Point::<f64, Logical>::from((
         position.0 - f64::from(geometry.loc.x),
         position.1 - f64::from(geometry.loc.y),
     ));
-    let id = session.bearings.hit_test(&output.name(), local)?;
+    let id = bearings.hit_test(&output.name(), local)?;
     Some((id, output))
 }
 
@@ -1889,7 +1891,8 @@ where
         if button == BTN_LEFT
             && state == ButtonState::Pressed
             && !session.focus_cycle.is_open()
-            && let Some((id, output)) = bearing_at_pointer(session)
+            && let Some((id, output)) =
+                bearing_at_pointer(&session.pointer, &session.wayland.space, &session.bearings)
         {
             wayland::focus::select_output(&mut session.wayland, &output);
             if crate::nodes::focus_or_restore_from_bearing(session, id, serial) {

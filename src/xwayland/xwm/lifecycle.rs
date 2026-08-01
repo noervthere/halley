@@ -2,8 +2,11 @@ use super::state::WindowState;
 use super::*;
 use x11rb::properties::WmHintsState;
 
-fn sync_allowed_actions<D: SessionDriver>(session: &Session<D>, surface: &X11Surface) {
-    let Some(control) = session.xwayland.control.as_ref() else {
+fn sync_allowed_actions(
+    control: Option<&crate::xwayland::control::X11Control>,
+    surface: &X11Surface,
+) {
+    let Some(control) = control else {
         return;
     };
     let fixed_size = surface
@@ -47,7 +50,7 @@ pub(super) fn forget_window<D: SessionDriver>(session: &mut Session<D>, surface:
         .xwayland
         .opening_placements
         .remove(&surface.window_id());
-    let Some(window) = window_for_surface(session, surface) else {
+    let Some(window) = window_for_surface(&session.wayland, &session.nodes, surface) else {
         return;
     };
     if let Some(geometry) = session.wayland.space.element_geometry(&window) {
@@ -112,7 +115,7 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
                 surface.is_mapped(),
             ),
         );
-        if window_for_surface(self, &surface).is_some()
+        if window_for_surface(&self.wayland, &self.nodes, &surface).is_some()
             || self
                 .xwayland
                 .pending_windows
@@ -135,7 +138,7 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
         }
         self.xwayland
             .transition_surface(&surface, WindowState::Normal);
-        sync_allowed_actions(self, &surface);
+        sync_allowed_actions(self.xwayland.control.as_ref(), &surface);
         sync_urgency(&surface);
         if initial_iconic {
             self.xwayland
@@ -165,7 +168,7 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
 
     fn mapped_override_redirect_window(&mut self, _xwm: XwmId, surface: X11Surface) {
         let xid = surface.window_id();
-        if window_for_surface(self, &surface).is_some()
+        if window_for_surface(&self.wayland, &self.nodes, &surface).is_some()
             || self.xwayland.pending_override_redirects.contains_key(&xid)
         {
             eventline::debug!("xwayland: ignored duplicate override-redirect map xid={xid}");
@@ -299,7 +302,7 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
                 map_override_redirect(self, surface, geometry, above, true);
                 return;
             }
-            let Some(window) = window_for_surface(self, &surface) else {
+            let Some(window) = window_for_surface(&self.wayland, &self.nodes, &surface) else {
                 self.xwayland
                     .override_redirect_placements
                     .insert(xid, OverrideRedirectPlacement { geometry });
@@ -331,7 +334,7 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
             self.request_redraw();
             return;
         }
-        let Some(window) = window_for_surface(self, &surface) else {
+        let Some(window) = window_for_surface(&self.wayland, &self.nodes, &surface) else {
             return;
         };
         let now = crate::frame_clock::monotonic_now();
@@ -427,13 +430,13 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
             sync_urgency(&surface);
         }
         if matches!(property, WmWindowProperty::Class | WmWindowProperty::Title)
-            && let Some(window) = window_for_surface(self, &surface)
+            && let Some(window) = window_for_surface(&self.wayland, &self.nodes, &surface)
         {
             self.window_rules.track_window(&window);
             self.request_redraw();
         }
         if property == WmWindowProperty::NormalHints {
-            sync_allowed_actions(self, &surface);
+            sync_allowed_actions(self.xwayland.control.as_ref(), &surface);
         }
     }
 
@@ -446,7 +449,7 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
             surface.is_fullscreen(),
             maximize_origin_active(&surface),
         );
-        let maximized = window_for_surface(self, &surface)
+        let maximized = window_for_surface(&self.wayland, &self.nodes, &surface)
             .and_then(|window| window.wl_surface().map(|surface| surface.into_owned()))
             .is_some_and(|wl_surface| {
                 let _ = crate::session::set_surface_field_maximized(self, &wl_surface, true);
@@ -467,7 +470,7 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
             surface.is_fullscreen(),
             maximize_origin_active(&surface),
         );
-        if let Some(wl_surface) = window_for_surface(self, &surface)
+        if let Some(wl_surface) = window_for_surface(&self.wayland, &self.nodes, &surface)
             .and_then(|window| window.wl_surface().map(|surface| surface.into_owned()))
         {
             let _ = crate::session::set_surface_field_maximized(self, &wl_surface, false);
@@ -479,7 +482,7 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
     }
 
     fn minimize_request(&mut self, _xwm: XwmId, surface: X11Surface) {
-        let changed = window_for_surface(self, &surface)
+        let changed = window_for_surface(&self.wayland, &self.nodes, &surface)
             .and_then(|window| {
                 window
                     .wl_surface()
@@ -498,7 +501,7 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
     }
 
     fn unminimize_request(&mut self, _xwm: XwmId, surface: X11Surface) {
-        if let Some(id) = window_for_surface(self, &surface)
+        if let Some(id) = window_for_surface(&self.wayland, &self.nodes, &surface)
             .and_then(|window| {
                 window
                     .wl_surface()
@@ -563,7 +566,7 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
         let Some(button) = evdev_button(button) else {
             return;
         };
-        let Some(window) = window_for_surface(self, &surface) else {
+        let Some(window) = window_for_surface(&self.wayland, &self.nodes, &surface) else {
             return;
         };
         crate::session::begin_pointer_resize(self, &window, resize_handle(resize_edge), button);
@@ -594,7 +597,7 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
         if crate::wayland::compositor::root_surface(&focused) != surface_root {
             return;
         }
-        let Some(window) = window_for_surface(self, &surface) else {
+        let Some(window) = window_for_surface(&self.wayland, &self.nodes, &surface) else {
             return;
         };
         if crate::session::begin_client_pointer_move(self, &window, serial, button) {
@@ -644,7 +647,7 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
             );
             return;
         }
-        if let Some(window) = window_for_surface(self, &surface) {
+        if let Some(window) = window_for_surface(&self.wayland, &self.nodes, &surface) {
             if let Err(err) = surface.set_demands_attention(false) {
                 eventline::warn!(
                     "xwayland: failed to clear activation attention xid={}: {err}",
@@ -657,7 +660,7 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
     }
 
     fn allow_selection_access(&mut self, xwm: XwmId, _selection: SelectionTarget) -> bool {
-        crate::xwayland::selection::allow_access(self, xwm)
+        crate::xwayland::selection::allow_access(&self.wayland, xwm)
     }
 
     fn send_selection(

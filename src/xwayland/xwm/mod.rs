@@ -52,12 +52,12 @@ struct MaximizeFullscreenState {
 #[derive(Default)]
 struct MaximizeFullscreen(Mutex<MaximizeFullscreenState>);
 
-fn window_for_surface<D: SessionDriver>(
-    session: &Session<D>,
+fn window_for_surface(
+    wayland: &crate::wayland::WaylandState,
+    nodes: &crate::nodes::NodesState,
     surface: &X11Surface,
 ) -> Option<Window> {
-    session
-        .wayland
+    wayland
         .space
         .elements()
         .find(|window| {
@@ -67,8 +67,7 @@ fn window_for_surface<D: SessionDriver>(
         })
         .cloned()
         .or_else(|| {
-            session
-                .nodes
+            nodes
                 .records()
                 .find(|record| {
                     record
@@ -144,9 +143,9 @@ fn remember_normal_size<D: SessionDriver>(
         return;
     }
     if is_steam_main_window(surface)
-        && window_for_surface(session, surface)
+        && window_for_surface(&session.wayland, &session.nodes, surface)
             .and_then(|window| crate::wayland::window_output_name(&window))
-            .and_then(|name| output_named(session, &name))
+            .and_then(|name| output_named(&session.wayland, &name))
             .and_then(|output| session.wayland.space.output_geometry(&output))
             .is_some_and(|geometry| size_fills_output(size, geometry.size))
     {
@@ -325,7 +324,7 @@ fn admit_window<D: SessionDriver>(session: &mut Session<D>, xid: u32) {
         if let Some(saved_output) = restore
             .output
             .as_deref()
-            .and_then(|name| output_named(session, name))
+            .and_then(|name| output_named(&session.wayland, name))
         {
             output = saved_output;
             location = restore.geometry.loc;

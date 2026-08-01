@@ -169,9 +169,8 @@ pub(super) fn resolve_override_redirect_owner<D: SessionDriver>(
         })
 }
 
-pub(super) fn output_named<D: SessionDriver>(session: &Session<D>, name: &str) -> Option<Output> {
-    session
-        .wayland
+pub(super) fn output_named(wayland: &crate::wayland::WaylandState, name: &str) -> Option<Output> {
+    wayland
         .space
         .outputs()
         .find(|output| output.name() == name)
@@ -187,7 +186,7 @@ pub(super) fn override_redirect_resolution<D: SessionDriver>(
     let output = owner
         .as_ref()
         .and_then(|owner| crate::wayland::window_output_name(&owner.window))
-        .and_then(|name| output_named(session, &name))
+        .and_then(|name| output_named(&session.wayland, &name))
         .or_else(|| output_for_geometry(session, geometry));
     OverrideRedirectResolution { owner, output }
 }
@@ -348,7 +347,7 @@ pub(super) fn map_override_redirect<D: SessionDriver>(
     above: Option<u32>,
     mirror_configure_stack: bool,
 ) {
-    if window_for_surface(session, &surface).is_some() {
+    if window_for_surface(&session.wayland, &session.nodes, &surface).is_some() {
         return;
     }
     let resolution = override_redirect_resolution(session, &surface, geometry);
