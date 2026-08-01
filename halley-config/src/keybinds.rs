@@ -135,7 +135,7 @@ mod tests {
                 )
             }
         }
-        assert_eq!(kb.binds.len(), 43);
+        assert_eq!(kb.binds.len(), 44);
 
         let quit = kb.binds.iter().find(|b| b.action == Action::Quit).unwrap();
         assert!(quit.modifiers.super_key);
@@ -236,7 +236,7 @@ mod tests {
             let focus = kb
                 .binds
                 .iter()
-                .find(|bind| bind.action == Action::ClusterTileFocus(direction))
+                .find(|bind| bind.action == Action::FocusDirection(direction))
                 .unwrap();
             assert!(focus.modifiers.super_key);
             assert!(!focus.modifiers.ctrl);
@@ -263,6 +263,14 @@ mod tests {
             assert!(monitor.modifiers.shift);
             assert_eq!(monitor.key, key);
         }
+
+        let center = kb
+            .binds
+            .iter()
+            .find(|bind| bind.action == Action::CenterLastFocused)
+            .unwrap();
+        assert!(center.modifiers.super_key);
+        assert_eq!(center.key, "h");
 
         let term = kb
             .binds

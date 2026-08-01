@@ -21,6 +21,11 @@ pub(super) fn focus_directional_field<D: SessionDriver>(
     output_name: &str,
     direction: halley_config::Direction,
 ) -> bool {
+    // Directional Field focus must not punch through another presentation's
+    // camera ownership (fullscreen, maximize, or a cluster workspace).
+    if session.cameras.get_mut(output_name).is_none() {
+        return false;
+    }
     let Some(current) = session.nodes.focused_on_output(output_name) else {
         return false;
     };

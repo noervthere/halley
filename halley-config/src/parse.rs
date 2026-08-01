@@ -374,6 +374,28 @@ end
     }
 
     #[test]
+    fn parses_contextual_direction_and_center_actions() {
+        let kb = parse(
+            r#"
+keybinds:
+  mod "super"
+  "$var.mod+left" "focus-left"
+  "$var.mod+right" "focus right"
+  "$var.mod+h" "center-last-focused"
+end
+"#,
+        );
+
+        for expected in [
+            Action::FocusDirection(crate::Direction::Left),
+            Action::FocusDirection(crate::Direction::Right),
+            Action::CenterLastFocused,
+        ] {
+            assert!(kb.binds.iter().any(|bind| bind.action == expected));
+        }
+    }
+
+    #[test]
     fn accepts_screenshot_action() {
         let kb = parse(
             r#"

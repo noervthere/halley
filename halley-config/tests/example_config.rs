@@ -21,7 +21,7 @@ fn example_config_parses_end_to_end() {
             )
         }
     }
-    assert_eq!(keybinds.binds.len(), 43);
+    assert_eq!(keybinds.binds.len(), 44);
 
     let quit = keybinds
         .binds
@@ -92,13 +92,21 @@ fn example_config_parses_end_to_end() {
     assert!(bearings_toggle.modifiers.super_key);
     assert!(bearings_toggle.modifiers.shift);
 
-    let cluster_left = keybinds
+    let field_left = keybinds
         .binds
         .iter()
-        .find(|bind| bind.action == Action::ClusterTileFocus(Direction::Left))
-        .expect("cluster left-focus bind present");
-    assert_eq!(cluster_left.key, "left");
-    assert!(cluster_left.modifiers.super_key);
+        .find(|bind| bind.action == Action::FocusDirection(Direction::Left))
+        .expect("contextual left-focus bind present");
+    assert_eq!(field_left.key, "left");
+    assert!(field_left.modifiers.super_key);
+
+    let center = keybinds
+        .binds
+        .iter()
+        .find(|bind| bind.action == Action::CenterLastFocused)
+        .expect("center-last-focused bind present");
+    assert_eq!(center.key, "h");
+    assert!(center.modifiers.super_key);
 
     let tile_swap_down = keybinds
         .binds

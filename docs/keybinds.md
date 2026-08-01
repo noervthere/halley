@@ -198,10 +198,11 @@ resolving `keycode-N`.
 The built-in action strings are `quit`, `close-focused`, `toggle-fullscreen`,
 `maximize-focused`, `toggle-state`, `apogee`, `bearings-show`,
 `bearings-toggle`, `cycle-focus`, `cycle-focus-backward`, `open-terminal`,
-`zoom-in`, `zoom-out`, `zoom-reset`, `screenshot`, and
+`center-last-focused`, `zoom-in`, `zoom-out`, `zoom-reset`, `screenshot`, and
 `cluster-toggle-float`. Parameterized actions also include
-`cluster-focus-DIRECTION`, `cluster-tile-swap-DIRECTION`, and `monitor-focus
-DIRECTION`, where `DIRECTION` is `left`, `right`, `up`, or `down`. `Alt+Tab` and
+`focus-DIRECTION`, `cluster-focus-DIRECTION`, `cluster-tile-swap-DIRECTION`,
+and `monitor-focus DIRECTION`, where `DIRECTION` is `left`, `right`, `up`, or
+`down`. `Alt+Tab` and
 `Alt+Shift+Tab` open and navigate the focus carousel; releasing Alt commits,
 focuses and raises the selected window, and moves the pointer to its final
 presentation center. A collapsed target restores first and receives one
@@ -224,10 +225,16 @@ hides them on the initiating key's release, even if Mod was released first.
 [Bearings](bearings.md) for layout, click behavior, configuration, and
 `halleyctl` controls.
 
-The default `Mod+Arrow` bindings focus directionally in a tiling cluster. In a
-stacking cluster, `Mod+Left` cycles forward and `Mod+Right` cycles backward;
-`Alt+Tab` and `Alt+Shift+Tab` use that same stack cycle. The vertical arrows are
-inert there, and cycling a stack with fewer than two windows is a handled no-op.
+The default `Mod+Arrow` bindings focus the nearest window in that direction in
+the Field and the nearest tile in a tiling cluster. In a stacking cluster,
+`Mod+Left` cycles forward and `Mod+Right` cycles backward; `Alt+Tab` and
+`Alt+Shift+Tab` use that same stack cycle. The vertical arrows are inert there,
+and cycling a stack with fewer than two windows is a handled no-op. The explicit
+`cluster-focus-DIRECTION` aliases remain available for cluster-only bindings.
+`Mod+H` focuses the output's most recently focused Field window and pans the
+camera to its center without changing client geometry or restoring a collapsed
+window. It is inert while fullscreen, maximize, or an open cluster owns the
+output camera.
 `Mod+Ctrl+Arrow` swaps the focused tile with its directional neighbour.
 The default `Mod+V` `cluster-toggle-float` binding moves the focused member of
 an active cluster between its layout and a cluster-owned floating layer. The

@@ -700,6 +700,9 @@ keybinds:
   "$var.mod+shift+z" "bearings-toggle"
   "alt+tab" "cycle-focus"
   "alt+shift+tab" "cycle-focus-backward"
+  # Focus the most recently used Field window and pan it to the center without
+  # changing its geometry or restoring it from a collapsed node.
+  "$var.mod+h" "center-last-focused"
 
   # Jump to the adjacent monitor and focus its most recently focused window.
   # This works from both the Field and an open cluster workspace.
@@ -727,13 +730,13 @@ keybinds:
   "$var.mod+9" "cluster-slot-9"
   "$var.mod+0" "cluster-slot-10"
 
-  # Directional cluster navigation. In a tiling cluster all four arrows focus
-  # the nearest tile. In a stacking cluster Left cycles forward and Right
-  # cycles backward; Alt+Tab and Alt+Shift+Tab retain the same stack behavior.
-  "$var.mod+left" "cluster-focus-left"
-  "$var.mod+right" "cluster-focus-right"
-  "$var.mod+up" "cluster-focus-up"
-  "$var.mod+down" "cluster-focus-down"
+  # Contextual directional navigation. In the Field each arrow focuses the
+  # nearest window in that direction. Tiling clusters use the nearest tile;
+  # stacking clusters cycle with Left/Right and ignore Up/Down.
+  "$var.mod+left" "focus-left"
+  "$var.mod+right" "focus-right"
+  "$var.mod+up" "focus-up"
+  "$var.mod+down" "focus-down"
 
   # Reorder the focused tile with its nearest neighbour in that direction.
   "$var.mod+ctrl+left" "cluster-tile-swap-left"
