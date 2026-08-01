@@ -8,7 +8,7 @@ use crate::render::node::NodeRenderer;
 use crate::render::scene::SceneElement;
 use crate::render::text::UiTextRenderer;
 
-use super::shell::{card_element, label_card_element, resolve_visuals};
+use super::shell::{label_card_element, resolve_visuals};
 
 pub(crate) struct OverflowElementContext<'a> {
     pub(crate) output: &'a Output,
@@ -180,7 +180,7 @@ pub(crate) fn elements(
     // enclosing strip. Keeping this explicit prevents cards from masking the
     // icons they contain.
     contents.extend(chips);
-    contents.push(SceneElement::NodeLabel(card_element(
+    contents.push(SceneElement::NodeLabel(label_card_element(
         renderer,
         node_renderer,
         layout.strip.to_physical(1),

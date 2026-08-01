@@ -33,8 +33,9 @@ radius in pixels; `0` is square.
 `borders false` removes overlay borders. Overlay borders always use the
 configured focused decoration border colour; there is no secondary/dual
 overlay border source.
-Apogee and Alt+Tab title bands, monitor badges, and `NODE` badges remain
-borderless regardless of this setting, matching old Halley's label chrome.
+Apogee and Alt+Tab title bands, monitor badges, `NODE` badges, and tiled-cluster
+overflow strips remain borderless regardless of this setting, matching old
+Halley's label chrome.
 Window preview textures use `decorations.border.radius`; the one surrounding
 overlay border uses `overlays.radius`. Both settings use the same content-radius
 semantics, so setting both to `8` produces matching curves.
