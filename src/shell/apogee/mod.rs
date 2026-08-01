@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
+use halley_core::cluster::ClusterId;
 use halley_core::field::NodeId;
 use smithay::desktop::{Space, Window};
 use smithay::utils::{Logical, Point, Rectangle};
@@ -18,10 +19,17 @@ pub enum Direction {
 #[derive(Clone, Debug)]
 pub struct Tile {
     pub id: NodeId,
+    pub kind: TileKind,
     pub output: String,
     pub target: Rectangle<i32, Logical>,
     pub source_stack_index: usize,
     pub source_stack_order: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TileKind {
+    Window,
+    ClusterCore(ClusterId),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -161,13 +169,14 @@ impl ApogeeState {
         &mut self,
         space: &Space<Window>,
         nodes: &crate::nodes::NodesState,
+        clusters: &crate::clusters::ClusterSystem,
         config: halley_config::Apogee,
         now: Duration,
     ) -> bool {
         if !config.enabled || self.session.is_some() {
             return false;
         }
-        let tiles = build_layout(space, nodes, config);
+        let tiles = build_layout(space, nodes, clusters, config);
         if tiles.is_empty() {
             return false;
         }
@@ -191,13 +200,14 @@ impl ApogeeState {
         &mut self,
         space: &Space<Window>,
         nodes: &crate::nodes::NodesState,
+        clusters: &crate::clusters::ClusterSystem,
         config: halley_config::Apogee,
     ) -> bool {
         if !config.enabled {
             return false;
         }
         if self.session.is_none() {
-            let tiles = build_layout(space, nodes, config);
+            let tiles = build_layout(space, nodes, clusters, config);
             if tiles.is_empty() {
                 return false;
             }
@@ -383,10 +393,13 @@ pub enum Tick {
 fn build_layout(
     space: &Space<Window>,
     nodes: &crate::nodes::NodesState,
+    clusters: &crate::clusters::ClusterSystem,
     config: halley_config::Apogee,
 ) -> Vec<Tile> {
     let mut by_output = HashMap::<String, Vec<(NodeId, usize, u64)>>::new();
-    for record in nodes.records().filter(|record| record.attached) {
+    for record in nodes.records().filter(|record| {
+        participates_in_window_mosaic(record.attached, clusters.is_member(record.id))
+    }) {
         let source_stack_index = record.collapsed_stack_index.or_else(|| {
             space
                 .elements()
@@ -409,12 +422,19 @@ fn build_layout(
         .collect::<Vec<_>>();
     outputs.sort_by_key(|(output, geometry)| (geometry.loc.x, geometry.loc.y, output.name()));
     for (output, output_rect) in outputs {
-        let Some(ids) = by_output.get(&output.name()) else {
-            continue;
-        };
+        let output_name = output.name();
+        let ids = by_output
+            .get(&output_name)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        let cores = clusters
+            .clusters_for_output(&output_name)
+            .filter_map(|(_, cluster, _)| clusters.core_node(cluster).map(|core| (cluster, core)))
+            .collect::<Vec<_>>();
         tiles.extend(layout_output(
             ids,
-            output.name(),
+            &cores,
+            output_name,
             output_rect,
             nodes,
             config,
@@ -423,14 +443,19 @@ fn build_layout(
     tiles
 }
 
+fn participates_in_window_mosaic(attached: bool, cluster_member: bool) -> bool {
+    attached && !cluster_member
+}
+
 fn layout_output(
     ids: &[(NodeId, usize, u64)],
+    cores: &[(ClusterId, NodeId)],
     output: String,
     bounds: Rectangle<i32, Logical>,
     nodes: &crate::nodes::NodesState,
     config: halley_config::Apogee,
 ) -> Vec<Tile> {
-    if ids.is_empty() {
+    if ids.is_empty() && cores.is_empty() {
         return Vec::new();
     }
     let entries = ids
@@ -468,7 +493,7 @@ fn layout_output(
         config.gap.max(0.0),
         config.max_rows.clamp(1, 5) as usize,
     );
-    entries
+    let mut tiles = entries
         .into_iter()
         .zip(slots)
         .map(|((id, source_stack_index, source_stack_order, _), slot)| {
@@ -476,6 +501,7 @@ fn layout_output(
             let height = slot.h.round().max(1.0) as i32;
             Tile {
                 id,
+                kind: TileKind::Window,
                 output: output.clone(),
                 target: Rectangle::new(
                     (
@@ -490,6 +516,52 @@ fn layout_output(
                 source_stack_index,
                 source_stack_order,
             }
+        })
+        .collect::<Vec<_>>();
+    tiles.extend(
+        cores
+            .iter()
+            .zip(layout_core_rail(cores.len(), bounds))
+            .enumerate()
+            .map(|(index, ((cluster, core), target))| Tile {
+                id: *core,
+                kind: TileKind::ClusterCore(*cluster),
+                output: output.clone(),
+                target,
+                source_stack_index: usize::MAX,
+                source_stack_order: index as u64,
+            }),
+    );
+    tiles
+}
+
+/// Cluster cores occupy the upper Apogee rail that the mosaic already leaves
+/// free. The gap contracts on narrow outputs while retaining the familiar
+/// 68px core size whenever the output has room.
+fn layout_core_rail(count: usize, bounds: Rectangle<i32, Logical>) -> Vec<Rectangle<i32, Logical>> {
+    if count == 0 {
+        return Vec::new();
+    }
+    let side = crate::clusters::CORE_DIAMETER_PX;
+    let available = bounds.size.w.max(1) as f32 * 0.84;
+    let gap = if count > 1 {
+        ((available - side * count as f32) / count.saturating_sub(1) as f32).clamp(12.0, 44.0)
+    } else {
+        0.0
+    };
+    let width = side * count as f32 + gap * count.saturating_sub(1) as f32;
+    let start_x = bounds.loc.x as f32 + bounds.size.w as f32 * 0.5 - width * 0.5;
+    let center_y = bounds.loc.y as f32 + (bounds.size.h.max(1) as f32 * 0.125).max(54.0);
+    (0..count)
+        .map(|index| {
+            Rectangle::new(
+                (
+                    (start_x + index as f32 * (side + gap)).round() as i32,
+                    (center_y - side * 0.5).round() as i32,
+                )
+                    .into(),
+                (side.round() as i32, side.round() as i32).into(),
+            )
         })
         .collect()
 }
@@ -531,6 +603,7 @@ pub fn toggle<D: crate::session::SessionDriver>(session: &mut crate::session::Se
         session.shell.apogee.open(
             &session.wayland.space,
             &session.nodes,
+            &session.clusters,
             session.settings.apogee,
             now,
         )
@@ -627,15 +700,8 @@ pub fn tick<D: crate::session::SessionDriver>(
         Tick::Idle => false,
         Tick::Active { animating } => animating,
         Tick::Closed(target) => {
-            if let Some(target) = target
-                && let Some(record) = session.nodes.record(target).cloned()
-            {
-                let serial = smithay::utils::SERIAL_COUNTER.next_serial();
-                if record.collapsed {
-                    let _ = crate::nodes::restore(session, target, serial);
-                } else {
-                    crate::session::focus_window(session, &record.window, serial);
-                }
+            if let Some(target) = target {
+                activate_target(session, target, now);
             }
             session.cursor.set_override(None);
             crate::session::note_pointer_activity(session);
@@ -644,6 +710,51 @@ pub fn tick<D: crate::session::SessionDriver>(
             false
         }
     }
+}
+
+fn activate_target<D: crate::session::SessionDriver>(
+    session: &mut crate::session::Session<D>,
+    target: NodeId,
+    now: Duration,
+) {
+    let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+    if let Some(cluster) = session.clusters.cluster_for_core(target) {
+        let output_name = session
+            .clusters
+            .metadata(cluster)
+            .map(|metadata| metadata.output.clone());
+        let Some(output_name) = output_name else {
+            return;
+        };
+        // Selecting the core for an already-open workspace must preserve it;
+        // ClusterSystem::activate is a toggle, so call it only when entering a
+        // different/collapsed cluster.
+        if cluster_needs_activation(session.clusters.active_on(&output_name), cluster) {
+            let _ = session.clusters.activate(&output_name, cluster, now);
+        }
+        let output = session
+            .wayland
+            .space
+            .outputs()
+            .find(|output| output.name() == output_name)
+            .cloned();
+        if let Some(output) = output {
+            crate::session::sync_cluster_activation_focus(session, &output, cluster, false, serial);
+        }
+        return;
+    }
+    let Some(record) = session.nodes.record(target).cloned() else {
+        return;
+    };
+    if record.collapsed {
+        let _ = crate::nodes::restore(session, target, serial);
+    } else {
+        crate::session::focus_window(session, &record.window, serial);
+    }
+}
+
+fn cluster_needs_activation(active: Option<ClusterId>, selected: ClusterId) -> bool {
+    active != Some(selected)
 }
 
 pub fn send_preview_frames(
@@ -658,7 +769,7 @@ pub fn send_preview_frames(
     for tile in session
         .tiles
         .iter()
-        .filter(|tile| tile.output == output.name())
+        .filter(|tile| tile.output == output.name() && matches!(tile.kind, TileKind::Window))
     {
         let Some(record) = nodes.record(tile.id).filter(|record| record.attached) else {
             continue;
@@ -673,7 +784,11 @@ pub fn send_preview_frames(
 
 #[cfg(test)]
 mod tests {
-    use super::{ApogeeState, Session, Settle, Tile};
+    use super::{
+        ApogeeState, Session, Settle, Tile, TileKind, cluster_needs_activation, layout_core_rail,
+        layout_output, participates_in_window_mosaic,
+    };
+    use halley_core::cluster::ClusterId;
     use halley_core::field::NodeId;
     use smithay::utils::Rectangle;
     use std::time::Duration;
@@ -683,6 +798,7 @@ mod tests {
         let mut session = Session {
             tiles: vec![Tile {
                 id: NodeId::new(1),
+                kind: TileKind::Window,
                 output: "DP-1".into(),
                 target: Rectangle::new((0, 0).into(), (100, 100).into()),
                 source_stack_index: 0,
@@ -790,5 +906,55 @@ mod tests {
         assert!(state.take_callback_due("DP-1", now, 30));
         assert!(state.take_callback_due("DP-2", now, 30));
         assert!(!state.take_callback_due("DP-1", now, 30));
+    }
+
+    #[test]
+    fn cluster_core_rail_is_centered_above_the_window_mosaic() {
+        let bounds = Rectangle::new((100, 50).into(), (1920, 1080).into());
+        let slots = layout_core_rail(3, bounds);
+
+        assert_eq!(slots.len(), 3);
+        assert!(slots.windows(2).all(|pair| pair[0].loc.x < pair[1].loc.x));
+        assert!(slots.iter().all(|slot| slot.loc.y < 50 + 236));
+        let rail_left = slots.first().unwrap().loc.x;
+        let rail_right = slots.last().unwrap().loc.x + slots.last().unwrap().size.w;
+        assert_eq!(rail_left - 100, 1920 - (rail_right - 100));
+    }
+
+    #[test]
+    fn core_only_output_still_produces_an_apogee_layout() {
+        let nodes = crate::nodes::NodesState::new(&halley_config::RuntimeConfig::default());
+        let cores = [
+            (ClusterId::new(1), NodeId::new(11)),
+            (ClusterId::new(2), NodeId::new(12)),
+        ];
+        let tiles = layout_output(
+            &[],
+            &cores,
+            "DP-1".into(),
+            Rectangle::new((0, 0).into(), (1920, 1080).into()),
+            &nodes,
+            halley_config::Apogee::default(),
+        );
+
+        assert_eq!(tiles.len(), 2);
+        assert_eq!(tiles[0].kind, TileKind::ClusterCore(ClusterId::new(1)));
+        assert_eq!(tiles[1].kind, TileKind::ClusterCore(ClusterId::new(2)));
+        assert!(tiles.iter().all(|tile| tile.target.loc.y < 236));
+    }
+
+    #[test]
+    fn cluster_members_are_represented_by_their_core_not_window_tiles() {
+        assert!(participates_in_window_mosaic(true, false));
+        assert!(!participates_in_window_mosaic(true, true));
+        assert!(!participates_in_window_mosaic(false, false));
+    }
+
+    #[test]
+    fn selecting_the_active_cluster_core_preserves_its_workspace() {
+        let active = ClusterId::new(4);
+        assert!(!cluster_needs_activation(Some(active), active));
+        assert!(cluster_needs_activation(None, active));
+        assert!(cluster_needs_activation(Some(ClusterId::new(3)), active));
     }
 }

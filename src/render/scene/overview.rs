@@ -1,3 +1,4 @@
+use super::apogee_clusters::{ApogeeCoreTileContext, apogee_core_tile_elements};
 use super::nodes::{ease_in_out_cubic, fit_ui_text};
 use super::*;
 
@@ -17,7 +18,9 @@ pub(super) fn apogee_elements(
     space: &smithay::desktop::Space<smithay::desktop::Window>,
     cameras: &crate::presentation::camera::OutputCameras,
     nodes: &crate::nodes::NodesState,
+    clusters: &crate::clusters::ClusterSystem,
     node_renderer: &mut crate::render::node::NodeRenderer,
+    cluster_renderer: &mut crate::clusters::render::ClusterRenderer,
     window_decoration_renderer: &mut crate::render::window_decoration::WindowDecorationRenderer,
     ui_text: &mut crate::render::text::UiTextRenderer,
     window_open_animations: &crate::animation::WindowOpenAnimations,
@@ -42,8 +45,38 @@ pub(super) fn apogee_elements(
     sort_apogee_tiles(&mut tiles, session.selected);
 
     let mut elements = Vec::new();
-    overlay_previews.retain(session.tiles.iter().map(|tile| tile.id));
+    overlay_previews.retain(
+        session
+            .tiles
+            .iter()
+            .filter(|tile| tile.kind == crate::shell::apogee::TileKind::Window)
+            .map(|tile| tile.id),
+    );
     for tile in tiles {
+        if let crate::shell::apogee::TileKind::ClusterCore(cluster) = tile.kind {
+            elements.extend(apogee_core_tile_elements(
+                renderer,
+                ApogeeCoreTileContext {
+                    output_geometry,
+                    tile,
+                    cluster,
+                    progress,
+                    chrome_alpha: visuals.chrome_alpha,
+                    highlighted: session.selected == Some(tile.id)
+                        || session.hovered == Some(tile.id),
+                    overlay_visuals,
+                    decorations,
+                    cameras,
+                    nodes,
+                    clusters,
+                    node_renderer,
+                    cluster_renderer,
+                    ui_text,
+                    now,
+                },
+            )?);
+            continue;
+        }
         let Some(record) = nodes.record(tile.id) else {
             continue;
         };

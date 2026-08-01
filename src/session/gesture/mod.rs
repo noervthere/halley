@@ -313,6 +313,7 @@ where
                     gesture.interactive_started = session.shell.apogee.begin_interactive(
                         &session.wayland.space,
                         &session.nodes,
+                        &session.clusters,
                         session.settings.apogee,
                     );
                     if gesture.interactive_started {

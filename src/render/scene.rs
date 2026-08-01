@@ -17,6 +17,7 @@ use super::RenderRequest;
 use crate::presentation::window::{
     window_visual_state, window_visual_state_with_cluster_presentation,
 };
+mod apogee_clusters;
 mod capture_ui;
 mod clusters;
 mod effects;
@@ -178,7 +179,9 @@ pub fn build(
             request.desktop.space,
             request.desktop.cameras,
             request.desktop.nodes,
+            request.desktop.clusters,
             request.resources.node_renderer,
+            request.resources.cluster_renderer,
             request.resources.window_decoration_renderer,
             request.resources.ui_text,
             request.desktop.window_open_animations,
@@ -965,6 +968,7 @@ mod tests {
     fn apogee_transition_preserves_source_stack_and_promotes_selection() {
         let back = crate::shell::apogee::Tile {
             id: halley_core::field::NodeId::new(1),
+            kind: crate::shell::apogee::TileKind::Window,
             output: "DP-1".into(),
             target: Rectangle::new((0, 0).into(), (100, 100).into()),
             source_stack_index: 0,
@@ -972,6 +976,7 @@ mod tests {
         };
         let middle = crate::shell::apogee::Tile {
             id: halley_core::field::NodeId::new(2),
+            kind: crate::shell::apogee::TileKind::Window,
             output: "DP-1".into(),
             target: Rectangle::new((100, 0).into(), (100, 100).into()),
             source_stack_index: 1,
@@ -979,6 +984,7 @@ mod tests {
         };
         let front = crate::shell::apogee::Tile {
             id: halley_core::field::NodeId::new(3),
+            kind: crate::shell::apogee::TileKind::Window,
             output: "DP-1".into(),
             target: Rectangle::new((200, 0).into(), (100, 100).into()),
             source_stack_index: 2,
