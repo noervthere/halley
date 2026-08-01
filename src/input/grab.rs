@@ -9,10 +9,16 @@ use smithay::wayland::seat::WaylandFocus;
 use std::time::Duration;
 
 #[derive(Clone, Debug)]
+pub enum ClusterWindowDragKind {
+    Layout(halley_core::cluster::layout::ClusterWorkspaceLayoutKind),
+    Floating,
+}
+
+#[derive(Clone, Debug)]
 pub struct ClusterWindowDrag {
     pub cluster_id: halley_core::cluster::ClusterId,
     pub output: String,
-    pub layout: halley_core::cluster::layout::ClusterWorkspaceLayoutKind,
+    pub kind: ClusterWindowDragKind,
     /// Membership remains provisional for the whole grab. This tracks whether
     /// the pointer is currently over the source output: returning there keeps
     /// the cluster intact, while release elsewhere commits the detach.

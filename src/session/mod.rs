@@ -339,6 +339,61 @@ pub(crate) fn reconcile_cluster_surfaces<D: SessionDriver>(
     }
 }
 
+/// Copies an acknowledged interactive-resize result back into the
+/// cluster-local floating layer. Clients may quantize the requested size, so
+/// the committed Space geometry is authoritative rather than the last pointer
+/// target sent to them.
+pub(crate) fn sync_cluster_floating_geometry<D: SessionDriver>(
+    session: &mut Session<D>,
+    surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+) {
+    let Some((member, window, output_name)) = session
+        .nodes
+        .id_for_surface(surface)
+        .and_then(|member| {
+            session
+                .clusters
+                .is_member_floating(member)
+                .then_some(member)
+        })
+        .and_then(|member| {
+            let record = session.nodes.record(member)?;
+            let cluster = session.clusters.cluster_for_member(member)?;
+            let metadata = session.clusters.metadata(cluster)?;
+            (session.clusters.active_on(&metadata.output) == Some(cluster))
+                .then(|| (member, record.window.clone(), metadata.output.clone()))
+        })
+    else {
+        return;
+    };
+    let Some(output) = session
+        .wayland
+        .space
+        .outputs()
+        .find(|output| output.name() == output_name)
+        .cloned()
+    else {
+        return;
+    };
+    let Some(output_geometry) = session.wayland.space.output_geometry(&output) else {
+        return;
+    };
+    let Some(geometry) = session.wayland.space.element_geometry(&window) else {
+        return;
+    };
+    let work_area = smithay::desktop::layer_map_for_output(&output).non_exclusive_zone();
+    let local = Rectangle::new(geometry.loc - output_geometry.loc, geometry.size);
+    if session
+        .clusters
+        .update_member_floating_rect(&output_name, member, local, work_area)
+    {
+        let _ = session
+            .clusters
+            .prepare_surface_target(member, geometry, geometry);
+        session.request_redraw();
+    }
+}
+
 pub(crate) fn sync_cluster_camera<D: SessionDriver>(
     session: &mut Session<D>,
     output_name: &str,
@@ -1245,16 +1300,27 @@ fn begin_pointer_move_active<D: SessionDriver>(
         let metadata = session.clusters.metadata(cluster_id)?;
         (metadata.output == output_name
             && session.clusters.active_on(&output_name) == Some(cluster_id))
-        .then(|| crate::input::grab::ClusterWindowDrag {
-            cluster_id,
-            output: output_name.clone(),
-            layout: metadata.layout,
-            on_origin_output: true,
+        .then(|| {
+            let kind = if session.clusters.is_member_floating(id) {
+                crate::input::grab::ClusterWindowDragKind::Floating
+            } else {
+                crate::input::grab::ClusterWindowDragKind::Layout(metadata.layout)
+            };
+            crate::input::grab::ClusterWindowDrag {
+                cluster_id,
+                output: output_name.clone(),
+                kind,
+                on_origin_output: true,
+            }
         })
     });
     if cluster_drag.as_ref().is_some_and(|drag| {
-        drag.layout == halley_core::cluster::layout::ClusterWorkspaceLayoutKind::Stacking
-            && id != session.clusters.first_member(drag.cluster_id)
+        matches!(
+            drag.kind,
+            crate::input::grab::ClusterWindowDragKind::Layout(
+                halley_core::cluster::layout::ClusterWorkspaceLayoutKind::Stacking
+            )
+        ) && id != session.clusters.first_member(drag.cluster_id)
     }) {
         return false;
     }
@@ -1325,10 +1391,15 @@ fn begin_pointer_move_active<D: SessionDriver>(
         let Some(rect) = cluster_drag_rect else {
             return false;
         };
-        if !session
-            .clusters
-            .begin_workspace_drag(&drag.output, id, rect)
-        {
+        let began = match drag.kind {
+            crate::input::grab::ClusterWindowDragKind::Layout(_) => session
+                .clusters
+                .begin_workspace_drag(&drag.output, id, rect),
+            crate::input::grab::ClusterWindowDragKind::Floating => session
+                .clusters
+                .begin_floating_member_drag(&drag.output, id, rect),
+        };
+        if !began {
             return false;
         }
         reconcile_cluster_surfaces(session, &output_name);

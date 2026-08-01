@@ -349,6 +349,7 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
             &mut self.interactions.resize_anchor,
             &mut self.wayland.space,
         );
+        super::sync_cluster_floating_geometry(self, &root);
         crate::nodes::reconcile_landmarks(self, None);
         super::pointer::reconcile_state(self);
         let preview_node = self.nodes.id_for_surface(&root);

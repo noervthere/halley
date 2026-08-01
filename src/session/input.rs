@@ -1184,7 +1184,13 @@ where
                 );
                 if let Some(drag) = cluster_drag.as_mut() {
                     drag.on_origin_output = drag.output == output_name;
-                    if let Some(id) = id {
+                    let tracks_this_output = !matches!(
+                        drag.kind,
+                        crate::input::grab::ClusterWindowDragKind::Floating
+                    ) || drag.on_origin_output;
+                    if let Some(id) = id
+                        && tracks_this_output
+                    {
                         let screen_location = Point::<i32, Logical>::from((
                             (position_after.0 + f64::from(screen_offset.x)).round() as i32
                                 - output_geometry.loc.x,
@@ -1206,10 +1212,27 @@ where
                     }
                 }
                 let attached_tile = cluster_drag.as_ref().is_some_and(|drag| {
-                    drag.layout == halley_core::cluster::layout::ClusterWorkspaceLayoutKind::Tiling
-                        && drag.on_origin_output
+                    matches!(
+                        drag.kind,
+                        crate::input::grab::ClusterWindowDragKind::Layout(
+                            halley_core::cluster::layout::ClusterWorkspaceLayoutKind::Tiling
+                        )
+                    ) && drag.on_origin_output
                 });
-                if output_changed {
+                let cluster_tracks_pointer = cluster_drag.as_ref().is_some_and(|drag| {
+                    !matches!(
+                        drag.kind,
+                        crate::input::grab::ClusterWindowDragKind::Floating
+                    ) || drag.on_origin_output
+                });
+                if output_changed
+                    && !cluster_drag.as_ref().is_some_and(|drag| {
+                        matches!(
+                            drag.kind,
+                            crate::input::grab::ClusterWindowDragKind::Floating
+                        )
+                    })
+                {
                     if let Some(id) = id {
                         crate::nodes::set_collapsed_output(session, id, &output);
                     } else {
@@ -1217,7 +1240,7 @@ where
                     }
                 }
                 if let Some(id) = id {
-                    if attached_tile || cluster_drag.is_some() {
+                    if attached_tile || cluster_tracks_pointer {
                         session
                             .wayland
                             .space
@@ -1419,13 +1442,52 @@ where
                 camera,
                 output_geometry,
             );
-            let size = crate::input::grab::resize_target_size(
+            let requested_size = crate::input::grab::resize_target_size(
                 state.handle,
                 state.start_rect,
                 state.start_cursor,
                 world,
             );
+            let size = if state.window.x11_surface().is_some() {
+                crate::xwayland::constrain_window_size(&state.window, requested_size)
+            } else {
+                requested_size
+            };
+            let member = state
+                .window
+                .wl_surface()
+                .and_then(|surface| session.nodes.id_for_surface(surface.as_ref()))
+                .filter(|member| session.clusters.is_member_floating(*member));
+            let floating_target = member.and_then(|member| {
+                let location = crate::input::grab::resize_location_after_commit(
+                    state.handle,
+                    state.start_rect.loc,
+                    state.start_rect.size,
+                    size,
+                );
+                let work_area =
+                    smithay::desktop::layer_map_for_output(&output).non_exclusive_zone();
+                let local = Rectangle::new(location - output_geometry.loc, size);
+                session.clusters.update_member_floating_rect(
+                    &output.name(),
+                    member,
+                    local,
+                    work_area,
+                );
+                let local = session.clusters.member_floating_rect(member)?;
+                let global = Rectangle::new(output_geometry.loc + local.loc, local.size);
+                let current = session
+                    .wayland
+                    .space
+                    .element_geometry(&state.window)
+                    .unwrap_or(state.start_rect);
+                let _ = session
+                    .clusters
+                    .prepare_surface_target(member, current, global);
+                Some(global)
+            });
             if let Some(toplevel) = state.window.toplevel() {
+                let size = floating_target.map_or(size, |target| target.size);
                 toplevel.with_pending_state(|pending| pending.size = Some(size));
                 let serial = toplevel.send_pending_configure();
                 crate::input::grab::note_resize_configure(
@@ -1433,14 +1495,16 @@ where
                     serial,
                 );
             } else {
-                let size = crate::xwayland::constrain_window_size(&state.window, size);
-                let location = crate::input::grab::resize_location_after_commit(
-                    state.handle,
-                    state.start_rect.loc,
-                    state.start_rect.size,
-                    size,
-                );
-                crate::xwayland::configure_window(&state.window, Rectangle::new(location, size));
+                let target = floating_target.unwrap_or_else(|| {
+                    let location = crate::input::grab::resize_location_after_commit(
+                        state.handle,
+                        state.start_rect.loc,
+                        state.start_rect.size,
+                        size,
+                    );
+                    Rectangle::new(location, size)
+                });
+                crate::xwayland::configure_window(&state.window, target);
             }
         }
         crate::input::grab::Grab::None
@@ -2169,27 +2233,41 @@ where
                         if let (Some(id), Some((drag, work_area, origin, pointer_inside))) =
                             (id, cluster_release)
                         {
-                            if pointer_inside {
-                                cluster_drop_handled = session.clusters.finish_workspace_drag(
-                                    &drag.output,
-                                    id,
-                                    work_area,
-                                    origin,
-                                    now,
-                                );
-                            } else {
-                                cluster_drop_handled =
-                                    session.clusters.detach_active_member_for_drag(
-                                        &mut session.nodes.field,
-                                        &drag.output,
-                                        crate::clusters::ClusterDragMember {
-                                            cluster_id: drag.cluster_id,
-                                            node_id: id,
-                                        },
-                                        work_area,
-                                        last_world,
-                                        now,
-                                    );
+                            match drag.kind {
+                                crate::input::grab::ClusterWindowDragKind::Floating => {
+                                    cluster_drop_handled =
+                                        session.clusters.finish_floating_member_drag(
+                                            &drag.output,
+                                            id,
+                                            work_area,
+                                            origin,
+                                        );
+                                }
+                                crate::input::grab::ClusterWindowDragKind::Layout(_) => {
+                                    if pointer_inside {
+                                        cluster_drop_handled =
+                                            session.clusters.finish_workspace_drag(
+                                                &drag.output,
+                                                id,
+                                                work_area,
+                                                origin,
+                                                now,
+                                            );
+                                    } else {
+                                        cluster_drop_handled =
+                                            session.clusters.detach_active_member_for_drag(
+                                                &mut session.nodes.field,
+                                                &drag.output,
+                                                crate::clusters::ClusterDragMember {
+                                                    cluster_id: drag.cluster_id,
+                                                    node_id: id,
+                                                },
+                                                work_area,
+                                                last_world,
+                                                now,
+                                            );
+                                    }
+                                }
                             }
                             if cluster_drop_handled {
                                 session.nodes.clear_direct_motion(id);

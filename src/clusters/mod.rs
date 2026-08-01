@@ -356,27 +356,24 @@ impl ClusterSystem {
         {
             return StackCycleOutcome::NotActive;
         }
-        if self
+        let Some(mut members) = self
             .registry
             .cluster(id)
-            .is_none_or(|cluster| cluster.members().len() < 2)
-        {
+            .map(|cluster| cluster.members().to_vec())
+        else {
+            return StackCycleOutcome::Unchanged;
+        };
+        let layout_indices = members
+            .iter()
+            .enumerate()
+            .filter_map(|(index, member)| {
+                (!self.member_floats.is_floating(*member)).then_some(index)
+            })
+            .collect::<Vec<_>>();
+        if layout_indices.len() < 2 {
             return StackCycleOutcome::Unchanged;
         }
         let Some(before) = self.workspace_layout(id, work_area) else {
-            return StackCycleOutcome::Unchanged;
-        };
-        let Some(member) = self.registry.cycle_cluster_stacking_members(
-            id,
-            match direction {
-                halley_config::FocusCycleDirection::Forward => {
-                    halley_core::cluster::layout::ClusterCycleDirection::Next
-                }
-                halley_config::FocusCycleDirection::Backward => {
-                    halley_core::cluster::layout::ClusterCycleDirection::Prev
-                }
-            },
-        ) else {
             return StackCycleOutcome::Unchanged;
         };
         let direction = match direction {
@@ -387,6 +384,21 @@ impl ClusterSystem {
                 halley_core::cluster::layout::ClusterCycleDirection::Prev
             }
         };
+        let mut layout_members = layout_indices
+            .iter()
+            .map(|index| members[*index])
+            .collect::<Vec<_>>();
+        let Some(member) =
+            halley_core::cluster::stacking::cycle_stacking_members(&mut layout_members, direction)
+        else {
+            return StackCycleOutcome::Unchanged;
+        };
+        for (index, member) in layout_indices.into_iter().zip(layout_members) {
+            members[index] = member;
+        }
+        if self.registry.reorder_cluster_members(id, members).is_err() {
+            return StackCycleOutcome::Unchanged;
+        }
         let Some(after) = self.workspace_layout(id, work_area) else {
             return StackCycleOutcome::Unchanged;
         };
@@ -519,6 +531,10 @@ impl ClusterSystem {
 
     pub fn is_member_floating(&self, member: NodeId) -> bool {
         self.member_floats.is_floating(member)
+    }
+
+    pub fn member_floating_rect(&self, member: NodeId) -> Option<Rectangle<i32, Logical>> {
+        self.member_floats.rect(member)
     }
 
     /// Moves one member between the active cluster's layout and its
@@ -853,7 +869,14 @@ impl ClusterSystem {
     ) -> Option<NodeId> {
         let id = self.active_on(output)?;
         let before = self.workspace_layout(id, work_area)?;
-        let current = current.or_else(|| self.first_member(id))?;
+        let current = current
+            .filter(|member| !self.member_floats.is_floating(*member))
+            .or_else(|| {
+                self.workspace_layout(id, work_area)?
+                    .placements
+                    .first()
+                    .map(|placement| placement.node_id)
+            })?;
         let target = self.directional_tile_target(output, Some(current), direction, work_area)?;
         let mut members = self.registry.cluster(id)?.members().to_vec();
         let current_index = members.iter().position(|member| *member == current)?;
@@ -1240,11 +1263,13 @@ impl ClusterSystem {
         use halley_core::cluster::ClusterRemoveMemberOutcome;
         use halley_core::field::{NodeState, Visibility};
 
+        let cluster_members = self.member_ids(cluster_id);
         let Some(outcome) = self.registry.remove_member_from_cluster(cluster_id, member) else {
             return false;
         };
         match outcome {
             ClusterRemoveMemberOutcome::Removed => {
+                self.member_floats.remove(member);
                 let _ = field.set_state(member, NodeState::Active);
                 if let Some(node) = field.node_mut(member) {
                     node.visibility.clear(Visibility::HIDDEN_BY_CLUSTER);
@@ -1258,6 +1283,9 @@ impl ClusterSystem {
                     return false;
                 }
                 self.remove_cluster_metadata(cluster_id);
+                for member in cluster_members {
+                    self.member_floats.remove(member);
+                }
                 if let Some(node) = field.node_mut(member) {
                     node.pos = position;
                 }
@@ -1296,6 +1324,7 @@ impl ClusterSystem {
             }
             return false;
         };
+        let cluster_members = self.member_ids(id);
         let Some((_, effect)) = self.registry.remove_node_cluster_safe(field, member) else {
             return false;
         };
@@ -1304,6 +1333,9 @@ impl ClusterSystem {
             Some(halley_core::cluster::RemoveNodeClusterEffect::DissolvedCluster(_))
         ) {
             self.remove_cluster_metadata(id);
+            for member in cluster_members {
+                self.member_floats.remove(member);
+            }
         }
         self.admission_floats.remove(&member);
         self.member_floats.remove(member);
@@ -2003,6 +2035,71 @@ mod tests {
         assert_eq!(
             system.registry.cluster(cluster).unwrap().members(),
             &[member]
+        );
+    }
+
+    #[test]
+    fn stack_cycle_leaves_floating_members_out_of_the_card_order() {
+        let (_field, mut system, cluster, members) =
+            active_test_cluster(3, ClusterWorkspaceLayoutKind::Stacking);
+        let work_area = Rectangle::new((0, 0).into(), (1_000, 700).into());
+        let floating = Rectangle::new((140, 100).into(), (480, 360).into());
+        assert_eq!(
+            system.toggle_member_floating("DP-1", members[0], work_area, floating, Duration::ZERO,),
+            Some(true)
+        );
+
+        assert_eq!(
+            system.cycle_stack(
+                "DP-1",
+                halley_config::FocusCycleDirection::Forward,
+                work_area,
+                Duration::from_secs(2),
+            ),
+            StackCycleOutcome::Cycled(members[2])
+        );
+        assert_eq!(
+            system.registry.cluster(cluster).unwrap().members(),
+            &[members[0], members[2], members[1]]
+        );
+        assert!(system.is_member_floating(members[0]));
+    }
+
+    #[test]
+    fn floating_member_drag_updates_only_its_remembered_cluster_geometry() {
+        let (_field, mut system, cluster, members) =
+            active_test_cluster(3, ClusterWorkspaceLayoutKind::Tiling);
+        let work_area = Rectangle::new((0, 0).into(), (1_000, 700).into());
+        let original_order = system.registry.cluster(cluster).unwrap().members().to_vec();
+        let initial = Rectangle::new((120, 90).into(), (520, 400).into());
+        assert_eq!(
+            system.toggle_member_floating("DP-1", members[0], work_area, initial, Duration::ZERO,),
+            Some(true)
+        );
+        assert!(system.begin_floating_member_drag("DP-1", members[0], initial));
+        assert_eq!(
+            system
+                .workspace_surface_targets(
+                    "DP-1",
+                    work_area,
+                    Rectangle::new((0, 0).into(), (1_000, 700).into()),
+                )
+                .len(),
+            2
+        );
+
+        let moved = Rectangle::new((340, 220).into(), initial.size);
+        assert!(system.update_workspace_drag(members[0], "DP-1", moved.loc));
+        assert_eq!(
+            system
+                .window_presentation(members[0], "DP-1", work_area, None, Duration::from_secs(2),),
+            WindowPresentation::PointerDrag { rect: moved }
+        );
+        assert!(system.finish_floating_member_drag("DP-1", members[0], work_area, moved,));
+        assert_eq!(system.member_floating_rect(members[0]), Some(moved));
+        assert_eq!(
+            system.registry.cluster(cluster).unwrap().members(),
+            original_order
         );
     }
 
