@@ -57,7 +57,7 @@ pub(super) fn handle<D, B>(
     D: SessionDriver,
     B: InputBackend,
 {
-    session.wheel_accumulator.reset_all();
+    session.interactions.wheel_accumulator.reset_all();
     let keycode = key_event.key_code();
     let state = key_event.state();
     let time = key_event.time_msec();
@@ -67,8 +67,11 @@ pub(super) fn handle<D, B>(
     if state == KeyState::Pressed && session.cursor_policy.keyboard_press() {
         session.request_redraw();
     }
-    let release_is_suppressed =
-        state == KeyState::Released && session.suppressed_keys.release_is_suppressed(keycode);
+    let release_is_suppressed = state == KeyState::Released
+        && session
+            .interactions
+            .suppressed_keys
+            .release_is_suppressed(keycode);
     let accessibility = if session.overlays.exit_modal_active() {
         crate::accessibility::KeyboardDisposition::Pass
     } else {
@@ -246,20 +249,20 @@ pub(super) fn handle<D, B>(
 
     match action {
         Some(KeyboardOutcome::ExitConfirm) => {
-            session.suppressed_keys.suppress(keycode);
+            session.interactions.suppressed_keys.suppress(keycode);
             session.confirm_exit();
         }
         Some(KeyboardOutcome::ExitCancel) => {
-            session.suppressed_keys.suppress(keycode);
+            session.interactions.suppressed_keys.suppress(keycode);
             session.cancel_exit_confirmation();
         }
         Some(KeyboardOutcome::ExitIntercept) => {
             if state == KeyState::Pressed {
-                session.suppressed_keys.suppress(keycode);
+                session.interactions.suppressed_keys.suppress(keycode);
             }
         }
         Some(KeyboardOutcome::Action(action)) => {
-            session.suppressed_keys.suppress(keycode);
+            session.interactions.suppressed_keys.suppress(keycode);
             close_blooms_for_keybind(session, pointer_output.as_deref());
             actions::dispatch(
                 session,
@@ -275,14 +278,14 @@ pub(super) fn handle<D, B>(
             }
         }
         Some(KeyboardOutcome::ClusterCancel) => {
-            session.suppressed_keys.suppress(keycode);
+            session.interactions.suppressed_keys.suppress(keycode);
             if session.clusters.back_or_cancel_creation() {
                 session.cursor.set_override(None);
                 session.request_redraw();
             }
         }
         Some(KeyboardOutcome::ClusterAccept) => {
-            session.suppressed_keys.suppress(keycode);
+            session.interactions.suppressed_keys.suppress(keycode);
             if session
                 .clusters
                 .creation()
@@ -305,7 +308,7 @@ pub(super) fn handle<D, B>(
             session.request_redraw();
         }
         Some(KeyboardOutcome::ClusterBackspace) => {
-            session.suppressed_keys.suppress(keycode);
+            session.interactions.suppressed_keys.suppress(keycode);
             let input = crate::clusters::NameInput::Backspace;
             if session.clusters.edit_name(input) {
                 session.clusters.start_name_repeat(
@@ -319,7 +322,7 @@ pub(super) fn handle<D, B>(
             }
         }
         Some(KeyboardOutcome::ClusterDelete) => {
-            session.suppressed_keys.suppress(keycode);
+            session.interactions.suppressed_keys.suppress(keycode);
             let input = crate::clusters::NameInput::Delete;
             if session.clusters.edit_name(input) {
                 session.clusters.start_name_repeat(
@@ -333,7 +336,7 @@ pub(super) fn handle<D, B>(
             }
         }
         Some(KeyboardOutcome::ClusterMoveLeft) => {
-            session.suppressed_keys.suppress(keycode);
+            session.interactions.suppressed_keys.suppress(keycode);
             let input = crate::clusters::NameInput::MoveLeft;
             if session.clusters.edit_name(input) {
                 session.clusters.start_name_repeat(
@@ -347,7 +350,7 @@ pub(super) fn handle<D, B>(
             }
         }
         Some(KeyboardOutcome::ClusterMoveRight) => {
-            session.suppressed_keys.suppress(keycode);
+            session.interactions.suppressed_keys.suppress(keycode);
             let input = crate::clusters::NameInput::MoveRight;
             if session.clusters.edit_name(input) {
                 session.clusters.start_name_repeat(
@@ -361,7 +364,7 @@ pub(super) fn handle<D, B>(
             }
         }
         Some(KeyboardOutcome::ClusterCharacter(ch)) => {
-            session.suppressed_keys.suppress(keycode);
+            session.interactions.suppressed_keys.suppress(keycode);
             let input = crate::clusters::NameInput::Character(ch);
             if session.clusters.edit_name(input) {
                 session.clusters.start_name_repeat(
@@ -376,34 +379,34 @@ pub(super) fn handle<D, B>(
         }
         Some(KeyboardOutcome::ClusterIntercept) => {
             if state == KeyState::Pressed {
-                session.suppressed_keys.suppress(keycode);
+                session.interactions.suppressed_keys.suppress(keycode);
             }
         }
         Some(KeyboardOutcome::AccessibilityIntercept) => {}
         Some(KeyboardOutcome::ApogeeCancel) => {
-            session.suppressed_keys.suppress(keycode);
+            session.interactions.suppressed_keys.suppress(keycode);
             crate::shell::apogee::cancel(session);
         }
         Some(KeyboardOutcome::ApogeeAccept) => {
-            session.suppressed_keys.suppress(keycode);
+            session.interactions.suppressed_keys.suppress(keycode);
             crate::shell::apogee::select(session);
         }
         Some(KeyboardOutcome::ApogeeMove(direction)) => {
-            session.suppressed_keys.suppress(keycode);
+            session.interactions.suppressed_keys.suppress(keycode);
             crate::shell::apogee::move_selection(session, direction);
         }
         Some(KeyboardOutcome::ApogeeIntercept) => {
             if state == KeyState::Pressed {
-                session.suppressed_keys.suppress(keycode);
+                session.interactions.suppressed_keys.suppress(keycode);
             }
         }
         Some(KeyboardOutcome::FocusCycleCancel) => {
-            session.suppressed_keys.suppress(keycode);
+            session.interactions.suppressed_keys.suppress(keycode);
             crate::shell::focus_cycle::cancel(session);
         }
         Some(KeyboardOutcome::FocusCycleIntercept) => {
             if state == KeyState::Pressed {
-                session.suppressed_keys.suppress(keycode);
+                session.interactions.suppressed_keys.suppress(keycode);
             }
         }
         Some(KeyboardOutcome::CaptureAccept) => {
@@ -416,14 +419,14 @@ pub(super) fn handle<D, B>(
                     session.request_redraw();
                 }
             } else if crate::capture::accept_selected(session) {
-                session.suppressed_keys.suppress(keycode);
+                session.interactions.suppressed_keys.suppress(keycode);
             }
         }
         Some(KeyboardOutcome::CaptureCancel) => {
             if session.capture.return_to_menu() {
                 session.request_redraw();
             } else if crate::capture::cancel_selected(session) {
-                session.suppressed_keys.suppress(keycode);
+                session.interactions.suppressed_keys.suppress(keycode);
             }
         }
         Some(KeyboardOutcome::CapturePrevious) => {

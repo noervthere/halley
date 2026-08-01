@@ -18,6 +18,7 @@ mod focus;
 pub(crate) mod gesture;
 mod input;
 pub(crate) use input::{cluster_owns_focus, sync_cluster_activation_focus};
+mod interaction;
 mod lifecycle;
 pub(crate) mod opening;
 pub(crate) mod output;
@@ -34,6 +35,7 @@ pub mod tty;
 pub mod winit;
 
 pub(crate) use focus::focus_window;
+pub use interaction::InteractionState;
 pub use settings::RuntimeSettings;
 pub use state::{Session, SessionDriver};
 
@@ -136,9 +138,9 @@ pub(crate) fn cancel_grab_for_surface<D: SessionDriver>(
     session: &mut Session<D>,
     surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
 ) {
-    if crate::input::grab::belongs_to_surface(&session.grab, surface) {
+    if crate::input::grab::belongs_to_surface(&session.interactions.grab, surface) {
         cancel_compositor_grab(session);
-        crate::input::grab::forget_resize_anchor(&mut session.resize_anchor, surface);
+        crate::input::grab::forget_resize_anchor(&mut session.interactions.resize_anchor, surface);
     }
 }
 
@@ -147,7 +149,7 @@ pub(crate) fn cancel_grab_for_surface<D: SessionDriver>(
 /// destruction all use this path so a held workspace window cannot remain
 /// floating or assigned to the wrong output.
 pub(crate) fn cancel_compositor_grab<D: SessionDriver>(session: &mut Session<D>) {
-    let provisional_cluster = match &session.grab {
+    let provisional_cluster = match &session.interactions.grab {
         crate::input::grab::Grab::MoveWindow {
             id: Some(id),
             cluster_drag: Some(drag),
@@ -155,8 +157,11 @@ pub(crate) fn cancel_compositor_grab<D: SessionDriver>(session: &mut Session<D>)
         } => Some((*id, drag.output.clone())),
         _ => None,
     };
-    if matches!(&session.grab, crate::input::grab::Grab::ResizeWindow(_)) {
-        crate::input::grab::release_resize_anchor(&mut session.resize_anchor);
+    if matches!(
+        &session.interactions.grab,
+        crate::input::grab::Grab::ResizeWindow(_)
+    ) {
+        crate::input::grab::release_resize_anchor(&mut session.interactions.resize_anchor);
     }
     session.clusters.cancel_join_candidate();
     session.clusters.cancel_window_drag();
@@ -173,7 +178,7 @@ pub(crate) fn cancel_compositor_grab<D: SessionDriver>(session: &mut Session<D>)
             session.request_redraw();
         }
     }
-    session.grab = crate::input::grab::Grab::None;
+    session.interactions.grab = crate::input::grab::Grab::None;
     session.cursor.set_override(None);
 }
 
@@ -1005,20 +1010,22 @@ pub(crate) fn begin_window_resize<D: SessionDriver>(
         return false;
     };
     focus::focus_window_from_pointer(session, window, serial);
-    session.grab = crate::input::grab::Grab::ResizeWindow(crate::input::grab::ResizeState {
-        window: window.clone(),
-        handle,
-        button,
-        start_rect,
-        start_cursor: cursor,
-    });
-    session.resize_anchor = window.toplevel().map(|_| crate::input::grab::ResizeAnchor {
-        window: window.clone(),
-        handle,
-        phase: crate::input::grab::ResizePhase::Ongoing,
-        last_configure: None,
-        last_size: start_rect.size,
-    });
+    session.interactions.grab =
+        crate::input::grab::Grab::ResizeWindow(crate::input::grab::ResizeState {
+            window: window.clone(),
+            handle,
+            button,
+            start_rect,
+            start_cursor: cursor,
+        });
+    session.interactions.resize_anchor =
+        window.toplevel().map(|_| crate::input::grab::ResizeAnchor {
+            window: window.clone(),
+            handle,
+            phase: crate::input::grab::ResizePhase::Ongoing,
+            last_configure: None,
+            last_size: start_rect.size,
+        });
     true
 }
 
@@ -1060,7 +1067,7 @@ pub(crate) fn begin_client_pointer_move<D: SessionDriver>(
     serial: smithay::utils::Serial,
     button: u32,
 ) -> bool {
-    if !matches!(session.grab, crate::input::grab::Grab::None)
+    if !matches!(session.interactions.grab, crate::input::grab::Grab::None)
         || !crate::window::accepts_compositor_grab(window)
         || window.wl_surface().is_some_and(|surface| {
             session
@@ -1089,7 +1096,7 @@ pub(crate) fn begin_client_pointer_move<D: SessionDriver>(
     let maximized = window
         .wl_surface()
         .is_some_and(|surface| session.maximize.contains(surface.as_ref()));
-    session.grab =
+    session.interactions.grab =
         crate::input::grab::Grab::PendingWindowMove(crate::input::grab::PendingWindowMove {
             window: window.clone(),
             serial,
@@ -1352,7 +1359,7 @@ fn begin_pointer_move_active<D: SessionDriver>(
                 })
         })
         .unwrap_or(world);
-    session.grab = crate::input::grab::Grab::MoveWindow {
+    session.interactions.grab = crate::input::grab::Grab::MoveWindow {
         id,
         window: window.clone(),
         cluster_drag,

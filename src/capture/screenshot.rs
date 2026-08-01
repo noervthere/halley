@@ -53,7 +53,7 @@ pub fn save_region<D: SessionDriver>(
     let primary = session.driver.primary_output().clone();
     let target_time = crate::frame_clock::monotonic_now();
     let node_grab_active = matches!(
-        &session.grab,
+        &session.interactions.grab,
         crate::input::grab::Grab::PendingNode { .. } | crate::input::grab::Grab::MoveNode { .. }
     );
 
@@ -308,7 +308,7 @@ where
     let primary = session.driver.primary_output().clone();
     let target_time = crate::frame_clock::monotonic_now();
     let node_grab_active = matches!(
-        &session.grab,
+        &session.interactions.grab,
         crate::input::grab::Grab::PendingNode { .. } | crate::input::grab::Grab::MoveNode { .. }
     );
     let driver = &mut session.driver;

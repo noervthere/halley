@@ -168,6 +168,7 @@ pub(super) fn diagnostic<D: SessionDriver>(
     });
     let root = crate::wayland::compositor::root_surface(surface);
     let tracked = session
+        .interactions
         .pointer_constraints
         .active
         .as_ref()
@@ -507,7 +508,7 @@ pub(super) fn reconcile<D: SessionDriver>(
     pointer: &PointerHandle<Session<D>>,
     preferred: Option<&WlSurface>,
 ) {
-    let tracked = session.pointer_constraints.active.clone();
+    let tracked = session.interactions.pointer_constraints.active.clone();
     let candidate = candidate_surface(session, pointer, preferred);
     let current_loss = tracked
         .as_ref()
@@ -553,23 +554,23 @@ pub(super) fn reconcile<D: SessionDriver>(
     {
         let reason = current_loss.unwrap_or(DeactivationReason::CandidateChanged);
         deactivate_tracked(session, pointer, tracked, reason);
-        session.pointer_constraints.active = None;
+        session.interactions.pointer_constraints.active = None;
     }
 
     let Some(candidate) = candidate else {
-        session.pointer_constraints.active = None;
+        session.interactions.pointer_constraints.active = None;
         return;
     };
     let Some(context) = owner_context(session, &candidate) else {
         if retain_cached_geometry(current_valid, current_is_candidate) {
-            session.pointer_constraints.active = tracked;
+            session.interactions.pointer_constraints.active = tracked;
         } else {
-            session.pointer_constraints.active = None;
+            session.interactions.pointer_constraints.active = None;
         }
         return;
     };
     let Some(mut constraint) = descriptor(&candidate, pointer) else {
-        session.pointer_constraints.active = None;
+        session.interactions.pointer_constraints.active = None;
         return;
     };
 
@@ -579,15 +580,15 @@ pub(super) fn reconcile<D: SessionDriver>(
         // active owner is resizing or changing output. Keep its last valid
         // inverse transform until an authoritative lifecycle transition.
         if retain_cached_geometry(current_valid, current_is_candidate) {
-            session.pointer_constraints.active = tracked;
+            session.interactions.pointer_constraints.active = tracked;
         } else {
-            session.pointer_constraints.active = None;
+            session.interactions.pointer_constraints.active = None;
         }
         return;
     };
     if decision.activate_candidate {
         if !activate(&candidate, pointer) {
-            session.pointer_constraints.active = None;
+            session.interactions.pointer_constraints.active = None;
             return;
         }
         eventline::debug!(
@@ -604,7 +605,7 @@ pub(super) fn reconcile<D: SessionDriver>(
         constraint.active = true;
     }
     if pointer.current_focus().as_ref() == Some(&candidate) && constraint.active {
-        session.pointer_constraints.active = Some(TrackedConstraint {
+        session.interactions.pointer_constraints.active = Some(TrackedConstraint {
             surface: candidate,
             kind: constraint.kind,
             position_hint: constraint.position_hint,
@@ -612,7 +613,7 @@ pub(super) fn reconcile<D: SessionDriver>(
         });
         session.request_redraw();
     } else {
-        session.pointer_constraints.active = None;
+        session.interactions.pointer_constraints.active = None;
     }
 }
 
@@ -624,6 +625,7 @@ pub(super) fn deactivate_before_focus_change<D: SessionDriver>(
         return;
     };
     let should_deactivate = session
+        .interactions
         .pointer_constraints
         .active
         .as_ref()
@@ -632,7 +634,7 @@ pub(super) fn deactivate_before_focus_change<D: SessionDriver>(
             Some(&root) != next_focused_root
         });
     if should_deactivate {
-        if let Some(tracked) = session.pointer_constraints.active.take() {
+        if let Some(tracked) = session.interactions.pointer_constraints.active.take() {
             deactivate_tracked(
                 session,
                 &pointer,
@@ -652,12 +654,13 @@ pub(super) fn deactivate_before_pointer_focus_change<D: SessionDriver>(
         return;
     };
     let should_deactivate = session
+        .interactions
         .pointer_constraints
         .active
         .as_ref()
         .is_some_and(|tracked| Some(&tracked.surface) != next_focus);
     if should_deactivate {
-        if let Some(tracked) = session.pointer_constraints.active.take() {
+        if let Some(tracked) = session.interactions.pointer_constraints.active.take() {
             deactivate_tracked(
                 session,
                 &pointer,
@@ -677,12 +680,13 @@ pub(super) fn deactivate_before_unmap<D: SessionDriver>(
         return;
     };
     let should_deactivate = session
+        .interactions
         .pointer_constraints
         .active
         .as_ref()
         .is_some_and(|tracked| crate::wayland::compositor::root_surface(&tracked.surface) == *root);
     if should_deactivate {
-        if let Some(tracked) = session.pointer_constraints.active.take() {
+        if let Some(tracked) = session.interactions.pointer_constraints.active.take() {
             deactivate_tracked(
                 session,
                 &pointer,
@@ -698,7 +702,7 @@ pub(super) fn active<D: SessionDriver>(
     session: &Session<D>,
     pointer: &PointerHandle<Session<D>>,
 ) -> Option<ActiveConstraint> {
-    let tracked = session.pointer_constraints.active.as_ref()?;
+    let tracked = session.interactions.pointer_constraints.active.as_ref()?;
     if !valid_active_owner(session, pointer, tracked) {
         return None;
     }
@@ -761,7 +765,7 @@ pub(super) fn apply_position_hint<D: SessionDriver>(
     _pointer: &PointerHandle<Session<D>>,
     location: Point<f64, Logical>,
 ) {
-    if let Some(tracked) = session.pointer_constraints.active.as_mut()
+    if let Some(tracked) = session.interactions.pointer_constraints.active.as_mut()
         && tracked.surface == *surface
     {
         tracked.position_hint = Some(location);

@@ -296,7 +296,7 @@ pub(crate) fn tick_physics<D: crate::session::SessionDriver>(
         session.nodes.physics_last_tick = now;
         return false;
     }
-    let authority = match &session.grab {
+    let authority = match &session.interactions.grab {
         crate::input::grab::Grab::MoveWindow {
             id: Some(id),
             cluster_drag,
@@ -975,7 +975,10 @@ pub fn tick_decay<D: crate::session::SessionDriver>(
         .filter(|record| {
             session.fullscreen.is_fullscreen_or_pending(&record.surface)
                 || session.maximize.contains(&record.surface)
-                || crate::input::grab::belongs_to_surface(&session.grab, &record.surface)
+                || crate::input::grab::belongs_to_surface(
+                    &session.interactions.grab,
+                    &record.surface,
+                )
         })
         .map(|record| record.surface.clone())
         .collect::<Vec<_>>();

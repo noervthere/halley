@@ -348,7 +348,10 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
                     .xwayland
                     .client_geometry_guarded(surface.window_id(), now);
                 let grabbed = window.wl_surface().is_some_and(|wl_surface| {
-                    crate::input::grab::belongs_to_surface(&self.grab, wl_surface.as_ref())
+                    crate::input::grab::belongs_to_surface(
+                        &self.interactions.grab,
+                        wl_surface.as_ref(),
+                    )
                 });
                 let fullscreen = window.wl_surface().is_some_and(|wl_surface| {
                     self.fullscreen

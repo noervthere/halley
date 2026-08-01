@@ -13,9 +13,9 @@ use smithay::wayland::seat::WaylandFocus;
 use crate::backend::winit::WinitBackend;
 use crate::backend::{self, Renderable};
 use crate::cursor::CursorManager;
+use crate::input::Keyboard;
 use crate::input::keybinds::BackendKind;
-use crate::input::pointer::{Pointer, WheelAccumulator};
-use crate::input::{Keyboard, SuppressedButtons, SuppressedKeys};
+use crate::input::pointer::Pointer;
 use crate::render::{
     self, CursorContext, DesktopContext, FrameContext, OverlayContext, RenderRequest, VisualContext,
 };
@@ -254,14 +254,9 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
         cameras,
         capture: crate::capture::CaptureState::default(),
         screencast: crate::capture::screencast::ScreencastState::default(),
-        grab: crate::input::grab::Grab::None,
-        resize_anchor: None,
-        suppressed_buttons: SuppressedButtons::default(),
-        suppressed_keys: SuppressedKeys::default(),
-        wheel_accumulator: WheelAccumulator::default(),
+        interactions: super::InteractionState::default(),
         touch: super::touch::TouchState::default(),
         gestures: super::gesture::GestureState::default(),
-        pointer_constraints: super::pointer::PointerConstraintLifecycle::default(),
         window_trace: super::trace::WindowTrace::from_env(),
         keyboard_monitor: None,
         opening_origins: super::opening::OpeningOrigins::default(),
@@ -417,7 +412,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                             nodes: &app.nodes,
                             clusters: &app.clusters,
                             window_rules: &app.window_rules,
-                            node_grab_active: app.grab.landmark_active(),
+                            node_grab_active: app.interactions.grab.landmark_active(),
                         },
                         cursor: CursorContext {
                             cursor: &app.cursor,

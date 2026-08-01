@@ -37,9 +37,8 @@ use smithay::wayland::xdg_activation::XdgActivationState;
 
 use super::output::{OutputChange, OutputConfiguration, OutputState};
 use crate::cursor::CursorManager;
-use crate::input::grab::{Grab, ResizeAnchor};
-use crate::input::pointer::{Pointer, WheelAccumulator};
-use crate::input::{Keyboard, SuppressedButtons, SuppressedKeys};
+use crate::input::Keyboard;
+use crate::input::pointer::Pointer;
 use crate::presentation::camera::OutputCameras;
 use crate::wayland::{ClientState, WaylandState};
 
@@ -134,14 +133,9 @@ pub struct Session<D: SessionDriver> {
     pub cameras: OutputCameras,
     pub capture: crate::capture::CaptureState,
     pub screencast: crate::capture::screencast::ScreencastState,
-    pub grab: Grab,
-    pub resize_anchor: Option<ResizeAnchor>,
-    pub suppressed_buttons: SuppressedButtons,
-    pub suppressed_keys: SuppressedKeys,
-    pub wheel_accumulator: WheelAccumulator,
+    pub interactions: super::InteractionState,
     pub(super) touch: super::touch::TouchState,
     pub(super) gestures: super::gesture::GestureState,
-    pub pointer_constraints: super::pointer::PointerConstraintLifecycle,
     pub(super) window_trace: super::trace::WindowTrace,
     pub keyboard_monitor: Option<crate::accessibility::KeyboardMonitorService>,
     pub opening_origins: super::opening::OpeningOrigins,

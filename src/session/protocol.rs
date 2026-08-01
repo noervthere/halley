@@ -345,7 +345,10 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
             crate::frame_clock::monotonic_now(),
         );
         self.maximize.handle_commit(&mut self.wayland, &root);
-        crate::input::grab::finish_resize_commit(&mut self.resize_anchor, &mut self.wayland.space);
+        crate::input::grab::finish_resize_commit(
+            &mut self.interactions.resize_anchor,
+            &mut self.wayland.space,
+        );
         crate::nodes::reconcile_landmarks(self, None);
         super::pointer::reconcile_state(self);
         let preview_node = self.nodes.id_for_surface(&root);

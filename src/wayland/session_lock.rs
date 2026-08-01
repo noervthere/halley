@@ -454,11 +454,11 @@ pub fn enter_secure_mode<D: SessionDriver>(session: &mut Session<D>) {
         crate::cursor::surface::clear_outputs(&old_cursor, &session.wayland.space);
     }
     crate::session::cancel_compositor_grab(session);
-    session.resize_anchor = None;
+    session.interactions.resize_anchor = None;
     session.pending_pointer_warp = None;
-    session.suppressed_buttons.clear();
-    session.suppressed_keys.clear();
-    session.wheel_accumulator.reset_all();
+    session.interactions.suppressed_buttons.clear();
+    session.interactions.suppressed_keys.clear();
+    session.interactions.wheel_accumulator.reset_all();
     super::session_lock::cancel_client_input(session);
     crate::session::sync_keyboard_focus(session, SERIAL_COUNTER.next_serial());
 }

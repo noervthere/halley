@@ -233,7 +233,7 @@ pub(crate) fn finish_window_unmap<D: SessionDriver>(
     }
     session.render.fullscreen_textures.remove(&surface);
     super::cancel_grab_for_surface(session, &surface);
-    crate::input::grab::forget_resize_anchor(&mut session.resize_anchor, &surface);
+    crate::input::grab::forget_resize_anchor(&mut session.interactions.resize_anchor, &surface);
     super::closing::start(session, &surface);
 
     let Some(focus) = focus else {

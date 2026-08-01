@@ -738,11 +738,11 @@ fn desktop_bounds(space: &Space<Window>) -> Option<Rectangle<i32, Logical>> {
 }
 
 fn begin_modal_capture<D: SessionDriver>(session: &mut Session<D>) {
-    let moving_node = match &session.grab {
+    let moving_node = match &session.interactions.grab {
         crate::input::grab::Grab::MoveNode { id, .. } => Some(*id),
         _ => None,
     };
-    let moving_window = match &session.grab {
+    let moving_window = match &session.interactions.grab {
         crate::input::grab::Grab::MoveWindow { id, .. } => *id,
         _ => None,
     };

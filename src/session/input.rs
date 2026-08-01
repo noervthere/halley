@@ -436,7 +436,7 @@ fn close_blooms_for_keybind<D: SessionDriver>(
 
 fn close_blooms_for_typing_away<D: SessionDriver>(session: &mut Session<D>) -> bool {
     let window_drag_active = matches!(
-        &session.grab,
+        &session.interactions.grab,
         crate::input::grab::Grab::PendingWindowMove(_)
             | crate::input::grab::Grab::MoveWindow { .. }
     );
@@ -583,7 +583,7 @@ pub(crate) fn wakeup_cluster_interactions<D: SessionDriver>(
             .unwrap_or(record.geometry.size);
         let (screen_offset, center) =
             bloom_drag_handoff(window_location, window_size, world, camera_scale);
-        session.grab = crate::input::grab::Grab::MoveWindow {
+        session.interactions.grab = crate::input::grab::Grab::MoveWindow {
             id: Some(member_id),
             window: record.window.clone(),
             cluster_drag: None,
@@ -599,7 +599,10 @@ pub(crate) fn wakeup_cluster_interactions<D: SessionDriver>(
         // handoff so the physical release reaches the MoveWindow cleanup
         // below; that cleanup still intercepts it, so no orphan release is
         // forwarded to the newly focused client.
-        session.suppressed_buttons.release_is_suppressed(BTN_LEFT);
+        session
+            .interactions
+            .suppressed_buttons
+            .release_is_suppressed(BTN_LEFT);
         super::focus_window(session, &record.window, SERIAL_COUNTER.next_serial());
     }
     session
@@ -802,14 +805,18 @@ where
                 session.request_redraw();
             }
             InputEvent::PointerButton { event } => match event.state() {
-                ButtonState::Pressed => session.suppressed_buttons.suppress(event.button_code()),
+                ButtonState::Pressed => session
+                    .interactions
+                    .suppressed_buttons
+                    .suppress(event.button_code()),
                 ButtonState::Released => {
                     session
+                        .interactions
                         .suppressed_buttons
                         .release_is_suppressed(event.button_code());
                 }
             },
-            InputEvent::PointerAxis { .. } => session.wheel_accumulator.reset_all(),
+            InputEvent::PointerAxis { .. } => session.interactions.wheel_accumulator.reset_all(),
             _ => {}
         }
         return;
@@ -865,7 +872,7 @@ where
                     update_capture_pointer(session, proposed_position);
                     match event.state() {
                         ButtonState::Pressed => {
-                            session.suppressed_buttons.suppress(BTN_LEFT);
+                            session.interactions.suppressed_buttons.suppress(BTN_LEFT);
                             match session.capture.press(proposed_position) {
                                 Some(crate::capture::CapturePress::ActivateScreenshot(mode)) => {
                                     if session.capture.activate_menu(mode, &session.wayland.space) {
@@ -884,7 +891,10 @@ where
                             }
                         }
                         ButtonState::Released => {
-                            session.suppressed_buttons.release_is_suppressed(BTN_LEFT);
+                            session
+                                .interactions
+                                .suppressed_buttons
+                                .release_is_suppressed(BTN_LEFT);
                             session.capture.release();
                         }
                     }
@@ -904,11 +914,14 @@ where
             InputEvent::PointerButton { event } if event.button_code() == BTN_LEFT => {
                 match event.state() {
                     ButtonState::Pressed => {
-                        session.suppressed_buttons.suppress(BTN_LEFT);
+                        session.interactions.suppressed_buttons.suppress(BTN_LEFT);
                         crate::shell::apogee::pointer_press(session, proposed_position);
                     }
                     ButtonState::Released => {
-                        session.suppressed_buttons.release_is_suppressed(BTN_LEFT);
+                        session
+                            .interactions
+                            .suppressed_buttons
+                            .release_is_suppressed(BTN_LEFT);
                     }
                 }
             }
@@ -1028,7 +1041,7 @@ where
             press_screen,
             screen_offset,
             ..
-        } = &session.grab
+        } = &session.interactions.grab
     {
         let dx = position_after.0 - press_screen.x;
         let dy = position_after.1 - press_screen.y;
@@ -1052,7 +1065,7 @@ where
                 };
                 crate::nodes::set_collapsed_output(session, id, &output);
                 session.nodes.clear_direct_motion(id);
-                session.grab = crate::input::grab::Grab::MoveNode {
+                session.interactions.grab = crate::input::grab::Grab::MoveNode {
                     id,
                     surface,
                     screen_offset,
@@ -1073,12 +1086,12 @@ where
             press_screen,
             screen_offset,
             ..
-        } = &session.grab
+        } = &session.interactions.grab
     {
         let dx = position_after.0 - press_screen.x;
         let dy = position_after.1 - press_screen.y;
         if dx.hypot(dy) >= NODE_DRAG_THRESHOLD_PX {
-            session.grab = crate::input::grab::Grab::MoveClusterCore {
+            session.interactions.grab = crate::input::grab::Grab::MoveClusterCore {
                 id: *id,
                 screen_offset: *screen_offset,
             };
@@ -1089,7 +1102,7 @@ where
     }
 
     if motion.is_some()
-        && let crate::input::grab::Grab::PendingWindowMove(pending) = &session.grab
+        && let crate::input::grab::Grab::PendingWindowMove(pending) = &session.interactions.grab
     {
         let pending = pending.clone();
         match pending_window_move_motion(
@@ -1099,11 +1112,11 @@ where
         ) {
             PendingWindowMoveMotion::Wait => {}
             PendingWindowMoveMotion::Cancel => {
-                session.grab = crate::input::grab::Grab::None;
+                session.interactions.grab = crate::input::grab::Grab::None;
                 session.cursor.set_override(None);
             }
             PendingWindowMoveMotion::Activate => {
-                session.grab = crate::input::grab::Grab::None;
+                session.interactions.grab = crate::input::grab::Grab::None;
                 if !super::activate_client_pointer_move(session, pending) {
                     session.cursor.set_override(None);
                 }
@@ -1111,7 +1124,7 @@ where
         }
     }
 
-    match &session.grab {
+    match &session.interactions.grab {
         crate::input::grab::Grab::MoveWindow {
             id,
             window,
@@ -1185,7 +1198,7 @@ where
                     if let crate::input::grab::Grab::MoveWindow {
                         cluster_drag: Some(live),
                         ..
-                    } = &mut session.grab
+                    } = &mut session.interactions.grab
                     {
                         live.on_origin_output = drag.on_origin_output;
                     }
@@ -1258,7 +1271,7 @@ where
                     last_update,
                     velocity,
                     ..
-                } = &mut session.grab
+                } = &mut session.interactions.grab
                 {
                     *last_world = desired_center;
                     *last_update = now;
@@ -1315,7 +1328,7 @@ where
                     last_update,
                     velocity,
                     ..
-                } = &mut session.grab
+                } = &mut session.interactions.grab
                 {
                     *last_world = desired;
                     *last_update = now;
@@ -1413,7 +1426,10 @@ where
             if let Some(toplevel) = state.window.toplevel() {
                 toplevel.with_pending_state(|pending| pending.size = Some(size));
                 let serial = toplevel.send_pending_configure();
-                crate::input::grab::note_resize_configure(&mut session.resize_anchor, serial);
+                crate::input::grab::note_resize_configure(
+                    &mut session.interactions.resize_anchor,
+                    serial,
+                );
             } else {
                 let size = crate::xwayland::constrain_window_size(&state.window, size);
                 let location = crate::input::grab::resize_location_after_commit(
@@ -1446,7 +1462,7 @@ where
         if let Some(route) = route.as_ref() {
             super::focus::update_hover(session, route, SERIAL_COUNTER.next_serial());
         }
-        let node_grab_active = session.grab.landmark_active();
+        let node_grab_active = session.interactions.grab.landmark_active();
         let now = crate::frame_clock::monotonic_now();
         let hovered_bloom = (!node_grab_active)
             .then(|| cluster_bloom_at_pointer(session, now))
@@ -1522,7 +1538,7 @@ where
         let time = button_event.time_msec();
         let serial = SERIAL_COUNTER.next_serial();
         if matches!(
-            &session.grab,
+            &session.interactions.grab,
             crate::input::grab::Grab::PendingWindowMove(pending)
                 if releases_pending_window_move(
                     pending.button,
@@ -1533,14 +1549,17 @@ where
             // No compositor move began, so leave this release unconsumed. It
             // completes the client's click and lets its double-click handler
             // decide whether to toggle maximize.
-            session.grab = crate::input::grab::Grab::None;
+            session.interactions.grab = crate::input::grab::Grab::None;
             session.cursor.set_override(None);
         }
         if button == BTN_LEFT && state == ButtonState::Released {
             if session.clusters.bloom_pull().is_some() {
                 session.clusters.clear_bloom_pull();
                 session.clusters.set_overlay_hovered(None);
-                session.suppressed_buttons.release_is_suppressed(button);
+                session
+                    .interactions
+                    .suppressed_buttons
+                    .release_is_suppressed(button);
                 session.cursor.set_override(None);
                 session.request_redraw();
                 super::pointer::finish_frame(session, &pointer_handle);
@@ -1617,16 +1636,19 @@ where
                     super::focus_window(session, &window, serial);
                 }
                 session.clusters.set_overlay_hovered(None);
-                session.suppressed_buttons.release_is_suppressed(button);
+                session
+                    .interactions
+                    .suppressed_buttons
+                    .release_is_suppressed(button);
                 session.cursor.set_override(None);
                 session.request_redraw();
                 super::pointer::finish_frame(session, &pointer_handle);
                 return;
             }
-            match &session.grab {
+            match &session.interactions.grab {
                 crate::input::grab::Grab::PendingNode { id, .. } => {
                     let id = *id;
-                    session.grab = crate::input::grab::Grab::None;
+                    session.interactions.grab = crate::input::grab::Grab::None;
                     session.cursor.set_override(None);
                     let _ = crate::nodes::restore(session, id, serial);
                     super::pointer::finish_frame(session, &pointer_handle);
@@ -1640,7 +1662,7 @@ where
                             crate::frame_clock::monotonic_now(),
                         );
                     }
-                    session.grab = crate::input::grab::Grab::None;
+                    session.interactions.grab = crate::input::grab::Grab::None;
                     session.cursor.set_override(None);
                     session.nodes.clear_direct_motion(id);
                     session.request_redraw();
@@ -1651,8 +1673,11 @@ where
                     let id = *id;
                     let output_name = output.clone();
                     let now = crate::frame_clock::monotonic_now();
-                    session.suppressed_buttons.release_is_suppressed(BTN_LEFT);
-                    session.grab = crate::input::grab::Grab::None;
+                    session
+                        .interactions
+                        .suppressed_buttons
+                        .release_is_suppressed(BTN_LEFT);
+                    session.interactions.grab = crate::input::grab::Grab::None;
                     session.cursor.set_override(None);
                     let output = {
                         session
@@ -1673,8 +1698,11 @@ where
                     return;
                 }
                 crate::input::grab::Grab::MoveClusterCore { .. } => {
-                    session.suppressed_buttons.release_is_suppressed(BTN_LEFT);
-                    session.grab = crate::input::grab::Grab::None;
+                    session
+                        .interactions
+                        .suppressed_buttons
+                        .release_is_suppressed(BTN_LEFT);
+                    session.interactions.grab = crate::input::grab::Grab::None;
                     session.cursor.set_override(None);
                     session.request_redraw();
                     super::pointer::finish_frame(session, &pointer_handle);
@@ -1711,18 +1739,24 @@ where
                                 }
                                 None => {}
                             }
-                            session.suppressed_buttons.suppress(button);
+                            session.interactions.suppressed_buttons.suppress(button);
                         }
                         ButtonState::Released => {
-                            session.suppressed_buttons.release_is_suppressed(button);
+                            session
+                                .interactions
+                                .suppressed_buttons
+                                .release_is_suppressed(button);
                             session.clusters.end_name_selection();
                         }
                     }
                     session.request_redraw();
                 } else if state == ButtonState::Pressed {
-                    session.suppressed_buttons.suppress(button);
+                    session.interactions.suppressed_buttons.suppress(button);
                 } else {
-                    session.suppressed_buttons.release_is_suppressed(button);
+                    session
+                        .interactions
+                        .suppressed_buttons
+                        .release_is_suppressed(button);
                 }
                 super::pointer::finish_frame(session, &pointer_handle);
                 return;
@@ -1742,9 +1776,12 @@ where
                 session.request_redraw();
             }
             if state == ButtonState::Pressed {
-                session.suppressed_buttons.suppress(button);
+                session.interactions.suppressed_buttons.suppress(button);
             } else {
-                session.suppressed_buttons.release_is_suppressed(button);
+                session
+                    .interactions
+                    .suppressed_buttons
+                    .release_is_suppressed(button);
             }
             super::pointer::finish_frame(session, &pointer_handle);
             return;
@@ -1768,7 +1805,7 @@ where
             && session.clusters.begin_bloom_pull(token, output.name())
         {
             wayland::focus::select_output(&mut session.wayland, &output);
-            session.suppressed_buttons.suppress(button);
+            session.interactions.suppressed_buttons.suppress(button);
             session.clusters.set_overlay_hovered(None);
             session
                 .cursor
@@ -1790,7 +1827,7 @@ where
             )
         {
             wayland::focus::select_output(&mut session.wayland, &output);
-            session.suppressed_buttons.suppress(button);
+            session.interactions.suppressed_buttons.suppress(button);
             session.clusters.set_overlay_hovered(None);
             session
                 .cursor
@@ -1831,12 +1868,13 @@ where
                 .expect("keyboard capability added at seat setup")
                 .modifier_state();
             if crate::input::mod_key_held(&modifiers, session.keyboard.effective_mod) {
-                session.grab = crate::input::grab::Grab::MoveClusterCore { id, screen_offset };
+                session.interactions.grab =
+                    crate::input::grab::Grab::MoveClusterCore { id, screen_offset };
                 session
                     .cursor
                     .set_override(Some(smithay::input::pointer::CursorIcon::Grabbing));
             } else {
-                session.grab = crate::input::grab::Grab::PendingClusterCore {
+                session.interactions.grab = crate::input::grab::Grab::PendingClusterCore {
                     id,
                     output: output.name(),
                     press_screen: Point::<f64, Logical>::from(position_after),
@@ -1844,7 +1882,7 @@ where
                 };
                 session.cursor.set_override(None);
             }
-            session.suppressed_buttons.suppress(button);
+            session.interactions.suppressed_buttons.suppress(button);
             session.request_redraw();
             intercepted = true;
         }
@@ -1855,7 +1893,7 @@ where
         {
             wayland::focus::select_output(&mut session.wayland, &output);
             if crate::nodes::focus_or_restore_from_bearing(session, id, serial) {
-                session.suppressed_buttons.suppress(button);
+                session.interactions.suppressed_buttons.suppress(button);
                 intercepted = true;
             }
         }
@@ -1879,7 +1917,7 @@ where
                 state,
                 on_background,
                 bindings_enabled,
-                &mut session.suppressed_buttons,
+                &mut session.interactions.suppressed_buttons,
             ) {
                 PointerBindingResult::Action(action) => {
                     let output_name = route.as_ref().map(|route| route.output.name().to_string());
@@ -1913,7 +1951,7 @@ where
             let mod_held = crate::input::mod_key_held(&modifiers, session.keyboard.effective_mod);
             if mod_held {
                 session.nodes.clear_direct_motion(id);
-                session.grab = crate::input::grab::Grab::MoveNode {
+                session.interactions.grab = crate::input::grab::Grab::MoveNode {
                     id,
                     surface: record.surface,
                     screen_offset,
@@ -1925,7 +1963,7 @@ where
                     .cursor
                     .set_override(Some(smithay::input::pointer::CursorIcon::Grabbing));
             } else {
-                session.grab = crate::input::grab::Grab::PendingNode {
+                session.interactions.grab = crate::input::grab::Grab::PendingNode {
                     id,
                     surface: record.surface,
                     press_screen: Point::<f64, Logical>::from(position_after),
@@ -2009,7 +2047,7 @@ where
                         }
                         Some(crate::input::pointer::PointerTarget::Background) => {
                             super::focus::focus_layer(session, None, serial);
-                            session.grab = crate::input::grab::Grab::Pan {
+                            session.interactions.grab = crate::input::grab::Grab::Pan {
                                 output: route.as_ref().expect("matched above").output.name(),
                             };
                             intercepted = true;
@@ -2018,7 +2056,7 @@ where
                     }
                 }
                 ButtonState::Released => {
-                    let released_window = match &session.grab {
+                    let released_window = match &session.interactions.grab {
                         crate::input::grab::Grab::MoveWindow {
                             id,
                             window,
@@ -2118,7 +2156,7 @@ where
                         } else {
                             None
                         };
-                        session.grab = crate::input::grab::Grab::None;
+                        session.interactions.grab = crate::input::grab::Grab::None;
                         session.cursor.set_override(None);
                         let mut cluster_drop_handled = false;
                         if let (Some(id), Some((drag, work_area, origin, pointer_inside))) =
@@ -2198,8 +2236,11 @@ where
                             session.request_redraw();
                         }
                         intercepted = true;
-                    } else if matches!(session.grab, crate::input::grab::Grab::Pan { .. }) {
-                        session.grab = crate::input::grab::Grab::None;
+                    } else if matches!(
+                        session.interactions.grab,
+                        crate::input::grab::Grab::Pan { .. }
+                    ) {
+                        session.interactions.grab = crate::input::grab::Grab::None;
                         session.cursor.set_override(None);
                         intercepted = true;
                     }
@@ -2210,12 +2251,12 @@ where
         if !intercepted
             && state == ButtonState::Released
             && matches!(
-                &session.grab,
+                &session.interactions.grab,
                 crate::input::grab::Grab::ResizeWindow(resize) if resize.button == button
             )
         {
-            session.grab = crate::input::grab::Grab::None;
-            crate::input::grab::release_resize_anchor(&mut session.resize_anchor);
+            session.interactions.grab = crate::input::grab::Grab::None;
+            crate::input::grab::release_resize_anchor(&mut session.interactions.resize_anchor);
             intercepted = true;
         }
 
@@ -2248,7 +2289,7 @@ where
             .modifier_state();
         let result = process_wheel_bindings(
             axis_event,
-            &mut session.wheel_accumulator,
+            &mut session.interactions.wheel_accumulator,
             bindings_enabled,
             |direction| match_wheel_bind(&session.keyboard.binds, &modifiers, direction),
         );
