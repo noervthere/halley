@@ -36,7 +36,7 @@ use crate::render::{
 use crate::wayland;
 
 use self::frame::{EstimatedVblankTimer, OutputFrameState};
-use super::SessionDriver;
+use super::RenderDriver as _;
 
 struct TtyDriver {
     backend: TtyBackend,
@@ -54,13 +54,7 @@ impl crate::ipc::OutputInfoSource for TtyDriver {
     }
 }
 
-impl super::SessionDriver for TtyDriver {
-    const BACKEND_KIND: BackendKind = BackendKind::Tty;
-
-    fn primary_output(&self) -> &Output {
-        self.backend.primary_output()
-    }
-
+impl super::RenderDriver for TtyDriver {
     fn dmabuf_capabilities(&mut self) -> crate::backend::dmabuf::DmabufCapabilities {
         self.backend.dmabuf_capabilities()
     }
@@ -97,6 +91,51 @@ impl super::SessionDriver for TtyDriver {
         f: impl FnOnce(&mut smithay::backend::renderer::gles::GlesRenderer) -> T,
     ) -> T {
         f(self.backend.renderer())
+    }
+
+    fn schedule_render_completion(
+        &mut self,
+        sync: smithay::backend::renderer::sync::SyncPoint,
+        completion: Box<dyn FnOnce() + 'static>,
+    ) -> Result<(), String> {
+        let Some(fence) = sync.export() else {
+            completion();
+            return Ok(());
+        };
+        let mut completion = Some(completion);
+        self.loop_handle
+            .insert_source(
+                Generic::new(fence, Interest::READ, Mode::OneShot),
+                move |_, _, _| {
+                    if let Some(completion) = completion.take() {
+                        completion();
+                    }
+                    Ok(PostAction::Remove)
+                },
+            )
+            .map(|_| ())
+            .map_err(|err| format!("failed to watch render fence: {err}"))
+    }
+
+    fn register_drm_syncobj_source(&mut self, client: Client, source: DrmSyncPointSource) -> bool {
+        self.loop_handle
+            .insert_source(source, move |_, _, app| {
+                let dh = app.wayland.display_handle.clone();
+                app.client_compositor_state(&client)
+                    .blocker_cleared(app, &dh);
+                Ok(())
+            })
+            .map(|_| true)
+            .unwrap_or_else(|err| {
+                eventline::warn!("explicit sync: failed to register acquire-point source: {err}");
+                false
+            })
+    }
+}
+
+impl super::OutputDriver for TtyDriver {
+    fn primary_output(&self) -> &Output {
+        self.backend.primary_output()
     }
 
     fn output_states(&self) -> Vec<super::output::OutputState> {
@@ -141,45 +180,6 @@ impl super::SessionDriver for TtyDriver {
         self.backend.set_gamma(output, ramp)
     }
 
-    fn schedule_render_completion(
-        &mut self,
-        sync: smithay::backend::renderer::sync::SyncPoint,
-        completion: Box<dyn FnOnce() + 'static>,
-    ) -> Result<(), String> {
-        let Some(fence) = sync.export() else {
-            completion();
-            return Ok(());
-        };
-        let mut completion = Some(completion);
-        self.loop_handle
-            .insert_source(
-                Generic::new(fence, Interest::READ, Mode::OneShot),
-                move |_, _, _| {
-                    if let Some(completion) = completion.take() {
-                        completion();
-                    }
-                    Ok(PostAction::Remove)
-                },
-            )
-            .map(|_| ())
-            .map_err(|err| format!("failed to watch render fence: {err}"))
-    }
-
-    fn register_drm_syncobj_source(&mut self, client: Client, source: DrmSyncPointSource) -> bool {
-        self.loop_handle
-            .insert_source(source, move |_, _, app| {
-                let dh = app.wayland.display_handle.clone();
-                app.client_compositor_state(&client)
-                    .blocker_cleared(app, &dh);
-                Ok(())
-            })
-            .map(|_| true)
-            .unwrap_or_else(|err| {
-                eventline::warn!("explicit sync: failed to register acquire-point source: {err}");
-                false
-            })
-    }
-
     fn apply_dpms(
         &mut self,
         command: halley_ipc::DpmsCommand,
@@ -191,6 +191,10 @@ impl super::SessionDriver for TtyDriver {
     fn output_requires_lock_frame(&self, output: &Output) -> bool {
         self.backend.output_dpms_enabled(output)
     }
+}
+
+impl super::SessionDriver for TtyDriver {
+    const BACKEND_KIND: BackendKind = BackendKind::Tty;
 
     fn stop(&mut self) {
         self.loop_signal.stop();

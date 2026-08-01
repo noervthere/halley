@@ -21,7 +21,7 @@ use crate::render::{
 };
 use crate::wayland;
 
-use super::{Session, SessionDriver};
+use super::Session;
 
 struct WinitDriver {
     backend: WinitBackend,
@@ -36,13 +36,7 @@ impl crate::ipc::OutputInfoSource for WinitDriver {
     }
 }
 
-impl SessionDriver for WinitDriver {
-    const BACKEND_KIND: BackendKind = BackendKind::Winit;
-
-    fn primary_output(&self) -> &smithay::output::Output {
-        self.backend.output()
-    }
-
+impl super::RenderDriver for WinitDriver {
     fn dmabuf_capabilities(&mut self) -> crate::backend::dmabuf::DmabufCapabilities {
         self.backend.dmabuf_capabilities()
     }
@@ -64,6 +58,36 @@ impl SessionDriver for WinitDriver {
 
     fn with_renderer<T>(&mut self, f: impl FnOnce(&mut GlesRenderer) -> T) -> T {
         f(self.backend.renderer())
+    }
+
+    fn schedule_render_completion(
+        &mut self,
+        sync: smithay::backend::renderer::sync::SyncPoint,
+        completion: Box<dyn FnOnce() + 'static>,
+    ) -> Result<(), String> {
+        let Some(fence) = sync.export() else {
+            completion();
+            return Ok(());
+        };
+        let mut completion = Some(completion);
+        self.loop_handle
+            .insert_source(
+                Generic::new(fence, Interest::READ, Mode::OneShot),
+                move |_, _, _| {
+                    if let Some(completion) = completion.take() {
+                        completion();
+                    }
+                    Ok(PostAction::Remove)
+                },
+            )
+            .map(|_| ())
+            .map_err(|err| format!("failed to watch render fence: {err}"))
+    }
+}
+
+impl super::OutputDriver for WinitDriver {
+    fn primary_output(&self) -> &smithay::output::Output {
+        self.backend.output()
     }
 
     fn output_states(&self) -> Vec<super::output::OutputState> {
@@ -108,30 +132,10 @@ impl SessionDriver for WinitDriver {
         self.test_output_configuration(configuration)?;
         Ok(Vec::new())
     }
+}
 
-    fn schedule_render_completion(
-        &mut self,
-        sync: smithay::backend::renderer::sync::SyncPoint,
-        completion: Box<dyn FnOnce() + 'static>,
-    ) -> Result<(), String> {
-        let Some(fence) = sync.export() else {
-            completion();
-            return Ok(());
-        };
-        let mut completion = Some(completion);
-        self.loop_handle
-            .insert_source(
-                Generic::new(fence, Interest::READ, Mode::OneShot),
-                move |_, _, _| {
-                    if let Some(completion) = completion.take() {
-                        completion();
-                    }
-                    Ok(PostAction::Remove)
-                },
-            )
-            .map(|_| ())
-            .map_err(|err| format!("failed to watch render fence: {err}"))
-    }
+impl super::SessionDriver for WinitDriver {
+    const BACKEND_KIND: BackendKind = BackendKind::Winit;
 
     fn stop(&mut self) {
         self.exit = true;

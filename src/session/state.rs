@@ -42,13 +42,8 @@ use crate::input::pointer::Pointer;
 use crate::presentation::camera::OutputCameras;
 use crate::wayland::{ClientState, WaylandState};
 
-/// The narrow contract shared compositor policy needs from a session driver.
-/// Hardware setup, rendering, output reconfiguration, and event sources stay
-/// inside the concrete driver modules.
-pub trait SessionDriver: crate::ipc::OutputInfoSource + 'static {
-    const BACKEND_KIND: crate::input::keybinds::BackendKind;
-
-    fn primary_output(&self) -> &Output;
+/// Rendering and buffer-import mechanics supplied by a session backend.
+pub trait RenderDriver: 'static {
     fn dmabuf_capabilities(&mut self) -> crate::backend::dmabuf::DmabufCapabilities;
     fn import_dmabuf(&mut self, dmabuf: &Dmabuf) -> bool;
     fn dmabuf_feedback(
@@ -57,6 +52,23 @@ pub trait SessionDriver: crate::ipc::OutputInfoSource + 'static {
     ) -> Option<&crate::backend::dmabuf::SurfaceDmabufFeedback>;
     fn request_redraw(&mut self, output: Option<&Output>);
     fn with_renderer<T>(&mut self, f: impl FnOnce(&mut GlesRenderer) -> T) -> T;
+    fn schedule_render_completion(
+        &mut self,
+        sync: SyncPoint,
+        completion: Box<dyn FnOnce() + 'static>,
+    ) -> Result<(), String>;
+    fn register_drm_syncobj_source(
+        &mut self,
+        _client: Client,
+        _source: DrmSyncPointSource,
+    ) -> bool {
+        false
+    }
+}
+
+/// Output discovery and hardware-policy mechanics supplied by a backend.
+pub trait OutputDriver: crate::ipc::OutputInfoSource + 'static {
+    fn primary_output(&self) -> &Output;
     fn output_states(&self) -> Vec<OutputState>;
     fn test_output_configuration(
         &mut self,
@@ -72,18 +84,6 @@ pub trait SessionDriver: crate::ipc::OutputInfoSource + 'static {
     fn set_gamma(&mut self, _output: &Output, _ramp: Option<Vec<u16>>) -> Result<(), String> {
         Err("gamma control is not supported by this backend".into())
     }
-    fn schedule_render_completion(
-        &mut self,
-        sync: SyncPoint,
-        completion: Box<dyn FnOnce() + 'static>,
-    ) -> Result<(), String>;
-    fn register_drm_syncobj_source(
-        &mut self,
-        _client: Client,
-        _source: DrmSyncPointSource,
-    ) -> bool {
-        false
-    }
     fn apply_dpms(
         &mut self,
         _command: halley_ipc::DpmsCommand,
@@ -94,6 +94,11 @@ pub trait SessionDriver: crate::ipc::OutputInfoSource + 'static {
     fn output_requires_lock_frame(&self, _output: &Output) -> bool {
         true
     }
+}
+
+/// Minimal coordinator contract shared by backend-independent session policy.
+pub trait SessionDriver: RenderDriver + OutputDriver + 'static {
+    const BACKEND_KIND: crate::input::keybinds::BackendKind;
     fn stop(&mut self);
 }
 

@@ -37,7 +37,7 @@ pub mod winit;
 pub(crate) use focus::focus_window;
 pub use interaction::InteractionState;
 pub use settings::RuntimeSettings;
-pub use state::{Session, SessionDriver};
+pub use state::{OutputDriver, RenderDriver, Session, SessionDriver};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SessionControl {
