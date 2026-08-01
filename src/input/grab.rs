@@ -34,6 +34,16 @@ pub enum Grab {
         /// Origin and membership state for a window pulled from an active
         /// cluster. Ordinary Field moves leave this unset.
         cluster_drag: Option<ClusterWindowDrag>,
+        /// Maximized title-bar moves defer their restore until real pointer
+        /// motion. A click or double-click can then remain a pure state toggle
+        /// instead of being mistaken for the start of a drag.
+        maximize_restore: Option<(
+            crate::presentation::maximize::FieldRestore,
+            Point<f64, Logical>,
+        )>,
+        /// Stable windowed size used while the client is acknowledging the
+        /// restore configure from a maximized title-bar drag.
+        drag_size: Option<Size<i32, Logical>>,
         screen_offset: Vec2,
         last_world: Vec2,
         last_update: Duration,

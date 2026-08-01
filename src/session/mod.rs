@@ -584,6 +584,10 @@ pub(crate) fn set_surface_field_maximized<D: SessionDriver>(
     surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
     maximized: bool,
 ) -> bool {
+    // Client-side title bars can issue an interactive move on press before a
+    // double-click state request. Retire that pending move first so maximize
+    // and unmaximize use the same transaction as the title-bar button.
+    cancel_grab_for_surface(session, surface);
     if session.maximize.contains(surface) == maximized {
         return false;
     }
@@ -1064,15 +1068,8 @@ pub(crate) fn begin_pointer_move<D: SessionDriver>(
 
     let restore = window
         .wl_surface()
-        .and_then(|surface| session.maximize.take_restore(surface.as_ref()));
+        .and_then(|surface| session.maximize.restore(surface.as_ref()));
     let was_maximized = restore.is_some();
-    if let Some(restore) = restore.as_ref() {
-        session.render.fullscreen_textures.remove(&restore.surface);
-        configure_field_geometry(session, restore);
-        let _ = session
-            .cameras
-            .apply_field_maximize(&route.output.name(), None);
-    }
 
     let id = window
         .wl_surface()
@@ -1175,19 +1172,43 @@ pub(crate) fn begin_pointer_move<D: SessionDriver>(
     if let Some(id) = id {
         session.nodes.clear_direct_motion(id);
     }
-    let center = session
-        .wayland
-        .space
-        .element_geometry(window)
-        .map(|geometry| halley_core::field::Vec2 {
-            x: geometry.loc.x as f32 + geometry.size.w as f32 * 0.5,
-            y: geometry.loc.y as f32 + geometry.size.h as f32 * 0.5,
+    let drag_size = restore.as_ref().map(|restore| restore.geometry.size);
+    let center = drag_size
+        .and_then(|size| {
+            let camera = session.cameras.get(&output_name)?;
+            let location = crate::input::grab::world_location_from_screen_grip(
+                session.pointer.position(),
+                screen_offset,
+                camera,
+                output_geometry,
+            );
+            Some(halley_core::field::Vec2 {
+                x: location.x as f32 + size.w as f32 * 0.5,
+                y: location.y as f32 + size.h as f32 * 0.5,
+            })
+        })
+        .or_else(|| {
+            session
+                .wayland
+                .space
+                .element_geometry(window)
+                .map(|geometry| halley_core::field::Vec2 {
+                    x: geometry.loc.x as f32 + geometry.size.w as f32 * 0.5,
+                    y: geometry.loc.y as f32 + geometry.size.h as f32 * 0.5,
+                })
         })
         .unwrap_or(world);
     session.grab = crate::input::grab::Grab::MoveWindow {
         id,
         window: window.clone(),
         cluster_drag,
+        maximize_restore: restore.map(|restore| {
+            (
+                restore,
+                smithay::utils::Point::from(session.pointer.position()),
+            )
+        }),
+        drag_size,
         screen_offset,
         last_world: center,
         last_update: crate::frame_clock::monotonic_now(),

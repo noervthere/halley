@@ -42,6 +42,12 @@ fn sampled_drag_velocity(
     }
 }
 
+fn drag_threshold_reached(press: Point<f64, Logical>, current: (f64, f64)) -> bool {
+    let dx = current.0 - press.x;
+    let dy = current.1 - press.y;
+    dx.hypot(dy) >= NODE_DRAG_THRESHOLD_PX
+}
+
 fn shortcut_policy_allows_bindings(focus_bypasses_shortcuts: bool, inhibitor_active: bool) -> bool {
     !focus_bypasses_shortcuts && !inhibitor_active
 }
@@ -485,6 +491,8 @@ pub(crate) fn wakeup_cluster_interactions<D: SessionDriver>(
             id: Some(member_id),
             window: record.window.clone(),
             cluster_drag: None,
+            maximize_restore: None,
+            drag_size: None,
             screen_offset,
             last_world: center,
             last_update: now,
@@ -1253,6 +1261,8 @@ where
             id,
             window,
             cluster_drag,
+            maximize_restore,
+            drag_size,
             screen_offset,
             last_world,
             last_update,
@@ -1261,10 +1271,35 @@ where
             let id = *id;
             let window = window.clone();
             let mut cluster_drag = cluster_drag.clone();
+            let maximize_restore = maximize_restore.clone();
+            let drag_size = *drag_size;
             let screen_offset = *screen_offset;
             let previous = *last_world;
             let last_update = *last_update;
             let previous_velocity = *velocity;
+            if let Some((expected, press_screen)) = maximize_restore {
+                if !drag_threshold_reached(press_screen, position_after) {
+                    super::pointer::finish_frame(session, &pointer_handle);
+                    return;
+                }
+                let maximize_output = session
+                    .maximize
+                    .output_for_surface(&expected.surface)
+                    .map(str::to_owned);
+                if let Some(restore) = session.maximize.take_restore(&expected.surface) {
+                    session.render.fullscreen_textures.remove(&restore.surface);
+                    super::configure_field_geometry(session, &restore);
+                    if let Some(output) = maximize_output {
+                        let _ = session.cameras.apply_field_maximize(&output, None);
+                    }
+                }
+                if let crate::input::grab::Grab::MoveWindow {
+                    maximize_restore, ..
+                } = &mut session.grab
+                {
+                    *maximize_restore = None;
+                }
+            }
             if let Some((output, output_geometry)) =
                 output_at_pointer(&session.wayland.space, position_after)
             {
@@ -1280,12 +1315,14 @@ where
                 );
                 let output_changed =
                     wayland::window_output_name(&window).as_deref() != Some(output_name.as_str());
-                let size = session
-                    .wayland
-                    .space
-                    .element_geometry(&window)
-                    .map(|geometry| geometry.size)
-                    .unwrap_or((1, 1).into());
+                let size = drag_size.unwrap_or_else(|| {
+                    session
+                        .wayland
+                        .space
+                        .element_geometry(&window)
+                        .map(|geometry| geometry.size)
+                        .unwrap_or((1, 1).into())
+                });
                 let desired_center = halley_core::field::Vec2 {
                     x: desired_location.x as f32 + size.w as f32 * 0.5,
                     y: desired_location.y as f32 + size.h as f32 * 0.5,
@@ -2839,8 +2876,8 @@ mod tests {
 
     use super::{
         CaptureKeyRouting, bloom_drag_handoff, capture_key_routing, cluster_blocks_zoom,
-        sampled_drag_velocity, shortcut_policy_allows_bindings, stacking_cycle_direction,
-        window_action_output,
+        drag_threshold_reached, sampled_drag_velocity, shortcut_policy_allows_bindings,
+        stacking_cycle_direction, window_action_output,
     };
     fn sample_constant_motion(report_hz: u32) -> Vec2 {
         let step = Duration::from_secs_f64(1.0 / f64::from(report_hz));
@@ -2880,6 +2917,14 @@ mod tests {
             Duration::from_millis(5),
         );
         assert_eq!(sampled, previous_velocity);
+    }
+
+    #[test]
+    fn maximized_titlebar_drag_ignores_double_click_jitter() {
+        let press = Point::<f64, Logical>::from((400.0, 250.0));
+
+        assert!(!drag_threshold_reached(press, (403.0, 254.0)));
+        assert!(drag_threshold_reached(press, (408.0, 250.0)));
     }
 
     #[test]
