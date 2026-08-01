@@ -13,6 +13,13 @@ fn portal_direction(direction: halley_config::Direction) -> PortalDir {
     }
 }
 
+fn output_local_center(world: Vec2, output_origin: (i32, i32)) -> Vec2 {
+    Vec2 {
+        x: world.x - output_origin.0 as f32,
+        y: world.y - output_origin.1 as f32,
+    }
+}
+
 /// Selects a directional neighbour in the output's Field. Cluster members are
 /// deliberately excluded: while a cluster is closed their Field geometry is
 /// only storage, and while it is open cluster navigation owns the action.
@@ -93,7 +100,19 @@ pub(super) fn center_last_focused<D: SessionDriver>(
     if !record.attached || record.output != output_name {
         return false;
     }
-    let target = node.pos;
+    let Some(output) = session
+        .wayland
+        .space
+        .outputs()
+        .find(|output| output.name() == output_name)
+        .cloned()
+    else {
+        return false;
+    };
+    let Some(output_geometry) = session.wayland.space.output_geometry(&output) else {
+        return false;
+    };
+    let target = output_local_center(node.pos, (output_geometry.loc.x, output_geometry.loc.y));
     let Some(camera) = session.cameras.get_mut(output_name) else {
         return false;
     };
@@ -131,6 +150,20 @@ mod tests {
         assert_eq!(
             portal_direction(halley_config::Direction::Down),
             PortalDir::S
+        );
+    }
+
+    #[test]
+    fn centering_converts_global_field_position_to_output_local_camera_position() {
+        assert_eq!(
+            output_local_center(
+                Vec2 {
+                    x: 2080.0,
+                    y: 500.0
+                },
+                (1280, 0)
+            ),
+            Vec2 { x: 800.0, y: 500.0 }
         );
     }
 }
