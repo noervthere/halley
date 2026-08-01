@@ -343,6 +343,7 @@ pub struct WindowPresentation {
     root_origin: Point<f64, Logical>,
     visual_geometry: Rectangle<i32, Logical>,
     hit_geometry: Rectangle<i32, Logical>,
+    cluster_depth: Option<usize>,
 }
 
 impl WindowPresentation {
@@ -411,6 +412,7 @@ impl WindowPresentation {
             root_origin,
             visual_geometry,
             hit_geometry,
+            cluster_depth: visual.cluster_depth,
         })
     }
 
@@ -452,6 +454,13 @@ impl WindowPresentation {
 
     pub fn visual_geometry(&self) -> Rectangle<i32, Logical> {
         self.visual_geometry
+    }
+
+    /// Layout-owned overlap order for an active cluster workspace. Input must
+    /// use the same depth as rendering or a visually covered member can steal
+    /// clicks from the card above it.
+    pub(crate) fn cluster_depth(&self) -> Option<usize> {
+        self.cluster_depth
     }
 
     pub fn contains_screen(&self, screen: Point<f64, Logical>) -> bool {

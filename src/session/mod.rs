@@ -338,15 +338,7 @@ pub(crate) fn warp_pointer_to_window_center<D: SessionDriver>(
 }
 
 fn toggle_focused_fullscreen<D: SessionDriver>(session: &mut Session<D>, output: Option<&str>) {
-    let id = match output {
-        Some(output) => session.nodes.focused_on_output(output),
-        None => session.nodes.focused(),
-    };
-    let Some(record) = id
-        .and_then(|id| session.nodes.record(id))
-        .filter(|record| !record.collapsed)
-        .cloned()
-    else {
+    let Some(record) = focused_window_record(session, output) else {
         return;
     };
     let focused = record.surface;
@@ -520,18 +512,48 @@ pub(crate) fn forget_destroyed_cluster_member<D: SessionDriver>(
 }
 
 fn toggle_focused_field_maximize<D: SessionDriver>(session: &mut Session<D>, output: Option<&str>) {
-    let id = match output {
-        Some(output) => session.nodes.focused_on_output(output),
-        None => session.nodes.focused(),
-    };
-    let Some(record) = id
-        .and_then(|id| session.nodes.record(id))
-        .filter(|record| !record.collapsed)
-        .cloned()
-    else {
+    let Some(record) = focused_window_record(session, output) else {
         return;
     };
     let _ = toggle_field_maximize(session, record);
+}
+
+/// Window actions follow the compositor's live client focus first. The node
+/// focus is persistent by design and can lag briefly during hover transitions;
+/// using it first made maximize/fullscreen target an older cluster member.
+fn focused_window_record<D: SessionDriver>(
+    session: &Session<D>,
+    output: Option<&str>,
+) -> Option<crate::nodes::NodeRecord> {
+    let belongs_to_output = |record: &&crate::nodes::NodeRecord| {
+        output.is_none_or(|output| {
+            crate::wayland::window_output_name(&record.window)
+                .as_deref()
+                .unwrap_or(&record.output)
+                == output
+        })
+    };
+    session
+        .wayland
+        .focused_window
+        .as_ref()
+        .and_then(|surface| session.nodes.id_for_surface(surface))
+        .and_then(|id| session.nodes.record(id))
+        .filter(|record| !record.collapsed)
+        .filter(belongs_to_output)
+        .cloned()
+        .or_else(|| {
+            let id = match output {
+                Some(output) => session.nodes.focused_on_output(output),
+                None => session.nodes.focused(),
+            }?;
+            session
+                .nodes
+                .record(id)
+                .filter(|record| !record.collapsed)
+                .filter(belongs_to_output)
+                .cloned()
+        })
 }
 
 pub(crate) fn set_surface_field_maximized<D: SessionDriver>(
@@ -901,9 +923,14 @@ pub(crate) fn begin_window_resize<D: SessionDriver>(
     cursor: halley_core::field::Vec2,
     serial: smithay::utils::Serial,
 ) -> bool {
-    if window
-        .wl_surface()
+    let surface = window.wl_surface();
+    if surface
+        .as_ref()
         .is_some_and(|surface| session.maximize.contains(surface.as_ref()))
+        || surface
+            .as_ref()
+            .and_then(|surface| session.nodes.id_for_surface(surface.as_ref()))
+            .is_some_and(|id| session.clusters.active_layout_for_member(id).is_some())
     {
         return false;
     }
@@ -993,10 +1020,16 @@ pub(crate) fn begin_pointer_move<D: SessionDriver>(
     let Some(window_location) = session.wayland.space.element_location(window) else {
         return false;
     };
-    let Some(camera) = session.cameras.get(&route.output.name()) else {
+    let Some(scale) = session
+        .cameras
+        .get(&route.output.name())
+        .map(crate::input::zoom::scale)
+    else {
         return false;
     };
-    let scale = crate::input::zoom::scale(camera);
+    let Some(output_geometry) = session.wayland.space.output_geometry(&route.output) else {
+        return false;
+    };
 
     let restore = window
         .wl_surface()
@@ -1010,18 +1043,32 @@ pub(crate) fn begin_pointer_move<D: SessionDriver>(
             .apply_field_maximize(&route.output.name(), None);
     }
 
-    focus::focus_window_from_pointer(session, window, serial);
     let id = window
         .wl_surface()
         .and_then(|surface| session.nodes.id_for_surface(surface.as_ref()));
-    let tiled_output = id.and_then(|id| {
-        let output = route.output.name();
-        session
-            .clusters
-            .begin_tiled_drag(&output, id)
-            .then_some(output)
+    let output_name = route.output.name();
+    let mut cluster_drag = id.and_then(|id| {
+        let cluster_id = session.clusters.cluster_for_member(id)?;
+        let metadata = session.clusters.metadata(cluster_id)?;
+        (metadata.output == output_name
+            && session.clusters.active_on(&output_name) == Some(cluster_id))
+        .then(|| crate::input::grab::ClusterWindowDrag {
+            cluster_id,
+            output: output_name.clone(),
+            layout: metadata.layout,
+            detached: false,
+        })
     });
-    let screen_offset = if tiled_output.is_some() {
+    if cluster_drag.as_ref().is_some_and(|drag| {
+        drag.layout == halley_core::cluster::layout::ClusterWorkspaceLayoutKind::Stacking
+            && id != session.clusters.first_member(drag.cluster_id)
+    }) {
+        return false;
+    }
+    focus::focus_window_from_pointer(session, window, serial);
+
+    let mut cluster_grab_location = None;
+    let screen_offset = if cluster_drag.is_some() {
         let visual = route.visual_geometry.unwrap_or_else(|| {
             session
                 .wayland
@@ -1029,7 +1076,19 @@ pub(crate) fn begin_pointer_move<D: SessionDriver>(
                 .element_geometry(window)
                 .unwrap_or_else(|| window.geometry())
         });
-        crate::input::grab::screen_grip_offset(session.pointer.position(), visual.loc)
+        let pointer = session.pointer.position();
+        let offset = crate::input::grab::screen_grip_offset(pointer, visual.loc);
+        let camera = session
+            .cameras
+            .get(&output_name)
+            .expect("the pointer output camera was validated above");
+        cluster_grab_location = Some(crate::input::grab::world_location_from_screen_grip(
+            pointer,
+            offset,
+            camera,
+            output_geometry,
+        ));
+        offset
     } else if was_maximized {
         let visual = route.visual_geometry.unwrap_or_else(|| {
             session
@@ -1060,6 +1119,51 @@ pub(crate) fn begin_pointer_move<D: SessionDriver>(
         }
     };
 
+    // Pulling a cluster member changes it from output-local workspace
+    // presentation to a camera-transformed Field presentation. Move its source
+    // rectangle in the same transaction so the exact grabbed pixel stays put.
+    if let (Some(id), Some(location), Some(drag)) =
+        (id, cluster_grab_location, cluster_drag.as_mut())
+    {
+        let size = session
+            .wayland
+            .space
+            .element_geometry(window)
+            .map(|geometry| geometry.size)
+            .unwrap_or((1, 1).into());
+        let center = halley_core::field::Vec2 {
+            x: location.x as f32 + size.w as f32 * 0.5,
+            y: location.y as f32 + size.h as f32 * 0.5,
+        };
+        let now = crate::frame_clock::monotonic_now();
+        let work_area = smithay::desktop::layer_map_for_output(&route.output).non_exclusive_zone();
+        match drag.layout {
+            halley_core::cluster::layout::ClusterWorkspaceLayoutKind::Tiling => {
+                if !session.clusters.begin_tiled_drag(&drag.output, id) {
+                    return false;
+                }
+            }
+            halley_core::cluster::layout::ClusterWorkspaceLayoutKind::Stacking => {
+                if !session.clusters.detach_active_member_for_drag(
+                    &mut session.nodes.field,
+                    &drag.output,
+                    crate::clusters::ClusterDragMember {
+                        cluster_id: drag.cluster_id,
+                        node_id: id,
+                    },
+                    work_area,
+                    center,
+                    now,
+                ) {
+                    return false;
+                }
+                drag.detached = true;
+                reconcile_cluster_surfaces(session, &output_name);
+            }
+        }
+        session.wayland.space.relocate_element(window, location);
+    }
+
     if let Some(id) = id {
         session.nodes.clear_direct_motion(id);
     }
@@ -1075,7 +1179,7 @@ pub(crate) fn begin_pointer_move<D: SessionDriver>(
     session.grab = crate::input::grab::Grab::MoveWindow {
         id,
         window: window.clone(),
-        tiled_output,
+        cluster_drag,
         screen_offset,
         last_world: center,
         last_update: crate::frame_clock::monotonic_now(),

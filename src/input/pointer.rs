@@ -367,7 +367,40 @@ fn window_under(
     )
     .filter(|presentation| presentation.progress > 0.0);
 
-    for window in context.space.elements().rev() {
+    let mut windows = context
+        .space
+        .elements()
+        .enumerate()
+        .filter_map(|(stack_index, window)| {
+            if !crate::wayland::window_is_on_output(window, output, context.primary) {
+                return None;
+            }
+            let presentation = WindowPresentation::for_window(
+                context.space,
+                context.cameras,
+                Some(context.clusters),
+                Some(context.nodes),
+                context.window_open_animations,
+                context.fullscreen,
+                context.maximize,
+                window,
+                output,
+                context.now,
+            )?;
+            Some((stack_index, window, presentation))
+        })
+        .collect::<Vec<_>>();
+    let cluster_anchor = windows
+        .iter()
+        .filter_map(|(stack_index, _, presentation)| {
+            presentation.cluster_depth().map(|_| *stack_index)
+        })
+        .max();
+    windows.sort_by_key(|(stack_index, _, presentation)| {
+        presentation_stack_key(*stack_index, presentation.cluster_depth(), cluster_anchor)
+    });
+
+    for (_, window, presentation) in windows.into_iter().rev() {
         if !crate::wayland::window_is_on_output(window, output, context.primary) {
             continue;
         }
@@ -377,20 +410,6 @@ fn window_under(
                 continue;
             }
         }
-        let Some(presentation) = WindowPresentation::for_window(
-            context.space,
-            context.cameras,
-            Some(context.clusters),
-            Some(context.nodes),
-            context.window_open_animations,
-            context.fullscreen,
-            context.maximize,
-            window,
-            output,
-            context.now,
-        ) else {
-            continue;
-        };
         if !presentation.contains_screen(screen_location) {
             continue;
         }
@@ -417,6 +436,17 @@ fn window_under(
         });
     }
     None
+}
+
+fn presentation_stack_key(
+    stack_index: usize,
+    cluster_depth: Option<usize>,
+    cluster_anchor: Option<usize>,
+) -> (usize, u64) {
+    (
+        cluster_depth.and(cluster_anchor).unwrap_or(stack_index),
+        cluster_depth.map_or(u64::MAX, |depth| depth as u64),
+    )
 }
 
 fn exclusive_member_for_window(
@@ -544,7 +574,7 @@ mod tests {
 
     use super::{
         WheelAccumulator, axis_frame, axis_frame_filtered, clamp_to_outputs, desktop_bounds,
-        process_wheel_bindings, wheel_delta_v120, wheel_direction,
+        presentation_stack_key, process_wheel_bindings, wheel_delta_v120, wheel_direction,
     };
     use crate::input::keybinds::WheelDirection;
 
@@ -860,6 +890,23 @@ mod tests {
         assert_eq!(frame.axis, (0.0, 0.0));
         assert_eq!(frame.v120, None);
         assert_eq!(frame.stop, (true, true));
+    }
+
+    #[test]
+    fn cluster_depth_replaces_stale_space_order_for_pointer_routing() {
+        let anchor = Some(7);
+        let rear = presentation_stack_key(7, Some(0), anchor);
+        let middle = presentation_stack_key(2, Some(1), anchor);
+        let front = presentation_stack_key(1, Some(2), anchor);
+
+        assert!(front > middle);
+        assert!(middle > rear);
+        assert_eq!(front.0, 7);
+    }
+
+    #[test]
+    fn ordinary_windows_keep_their_space_stack_key() {
+        assert_eq!(presentation_stack_key(4, None, Some(9)), (4, u64::MAX));
     }
 
     fn configured_outputs() -> [Rectangle<i32, smithay::utils::Logical>; 2] {

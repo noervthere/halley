@@ -8,6 +8,17 @@ use smithay::utils::{Logical, Point, Rectangle, Serial, Size};
 use smithay::wayland::seat::WaylandFocus;
 use std::time::Duration;
 
+#[derive(Clone, Debug)]
+pub struct ClusterWindowDrag {
+    pub cluster_id: halley_core::cluster::ClusterId,
+    pub output: String,
+    pub layout: halley_core::cluster::layout::ClusterWorkspaceLayoutKind,
+    /// Tiling keeps membership while rearranging on the source output. It
+    /// flips to detached when the pointer crosses to another monitor.
+    /// Stacking detaches as soon as the front card is pulled out.
+    pub detached: bool,
+}
+
 /// What's currently being dragged with the left mouse button held, if
 /// anything - `None` the rest of the time. Lives on `App`/`TtyApp` next to
 /// `pointer`/`camera`, mirroring how each of those was added for one
@@ -20,9 +31,9 @@ pub enum Grab {
     MoveWindow {
         id: Option<halley_core::field::NodeId>,
         window: Window,
-        /// The cluster output while a tiling member is temporarily floating
-        /// under pointer authority. Ordinary Field moves leave this unset.
-        tiled_output: Option<String>,
+        /// Origin and membership state for a window pulled from an active
+        /// cluster. Ordinary Field moves leave this unset.
+        cluster_drag: Option<ClusterWindowDrag>,
         screen_offset: Vec2,
         last_world: Vec2,
         last_update: Duration,
@@ -76,13 +87,17 @@ pub(crate) fn screen_grip_offset(
     }
 }
 
-pub(crate) fn screen_location_from_grip(
+pub(crate) fn world_location_from_screen_grip(
     pointer: (f64, f64),
     screen_offset: Vec2,
+    camera: &Camera,
+    output_geometry: Rectangle<i32, Logical>,
 ) -> Point<i32, Logical> {
+    let world = screen_to_world_on_output(pointer, camera, output_geometry);
+    let world_offset = screen_offset_to_world(screen_offset, camera);
     Point::from((
-        (pointer.0 + f64::from(screen_offset.x)).round() as i32,
-        (pointer.1 + f64::from(screen_offset.y)).round() as i32,
+        (world.x + world_offset.x).round() as i32,
+        (world.y + world_offset.y).round() as i32,
     ))
 }
 
@@ -818,10 +833,12 @@ mod tests {
     }
 
     #[test]
-    fn output_local_grip_follows_the_pointer_without_field_camera_conversion() {
+    fn screen_grip_keeps_its_visual_point_through_field_camera_conversion() {
         let pointer = (460.0, 280.0);
         let visual_location = Point::from((320, 180));
         let offset = screen_grip_offset(pointer, visual_location);
+        let output = Rectangle::new((0, 0).into(), (1280, 800).into());
+        let mut camera = camera_at_rest();
 
         assert_eq!(
             offset,
@@ -831,8 +848,17 @@ mod tests {
             }
         );
         assert_eq!(
-            screen_location_from_grip((700.0, 510.0), offset),
-            Point::from((560, 410))
+            world_location_from_screen_grip(pointer, offset, &camera, output),
+            visual_location
+        );
+
+        camera.view_size = Vec2 {
+            x: 2560.0,
+            y: 1600.0,
+        };
+        assert_eq!(
+            world_location_from_screen_grip(pointer, offset, &camera, output),
+            Point::from((0, -40))
         );
     }
 }

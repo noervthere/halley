@@ -299,12 +299,14 @@ pub(crate) fn tick_physics<D: crate::session::SessionDriver>(
     let authority = match &session.grab {
         crate::input::grab::Grab::MoveWindow {
             id: Some(id),
-            tiled_output: None,
+            cluster_drag,
             last_world,
             velocity,
             ..
+        } if cluster_drag.as_ref().is_none_or(|drag| drag.detached) => {
+            Some((*id, *last_world, *velocity))
         }
-        | crate::input::grab::Grab::MoveNode {
+        crate::input::grab::Grab::MoveNode {
             id,
             last_world,
             velocity,

@@ -81,6 +81,47 @@ fn select_focus_successor(
     )
 }
 
+fn stacking_focus_successor<D: SessionDriver>(
+    session: &Session<D>,
+    closing: &WlSurface,
+) -> Option<WlSurface> {
+    let closing = session.nodes.id_for_surface(closing)?;
+    let cluster = session.clusters.cluster_for_member(closing)?;
+    let metadata = session.clusters.metadata(cluster)?;
+    if metadata.layout != halley_core::cluster::layout::ClusterWorkspaceLayoutKind::Stacking
+        || session.clusters.active_on(&metadata.output) != Some(cluster)
+    {
+        return None;
+    }
+    let successor =
+        select_stacking_successor(session.clusters.member_ids(cluster), closing, |member| {
+            let Some(record) = session.nodes.record(member) else {
+                return false;
+            };
+            record.attached
+                && !record.collapsed
+                && session
+                    .wayland
+                    .space
+                    .elements()
+                    .any(|window| window == &record.window)
+        })?;
+    session
+        .nodes
+        .record(successor)
+        .map(|record| record.surface.clone())
+}
+
+fn select_stacking_successor<T: Copy + Eq>(
+    members: impl IntoIterator<Item = T>,
+    closing: T,
+    mut available: impl FnMut(T) -> bool,
+) -> Option<T> {
+    members
+        .into_iter()
+        .find(|member| *member != closing && available(*member))
+}
+
 fn select_ordered_successor<T>(
     candidates: impl IntoIterator<Item = T>,
     closing: &T,
@@ -130,7 +171,14 @@ pub(crate) fn prepare_window_unmap<D: SessionDriver>(
             .field_config
             .close_restore_focus
             .then(|| {
-                select_focus_successor(&session.wayland, &session.nodes, surface, output.as_deref())
+                stacking_focus_successor(session, surface).or_else(|| {
+                    select_focus_successor(
+                        &session.wayland,
+                        &session.nodes,
+                        surface,
+                        output.as_deref(),
+                    )
+                })
             })
             .flatten();
         FocusSuccession {
@@ -187,12 +235,14 @@ pub(crate) fn finish_window_unmap<D: SessionDriver>(
         return;
     }
 
-    let revalidated = select_focus_successor(
-        &session.wayland,
-        &session.nodes,
-        &surface,
-        focus.output.as_deref(),
-    );
+    let revalidated = stacking_focus_successor(session, &surface).or_else(|| {
+        select_focus_successor(
+            &session.wayland,
+            &session.nodes,
+            &surface,
+            focus.output.as_deref(),
+        )
+    });
     if revalidated != focus.preferred {
         eventline::debug!("focus: successor changed while window teardown completed");
     }
@@ -237,7 +287,10 @@ pub(crate) fn finish_window_unmap<D: SessionDriver>(
 mod tests {
     use std::collections::HashMap;
 
-    use super::{CloseSuccessorAction, close_successor_action, select_ordered_successor};
+    use super::{
+        CloseSuccessorAction, close_successor_action, select_ordered_successor,
+        select_stacking_successor,
+    };
 
     fn output_lookup(
         outputs: &HashMap<&'static str, Option<&'static str>>,
@@ -331,6 +384,18 @@ mod tests {
                 |_| 0
             ),
             None
+        );
+    }
+
+    #[test]
+    fn stacking_successor_is_the_first_remaining_available_card() {
+        assert_eq!(
+            select_stacking_successor([10, 20, 30, 40], 10, |member| member != 20),
+            Some(30)
+        );
+        assert_eq!(
+            select_stacking_successor([10, 20, 30, 40], 30, |_| true),
+            Some(10)
         );
     }
 

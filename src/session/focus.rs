@@ -65,10 +65,11 @@ fn focus_window_with_raise<D: SessionDriver>(
     serial: Serial,
     raise: bool,
 ) {
-    if !crate::window::accepts_wm_focus(window) {
+    let window = stacking_front_window(session, window).unwrap_or_else(|| window.clone());
+    if !crate::window::accepts_wm_focus(&window) {
         return;
     }
-    crate::window::focus(&mut session.wayland, window, raise);
+    crate::window::focus(&mut session.wayland, &window, raise);
     if let Some(surface) = window.wl_surface() {
         session.nodes.focus_surface(
             surface.as_ref(),
@@ -76,9 +77,44 @@ fn focus_window_with_raise<D: SessionDriver>(
         );
     }
     if raise {
-        session.xwayland.raise_window(window);
+        session.xwayland.raise_window(&window);
     }
     super::sync_keyboard_focus(session, serial);
+}
+
+/// A stacking workspace has one keyboard-active card: its front member.
+/// Pointer hover, close succession, and generic activation must not revive a
+/// rear card merely because Smithay's underlying space order still mentions
+/// it. Transient/non-member windows are left alone so dialogs remain usable.
+fn stacking_front_window<D: SessionDriver>(
+    session: &Session<D>,
+    requested: &Window,
+) -> Option<Window> {
+    let requested_id = requested
+        .wl_surface()
+        .and_then(|surface| session.nodes.id_for_surface(surface.as_ref()))?;
+    let cluster = session.clusters.cluster_for_member(requested_id)?;
+    let metadata = session.clusters.metadata(cluster)?;
+    if metadata.layout != halley_core::cluster::layout::ClusterWorkspaceLayoutKind::Stacking
+        || session.clusters.active_on(&metadata.output) != Some(cluster)
+    {
+        return None;
+    }
+    session
+        .clusters
+        .member_ids(cluster)
+        .into_iter()
+        .filter_map(|member| session.nodes.record(member))
+        .find(|record| {
+            record.attached
+                && !record.collapsed
+                && session
+                    .wayland
+                    .space
+                    .elements()
+                    .any(|mapped| mapped == &record.window)
+        })
+        .map(|record| record.window.clone())
 }
 
 pub(super) fn focus_node_from_hover<D: SessionDriver>(
@@ -162,11 +198,17 @@ pub(super) fn update_hover<D: SessionDriver>(
     crate::wayland::focus::select_output(&mut session.wayland, &route.output);
     match &route.target {
         crate::input::pointer::PointerTarget::Window(window) => {
+            let window = stacking_front_window(session, window).unwrap_or_else(|| window.clone());
             let surface = window.wl_surface().map(std::borrow::Cow::into_owned);
-            if surface.is_some() && session.wayland.focused_window != surface {
+            let node = surface
+                .as_ref()
+                .and_then(|surface| session.nodes.id_for_surface(surface));
+            if surface.is_some()
+                && (session.wayland.focused_window != surface || session.nodes.focused() != node)
+            {
                 focus_window_with_raise(
                     session,
-                    window,
+                    &window,
                     serial,
                     should_raise(FocusOrigin::Hover, session.input.raise_on_click),
                 );

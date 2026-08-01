@@ -60,6 +60,12 @@ pub enum StackCycleOutcome {
     Cycled(NodeId),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClusterDragMember {
+    pub cluster_id: ClusterId,
+    pub node_id: NodeId,
+}
+
 /// Owns every cluster-specific state transition. Field and Nodes remain
 /// unaware of membership, slots, workspace modes, naming, and presentation.
 pub struct ClusterSystem {
@@ -304,7 +310,7 @@ impl ClusterSystem {
                 self.hide_overflow(output);
             }
         }
-        self.begin_reflow(output, id, before, now, duration_ms);
+        self.begin_layout_reflow(output, id, before, now, duration_ms);
         true
     }
 
@@ -729,6 +735,83 @@ impl ClusterSystem {
         }
         self.surfaces.invalidate_target(member);
         self.dragged_tile = Some(member);
+        true
+    }
+
+    /// Pulls an active workspace member into the Field while retaining enough
+    /// cluster state for a possible drop back into the same workspace.
+    pub fn detach_active_member_for_drag(
+        &mut self,
+        field: &mut Field,
+        output: &str,
+        dragged: ClusterDragMember,
+        work_area: Rectangle<i32, Logical>,
+        position: Vec2,
+        now: Duration,
+    ) -> bool {
+        let ClusterDragMember {
+            cluster_id: cluster,
+            node_id: member,
+        } = dragged;
+        if self.active_on(output) != Some(cluster)
+            || self.cluster_for_member(member) != Some(cluster)
+        {
+            return false;
+        }
+        let Some(layout) = self.metadata(cluster).map(|metadata| metadata.layout) else {
+            return false;
+        };
+        let Some(before) = self.workspace_layout(cluster, work_area) else {
+            return false;
+        };
+        if self.dragged_tile == Some(member) {
+            self.dragged_tile = None;
+        }
+        self.surfaces.invalidate_target(member);
+        if !self.detach_member(field, cluster, member, position, now) {
+            return false;
+        }
+        if self.active_on(output) == Some(cluster) {
+            let duration_ms = match layout {
+                ClusterWorkspaceLayoutKind::Tiling => self.animations.tiling.reflow_duration_ms,
+                ClusterWorkspaceLayoutKind::Stacking => self.animations.stacking.cycle_duration_ms,
+            };
+            self.begin_reflow(output, cluster, before, now, duration_ms);
+        }
+        true
+    }
+
+    /// Reattaches a pulled-out member at the front of its original active
+    /// cluster. In stacking that is the only focusable/top card; in tiling it
+    /// becomes the master.
+    pub fn rejoin_dragged_member_front(
+        &mut self,
+        field: &mut Field,
+        output: &str,
+        dragged: ClusterDragMember,
+        work_area: Rectangle<i32, Logical>,
+        origin: Rectangle<i32, Logical>,
+        now: Duration,
+    ) -> bool {
+        let ClusterDragMember {
+            cluster_id: cluster,
+            node_id: member,
+        } = dragged;
+        if self.active_on(output) != Some(cluster) || self.is_member(member) {
+            return false;
+        }
+        let Some(before) = self.workspace_layout(cluster, work_area) else {
+            return false;
+        };
+        if self
+            .registry
+            .add_member_to_cluster_front(field, cluster, member)
+            .is_err()
+        {
+            return false;
+        }
+        self.surfaces.invalidate_target(member);
+        self.begin_reflow_with_origin(output, cluster, before, member, origin, now);
         true
     }
 
@@ -1346,6 +1429,68 @@ mod tests {
         };
         assert!(rect.loc.x < old_second.loc.x);
         assert!(rect.loc.x > target.loc.x);
+    }
+
+    #[test]
+    fn pulled_stack_card_rejoins_its_active_cluster_at_the_front() {
+        let (mut field, mut system, cluster, members) =
+            active_test_cluster(3, ClusterWorkspaceLayoutKind::Stacking);
+        let work_area = Rectangle::new((0, 0).into(), (1_000, 700).into());
+        let front = members[0];
+        let now = Duration::from_secs(2);
+
+        assert!(system.detach_active_member_for_drag(
+            &mut field,
+            "DP-1",
+            ClusterDragMember {
+                cluster_id: cluster,
+                node_id: front,
+            },
+            work_area,
+            Vec2 { x: 500.0, y: 350.0 },
+            now,
+        ));
+        assert_eq!(system.cluster_for_member(front), None);
+        assert_eq!(system.member_ids(cluster), members[1..]);
+
+        assert!(system.rejoin_dragged_member_front(
+            &mut field,
+            "DP-1",
+            ClusterDragMember {
+                cluster_id: cluster,
+                node_id: front,
+            },
+            work_area,
+            Rectangle::new((300, 200).into(), (500, 400).into()),
+            now + Duration::from_millis(10),
+        ));
+        assert_eq!(system.first_member(cluster), Some(front));
+        assert_eq!(system.member_ids(cluster), members);
+    }
+
+    #[test]
+    fn stacked_to_tiled_reflow_keeps_each_cards_original_depth_until_settled() {
+        let (_field, mut system, cluster, members) =
+            active_test_cluster(3, ClusterWorkspaceLayoutKind::Stacking);
+        let work_area = Rectangle::new((0, 0).into(), (1_000, 700).into());
+        let started = Duration::from_secs(2);
+        let old_depths = system
+            .workspace_layout(cluster, work_area)
+            .unwrap()
+            .placements
+            .into_iter()
+            .map(|placement| (placement.node_id, placement.depth))
+            .collect::<HashMap<_, _>>();
+
+        assert!(system.cycle_active_layout("DP-1", work_area, started));
+        for member in members {
+            let WindowPresentation::Workspace { depth, .. } =
+                system.window_presentation(member, "DP-1", work_area, None, started)
+            else {
+                panic!("every transitioning member should remain presented");
+            };
+            assert_eq!(depth, old_depths[&member]);
+        }
     }
 
     #[test]

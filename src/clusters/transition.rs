@@ -50,6 +50,7 @@ struct ReflowPlacement {
 #[derive(Clone, Copy, Debug)]
 enum ReflowKind {
     Standard,
+    LayoutChange,
     StackCycle(ClusterCycleDirection),
 }
 
@@ -202,6 +203,43 @@ impl ClusterSystem {
         now: Duration,
         duration_ms: u32,
     ) {
+        self.begin_reflow_kind(
+            output,
+            cluster_id,
+            before,
+            now,
+            duration_ms,
+            ReflowKind::Standard,
+        );
+    }
+
+    pub(super) fn begin_layout_reflow(
+        &mut self,
+        output: &str,
+        cluster_id: ClusterId,
+        before: halley_core::cluster::layout::ClusterWorkspaceLayoutResult,
+        now: Duration,
+        duration_ms: u32,
+    ) {
+        self.begin_reflow_kind(
+            output,
+            cluster_id,
+            before,
+            now,
+            duration_ms,
+            ReflowKind::LayoutChange,
+        );
+    }
+
+    fn begin_reflow_kind(
+        &mut self,
+        output: &str,
+        cluster_id: ClusterId,
+        before: halley_core::cluster::layout::ClusterWorkspaceLayoutResult,
+        now: Duration,
+        duration_ms: u32,
+        kind: ReflowKind,
+    ) {
         if !self.animations.enabled {
             self.reflows.remove(output);
             return;
@@ -214,7 +252,7 @@ impl ClusterSystem {
                 started_at: now,
                 duration: Duration::from_millis(u64::from(duration_ms.max(1))),
                 from,
-                kind: ReflowKind::Standard,
+                kind,
                 wrapped: None,
             },
         );
@@ -241,14 +279,19 @@ impl ClusterSystem {
                 depth: usize::MAX,
             },
         );
+        let duration_ms = self
+            .metadata(cluster_id)
+            .map(|metadata| match metadata.layout {
+                ClusterWorkspaceLayoutKind::Tiling => self.animations.tiling.reflow_duration_ms,
+                ClusterWorkspaceLayoutKind::Stacking => self.animations.stacking.cycle_duration_ms,
+            })
+            .unwrap_or(self.animations.tiling.reflow_duration_ms);
         self.reflows.insert(
             output.to_string(),
             ReflowTransition {
                 cluster_id,
                 started_at: now,
-                duration: Duration::from_millis(u64::from(
-                    self.animations.tiling.reflow_duration_ms.max(1),
-                )),
+                duration: Duration::from_millis(u64::from(duration_ms.max(1))),
                 from,
                 kind: ReflowKind::Standard,
                 wrapped: None,
@@ -418,7 +461,9 @@ impl ClusterSystem {
         let linear = (elapsed.as_secs_f32() / reflow.duration.as_secs_f32()).clamp(0.0, 1.0);
         let eased = match reflow.kind {
             ReflowKind::StackCycle(_) => ease_in_out_cubic(linear),
-            ReflowKind::Standard => linear * linear * (3.0 - 2.0 * linear),
+            ReflowKind::Standard | ReflowKind::LayoutChange => {
+                linear * linear * (3.0 - 2.0 * linear)
+            }
         };
         let from = reflow.from.get(&member).copied();
         match reflow.kind {
@@ -428,6 +473,18 @@ impl ClusterSystem {
                 Some(ReflowVisual {
                     rect: lerp_rect(from.rect, target, eased),
                     depth,
+                    alpha: 1.0,
+                })
+            }
+            ReflowKind::LayoutChange => {
+                let from = from?;
+                let (target, _target_depth) = target?;
+                Some(ReflowVisual {
+                    rect: lerp_rect(from.rect, target, eased),
+                    // Layout changes must not reshuffle cards before their
+                    // movement finishes. The final target depth takes over
+                    // naturally when this reflow expires.
+                    depth: from.depth,
                     alpha: 1.0,
                 })
             }
