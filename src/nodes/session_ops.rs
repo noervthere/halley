@@ -772,10 +772,10 @@ pub fn pan_after_close_restore<D: crate::session::SessionDriver>(
     }
 }
 
-/// Activate a Bearings target in one operation. Collapsed nodes follow the
-/// configured restore-centering policy; live windows are focused immediately
-/// and the camera only moves far enough to reveal their current bounds.
-pub fn focus_or_restore_from_bearing<D: crate::session::SessionDriver>(
+/// Activate a node and make it visible in one operation. Collapsed nodes
+/// follow the configured restore-centering policy; live windows are focused
+/// immediately and the camera only moves far enough to reveal their bounds.
+pub fn focus_or_reveal_node<D: crate::session::SessionDriver>(
     session: &mut crate::session::Session<D>,
     id: NodeId,
     serial: smithay::utils::Serial,

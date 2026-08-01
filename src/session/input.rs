@@ -1945,7 +1945,7 @@ where
             )
         {
             wayland::focus::select_output(&mut session.wayland, &output);
-            if crate::nodes::focus_or_restore_from_bearing(session, id, serial) {
+            if crate::nodes::focus_or_reveal_node(session, id, serial) {
                 session.interactions.suppressed_buttons.suppress(button);
                 intercepted = true;
             }

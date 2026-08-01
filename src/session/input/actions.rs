@@ -225,6 +225,20 @@ pub(super) fn dispatch<D: SessionDriver>(
                 }
             }
         }
+        super::super::SessionControl::FocusDirection(direction) => {
+            if let Some(output) = action_output {
+                if session.clusters.active_on(&output).is_some() {
+                    navigate_cluster(session, &output, direction, false);
+                } else {
+                    super::super::navigation::focus_directional_field(session, &output, direction);
+                }
+            }
+        }
+        super::super::SessionControl::CenterLastFocused => {
+            if let Some(output) = action_output {
+                super::super::navigation::center_last_focused(session, &output);
+            }
+        }
         super::super::SessionControl::ClusterMode => {
             if let Some(output) = action_output
                 && session.clusters.begin_creation(output)

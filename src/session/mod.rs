@@ -20,6 +20,7 @@ mod input;
 pub(crate) use input::{cluster_owns_focus, sync_cluster_activation_focus};
 mod interaction;
 mod lifecycle;
+mod navigation;
 pub(crate) mod opening;
 pub(crate) mod output;
 pub(crate) mod pointer;
@@ -50,6 +51,8 @@ enum SessionControl {
     ToggleState,
     Apogee,
     FocusCycle(halley_config::FocusCycleDirection),
+    FocusDirection(halley_config::Direction),
+    CenterLastFocused,
     BearingsShow,
     BearingsToggle,
     ClusterMode,
@@ -88,6 +91,8 @@ fn dispatch_action(
         Action::ToggleState => return SessionControl::ToggleState,
         Action::Apogee => return SessionControl::Apogee,
         Action::FocusCycle(direction) => return SessionControl::FocusCycle(direction),
+        Action::FocusDirection(direction) => return SessionControl::FocusDirection(direction),
+        Action::CenterLastFocused => return SessionControl::CenterLastFocused,
         Action::ClusterMode => return SessionControl::ClusterMode,
         Action::ClusterLayoutCycle => return SessionControl::ClusterLayoutCycle,
         Action::ClusterToggleFloat => return SessionControl::ClusterToggleFloat,

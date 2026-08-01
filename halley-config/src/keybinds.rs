@@ -62,6 +62,8 @@ pub enum Action {
     BearingsShow,
     BearingsToggle,
     FocusCycle(FocusCycleDirection),
+    FocusDirection(Direction),
+    CenterLastFocused,
     ClusterMode,
     ClusterLayoutCycle,
     ClusterToggleFloat,

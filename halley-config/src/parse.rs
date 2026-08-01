@@ -88,6 +88,18 @@ fn parse_action(s: &str) -> Action {
     {
         return Action::ClusterTileFocus(direction);
     }
+    if let ["focus", direction] = words.as_slice()
+        && let Some(direction) = parse_direction(direction)
+    {
+        return Action::FocusDirection(direction);
+    }
+    if let Some(direction) = s
+        .strip_prefix("focus-")
+        .or_else(|| s.strip_prefix("focus_"))
+        .and_then(parse_direction)
+    {
+        return Action::FocusDirection(direction);
+    }
     if let ["tile", "swap", direction] | ["tile-swap", direction] = words.as_slice()
         && let Some(direction) = parse_direction(direction)
     {
@@ -129,6 +141,7 @@ fn parse_action(s: &str) -> Action {
         "cycle-focus-backward" | "cycle_focus_backward" => {
             Action::FocusCycle(crate::FocusCycleDirection::Backward)
         }
+        "center-last-focused" | "center_last_focused" => Action::CenterLastFocused,
         "cluster-mode" | "cluster_mode" => Action::ClusterMode,
         "cluster-layout cycle" | "cluster-layout-cycle" | "cluster_layout_cycle" => {
             Action::ClusterLayoutCycle
