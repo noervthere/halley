@@ -746,6 +746,12 @@ fn activate_target<D: crate::session::SessionDriver>(
     let Some(record) = session.nodes.record(target).cloned() else {
         return;
     };
+    // A field target is intentionally outside the active cluster workspace.
+    // Selecting it is the one Apogee path that should collapse that workspace;
+    // merely opening or cancelling Apogee never reaches this mutation.
+    if let Some(active) = session.clusters.active_on(&record.output) {
+        let _ = session.clusters.activate(&record.output, active, now);
+    }
     if record.collapsed {
         let _ = crate::nodes::restore(session, target, serial);
     } else {
