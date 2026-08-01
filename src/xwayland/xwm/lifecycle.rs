@@ -670,15 +670,20 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
         mime_type: String,
         fd: OwnedFd,
     ) {
-        crate::xwayland::selection::send(self, selection, mime_type, fd);
+        crate::xwayland::selection::send(&self.seat, selection, mime_type, fd);
     }
 
     fn new_selection(&mut self, _xwm: XwmId, selection: SelectionTarget, mime_types: Vec<String>) {
-        crate::xwayland::selection::set(self, selection, mime_types);
+        crate::xwayland::selection::set(
+            &self.wayland.display_handle,
+            &self.seat,
+            selection,
+            mime_types,
+        );
     }
 
     fn cleared_selection(&mut self, _xwm: XwmId, selection: SelectionTarget) {
-        crate::xwayland::selection::clear(self, selection);
+        crate::xwayland::selection::clear(&self.wayland.display_handle, &self.seat, selection);
     }
 
     fn randr_primary_output_change(&mut self, _xwm: XwmId, output_name: Option<String>) {
