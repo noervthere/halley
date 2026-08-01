@@ -437,10 +437,11 @@ field:
   # The same value is the clearance between landmarks and active windows.
   gap 20.0
 
-  # After the focused window closes, select the most recently focused survivor
-  # on the same output, then fall back to the global most-recently-used window.
-  # Set this to false to clear focus instead; the two settings below then have
-  # no effect.
+  # After the focused window closes, prefer the active cluster's next layout
+  # member. In tiling, this keeps focus in the vacated slot (and on the newly
+  # promoted master); in stacking, it selects the first surviving card. Then
+  # fall back to same-output and global MRU order. Set this to false to clear
+  # focus instead; the two settings below then have no effect.
   close-restore-focus true
 
   # The selected successor may already be a collapsed node. False keeps it

@@ -85,10 +85,15 @@ See [Animations](animations.md) for every curve and motion knob.
 
 ## Focus after close
 
-When `close-restore-focus` is true, closing the focused window selects the
-most recently focused surviving window on the same output, then falls back to
-the global MRU window. An active successor is focused normally. A collapsed
-successor remains collapsed and becomes Halley's logical node focus by default.
+When `close-restore-focus` is true, closing a window in an active cluster first
+selects a successor in that cluster's layout order. In a tiling cluster, the
+member that fills the closed tile is preferred, so closing the master focuses
+the newly promoted master. In a stacking cluster, the first surviving card is
+preferred. Outside an active cluster, or when no cluster member survives,
+Halley selects the most recently focused surviving window on the same output,
+then falls back to the global MRU window. An active successor is focused
+normally. A collapsed successor remains collapsed and becomes Halley's logical
+node focus by default.
 Set `close-restore-nodes` to true to restore and focus that node in the same
 close action. When `close-restore-focus` is false, Halley clears focus instead
 of selecting a successor, regardless of `close-restore-nodes`.

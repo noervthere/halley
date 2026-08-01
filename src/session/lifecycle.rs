@@ -81,31 +81,38 @@ fn select_focus_successor(
     )
 }
 
-fn stacking_focus_successor<D: SessionDriver>(
+fn cluster_focus_successor<D: SessionDriver>(
     session: &Session<D>,
     closing: &WlSurface,
 ) -> Option<WlSurface> {
     let closing = session.nodes.id_for_surface(closing)?;
     let cluster = session.clusters.cluster_for_member(closing)?;
     let metadata = session.clusters.metadata(cluster)?;
-    if metadata.layout != halley_core::cluster::layout::ClusterWorkspaceLayoutKind::Stacking
-        || session.clusters.active_on(&metadata.output) != Some(cluster)
-    {
+    if session.clusters.active_on(&metadata.output) != Some(cluster) {
         return None;
     }
-    let successor =
-        select_stacking_successor(session.clusters.member_ids(cluster), closing, |member| {
-            let Some(record) = session.nodes.record(member) else {
-                return false;
-            };
-            record.attached
-                && !record.collapsed
-                && session
-                    .wayland
-                    .space
-                    .elements()
-                    .any(|window| window == &record.window)
-        })?;
+
+    let members = session.clusters.member_ids(cluster);
+    let available = |member| {
+        let Some(record) = session.nodes.record(member) else {
+            return false;
+        };
+        record.attached
+            && !record.collapsed
+            && session
+                .wayland
+                .space
+                .elements()
+                .any(|window| window == &record.window)
+    };
+    let successor = match metadata.layout {
+        halley_core::cluster::layout::ClusterWorkspaceLayoutKind::Stacking => {
+            select_stacking_successor(members, closing, available)
+        }
+        halley_core::cluster::layout::ClusterWorkspaceLayoutKind::Tiling => {
+            select_tiling_successor(&members, closing, available)
+        }
+    }?;
     session
         .nodes
         .record(successor)
@@ -120,6 +127,19 @@ fn select_stacking_successor<T: Copy + Eq>(
     members
         .into_iter()
         .find(|member| *member != closing && available(*member))
+}
+
+fn select_tiling_successor<T: Copy + Eq>(
+    members: &[T],
+    closing: T,
+    mut available: impl FnMut(T) -> bool,
+) -> Option<T> {
+    let closing_index = members.iter().position(|member| *member == closing)?;
+    members[closing_index + 1..]
+        .iter()
+        .copied()
+        .chain(members[..closing_index].iter().rev().copied())
+        .find(|member| available(*member))
 }
 
 fn select_ordered_successor<T>(
@@ -171,7 +191,7 @@ pub(crate) fn prepare_window_unmap<D: SessionDriver>(
             .field_config
             .close_restore_focus
             .then(|| {
-                stacking_focus_successor(session, surface).or_else(|| {
+                cluster_focus_successor(session, surface).or_else(|| {
                     select_focus_successor(
                         &session.wayland,
                         &session.nodes,
@@ -235,7 +255,7 @@ pub(crate) fn finish_window_unmap<D: SessionDriver>(
         return;
     }
 
-    let revalidated = stacking_focus_successor(session, &surface).or_else(|| {
+    let revalidated = cluster_focus_successor(session, &surface).or_else(|| {
         select_focus_successor(
             &session.wayland,
             &session.nodes,
@@ -289,7 +309,7 @@ mod tests {
 
     use super::{
         CloseSuccessorAction, close_successor_action, select_ordered_successor,
-        select_stacking_successor,
+        select_stacking_successor, select_tiling_successor,
     };
 
     fn output_lookup(
@@ -396,6 +416,42 @@ mod tests {
         assert_eq!(
             select_stacking_successor([10, 20, 30, 40], 30, |_| true),
             Some(10)
+        );
+    }
+
+    #[test]
+    fn tiling_successor_promotes_the_next_member_when_master_closes() {
+        assert_eq!(
+            select_tiling_successor(&[10, 20, 30, 40], 10, |_| true),
+            Some(20)
+        );
+    }
+
+    #[test]
+    fn tiling_successor_fills_the_closed_stack_slot() {
+        assert_eq!(
+            select_tiling_successor(&[10, 20, 30, 40], 20, |_| true),
+            Some(30)
+        );
+    }
+
+    #[test]
+    fn tiling_successor_uses_the_preceding_member_at_the_end() {
+        assert_eq!(
+            select_tiling_successor(&[10, 20, 30, 40], 40, |_| true),
+            Some(30)
+        );
+    }
+
+    #[test]
+    fn tiling_successor_skips_unavailable_members_in_layout_order() {
+        assert_eq!(
+            select_tiling_successor(&[10, 20, 30, 40], 20, |member| member != 30),
+            Some(40)
+        );
+        assert_eq!(
+            select_tiling_successor(&[10, 20, 30, 40], 40, |member| member != 30),
+            Some(20)
         );
     }
 
