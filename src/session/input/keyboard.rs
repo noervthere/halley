@@ -72,7 +72,7 @@ pub(super) fn handle<D, B>(
             .interactions
             .suppressed_keys
             .release_is_suppressed(keycode);
-    let accessibility = if session.overlays.exit_modal_active() {
+    let accessibility = if session.shell.overlays.exit_modal_active() {
         crate::accessibility::KeyboardDisposition::Pass
     } else {
         crate::accessibility::process_key(
@@ -95,7 +95,7 @@ pub(super) fn handle<D, B>(
         SERIAL_COUNTER.next_serial(),
         time,
         |data, modifiers, handle| {
-            if data.overlays.exit_modal_active() {
+            if data.shell.overlays.exit_modal_active() {
                 if state == KeyState::Released {
                     return if release_is_suppressed {
                         FilterResult::Intercept(KeyboardOutcome::ExitIntercept)
@@ -134,10 +134,10 @@ pub(super) fn handle<D, B>(
                 };
                 return FilterResult::Intercept(outcome);
             }
-            if state == KeyState::Released && data.bearings.is_show_key_held(keycode.raw()) {
+            if state == KeyState::Released && data.shell.bearings.is_show_key_held(keycode.raw()) {
                 return FilterResult::Intercept(KeyboardOutcome::BearingsRelease);
             }
-            if data.apogee.accepts_input() {
+            if data.shell.apogee.accepts_input() {
                 let sym = handle.raw_latin_sym_or_raw_current_sym();
                 if state == KeyState::Released {
                     return FilterResult::Intercept(KeyboardOutcome::ApogeeIntercept);
@@ -172,7 +172,7 @@ pub(super) fn handle<D, B>(
                 };
                 return FilterResult::Intercept(outcome);
             }
-            if data.focus_cycle.is_open() {
+            if data.shell.focus_cycle.is_open() {
                 let sym = handle.raw_latin_sym_or_raw_current_sym();
                 if state == KeyState::Released && matches!(sym, Some(Keysym::Alt_L | Keysym::Alt_R))
                 {
@@ -273,7 +273,7 @@ pub(super) fn handle<D, B>(
             );
         }
         Some(KeyboardOutcome::BearingsRelease) => {
-            if session.bearings.release_show_key(keycode.raw()) {
+            if session.shell.bearings.release_show_key(keycode.raw()) {
                 session.request_redraw();
             }
         }
@@ -298,7 +298,7 @@ pub(super) fn handle<D, B>(
                     .creation()
                     .map(|creation| creation.output.clone())
             {
-                session.overlays.show_error(
+                session.shell.overlays.show_error(
                     output,
                     "Not enough selections\nSelect at least one window",
                     3_000,
@@ -443,7 +443,7 @@ pub(super) fn handle<D, B>(
     }
 
     if state == KeyState::Released
-        && session.focus_cycle.is_open()
+        && session.shell.focus_cycle.is_open()
         && !keyboard.modifier_state().alt
     {
         crate::shell::focus_cycle::commit(session, SERIAL_COUNTER.next_serial());

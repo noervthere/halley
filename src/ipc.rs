@@ -294,25 +294,25 @@ pub fn handle_request<D: crate::session::SessionDriver>(
         halley_ipc::Request::Node(request) => crate::nodes::handle_request(app, request),
         halley_ipc::Request::Bearings(request) => match request {
             halley_ipc::BearingsRequest::Show => {
-                if app.bearings.set_visible(true) {
+                if app.shell.bearings.set_visible(true) {
                     app.request_redraw();
                 }
                 halley_ipc::Response::Ack
             }
             halley_ipc::BearingsRequest::Hide => {
-                if app.bearings.set_visible(false) {
+                if app.shell.bearings.set_visible(false) {
                     app.request_redraw();
                 }
                 halley_ipc::Response::Ack
             }
             halley_ipc::BearingsRequest::Toggle => {
-                app.bearings.toggle();
+                app.shell.bearings.toggle();
                 app.request_redraw();
                 halley_ipc::Response::Ack
             }
             halley_ipc::BearingsRequest::Status => {
                 halley_ipc::Response::BearingsStatus(halley_ipc::BearingsStatusResponse {
-                    visible: app.bearings.visible(),
+                    visible: app.shell.bearings.visible(),
                 })
             }
         },

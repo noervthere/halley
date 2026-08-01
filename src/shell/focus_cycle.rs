@@ -229,7 +229,7 @@ pub fn start_or_step<D: crate::session::SessionDriver>(
     session: &mut crate::session::Session<D>,
     direction: FocusCycleDirection,
 ) -> bool {
-    let changed = session.focus_cycle.start_or_step(
+    let changed = session.shell.focus_cycle.start_or_step(
         &session.nodes,
         direction,
         crate::frame_clock::monotonic_now(),
@@ -242,6 +242,7 @@ pub fn start_or_step<D: crate::session::SessionDriver>(
 
 pub fn cancel<D: crate::session::SessionDriver>(session: &mut crate::session::Session<D>) -> bool {
     let changed = session
+        .shell
         .focus_cycle
         .cancel(crate::frame_clock::monotonic_now());
     if changed {
@@ -255,6 +256,7 @@ pub fn commit<D: crate::session::SessionDriver>(
     serial: smithay::utils::Serial,
 ) -> bool {
     let Some(target) = session
+        .shell
         .focus_cycle
         .commit(crate::frame_clock::monotonic_now())
     else {

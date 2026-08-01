@@ -241,17 +241,14 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
         start_time: Instant::now(),
         config_path: config_path.clone(),
         startup_config_diagnostic: initial.diagnostic,
-        overlays: crate::shell::overlay::OverlayManager::default(),
+        shell: crate::shell::state::ShellState::new(&runtime_config),
         settings: super::RuntimeSettings::new(&runtime_config, applied_input),
         nodes: crate::nodes::NodesState::new(&runtime_config),
         clusters: crate::clusters::ClusterSystem::new(
             runtime_config.clusters,
             runtime_config.animations.cluster,
         ),
-        bearings: crate::shell::bearings::BearingsState::new(runtime_config.bearings),
-        focus_cycle: crate::shell::focus_cycle::FocusCycleState::default(),
         pending_pointer_warp: None,
-        apogee: crate::shell::apogee::ApogeeState::default(),
         window_rules: crate::window::rules::WindowRulesState::new(
             runtime_config.window_rules.clone(),
         ),
@@ -366,9 +363,11 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                 let node_animating = app
                     .nodes
                     .is_animating_on_output(&output.name(), target_presentation_time);
-                let bearings_animating =
-                    app.bearings.tick(&output.name(), target_presentation_time);
-                let focus_cycle_animating = app.focus_cycle.tick(target_presentation_time);
+                let bearings_animating = app
+                    .shell
+                    .bearings
+                    .tick(&output.name(), target_presentation_time);
+                let focus_cycle_animating = app.shell.focus_cycle.tick(target_presentation_time);
                 let apogee_animating = crate::shell::apogee::tick(app, target_presentation_time);
                 let background_animating =
                     app.background_animates_on_output(&output, target_presentation_time);
@@ -426,11 +425,11 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                         },
                         overlays: OverlayContext {
                             capture_overlay: app.capture.overlay(),
-                            bearings: &app.bearings,
-                            focus_cycle: &app.focus_cycle,
-                            apogee: &app.apogee,
+                            bearings: &app.shell.bearings,
+                            focus_cycle: &app.shell.focus_cycle,
+                            apogee: &app.shell.apogee,
                             apogee_config: app.settings.apogee,
-                            overlays: &app.overlays,
+                            overlays: &app.shell.overlays,
                             overlay_config: &app.settings.overlays,
                         },
                         visuals: VisualContext {
@@ -479,14 +478,14 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                             elapsed,
                         );
                     }
-                } else if app.apogee.is_active() {
-                    if app.apogee.take_callback_due(
+                } else if app.shell.apogee.is_active() {
+                    if app.shell.apogee.take_callback_due(
                         &output.name(),
                         target_presentation_time,
                         app.settings.apogee.preview_max_fps,
                     ) {
                         crate::shell::apogee::send_preview_frames(
-                            &app.apogee,
+                            &app.shell.apogee,
                             &app.nodes,
                             &output,
                             elapsed,
@@ -545,7 +544,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                     || apogee_animating
                     || background_animating
                     || cluster_animating
-                    || app.overlays.animating(target_presentation_time)
+                    || app.shell.overlays.animating(target_presentation_time)
                     || app.render.node_renderer.has_pending_icons()
                     || cursor_animating
                 {

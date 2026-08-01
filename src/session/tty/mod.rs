@@ -381,17 +381,14 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
         start_time: Instant::now(),
         config_path: config_path.clone(),
         startup_config_diagnostic: initial.diagnostic,
-        overlays: crate::shell::overlay::OverlayManager::default(),
+        shell: crate::shell::state::ShellState::new(&runtime_config),
         settings: super::RuntimeSettings::new(&runtime_config, applied_input),
         nodes: crate::nodes::NodesState::new(&runtime_config),
         clusters: crate::clusters::ClusterSystem::new(
             runtime_config.clusters,
             runtime_config.animations.cluster,
         ),
-        bearings: crate::shell::bearings::BearingsState::new(runtime_config.bearings),
-        focus_cycle: crate::shell::focus_cycle::FocusCycleState::default(),
         pending_pointer_warp: None,
-        apogee: crate::shell::apogee::ApogeeState::default(),
         window_rules: crate::window::rules::WindowRulesState::new(
             runtime_config.window_rules.clone(),
         ),
@@ -684,13 +681,18 @@ fn send_output_frame_callbacks(app: &mut TtyApp, output: &Output) {
     let primary = app.driver.backend.primary_output();
     if app.session_lock.active() {
         crate::wayland::session_lock::send_frames(&app.session_lock, output, elapsed);
-    } else if app.apogee.is_active() {
-        if app.apogee.take_callback_due(
+    } else if app.shell.apogee.is_active() {
+        if app.shell.apogee.take_callback_due(
             &output.name(),
             crate::frame_clock::monotonic_now(),
             app.settings.apogee.preview_max_fps,
         ) {
-            crate::shell::apogee::send_preview_frames(&app.apogee, &app.nodes, output, elapsed);
+            crate::shell::apogee::send_preview_frames(
+                &app.shell.apogee,
+                &app.nodes,
+                output,
+                elapsed,
+            );
         }
     } else {
         app.wayland
@@ -894,11 +896,14 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
     let node_animating = app
         .nodes
         .is_animating_on_output(&output.name(), target_presentation_time);
-    let bearings_animating = app.bearings.tick(&output.name(), target_presentation_time);
-    let focus_cycle_animating = app.focus_cycle.tick(target_presentation_time);
+    let bearings_animating = app
+        .shell
+        .bearings
+        .tick(&output.name(), target_presentation_time);
+    let focus_cycle_animating = app.shell.focus_cycle.tick(target_presentation_time);
     let apogee_animating = crate::shell::apogee::tick(app, target_presentation_time);
     let background_animating = app.background_animates_on_output(output, target_presentation_time);
-    let overlay_animating = app.overlays.animating(target_presentation_time);
+    let overlay_animating = app.shell.overlays.animating(target_presentation_time);
     let cluster_animating = app
         .clusters
         .is_animating_on_output(&output.name(), target_presentation_time)
@@ -980,11 +985,11 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
             },
             overlays: OverlayContext {
                 capture_overlay: app.capture.overlay(),
-                bearings: &app.bearings,
-                focus_cycle: &app.focus_cycle,
-                apogee: &app.apogee,
+                bearings: &app.shell.bearings,
+                focus_cycle: &app.shell.focus_cycle,
+                apogee: &app.shell.apogee,
                 apogee_config: app.settings.apogee,
-                overlays: &app.overlays,
+                overlays: &app.shell.overlays,
                 overlay_config: &app.settings.overlays,
             },
             visuals: VisualContext {
@@ -1057,16 +1062,16 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
 fn auto_vrr_eligible(app: &TtyApp, output: &Output, now: Duration) -> bool {
     if app.session_lock.active()
         || app.capture.is_active()
-        || app.apogee.is_active()
-        || app.focus_cycle.session().is_some()
-        || app.bearings.mix(&output.name()) > 0.002
+        || app.shell.apogee.is_active()
+        || app.shell.focus_cycle.session().is_some()
+        || app.shell.bearings.mix(&output.name()) > 0.002
         || app
             .nodes
             .hover_preview_visible_on_output(&output.name(), now)
     {
         return false;
     }
-    let overlays = app.overlays.snapshot(&output.name(), now);
+    let overlays = app.shell.overlays.snapshot(&output.name(), now);
     if overlays.exit_mix.is_some() || overlays.notification.is_some() {
         return false;
     }

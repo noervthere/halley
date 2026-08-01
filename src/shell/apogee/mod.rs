@@ -115,12 +115,6 @@ impl ApogeeState {
         self.accepts_input()
     }
 
-    pub fn is_interactive(&self) -> bool {
-        self.session
-            .as_ref()
-            .is_some_and(|session| session.manual_progress.is_some())
-    }
-
     pub fn contains(&self, id: NodeId) -> bool {
         self.session
             .as_ref()
@@ -522,16 +516,19 @@ fn ease_in_out_cubic(value: f32) -> f32 {
 
 pub fn toggle<D: crate::session::SessionDriver>(session: &mut crate::session::Session<D>) -> bool {
     let now = crate::frame_clock::monotonic_now();
-    let changed = if session.apogee.is_active() {
-        session.apogee.close(None, session.settings.apogee, now)
+    let changed = if session.shell.apogee.is_active() {
+        session
+            .shell
+            .apogee
+            .close(None, session.settings.apogee, now)
     } else if session.capture.is_active()
-        || session.focus_cycle.is_open()
+        || session.shell.focus_cycle.is_open()
         || !matches!(session.interactions.grab, crate::input::grab::Grab::None)
     {
         false
     } else {
         session.nodes.sync_from_space(&session.wayland.space);
-        session.apogee.open(
+        session.shell.apogee.open(
             &session.wayland.space,
             &session.nodes,
             session.settings.apogee,
@@ -549,7 +546,7 @@ pub fn toggle<D: crate::session::SessionDriver>(session: &mut crate::session::Se
 }
 
 pub fn cancel<D: crate::session::SessionDriver>(session: &mut crate::session::Session<D>) -> bool {
-    let changed = session.apogee.close(
+    let changed = session.shell.apogee.close(
         None,
         session.settings.apogee,
         crate::frame_clock::monotonic_now(),
@@ -564,8 +561,8 @@ pub fn cancel<D: crate::session::SessionDriver>(session: &mut crate::session::Se
 }
 
 pub fn select<D: crate::session::SessionDriver>(session: &mut crate::session::Session<D>) -> bool {
-    let target = session.apogee.selected();
-    let changed = session.apogee.close(
+    let target = session.shell.apogee.selected();
+    let changed = session.shell.apogee.close(
         target,
         session.settings.apogee,
         crate::frame_clock::monotonic_now(),
@@ -583,8 +580,8 @@ pub fn pointer_motion<D: crate::session::SessionDriver>(
     session: &mut crate::session::Session<D>,
     position: (f64, f64),
 ) -> bool {
-    let changed = session.apogee.hover(Point::from(position));
-    let icon = if session.apogee.hovered().is_some() {
+    let changed = session.shell.apogee.hover(Point::from(position));
+    let icon = if session.shell.apogee.hovered().is_some() {
         smithay::input::pointer::CursorIcon::Pointer
     } else {
         smithay::input::pointer::CursorIcon::Default
@@ -600,7 +597,7 @@ pub fn pointer_press<D: crate::session::SessionDriver>(
     session: &mut crate::session::Session<D>,
     position: (f64, f64),
 ) -> bool {
-    let changed = session.apogee.activate_at(
+    let changed = session.shell.apogee.activate_at(
         Point::from(position),
         session.settings.apogee,
         crate::frame_clock::monotonic_now(),
@@ -615,7 +612,7 @@ pub fn move_selection<D: crate::session::SessionDriver>(
     session: &mut crate::session::Session<D>,
     direction: Direction,
 ) -> bool {
-    let changed = session.apogee.move_selection(direction);
+    let changed = session.shell.apogee.move_selection(direction);
     if changed {
         session.request_redraw();
     }
@@ -626,7 +623,7 @@ pub fn tick<D: crate::session::SessionDriver>(
     session: &mut crate::session::Session<D>,
     now: Duration,
 ) -> bool {
-    match session.apogee.tick(now) {
+    match session.shell.apogee.tick(now) {
         Tick::Idle => false,
         Tick::Active { animating } => animating,
         Tick::Closed(target) => {

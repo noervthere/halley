@@ -286,7 +286,7 @@ pub(super) fn constrain_motion<D: SessionDriver>(
 
 pub(super) fn cursor_visible<D: SessionDriver>(session: &Session<D>) -> bool {
     if interactive_overlay_forces_cursor(
-        session.apogee.is_active(),
+        session.shell.apogee.is_active(),
         session.capture.is_active(),
         session.clusters.accepts_modal_input(),
     ) {

@@ -126,14 +126,11 @@ pub struct Session<D: SessionDriver> {
     pub start_time: std::time::Instant,
     pub config_path: Option<PathBuf>,
     pub startup_config_diagnostic: Option<halley_config::ConfigDiagnostic>,
-    pub overlays: crate::shell::overlay::OverlayManager,
+    pub shell: crate::shell::state::ShellState,
     pub settings: super::RuntimeSettings,
     pub nodes: crate::nodes::NodesState,
     pub clusters: crate::clusters::ClusterSystem,
-    pub bearings: crate::shell::bearings::BearingsState,
-    pub focus_cycle: crate::shell::focus_cycle::FocusCycleState,
     pub pending_pointer_warp: Option<WlSurface>,
-    pub apogee: crate::shell::apogee::ApogeeState,
     pub window_rules: crate::window::rules::WindowRulesState,
     pub cameras: OutputCameras,
     pub capture: crate::capture::CaptureState,
@@ -254,13 +251,13 @@ impl<D: SessionDriver> Session<D> {
         let now = crate::frame_clock::monotonic_now();
         let output = self.notification_output_name();
         if self.startup_config_diagnostic.take().is_some() {
-            self.overlays.show_config_error(
+            self.shell.overlays.show_config_error(
                 output,
                 self.settings.overlays.notifications.error_duration_ms,
                 now,
             );
         } else if let Some(path) = self.config_path.as_deref() {
-            self.overlays.show_config_success(
+            self.shell.overlays.show_config_success(
                 output,
                 path,
                 self.settings.overlays.notifications.success_duration_ms,
@@ -272,7 +269,7 @@ impl<D: SessionDriver> Session<D> {
 
     pub fn show_config_reload_error(&mut self) {
         let output = self.notification_output_name();
-        self.overlays.show_config_error(
+        self.shell.overlays.show_config_error(
             output,
             self.settings.overlays.notifications.error_duration_ms,
             crate::frame_clock::monotonic_now(),
@@ -282,6 +279,7 @@ impl<D: SessionDriver> Session<D> {
 
     pub fn clear_config_reload_error(&mut self) {
         if self
+            .shell
             .overlays
             .clear_config_error(crate::frame_clock::monotonic_now())
         {
@@ -290,7 +288,11 @@ impl<D: SessionDriver> Session<D> {
     }
 
     pub fn show_exit_confirmation(&mut self) {
-        if !self.overlays.show_exit(crate::frame_clock::monotonic_now()) {
+        if !self
+            .shell
+            .overlays
+            .show_exit(crate::frame_clock::monotonic_now())
+        {
             return;
         }
         super::cancel_compositor_grab(self);
@@ -301,6 +303,7 @@ impl<D: SessionDriver> Session<D> {
 
     pub fn cancel_exit_confirmation(&mut self) {
         if self
+            .shell
             .overlays
             .cancel_exit(crate::frame_clock::monotonic_now())
         {
@@ -309,7 +312,7 @@ impl<D: SessionDriver> Session<D> {
     }
 
     pub fn confirm_exit(&mut self) {
-        if self.overlays.exit_modal_active() {
+        if self.shell.overlays.exit_modal_active() {
             self.driver.stop();
         }
     }
@@ -344,7 +347,7 @@ impl<D: SessionDriver> Session<D> {
         let nodes_redraw = self
             .nodes
             .reload(config, crate::frame_clock::monotonic_now());
-        let bearings_redraw = self.bearings.reload(config.bearings);
+        let bearings_redraw = self.shell.bearings.reload(config.bearings);
         let clusters_redraw = self
             .clusters
             .reload(config.clusters, config.animations.cluster);
@@ -388,7 +391,7 @@ impl<D: SessionDriver> Session<D> {
         {
             return false;
         }
-        if self.apogee.is_active() {
+        if self.shell.apogee.is_active() {
             return true;
         }
         self.fullscreen

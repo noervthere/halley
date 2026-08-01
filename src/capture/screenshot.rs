@@ -71,8 +71,8 @@ pub fn save_region<D: SessionDriver>(
     let nodes = &session.nodes;
     let clusters = &session.clusters;
     let window_rules = &session.window_rules;
-    let bearings = &session.bearings;
-    let overlays = &session.overlays;
+    let bearings = &session.shell.bearings;
+    let overlays = &session.shell.overlays;
     let overlay_config = &session.settings.overlays;
     let resources = &mut session.render;
     let session_lock = &session.session_lock;
@@ -113,8 +113,8 @@ pub fn save_region<D: SessionDriver>(
                         overlays: OverlayContext {
                             capture_overlay: crate::capture::CaptureOverlay::None,
                             bearings,
-                            focus_cycle: &session.focus_cycle,
-                            apogee: &session.apogee,
+                            focus_cycle: &session.shell.focus_cycle,
+                            apogee: &session.shell.apogee,
                             apogee_config: session.settings.apogee,
                             overlays,
                             overlay_config,
@@ -325,8 +325,8 @@ where
     let nodes = &session.nodes;
     let clusters = &session.clusters;
     let window_rules = &session.window_rules;
-    let bearings = &session.bearings;
-    let overlays = &session.overlays;
+    let bearings = &session.shell.bearings;
+    let overlays = &session.shell.overlays;
     let overlay_config = &session.settings.overlays;
     let resources = &mut session.render;
     let session_lock = &session.session_lock;
@@ -364,8 +364,8 @@ where
                 overlays: OverlayContext {
                     capture_overlay: crate::capture::CaptureOverlay::None,
                     bearings,
-                    focus_cycle: &session.focus_cycle,
-                    apogee: &session.apogee,
+                    focus_cycle: &session.shell.focus_cycle,
+                    apogee: &session.shell.apogee,
                     apogee_config: session.settings.apogee,
                     overlays,
                     overlay_config,

@@ -206,7 +206,7 @@ fn install_apogee_preview_timer<D: SessionDriver>(
         .insert_source(
             Timer::from_duration(Duration::from_millis(8)),
             |_, _, session| {
-                if session.apogee.take_live_redraw_due(
+                if session.shell.apogee.take_live_redraw_due(
                     crate::frame_clock::monotonic_now(),
                     session.settings.apogee.preview_max_fps,
                 ) {
@@ -227,7 +227,7 @@ fn install_overlay_timer<D: SessionDriver>(
             Timer::from_duration(Duration::from_millis(8)),
             |_, _, session| {
                 let now = crate::frame_clock::monotonic_now();
-                let overlays_changed = session.overlays.wakeup(now);
+                let overlays_changed = session.shell.overlays.wakeup(now);
                 let bloom_changed = session.clusters.bloom_wakeup(now);
                 if bloom_changed {
                     for core in session.clusters.bloom_pinned_core_nodes() {

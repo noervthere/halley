@@ -356,10 +356,10 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
             self.render.overlay_previews.mark_dirty(id);
         }
         let apogee_preview_commit = self.settings.apogee.live_previews
-            && self.apogee.accepts_live_previews()
-            && preview_node.is_some_and(|id| self.apogee.contains(id));
+            && self.shell.apogee.accepts_live_previews()
+            && preview_node.is_some_and(|id| self.shell.apogee.contains(id));
         if apogee_preview_commit {
-            self.apogee.mark_preview_dirty();
+            self.shell.apogee.mark_preview_dirty();
         } else {
             self.request_redraw();
         }

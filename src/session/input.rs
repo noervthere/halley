@@ -797,7 +797,7 @@ where
         crate::wayland::session_lock::handle_input(session, event);
         return;
     }
-    if session.overlays.exit_modal_active() && !matches!(event, InputEvent::Keyboard { .. }) {
+    if session.shell.overlays.exit_modal_active() && !matches!(event, InputEvent::Keyboard { .. }) {
         match event {
             InputEvent::PointerMotion { .. } | InputEvent::PointerMotionAbsolute { .. } => {
                 session
@@ -908,7 +908,7 @@ where
             _ => {}
         }
     }
-    if session.apogee.accepts_input() {
+    if session.shell.apogee.accepts_input() {
         match event {
             InputEvent::PointerMotion { .. } | InputEvent::PointerMotionAbsolute { .. } => {
                 crate::shell::apogee::pointer_motion(session, proposed_position);
@@ -1796,13 +1796,14 @@ where
         }
         let mut intercepted = false;
         let mut finishing_client_move = false;
-        let bloom_token =
-            (button == BTN_LEFT && state == ButtonState::Pressed && !session.focus_cycle.is_open())
-                .then(|| cluster_bloom_at_pointer(session, crate::frame_clock::monotonic_now()))
-                .flatten();
+        let bloom_token = (button == BTN_LEFT
+            && state == ButtonState::Pressed
+            && !session.shell.focus_cycle.is_open())
+        .then(|| cluster_bloom_at_pointer(session, crate::frame_clock::monotonic_now()))
+        .flatten();
         if button == BTN_LEFT
             && state == ButtonState::Pressed
-            && !session.focus_cycle.is_open()
+            && !session.shell.focus_cycle.is_open()
             && let Some((token, output)) = bloom_token
             && session.clusters.begin_bloom_pull(token, output.name())
         {
@@ -1817,7 +1818,7 @@ where
         }
         if button == BTN_LEFT
             && state == ButtonState::Pressed
-            && !session.focus_cycle.is_open()
+            && !session.shell.focus_cycle.is_open()
             && !intercepted
             && let Some((member, output, local)) =
                 cluster_overflow_at_pointer(session, crate::frame_clock::monotonic_now())
@@ -1839,7 +1840,7 @@ where
         }
         if button == BTN_LEFT
             && state == ButtonState::Pressed
-            && !session.focus_cycle.is_open()
+            && !session.shell.focus_cycle.is_open()
             && !intercepted
             && let Some((id, output)) = cluster_at_pointer(session)
             && let Some(metadata) = session.clusters.metadata(id)
@@ -1890,9 +1891,12 @@ where
         }
         if button == BTN_LEFT
             && state == ButtonState::Pressed
-            && !session.focus_cycle.is_open()
-            && let Some((id, output)) =
-                bearing_at_pointer(&session.pointer, &session.wayland.space, &session.bearings)
+            && !session.shell.focus_cycle.is_open()
+            && let Some((id, output)) = bearing_at_pointer(
+                &session.pointer,
+                &session.wayland.space,
+                &session.shell.bearings,
+            )
         {
             wayland::focus::select_output(&mut session.wayland, &output);
             if crate::nodes::focus_or_restore_from_bearing(session, id, serial) {

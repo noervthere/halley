@@ -189,15 +189,15 @@ pub(super) fn dispatch<D: SessionDriver>(
         }
         super::super::SessionControl::BearingsShow => {
             let changed = match held_keycode {
-                Some(keycode) => session.bearings.show_while_held(keycode),
-                None => session.bearings.set_visible(true),
+                Some(keycode) => session.shell.bearings.show_while_held(keycode),
+                None => session.shell.bearings.set_visible(true),
             };
             if changed {
                 session.request_redraw();
             }
         }
         super::super::SessionControl::BearingsToggle => {
-            session.bearings.toggle();
+            session.shell.bearings.toggle();
             session.request_redraw();
         }
         super::super::SessionControl::Screenshot => {

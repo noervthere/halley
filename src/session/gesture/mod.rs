@@ -199,7 +199,7 @@ where
     B: InputBackend,
 {
     let settings = &session.settings.input.gestures;
-    let apogee_fingers = if session.apogee.is_active() {
+    let apogee_fingers = if session.shell.apogee.is_active() {
         settings.apogee_close_fingers
     } else {
         settings.apogee_open_fingers
@@ -218,7 +218,7 @@ where
         && !apogee_blocked
     {
         session.gestures.swipe = Some(Sequence::Compositor(SwipeGesture::Apogee(ApogeeSwipe {
-            mode: if session.apogee.is_active() {
+            mode: if session.shell.apogee.is_active() {
                 ApogeeSwipeMode::Close
             } else {
                 ApogeeSwipeMode::Open
@@ -310,7 +310,7 @@ where
                 let travel = (-gesture.net_y - DEADZONE_PX).max(0.0);
                 if travel > 0.0 && !gesture.interactive_started {
                     session.nodes.sync_from_space(&session.wayland.space);
-                    gesture.interactive_started = session.apogee.begin_interactive(
+                    gesture.interactive_started = session.shell.apogee.begin_interactive(
                         &session.wayland.space,
                         &session.nodes,
                         session.settings.apogee,
@@ -324,6 +324,7 @@ where
                 }
                 if gesture.interactive_started {
                     session
+                        .shell
                         .apogee
                         .set_interactive_progress((travel / OPEN_TRAVEL_PX) as f32);
                     session.request_redraw();
@@ -377,7 +378,7 @@ where
                     ((-gesture.net_y - DEADZONE_PX).max(0.0) / OPEN_TRAVEL_PX).clamp(0.0, 1.0);
                 let upward_flick = gesture.last_delta_y < -10.0;
                 let commit = !event.cancelled() && (progress >= 0.4 || upward_flick);
-                session.apogee.finish_interactive(
+                session.shell.apogee.finish_interactive(
                     commit,
                     session.settings.apogee,
                     crate::frame_clock::monotonic_now(),
