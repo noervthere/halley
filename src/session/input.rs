@@ -20,6 +20,8 @@ use crate::input::{
 };
 use crate::wayland;
 
+mod actions;
+
 const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
 const NODE_DRAG_THRESHOLD_PX: f64 = 8.0;
@@ -774,222 +776,6 @@ fn bearing_at_pointer<D: SessionDriver>(
     ));
     let id = session.bearings.hit_test(&output.name(), local)?;
     Some((id, output))
-}
-
-fn window_action_output(
-    focus_mode: halley_config::FocusMode,
-    pointer_output: Option<&str>,
-    selected_output: Option<&str>,
-) -> Option<String> {
-    match focus_mode {
-        halley_config::FocusMode::Hover => pointer_output.or(selected_output).map(str::to_owned),
-        halley_config::FocusMode::Click => selected_output.map(str::to_owned),
-    }
-}
-
-fn cluster_blocks_zoom(action: &halley_config::Action, active_cluster: bool) -> bool {
-    active_cluster
-        && matches!(
-            action,
-            halley_config::Action::ZoomIn
-                | halley_config::Action::ZoomOut
-                | halley_config::Action::ZoomReset
-        )
-}
-
-fn dispatch_action<D: SessionDriver>(
-    session: &mut Session<D>,
-    action: halley_config::Action,
-    socket_name: &OsStr,
-    output_name: Option<&str>,
-    held_keycode: Option<u32>,
-) {
-    let zoom_action = matches!(
-        &action,
-        halley_config::Action::ZoomIn
-            | halley_config::Action::ZoomOut
-            | halley_config::Action::ZoomReset
-    );
-    let selected_output =
-        crate::wayland::focus::selected_output(&session.wayland).map(Output::name);
-    let action_output = window_action_output(
-        session.input.focus_mode,
-        output_name,
-        selected_output.as_deref(),
-    );
-    let x11_display = session.xwayland.display_name();
-    let cluster_blocks_zoom = output_name.is_some_and(|name| {
-        cluster_blocks_zoom(&action, session.clusters.active_on(name).is_some())
-    });
-    let camera = (!cluster_blocks_zoom)
-        .then(|| output_name.and_then(|name| session.cameras.get_mut(name)))
-        .flatten();
-    match super::dispatch_action(
-        action,
-        session.keyboard.terminal_command(),
-        super::SpawnContext {
-            socket_name,
-            x11_display: x11_display.as_deref(),
-            cursor_theme: session.cursor.theme_name(),
-            cursor_size: session.cursor.size(),
-            environment: &session.launch_environment,
-        },
-        camera,
-        &session.zoom,
-    ) {
-        super::SessionControl::Continue => {}
-        super::SessionControl::Quit => session.show_exit_confirmation(),
-        super::SessionControl::CloseFocusedWindow => {
-            crate::nodes::close_focused_on_output(session, action_output.as_deref())
-        }
-        super::SessionControl::ToggleFullscreen => {
-            super::toggle_focused_fullscreen(session, action_output.as_deref())
-        }
-        super::SessionControl::ToggleFieldMaximize => {
-            super::toggle_focused_field_maximize(session, action_output.as_deref())
-        }
-        super::SessionControl::ToggleState => toggle_cluster_or_focused_node(
-            session,
-            action_output.as_deref(),
-            SERIAL_COUNTER.next_serial(),
-        ),
-        super::SessionControl::Apogee => {
-            crate::shell::apogee::toggle(session);
-        }
-        super::SessionControl::FocusCycle(direction) => {
-            let cluster_cycle = action_output.as_deref().map_or(
-                crate::clusters::StackCycleOutcome::NotActive,
-                |output| {
-                    let Some(work_area) = work_area_for_output(&session.wayland.space, output)
-                    else {
-                        return crate::clusters::StackCycleOutcome::NotActive;
-                    };
-                    session.clusters.cycle_stack(
-                        output,
-                        direction,
-                        work_area,
-                        crate::frame_clock::monotonic_now(),
-                    )
-                },
-            );
-            match cluster_cycle {
-                crate::clusters::StackCycleOutcome::Cycled(member) => {
-                    if let Some(window) = session
-                        .nodes
-                        .record(member)
-                        .map(|record| record.window.clone())
-                    {
-                        super::focus_window(session, &window, SERIAL_COUNTER.next_serial());
-                        session.request_redraw();
-                    }
-                }
-                crate::clusters::StackCycleOutcome::Unchanged => {}
-                crate::clusters::StackCycleOutcome::NotActive => {
-                    crate::shell::focus_cycle::start_or_step(session, direction);
-                }
-            }
-        }
-        super::SessionControl::ClusterMode => {
-            if let Some(output) = action_output
-                && session.clusters.begin_creation(output)
-            {
-                session.request_redraw();
-            }
-        }
-        super::SessionControl::ClusterLayoutCycle => {
-            if let Some(output) = action_output
-                && let Some(work_area) = work_area_for_output(&session.wayland.space, &output)
-                && session.clusters.cycle_active_layout(
-                    &output,
-                    work_area,
-                    crate::frame_clock::monotonic_now(),
-                )
-            {
-                session.request_redraw();
-            }
-        }
-        super::SessionControl::ClusterSlot(slot) => {
-            if let Some(output_name) = action_output {
-                let target = session
-                    .clusters
-                    .clusters_for_output(&output_name)
-                    .find_map(|(candidate_slot, id, _)| (candidate_slot == slot).then_some(id));
-                let owned_focus = target.is_some_and(|id| cluster_owns_focus(session, id));
-                if session.clusters.activate_slot(
-                    &output_name,
-                    slot,
-                    crate::frame_clock::monotonic_now(),
-                ) {
-                    if let Some(id) = target {
-                        let output = session
-                            .wayland
-                            .space
-                            .outputs()
-                            .find(|candidate| candidate.name() == output_name)
-                            .cloned();
-                        if let Some(output) = output {
-                            sync_cluster_activation_focus(
-                                session,
-                                &output,
-                                id,
-                                owned_focus,
-                                SERIAL_COUNTER.next_serial(),
-                            );
-                        }
-                    }
-                    session.request_redraw();
-                }
-            }
-        }
-        super::SessionControl::ClusterTileFocus(direction) => {
-            if let Some(output) = action_output {
-                navigate_cluster(session, &output, direction, false);
-            }
-        }
-        super::SessionControl::ClusterTileSwap(direction) => {
-            if let Some(output) = action_output {
-                navigate_cluster(session, &output, direction, true);
-            }
-        }
-        super::SessionControl::MonitorFocus(direction) => focus_adjacent_output(session, direction),
-        super::SessionControl::BearingsShow => {
-            let changed = match held_keycode {
-                Some(keycode) => session.bearings.show_while_held(keycode),
-                None => session.bearings.set_visible(true),
-            };
-            if changed {
-                session.request_redraw();
-            }
-        }
-        super::SessionControl::BearingsToggle => {
-            session.bearings.toggle();
-            session.request_redraw();
-        }
-        super::SessionControl::Screenshot => {
-            let window_available = session.wayland.space.elements().any(|window| {
-                window.wl_surface().is_some()
-                    && crate::wayland::window_output_name(window)
-                        .map(|name| Some(name.as_str()) == output_name)
-                        .unwrap_or_else(|| {
-                            output_name
-                                .is_some_and(|name| name == session.driver.primary_output().name())
-                        })
-            });
-            crate::capture::begin_local(session, output_name, window_available);
-        }
-    }
-    if zoom_action
-        && !cluster_blocks_zoom
-        && let Some(output_name) = output_name
-    {
-        let scale = session
-            .cameras
-            .get(output_name)
-            .map(crate::presentation::camera::target_scale);
-        if let Some(scale) = scale {
-            crate::nodes::reconcile_landmarks_at_scale(session, output_name, scale);
-        }
-    }
 }
 
 enum KeyboardOutcome {
@@ -2145,7 +1931,7 @@ where
             ) {
                 PointerBindingResult::Action(action) => {
                     let output_name = route.as_ref().map(|route| route.output.name().to_string());
-                    dispatch_action(session, action, socket_name, output_name.as_deref(), None);
+                    actions::dispatch(session, action, socket_name, output_name.as_deref(), None);
                     intercepted = true;
                 }
                 PointerBindingResult::SuppressedRelease => intercepted = true,
@@ -2517,7 +2303,7 @@ where
         let bound_action = !result.actions.is_empty();
         for (direction, action) in result.actions {
             eventline::debug!("keybinds: wheel {direction:?} + {modifiers:?} -> {action:?}");
-            dispatch_action(session, action, socket_name, output_name.as_deref(), None);
+            actions::dispatch(session, action, socket_name, output_name.as_deref(), None);
         }
 
         if !bound_action
@@ -2754,7 +2540,7 @@ where
             Some(KeyboardOutcome::Action(action)) => {
                 session.suppressed_keys.suppress(keycode);
                 close_blooms_for_keybind(session, pointer_output.as_deref());
-                dispatch_action(
+                actions::dispatch(
                     session,
                     action,
                     socket_name,
@@ -3024,13 +2810,13 @@ mod tests {
     use smithay::backend::input::KeyState;
     use smithay::utils::{Logical, Point, Size};
 
+    use super::actions::{cluster_blocks_zoom, window_action_output};
     use super::{BTN_LEFT, BTN_RIGHT, PendingWindowMoveMotion};
     use super::{
-        CaptureKeyRouting, bloom_drag_handoff, capture_key_routing, cluster_blocks_zoom,
-        drag_threshold_reached, forward_pointer_button, pending_window_move_motion,
-        plain_background_press_dismisses_bloom, releases_pending_window_move,
-        sampled_drag_velocity, shortcut_policy_allows_bindings, stacking_cycle_direction,
-        typing_abandons_bloom, window_action_output,
+        CaptureKeyRouting, bloom_drag_handoff, capture_key_routing, drag_threshold_reached,
+        forward_pointer_button, pending_window_move_motion, plain_background_press_dismisses_bloom,
+        releases_pending_window_move, sampled_drag_velocity, shortcut_policy_allows_bindings,
+        stacking_cycle_direction, typing_abandons_bloom,
     };
     fn sample_constant_motion(report_hz: u32) -> Vec2 {
         let step = Duration::from_secs_f64(1.0 / f64::from(report_hz));
