@@ -188,7 +188,8 @@ pub(crate) fn prepare_window_unmap<D: SessionDriver>(
         let output = mapped_managed_window(&session.wayland, surface)
             .and_then(|window| crate::wayland::window_output_name(&window));
         let preferred = session
-            .field_config
+            .settings
+            .field
             .close_restore_focus
             .then(|| {
                 cluster_focus_successor(session, surface).or_else(|| {
@@ -204,7 +205,7 @@ pub(crate) fn prepare_window_unmap<D: SessionDriver>(
         FocusSuccession {
             output,
             preferred,
-            pan: session.field_config.close_restore_pan,
+            pan: session.settings.field.close_restore_pan,
         }
     });
     WindowUnmapPreparation {
@@ -247,7 +248,7 @@ pub(crate) fn finish_window_unmap<D: SessionDriver>(
         return;
     }
 
-    if !session.field_config.close_restore_focus {
+    if !session.settings.field.close_restore_focus {
         crate::window::clear_focus(&mut session.wayland);
         session
             .nodes
@@ -275,7 +276,7 @@ pub(crate) fn finish_window_unmap<D: SessionDriver>(
             .record(id)
             .is_some_and(|record| record.collapsed);
         let serial = SERIAL_COUNTER.next_serial();
-        match close_successor_action(collapsed, session.field_config.close_restore_nodes) {
+        match close_successor_action(collapsed, session.settings.field.close_restore_nodes) {
             CloseSuccessorAction::FocusWindow => {
                 if let Some(window) = session.nodes.record(id).map(|record| record.window.clone()) {
                     super::focus_window(session, &window, serial);

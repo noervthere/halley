@@ -61,9 +61,9 @@ pub fn save_region<D: SessionDriver>(
     let cursor = &session.cursor;
     let pointer_position = session.pointer.position();
     let wayland = &session.wayland;
-    let decorations = &session.decorations;
-    let blur = session.effects.blur;
-    let shadows = session.effects.shadows;
+    let decorations = &session.settings.decorations;
+    let blur = session.settings.effects.blur;
+    let shadows = session.settings.effects.shadows;
     let cameras = &session.cameras;
     let window_open_animations = &session.window_open_animations;
     let fullscreen = &session.fullscreen;
@@ -73,7 +73,7 @@ pub fn save_region<D: SessionDriver>(
     let window_rules = &session.window_rules;
     let bearings = &session.bearings;
     let overlays = &session.overlays;
-    let overlay_config = &session.overlay_config;
+    let overlay_config = &session.settings.overlays;
     let resources = &mut session.render;
     let session_lock = &session.session_lock;
     let images = driver.with_renderer(|renderer| -> Result<Vec<OutputImage>, Box<dyn Error>> {
@@ -115,7 +115,7 @@ pub fn save_region<D: SessionDriver>(
                             bearings,
                             focus_cycle: &session.focus_cycle,
                             apogee: &session.apogee,
-                            apogee_config: session.apogee_config,
+                            apogee_config: session.settings.apogee,
                             overlays,
                             overlay_config,
                         },
@@ -123,7 +123,7 @@ pub fn save_region<D: SessionDriver>(
                             decorations,
                             blur,
                             shadows,
-                            background: &session.background,
+                            background: &session.settings.background,
                             background_base: session.config_path.as_deref().and_then(Path::parent),
                         },
                         resources: crate::render::resources::RenderResources::from(&mut *resources),
@@ -139,7 +139,7 @@ pub fn save_region<D: SessionDriver>(
 
     let pixels = composite_region(region, &images)?;
     save_pixels(
-        &session.screenshot.directory,
+        &session.settings.screenshot.directory,
         region.size.w as u32,
         region.size.h as u32,
         &pixels,
@@ -175,7 +175,7 @@ pub fn save_window<D: SessionDriver>(
         .driver
         .with_renderer(|renderer| capture_surface_tree(renderer, &surface, geometry))?;
     save_pixels(
-        &session.screenshot.directory,
+        &session.settings.screenshot.directory,
         geometry.size.w as u32,
         geometry.size.h as u32,
         &pixels,
@@ -315,9 +315,9 @@ where
     let cursor = &session.cursor;
     let pointer_position = session.pointer.position();
     let wayland = &session.wayland;
-    let decorations = &session.decorations;
-    let blur = session.effects.blur;
-    let shadows = session.effects.shadows;
+    let decorations = &session.settings.decorations;
+    let blur = session.settings.effects.blur;
+    let shadows = session.settings.effects.shadows;
     let cameras = &session.cameras;
     let window_open_animations = &session.window_open_animations;
     let fullscreen = &session.fullscreen;
@@ -327,7 +327,7 @@ where
     let window_rules = &session.window_rules;
     let bearings = &session.bearings;
     let overlays = &session.overlays;
-    let overlay_config = &session.overlay_config;
+    let overlay_config = &session.settings.overlays;
     let resources = &mut session.render;
     let session_lock = &session.session_lock;
     driver.with_renderer(|renderer| {
@@ -366,7 +366,7 @@ where
                     bearings,
                     focus_cycle: &session.focus_cycle,
                     apogee: &session.apogee,
-                    apogee_config: session.apogee_config,
+                    apogee_config: session.settings.apogee,
                     overlays,
                     overlay_config,
                 },
@@ -374,7 +374,7 @@ where
                     decorations,
                     blur,
                     shadows,
-                    background: &session.background,
+                    background: &session.settings.background,
                     background_base: session.config_path.as_deref().and_then(Path::parent),
                 },
                 resources: crate::render::resources::RenderResources::from(resources),

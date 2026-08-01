@@ -523,7 +523,7 @@ fn ease_in_out_cubic(value: f32) -> f32 {
 pub fn toggle<D: crate::session::SessionDriver>(session: &mut crate::session::Session<D>) -> bool {
     let now = crate::frame_clock::monotonic_now();
     let changed = if session.apogee.is_active() {
-        session.apogee.close(None, session.apogee_config, now)
+        session.apogee.close(None, session.settings.apogee, now)
     } else if session.capture.is_active()
         || session.focus_cycle.is_open()
         || !matches!(session.grab, crate::input::grab::Grab::None)
@@ -534,7 +534,7 @@ pub fn toggle<D: crate::session::SessionDriver>(session: &mut crate::session::Se
         session.apogee.open(
             &session.wayland.space,
             &session.nodes,
-            session.apogee_config,
+            session.settings.apogee,
             now,
         )
     };
@@ -551,7 +551,7 @@ pub fn toggle<D: crate::session::SessionDriver>(session: &mut crate::session::Se
 pub fn cancel<D: crate::session::SessionDriver>(session: &mut crate::session::Session<D>) -> bool {
     let changed = session.apogee.close(
         None,
-        session.apogee_config,
+        session.settings.apogee,
         crate::frame_clock::monotonic_now(),
     );
     if changed {
@@ -567,7 +567,7 @@ pub fn select<D: crate::session::SessionDriver>(session: &mut crate::session::Se
     let target = session.apogee.selected();
     let changed = session.apogee.close(
         target,
-        session.apogee_config,
+        session.settings.apogee,
         crate::frame_clock::monotonic_now(),
     );
     if changed {
@@ -602,7 +602,7 @@ pub fn pointer_press<D: crate::session::SessionDriver>(
 ) -> bool {
     let changed = session.apogee.activate_at(
         Point::from(position),
-        session.apogee_config,
+        session.settings.apogee,
         crate::frame_clock::monotonic_now(),
     );
     if changed {

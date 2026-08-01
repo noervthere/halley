@@ -23,6 +23,7 @@ pub(crate) mod opening;
 pub(crate) mod output;
 pub(crate) mod pointer;
 mod protocol;
+mod settings;
 mod spawn;
 mod state;
 pub(crate) mod touch;
@@ -33,6 +34,7 @@ pub mod tty;
 pub mod winit;
 
 pub(crate) use focus::focus_window;
+pub use settings::RuntimeSettings;
 pub use state::{Session, SessionDriver};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -201,7 +203,7 @@ fn install_apogee_preview_timer<D: SessionDriver>(
             |_, _, session| {
                 if session.apogee.take_live_redraw_due(
                     crate::frame_clock::monotonic_now(),
-                    session.apogee_config.preview_max_fps,
+                    session.settings.apogee.preview_max_fps,
                 ) {
                     session.request_redraw();
                 }
@@ -652,8 +654,8 @@ fn toggle_field_maximize<D: SessionDriver>(
         return false;
     };
     let usable = smithay::desktop::layer_map_for_output(&target_output).non_exclusive_zone();
-    let inset = (session.field_config.gap.ceil() as i32)
-        .saturating_add(session.decorations.border_width_px);
+    let inset = (session.settings.field.gap.ceil() as i32)
+        .saturating_add(session.settings.decorations.border_width_px);
     let target = Rectangle::new(
         output_geometry.loc
             + usable.loc

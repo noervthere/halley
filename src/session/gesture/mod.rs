@@ -149,9 +149,9 @@ fn begin_route<D: SessionDriver>(
         session.capture.is_active() || !matches!(session.grab, crate::input::grab::Grab::None);
     let client_forced = super::pointer::has_active_constraint(session) || pointer.is_grabbed();
     let choice = RoutePolicy {
-        behavior_enabled: session.input.gestures.enabled && behavior_enabled,
+        behavior_enabled: session.settings.input.gestures.enabled && behavior_enabled,
         client_available,
-        client_passthrough: session.input.gestures.client_passthrough,
+        client_passthrough: session.settings.input.gestures.client_passthrough,
         scope,
         modifier_forces: modifier_forces(session),
         client_forced,
@@ -166,7 +166,7 @@ fn begin_route<D: SessionDriver>(
 }
 
 fn modifier_forces<D: SessionDriver>(session: &Session<D>) -> bool {
-    let modifier = match session.input.gestures.modifier {
+    let modifier = match session.settings.input.gestures.modifier {
         GestureModifier::Disabled => return false,
         GestureModifier::Keybind => session.keyboard.effective_mod,
         GestureModifier::Explicit(modifier) => {
@@ -198,7 +198,7 @@ where
     D: SessionDriver,
     B: InputBackend,
 {
-    let settings = &session.input.gestures;
+    let settings = &session.settings.input.gestures;
     let apogee_fingers = if session.apogee.is_active() {
         settings.apogee_close_fingers
     } else {
@@ -213,7 +213,7 @@ where
         || super::pointer::has_active_constraint(session)
         || pointer.is_grabbed();
     if settings.enabled
-        && session.apogee_config.enabled
+        && session.settings.apogee.enabled
         && event.fingers() == apogee_fingers
         && !apogee_blocked
     {
@@ -313,7 +313,7 @@ where
                     gesture.interactive_started = session.apogee.begin_interactive(
                         &session.wayland.space,
                         &session.nodes,
-                        session.apogee_config,
+                        session.settings.apogee,
                     );
                     if gesture.interactive_started {
                         session
@@ -363,8 +363,8 @@ where
                 gesture.finish(
                     camera,
                     event.cancelled(),
-                    session.input.gestures.pan_momentum,
-                    session.input.gestures.flick_min_px_per_s,
+                    session.settings.input.gestures.pan_momentum,
+                    session.settings.input.gestures.flick_min_px_per_s,
                 );
                 session.request_redraw();
             }
@@ -379,7 +379,7 @@ where
                 let commit = !event.cancelled() && (progress >= 0.4 || upward_flick);
                 session.apogee.finish_interactive(
                     commit,
-                    session.apogee_config,
+                    session.settings.apogee,
                     crate::frame_clock::monotonic_now(),
                 );
                 session.request_redraw();
@@ -387,7 +387,7 @@ where
             ApogeeSwipeMode::Open => {}
             ApogeeSwipeMode::Close => {
                 if !event.cancelled()
-                    && gesture.net_y >= session.input.gestures.swipe_threshold_px as f64
+                    && gesture.net_y >= session.settings.input.gestures.swipe_threshold_px as f64
                 {
                     crate::shell::apogee::cancel(session);
                 }
@@ -402,11 +402,11 @@ where
     D: SessionDriver,
     B: InputBackend,
 {
-    let settings = &session.input.gestures;
+    let settings = &session.settings.input.gestures;
     let route = begin_route(
         session,
         event.time_msec(),
-        settings.pinch_to_zoom && session.zoom.enabled,
+        settings.pinch_to_zoom && session.settings.zoom.enabled,
         settings.pinch_scope,
     );
     session.gestures.pinch = Some(match route.choice {
@@ -475,7 +475,7 @@ where
                 let delta = event.delta();
                 gesture.update(
                     camera,
-                    &session.zoom,
+                    &session.settings.zoom,
                     event.time_msec(),
                     delta.x,
                     delta.y,
@@ -519,8 +519,8 @@ where
                 gesture.finish(
                     camera,
                     event.cancelled(),
-                    session.input.gestures.pan_momentum,
-                    session.input.gestures.flick_min_px_per_s,
+                    session.settings.input.gestures.pan_momentum,
+                    session.settings.input.gestures.flick_min_px_per_s,
                 );
                 session.request_redraw();
             }
@@ -621,7 +621,7 @@ where
     let horizontal_active = horizontal.is_some_and(|value| value != 0.0);
     let vertical_active = vertical.is_some_and(|value| value != 0.0);
     if !horizontal_active && !vertical_active
-        || session.input.gestures.scroll_pan == ScrollPanMode::Off
+        || session.settings.input.gestures.scroll_pan == ScrollPanMode::Off
     {
         return false;
     }

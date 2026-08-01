@@ -238,7 +238,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
         config_path: config_path.clone(),
         startup_config_diagnostic: initial.diagnostic,
         overlays: crate::shell::overlay::OverlayManager::default(),
-        overlay_config: runtime_config.overlays,
+        settings: super::RuntimeSettings::new(&runtime_config, applied_input),
         nodes: crate::nodes::NodesState::new(&runtime_config),
         clusters: crate::clusters::ClusterSystem::new(
             runtime_config.clusters,
@@ -248,18 +248,10 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
         focus_cycle: crate::shell::focus_cycle::FocusCycleState::default(),
         pending_pointer_warp: None,
         apogee: crate::shell::apogee::ApogeeState::default(),
-        apogee_config: runtime_config.apogee,
-        input: applied_input,
-        decorations: runtime_config.decorations,
-        effects: runtime_config.effects,
-        background: runtime_config.background.clone(),
         window_rules: crate::window::rules::WindowRulesState::new(
             runtime_config.window_rules.clone(),
         ),
         cameras,
-        field_config: runtime_config.field,
-        zoom: runtime_config.field.zoom,
-        screenshot: runtime_config.screenshot,
         capture: crate::capture::CaptureState::default(),
         screencast: crate::capture::screencast::ScreencastState::default(),
         grab: crate::input::grab::Grab::None,
@@ -344,8 +336,8 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                 for camera in app.cameras.iter_mut() {
                     animating |= crate::input::zoom::tick(
                         camera,
-                        &app.zoom,
-                        app.input.gestures.pan_decay_rate,
+                        &app.settings.zoom,
+                        app.settings.input.gestures.pan_decay_rate,
                         dt,
                     )
                     .1;
@@ -438,15 +430,15 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                             bearings: &app.bearings,
                             focus_cycle: &app.focus_cycle,
                             apogee: &app.apogee,
-                            apogee_config: app.apogee_config,
+                            apogee_config: app.settings.apogee,
                             overlays: &app.overlays,
-                            overlay_config: &app.overlay_config,
+                            overlay_config: &app.settings.overlays,
                         },
                         visuals: VisualContext {
-                            decorations: &app.decorations,
-                            blur: app.effects.blur,
-                            shadows: app.effects.shadows,
-                            background: &app.background,
+                            decorations: &app.settings.decorations,
+                            blur: app.settings.effects.blur,
+                            shadows: app.settings.effects.shadows,
+                            background: &app.settings.background,
                             background_base: app
                                 .config_path
                                 .as_deref()
@@ -492,7 +484,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                     if app.apogee.take_callback_due(
                         &output.name(),
                         target_presentation_time,
-                        app.apogee_config.preview_max_fps,
+                        app.settings.apogee.preview_max_fps,
                     ) {
                         crate::shell::apogee::send_preview_frames(
                             &app.apogee,

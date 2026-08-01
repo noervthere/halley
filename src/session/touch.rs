@@ -175,7 +175,7 @@ where
         }
     }
 
-    if !session.input.gestures.touch_passthrough {
+    if !session.settings.input.gestures.touch_passthrough {
         return;
     }
     let Some((surface, origin)) = route.focus else {
@@ -327,6 +327,7 @@ where
 {
     let device_name = event.device().name();
     let configured = session
+        .settings
         .input
         .settings_for_device(halley_config::DeviceKind::Touchscreen, device_name.as_ref());
     let requested_output = configured.map_to_output.as_deref();

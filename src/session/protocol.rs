@@ -224,7 +224,7 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
             surface,
             rule,
             smithay::utils::Point::from(self.pointer.position()),
-            self.field_config.gap,
+            self.settings.field.gap,
         );
         match toplevel_commit.clone() {
             wayland::xdg_shell::ToplevelCommit::Mapped(mapped) => {
@@ -352,7 +352,7 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
         if let Some(id) = preview_node {
             self.render.overlay_previews.mark_dirty(id);
         }
-        let apogee_preview_commit = self.apogee_config.live_previews
+        let apogee_preview_commit = self.settings.apogee.live_previews
             && self.apogee.accepts_live_previews()
             && preview_node.is_some_and(|id| self.apogee.contains(id));
         if apogee_preview_commit {

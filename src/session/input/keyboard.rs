@@ -312,8 +312,8 @@ pub(super) fn handle<D, B>(
                     keycode.raw(),
                     input,
                     crate::frame_clock::monotonic_now(),
-                    session.input.repeat_delay,
-                    session.input.repeat_rate,
+                    session.settings.input.repeat_delay,
+                    session.settings.input.repeat_rate,
                 );
                 session.request_redraw();
             }
@@ -326,8 +326,8 @@ pub(super) fn handle<D, B>(
                     keycode.raw(),
                     input,
                     crate::frame_clock::monotonic_now(),
-                    session.input.repeat_delay,
-                    session.input.repeat_rate,
+                    session.settings.input.repeat_delay,
+                    session.settings.input.repeat_rate,
                 );
                 session.request_redraw();
             }
@@ -340,8 +340,8 @@ pub(super) fn handle<D, B>(
                     keycode.raw(),
                     input,
                     crate::frame_clock::monotonic_now(),
-                    session.input.repeat_delay,
-                    session.input.repeat_rate,
+                    session.settings.input.repeat_delay,
+                    session.settings.input.repeat_rate,
                 );
                 session.request_redraw();
             }
@@ -354,8 +354,8 @@ pub(super) fn handle<D, B>(
                     keycode.raw(),
                     input,
                     crate::frame_clock::monotonic_now(),
-                    session.input.repeat_delay,
-                    session.input.repeat_rate,
+                    session.settings.input.repeat_delay,
+                    session.settings.input.repeat_rate,
                 );
                 session.request_redraw();
             }
@@ -368,8 +368,8 @@ pub(super) fn handle<D, B>(
                     keycode.raw(),
                     input,
                     crate::frame_clock::monotonic_now(),
-                    session.input.repeat_delay,
-                    session.input.repeat_rate,
+                    session.settings.input.repeat_delay,
+                    session.settings.input.repeat_rate,
                 );
                 session.request_redraw();
             }

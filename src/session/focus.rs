@@ -40,7 +40,7 @@ pub(crate) fn focus_window<D: SessionDriver>(
         session,
         window,
         serial,
-        should_raise(FocusOrigin::Explicit, session.input.raise_on_click),
+        should_raise(FocusOrigin::Explicit, session.settings.input.raise_on_click),
     );
 }
 
@@ -55,7 +55,7 @@ pub(crate) fn focus_window_from_pointer<D: SessionDriver>(
         session,
         window,
         serial,
-        should_raise(FocusOrigin::Pointer, session.input.raise_on_click),
+        should_raise(FocusOrigin::Pointer, session.settings.input.raise_on_click),
     );
 }
 
@@ -123,7 +123,7 @@ pub(super) fn focus_node_from_hover<D: SessionDriver>(
     output: &smithay::output::Output,
     serial: Serial,
 ) {
-    if session.input.focus_mode != halley_config::FocusMode::Hover
+    if session.settings.input.focus_mode != halley_config::FocusMode::Hover
         || hover_is_blocked(session)
         || session.nodes.focused() == Some(id)
         || !session
@@ -145,7 +145,7 @@ pub(super) fn focus_cluster_core_from_hover<D: SessionDriver>(
     output: &smithay::output::Output,
     serial: Serial,
 ) {
-    if session.input.focus_mode != halley_config::FocusMode::Hover
+    if session.settings.input.focus_mode != halley_config::FocusMode::Hover
         || hover_is_blocked(session)
         || session.nodes.focused() == Some(id)
         || session.clusters.cluster_for_core(id).is_none()
@@ -191,7 +191,9 @@ pub(super) fn update_hover<D: SessionDriver>(
     route: &crate::input::pointer::PointerRoute,
     serial: Serial,
 ) {
-    if session.input.focus_mode != halley_config::FocusMode::Hover || hover_is_blocked(session) {
+    if session.settings.input.focus_mode != halley_config::FocusMode::Hover
+        || hover_is_blocked(session)
+    {
         return;
     }
 
@@ -210,7 +212,7 @@ pub(super) fn update_hover<D: SessionDriver>(
                     session,
                     &window,
                     serial,
-                    should_raise(FocusOrigin::Hover, session.input.raise_on_click),
+                    should_raise(FocusOrigin::Hover, session.settings.input.raise_on_click),
                 );
             }
         }

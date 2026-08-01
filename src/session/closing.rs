@@ -71,15 +71,16 @@ pub(crate) fn capture_window<D: SessionDriver>(session: &mut Session<D>, window:
     let border = (fullscreen_border_alpha > 0.0).then(|| {
         let focused = session.wayland.focused_window.as_ref() == Some(&surface);
         crate::render::close::CloseBorder {
-            width: ((session.decorations.border_width_px as f64 * f64::from(visual.zoom_scale))
-                .round() as i32)
+            width: ((session.settings.decorations.border_width_px as f64
+                * f64::from(visual.zoom_scale))
+            .round() as i32)
                 .max(1),
-            color: crate::render::window_border_color(&session.decorations, focused)
+            color: crate::render::window_border_color(&session.settings.decorations, focused)
                 * fullscreen_border_alpha,
         }
     });
     let content_radius = crate::render::window_decoration::scaled_metric(
-        session.decorations.border_radius_px,
+        session.settings.decorations.border_radius_px,
         visual.zoom_scale,
     ) as f32
         * fullscreen_border_alpha;

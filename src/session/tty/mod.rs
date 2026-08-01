@@ -378,7 +378,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
         config_path: config_path.clone(),
         startup_config_diagnostic: initial.diagnostic,
         overlays: crate::shell::overlay::OverlayManager::default(),
-        overlay_config: runtime_config.overlays,
+        settings: super::RuntimeSettings::new(&runtime_config, applied_input),
         nodes: crate::nodes::NodesState::new(&runtime_config),
         clusters: crate::clusters::ClusterSystem::new(
             runtime_config.clusters,
@@ -388,18 +388,10 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
         focus_cycle: crate::shell::focus_cycle::FocusCycleState::default(),
         pending_pointer_warp: None,
         apogee: crate::shell::apogee::ApogeeState::default(),
-        apogee_config: runtime_config.apogee,
-        input: applied_input,
-        decorations: runtime_config.decorations,
-        effects: runtime_config.effects,
-        background: runtime_config.background.clone(),
         window_rules: crate::window::rules::WindowRulesState::new(
             runtime_config.window_rules.clone(),
         ),
         cameras: crate::presentation::camera::OutputCameras::default(),
-        field_config: runtime_config.field,
-        zoom: runtime_config.field.zoom,
-        screenshot: runtime_config.screenshot,
         capture: crate::capture::CaptureState::default(),
         screencast: crate::capture::screencast::ScreencastState::default(),
         grab: crate::input::grab::Grab::None,
@@ -523,7 +515,10 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
             }
             match &event {
                 smithay::backend::input::InputEvent::DeviceAdded { device } => {
-                    let first_touch = app.driver.physical_input.added(device.clone(), &app.input);
+                    let first_touch = app
+                        .driver
+                        .physical_input
+                        .added(device.clone(), &app.settings.input);
                     if first_touch && app.seat.get_touch().is_none() {
                         app.seat.add_touch();
                     }
@@ -694,7 +689,7 @@ fn send_output_frame_callbacks(app: &mut TtyApp, output: &Output) {
         if app.apogee.take_callback_due(
             &output.name(),
             crate::frame_clock::monotonic_now(),
-            app.apogee_config.preview_max_fps,
+            app.settings.apogee.preview_max_fps,
         ) {
             crate::shell::apogee::send_preview_frames(&app.apogee, &app.nodes, output, elapsed);
         }
@@ -753,7 +748,7 @@ fn apply_runtime_config(app: &mut TtyApp, reload: crate::config::ConfigReload) {
             let config = *config;
             let reload_commands = config.autostart.on_reload.clone();
             app.apply_common_config(&config);
-            app.driver.physical_input.reload(&app.input);
+            app.driver.physical_input.reload(&app.settings.input);
 
             if app.driver.paused {
                 app.driver.pending_output_config = Some(config.outputs);
@@ -874,8 +869,8 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
     let camera_animating = app.cameras.get_mut(&output.name()).is_some_and(|camera| {
         crate::input::zoom::tick(
             camera,
-            &app.zoom,
-            app.input.gestures.pan_decay_rate,
+            &app.settings.zoom,
+            app.settings.input.gestures.pan_decay_rate,
             dt.as_secs_f32(),
         )
         .1
@@ -989,15 +984,15 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
                 bearings: &app.bearings,
                 focus_cycle: &app.focus_cycle,
                 apogee: &app.apogee,
-                apogee_config: app.apogee_config,
+                apogee_config: app.settings.apogee,
                 overlays: &app.overlays,
-                overlay_config: &app.overlay_config,
+                overlay_config: &app.settings.overlays,
             },
             visuals: VisualContext {
-                decorations: &app.decorations,
-                blur: app.effects.blur,
-                shadows: app.effects.shadows,
-                background: &app.background,
+                decorations: &app.settings.decorations,
+                blur: app.settings.effects.blur,
+                shadows: app.settings.effects.shadows,
+                background: &app.settings.background,
                 background_base: app.config_path.as_deref().and_then(std::path::Path::parent),
             },
             resources: crate::render::resources::RenderResources::from(&mut app.render),

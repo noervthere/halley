@@ -46,7 +46,7 @@ pub(super) fn dispatch<D: SessionDriver>(
     let selected_output =
         crate::wayland::focus::selected_output(&session.wayland).map(Output::name);
     let action_output = window_action_output(
-        session.input.focus_mode,
+        session.settings.input.focus_mode,
         output_name,
         selected_output.as_deref(),
     );
@@ -68,7 +68,7 @@ pub(super) fn dispatch<D: SessionDriver>(
             environment: &session.launch_environment,
         },
         camera,
-        &session.zoom,
+        &session.settings.zoom,
     ) {
         super::super::SessionControl::Continue => {}
         super::super::SessionControl::Quit => session.show_exit_confirmation(),

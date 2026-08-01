@@ -51,7 +51,7 @@ where
         .expect("keyboard capability added at seat setup");
     let mut applied = requested.clone();
 
-    if requested.keyboard != session.input.keyboard {
+    if requested.keyboard != session.settings.input.keyboard {
         let num_lock = keyboard.modifier_state().num_lock;
         if keyboard
             .set_xkb_config(session, xkb_config(&requested.keyboard))
@@ -61,7 +61,7 @@ where
                 "input: failed to compile XKB layout {:?}; keeping the last working keymap",
                 requested.keyboard.layout
             );
-            applied.keyboard = session.input.keyboard.clone();
+            applied.keyboard = session.settings.input.keyboard.clone();
         } else {
             let mut modifiers = keyboard.modifier_state();
             if modifiers.num_lock != num_lock {
@@ -71,13 +71,13 @@ where
         }
     }
 
-    if requested.repeat_rate != session.input.repeat_rate
-        || requested.repeat_delay != session.input.repeat_delay
+    if requested.repeat_rate != session.settings.input.repeat_rate
+        || requested.repeat_delay != session.settings.input.repeat_delay
     {
         keyboard.change_repeat_info(requested.repeat_rate, requested.repeat_delay);
     }
 
-    session.input = applied;
+    session.settings.input = applied;
 }
 
 #[cfg(test)]

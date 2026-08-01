@@ -123,23 +123,15 @@ pub struct Session<D: SessionDriver> {
     pub config_path: Option<PathBuf>,
     pub startup_config_diagnostic: Option<halley_config::ConfigDiagnostic>,
     pub overlays: crate::shell::overlay::OverlayManager,
-    pub overlay_config: halley_config::Overlays,
+    pub settings: super::RuntimeSettings,
     pub nodes: crate::nodes::NodesState,
     pub clusters: crate::clusters::ClusterSystem,
     pub bearings: crate::shell::bearings::BearingsState,
     pub focus_cycle: crate::shell::focus_cycle::FocusCycleState,
     pub pending_pointer_warp: Option<WlSurface>,
     pub apogee: crate::shell::apogee::ApogeeState,
-    pub apogee_config: halley_config::Apogee,
-    pub input: halley_config::Input,
-    pub decorations: halley_config::Decorations,
-    pub effects: halley_config::Effects,
-    pub background: halley_config::Background,
     pub window_rules: crate::window::rules::WindowRulesState,
     pub cameras: OutputCameras,
-    pub field_config: halley_config::Field,
-    pub zoom: halley_config::Zoom,
-    pub screenshot: halley_config::Screenshot,
     pub capture: crate::capture::CaptureState,
     pub screencast: crate::capture::screencast::ScreencastState,
     pub grab: Grab,
@@ -265,14 +257,14 @@ impl<D: SessionDriver> Session<D> {
         if self.startup_config_diagnostic.take().is_some() {
             self.overlays.show_config_error(
                 output,
-                self.overlay_config.notifications.error_duration_ms,
+                self.settings.overlays.notifications.error_duration_ms,
                 now,
             );
         } else if let Some(path) = self.config_path.as_deref() {
             self.overlays.show_config_success(
                 output,
                 path,
-                self.overlay_config.notifications.success_duration_ms,
+                self.settings.overlays.notifications.success_duration_ms,
                 now,
             );
         }
@@ -283,7 +275,7 @@ impl<D: SessionDriver> Session<D> {
         let output = self.notification_output_name();
         self.overlays.show_config_error(
             output,
-            self.overlay_config.notifications.error_duration_ms,
+            self.settings.overlays.notifications.error_duration_ms,
             crate::frame_clock::monotonic_now(),
         );
         self.request_redraw();
@@ -326,9 +318,9 @@ impl<D: SessionDriver> Session<D> {
     /// Applies every backend-independent setting from one validated config
     /// snapshot. Output hardware policy remains with the concrete driver.
     pub fn apply_common_config(&mut self, config: &halley_config::RuntimeConfig) {
-        let cancel_touch =
-            self.input.gestures.touch_passthrough && !config.input.gestures.touch_passthrough;
-        let cancel_gestures = self.input.gestures != config.input.gestures;
+        let cancel_touch = self.settings.input.gestures.touch_passthrough
+            && !config.input.gestures.touch_passthrough;
+        let cancel_gestures = self.settings.input.gestures != config.input.gestures;
         if cancel_touch {
             super::touch::cancel_all(self);
         }
@@ -346,13 +338,8 @@ impl<D: SessionDriver> Session<D> {
             super::environment::publish_cursor(&config.cursor);
         }
         let window_rules_redraw = self.window_rules_reload_changes_visuals(&config.window_rules);
-        let background_redraw = self.background != config.background;
-        let redraw = self.decorations != config.decorations
-            || self.effects != config.effects
+        let redraw = self.settings.visuals_changed(config)
             || window_rules_redraw
-            || background_redraw
-            || self.zoom != config.field.zoom
-            || self.overlay_config != config.overlays
             || cursor_changed
             || cursor_visibility_changed;
         let nodes_redraw = self
@@ -363,14 +350,7 @@ impl<D: SessionDriver> Session<D> {
             .clusters
             .reload(config.clusters, config.animations.cluster);
         let font_redraw = self.render.ui_text.reload_font(&config.font);
-        self.apogee_config = config.apogee;
-        self.decorations = config.decorations;
-        self.effects = config.effects;
-        self.background = config.background.clone();
-        self.field_config = config.field;
-        self.overlay_config = config.overlays;
-        self.zoom = config.field.zoom;
-        self.screenshot = config.screenshot.clone();
+        self.settings.reload_non_input(config);
         self.window_open_animations.reload(config.animations);
         self.render
             .window_close_animations
@@ -403,8 +383,8 @@ impl<D: SessionDriver> Session<D> {
     }
 
     pub fn background_animates_on_output(&self, output: &Output, now: std::time::Duration) -> bool {
-        if self.background.mode != halley_config::BackgroundMode::FieldShader
-            || !self.background.animated
+        if self.settings.background.mode != halley_config::BackgroundMode::FieldShader
+            || !self.settings.background.animated
             || self.session_lock.active()
         {
             return false;

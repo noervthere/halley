@@ -314,7 +314,7 @@ fn admit_window<D: SessionDriver>(session: &mut Session<D>, xid: u32) {
             window_size: opening_size,
             placement: rule.spawn_placement,
             cursor_position: smithay::utils::Point::from(session.pointer.position()),
-            gap: session.field_config.gap,
+            gap: session.settings.field.gap,
         },
     );
     let mut output = initial_placement.output;
@@ -339,7 +339,7 @@ fn admit_window<D: SessionDriver>(session: &mut Session<D>, xid: u32) {
                     window_size: opening_size,
                     placement: halley_config::WindowSpawnPlacement::Default,
                     cursor_position: smithay::utils::Point::from(session.pointer.position()),
-                    gap: session.field_config.gap,
+                    gap: session.settings.field.gap,
                 },
             );
             output = placement.output;
@@ -372,7 +372,7 @@ fn admit_window<D: SessionDriver>(session: &mut Session<D>, xid: u32) {
                     window_size: opening_size,
                     placement: rule.spawn_placement,
                     cursor_position: smithay::utils::Point::from(session.pointer.position()),
-                    gap: session.field_config.gap,
+                    gap: session.settings.field.gap,
                 },
             );
             output = placement.output;
