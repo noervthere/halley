@@ -43,10 +43,10 @@ struct JoinCandidate {
     ready: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct JoinAffordance {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct JoinReadiness {
     pub(crate) member: NodeId,
-    pub(crate) center: Vec2,
+    pub(crate) cluster_id: ClusterId,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

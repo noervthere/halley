@@ -1,6 +1,19 @@
 use super::*;
 use crate::render::scene::nodes::{node_fill_color, node_ring_color};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CoreVisualFlags {
+    identity_highlighted: bool,
+    join_border_ready: bool,
+}
+
+fn core_visual_flags(focused: bool, hovered: bool, join_ready: bool) -> CoreVisualFlags {
+    CoreVisualFlags {
+        identity_highlighted: focused || hovered,
+        join_border_ready: join_ready,
+    }
+}
+
 pub(super) struct ClusterElementContext<'a> {
     pub(super) output: &'a Output,
     pub(super) output_geometry: Rectangle<i32, Logical>,
@@ -42,6 +55,8 @@ pub(super) fn cluster_elements(
         return Ok(Vec::new());
     };
     let focused_node = nodes.focused();
+    let output_name = output.name();
+    let join_readiness = clusters.join_readiness_on_output(&output_name);
     let icon_colors = [
         rgba(decorations.border_color_unfocused),
         rgba(decorations.border_color_focused),
@@ -54,7 +69,9 @@ pub(super) fn cluster_elements(
         });
         let hovered = clusters.hovered_core() == Some(id);
         let bloom_open = clusters.bloom_open_on_output(&output.name()) == Some(id);
-        let highlighted = focused || hovered;
+        let join_ready = join_readiness.is_some_and(|readiness| readiness.cluster_id == id);
+        let visual_flags = core_visual_flags(focused, hovered, join_ready);
+        let highlighted = visual_flags.identity_highlighted;
         let core_position = clusters
             .registry()
             .cluster(id)
@@ -70,6 +87,12 @@ pub(super) fn cluster_elements(
             (side, side).into(),
         );
         let ring = node_ring_color(nodes.config, decorations, highlighted);
+        let core_border = if visual_flags.join_border_ready {
+            let focused = decorations.border_color_focused;
+            (focused.r, focused.g, focused.b)
+        } else {
+            ring
+        };
         let fill = node_fill_color(nodes.config, ring);
         let mut elements = Vec::new();
         let hover_mix = if bloom_open {
@@ -119,9 +142,10 @@ pub(super) fn cluster_elements(
         elements.push(SceneElement::ClusterCore(cluster_renderer.core(
             renderer,
             destination,
-            ring,
+            core_border,
             fill,
             nodes.config.opacity,
+            visual_flags.join_border_ready,
         )?));
         if let Some(shadow) = shadow_renderer.element(
             renderer,
@@ -152,4 +176,20 @@ fn rgba(color: halley_config::BorderColor) -> [u8; 4] {
         (color.b.clamp(0.0, 1.0) * 255.0).round() as u8,
         255,
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn join_readiness_changes_only_the_core_border_highlight_state() {
+        assert_eq!(
+            core_visual_flags(false, false, true),
+            CoreVisualFlags {
+                identity_highlighted: false,
+                join_border_ready: true,
+            }
+        );
+    }
 }

@@ -162,11 +162,12 @@ normal Field window against the core: the window docks at the same non-overlap
 distance used by `field.gap` instead of pushing the core away.
 
 Hold the window there for `clusters.join-dwell-ms`. When the dwell completes,
-a focused-colour ring appears outside the unchanged core and its icon, while a
-light dimming overlay marks the dragged window; releasing then adds the window
-to that cluster. Moving away, closing the bloom, changing outputs, cancelling
-the grab, or releasing before the affordance appears cancels the join. Closed
-and closing blooms never accept windows.
+the core's original border changes to the focused colour and thickens to five
+pixels without changing its fill or icon. A light wash of that same colour
+marks the dragged window; releasing then adds the window to that cluster.
+Moving away, closing the bloom, changing outputs, cancelling the grab, or
+releasing before the affordance appears cancels the join. Closed and closing
+blooms never accept windows.
 
 Clicking or grabbing another window leaves the bloom open, matching old
 Halley. A plain click on the empty Field, clicking or dragging the bloomed core,

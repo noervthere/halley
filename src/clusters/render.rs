@@ -17,6 +17,7 @@ use smithay::utils::{Buffer, Logical, Physical, Rectangle, Scale, Transform};
 const CIRCLE_SHADER: &str = include_str!("shaders/node_circle_shader.frag");
 const CLUSTER_ICON: &[u8] = include_bytes!("assets/clusters.svg");
 const ICON_SIZE: u32 = 64;
+const JOIN_READY_BORDER_WIDTH_PX: f32 = 5.0;
 
 struct Resources {
     context: ContextId<GlesTexture>,
@@ -57,8 +58,14 @@ impl ClusterRenderer {
         border_rgb: (f32, f32, f32),
         fill_rgb: (f32, f32, f32),
         opacity: f32,
+        join_ready: bool,
     ) -> Result<ClusterCoreElement, Box<dyn Error>> {
-        self.core_with_alpha(renderer, destination, border_rgb, fill_rgb, opacity, 1.0)
+        let mut element =
+            self.core_with_alpha(renderer, destination, border_rgb, fill_rgb, opacity, 1.0)?;
+        if join_ready {
+            element.border.3 = join_ready_border_fraction(destination);
+        }
+        Ok(element)
     }
 
     pub fn core_with_alpha(
@@ -103,19 +110,6 @@ impl ClusterRenderer {
             flat_fill: 0.0,
             center_flat_fill: 0.0,
         })
-    }
-
-    pub fn join_ring(
-        &mut self,
-        renderer: &mut GlesRenderer,
-        destination: Rectangle<i32, Physical>,
-        ring_rgb: (f32, f32, f32),
-    ) -> Result<ClusterCoreElement, Box<dyn Error>> {
-        let mut element =
-            self.core_with_alpha(renderer, destination, ring_rgb, ring_rgb, 0.0, 0.95)?;
-        let radius = destination.size.w.min(destination.size.h).max(1) as f32 * 0.5;
-        element.border.3 = 3.0 / radius;
-        Ok(element)
     }
 
     pub fn icon(
@@ -191,6 +185,11 @@ impl ClusterRenderer {
         });
         Ok(())
     }
+}
+
+fn join_ready_border_fraction(destination: Rectangle<i32, Physical>) -> f32 {
+    let radius = destination.size.w.min(destination.size.h).max(1) as f32 * 0.5;
+    JOIN_READY_BORDER_WIDTH_PX / radius
 }
 
 fn raster_icon(color: [u8; 4]) -> Option<RgbaImage> {
@@ -370,6 +369,12 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     use super::*;
+
+    #[test]
+    fn join_ready_border_is_five_pixels_inside_the_original_core() {
+        let core = Rectangle::new((0, 0).into(), (68, 68).into());
+        assert_eq!(join_ready_border_fraction(core) * 34.0, 5.0);
+    }
 
     #[test]
     fn restored_assets_do_not_drift() {

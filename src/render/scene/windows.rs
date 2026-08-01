@@ -1,5 +1,7 @@
 use super::*;
 
+const JOIN_READY_TINT_ALPHA: f32 = 0.10;
+
 pub(super) struct StackGroup {
     pub(super) stack_index: usize,
     pub(super) order: u64,
@@ -133,8 +135,10 @@ pub(super) fn live_window_elements(
     let rounded = managed && content_radius > 0.0;
     let rounded_available = rounded && window_decoration_renderer.available(renderer);
     if join_ready {
-        let tint_alpha = alpha * 0.14;
-        let tint_color = smithay::backend::renderer::Color32F::new(0.0, 0.0, 0.0, 1.0);
+        let tint_alpha = alpha * JOIN_READY_TINT_ALPHA;
+        let focused = context.decorations.border_color_focused;
+        let tint_color =
+            smithay::backend::renderer::Color32F::new(focused.r, focused.g, focused.b, 1.0);
         if let Some(tint) = window_decoration_renderer.tint_element(
             renderer,
             visual.animated_rect,

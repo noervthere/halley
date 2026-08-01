@@ -3,7 +3,7 @@ use std::time::Duration;
 use halley_core::cluster::ClusterId;
 use halley_core::field::{Field, NodeId, NodeState};
 
-use super::{ClusterSystem, JoinAffordance, JoinCandidate, JoinContact};
+use super::{ClusterSystem, JoinCandidate, JoinContact, JoinReadiness};
 
 impl ClusterSystem {
     /// Tracks an ordinary Field window docked against the currently bloomed
@@ -98,7 +98,7 @@ impl ClusterSystem {
         Some(candidate.cluster_id)
     }
 
-    pub(crate) fn join_affordance_on_output(&self, output: &str) -> Option<JoinAffordance> {
+    pub(crate) fn join_readiness_on_output(&self, output: &str) -> Option<JoinReadiness> {
         let candidate = self.join_candidate.as_ref()?;
         if !candidate.ready
             || candidate.output != output
@@ -106,15 +106,15 @@ impl ClusterSystem {
         {
             return None;
         }
-        Some(JoinAffordance {
+        Some(JoinReadiness {
             member: candidate.member,
-            center: self.metadata(candidate.cluster_id)?.core_position,
+            cluster_id: candidate.cluster_id,
         })
     }
 
     pub(crate) fn join_ready_for(&self, member: NodeId, output: &str) -> bool {
-        self.join_affordance_on_output(output)
-            .is_some_and(|affordance| affordance.member == member)
+        self.join_readiness_on_output(output)
+            .is_some_and(|readiness| readiness.member == member)
     }
 }
 
@@ -239,13 +239,13 @@ mod tests {
             Duration::from_millis(2_000)
         ));
         assert!(!system.tick_join_candidate_ready(Duration::from_millis(2_499)));
-        assert!(system.join_affordance_on_output("DP-1").is_none());
+        assert!(system.join_readiness_on_output("DP-1").is_none());
         assert!(system.tick_join_candidate_ready(Duration::from_millis(2_500)));
         assert_eq!(
-            system.join_affordance_on_output("DP-1"),
-            Some(JoinAffordance {
+            system.join_readiness_on_output("DP-1"),
+            Some(JoinReadiness {
                 member: joining,
-                center: core,
+                cluster_id: cluster,
             })
         );
         assert!(system.join_ready_for(joining, "DP-1"));

@@ -41,8 +41,7 @@ pub(crate) fn elements(
         return Ok(Vec::new());
     };
     let layout = clusters.bloom_layout(&output.name(), camera, output_geometry, now);
-    let affordance = clusters.join_affordance_on_output(&output.name());
-    if layout.is_empty() && affordance.is_none() {
+    if layout.is_empty() {
         return Ok(Vec::new());
     }
 
@@ -157,40 +156,5 @@ pub(crate) fn elements(
     // the circle token that carries it.
     contents.extend(tokens);
     labels.extend(contents);
-    if let Some(affordance) = affordance {
-        let center = crate::nodes::screen_from_world(affordance.center, camera, output_geometry)
-            - output_geometry.loc;
-        let destination = join_ring_rect(center);
-        let focused = decorations.border_color_focused;
-        labels.insert(
-            0,
-            SceneElement::ClusterCore(cluster_renderer.join_ring(
-                renderer,
-                destination,
-                (focused.r, focused.g, focused.b),
-            )?),
-        );
-    }
     Ok(labels)
-}
-
-fn join_ring_rect(center: smithay::utils::Point<i32, Logical>) -> Rectangle<i32, Physical> {
-    const RADIUS: i32 = 38;
-    Rectangle::new(
-        (center.x - RADIUS, center.y - RADIUS).into(),
-        (RADIUS * 2, RADIUS * 2).into(),
-    )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn join_ring_sits_outside_the_core_without_covering_its_icon() {
-        assert_eq!(
-            join_ring_rect((120, 80).into()),
-            Rectangle::new((82, 42).into(), (76, 76).into())
-        );
-    }
 }
