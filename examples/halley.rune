@@ -713,6 +713,8 @@ keybinds:
   # to return to the Field. Slot 10 uses 0, like a ten-key workspace row.
   "$var.mod+shift+c" "cluster-mode"
   "$var.mod+l" "cluster-layout-cycle"
+  # Float the focused member inside the active cluster. Its layout slot and
+  # last floating geometry are retained for the next toggle.
   "$var.mod+v" "cluster-toggle-float"
   "$var.mod+1" "cluster-slot-1"
   "$var.mod+2" "cluster-slot-2"

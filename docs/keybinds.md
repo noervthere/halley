@@ -198,10 +198,10 @@ resolving `keycode-N`.
 The built-in action strings are `quit`, `close-focused`, `toggle-fullscreen`,
 `maximize-focused`, `toggle-state`, `apogee`, `bearings-show`,
 `bearings-toggle`, `cycle-focus`, `cycle-focus-backward`, `open-terminal`,
-`zoom-in`, `zoom-out`, `zoom-reset`, and `screenshot`. Parameterized actions
-also include `cluster-focus-DIRECTION`, `cluster-tile-swap-DIRECTION`, and
-`monitor-focus DIRECTION`, where `DIRECTION` is `left`, `right`, `up`, or
-`down`. `Alt+Tab` and
+`zoom-in`, `zoom-out`, `zoom-reset`, `screenshot`, and
+`cluster-toggle-float`. Parameterized actions also include
+`cluster-focus-DIRECTION`, `cluster-tile-swap-DIRECTION`, and `monitor-focus
+DIRECTION`, where `DIRECTION` is `left`, `right`, `up`, or `down`. `Alt+Tab` and
 `Alt+Shift+Tab` open and navigate the focus carousel; releasing Alt commits,
 focuses and raises the selected window, and moves the pointer to its final
 presentation center. A collapsed target restores first and receives one
@@ -229,6 +229,14 @@ stacking cluster, `Mod+Left` cycles forward and `Mod+Right` cycles backward;
 `Alt+Tab` and `Alt+Shift+Tab` use that same stack cycle. The vertical arrows are
 inert there, and cycling a stack with fewer than two windows is a handled no-op.
 `Mod+Ctrl+Arrow` swaps the focused tile with its directional neighbour.
+The default `Mod+V` `cluster-toggle-float` binding moves the focused member of
+an active cluster between its layout and a cluster-local floating layer. The
+remaining tiles or cards reflow without changing membership order. A floating
+member stays above the layout, supports the normal Mod+left move and Mod+right
+resize gestures, remembers that geometry across retiling, and closes and
+reopens with its cluster. The action is inert outside an active cluster and
+while the member is fullscreen, maximized, or already held by a compositor
+grab.
 `Mod+Shift+Arrow` works in either the Field or a cluster: it selects the adjacent
 monitor in that direction and focuses that monitor's most recently focused
 window. Monitor selection follows configured output geometry, so non-row

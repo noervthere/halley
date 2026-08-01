@@ -52,11 +52,13 @@ Placement values are:
 Omitting `spawn-placement` uses the same viewport-centered placement as
 `viewport-center`.
 
-`cluster-participation` accepts `layout` or `float`. Halley parses, validates,
-and retains this value now so the configuration is stable for the upcoming
-cluster runtime. It does not yet change window presentation. The old
-`overlap-policy` field is accepted only as a migration aid and has no runtime
-effect; new configurations should omit it.
+`cluster-participation` accepts `layout` or `float`. When a window maps on an
+output with an active cluster, `layout` admits it into that cluster's current
+layout and `float` leaves it as an ordinary Field window above the workspace.
+This initial admission rule remains separate from `cluster-toggle-float`, which
+temporarily floats an existing cluster member without removing its membership.
+The old `overlap-policy` field is accepted only as a migration aid and has no
+runtime effect; new configurations should omit it.
 
 Live reload re-resolves visual fields such as opacity and blur for mapped
 windows. Initial size and placement remain initial-map decisions.
