@@ -1,7 +1,5 @@
-use std::collections::HashSet;
 use std::fmt;
 
-use rune_cfg::RuneConfig;
 use rune_cfg::ast::{ObjectItem, Value};
 
 /// Variable refresh rate mode for one output. `On` keeps hardware VRR enabled;
@@ -52,92 +50,84 @@ impl fmt::Display for OutputParseError {
 
 impl std::error::Error for OutputParseError {}
 
-/// Parses every top-level `output:` block in the config into one
-/// `OutputConfig` each, in file order.
-///
-/// This is the one config module in this crate that can't use the tidy
-/// `config.get_or("path", default)`-style dotted-path helpers every other
-/// module (`decorations.rs`, `zoom.rs`, `keybinds.rs`) uses: those helpers
-/// resolve a path to the *first* matching key, but a monitor setup means
-/// writing multiple sibling `output:` blocks with the same key name (not one
-/// wrapper section with per-connector children, which is what old halley did
-/// and what this format deliberately avoids - see the plan). rune-cfg's
-/// parser never deduplicates repeated top-level keys (confirmed by reading
-/// `rune_cfg::config::mod::RuneConfig::resolved_root`, which folds
-/// `Document.items: Vec<(String, Value)>` - an ordered list, not a map -
-/// into the resolved tree), so reading the whole document as a raw
-/// `Value::Object` once and filtering for every `("output", _)` entry
-/// directly is the only way to see all of them.
-pub fn parse_outputs(config: &RuneConfig) -> Vec<OutputConfig> {
-    let Ok(Value::Object(root_items)) = config.get_value("") else {
-        return Vec::new();
-    };
-
-    root_items
-        .iter()
-        .filter_map(|item| match item {
-            ObjectItem::Assign(key, value) if key == "output" => Some(value),
-            _ => None,
-        })
-        .filter_map(|value| {
-            let Value::Object(fields) = value else {
-                return None;
-            };
-            parse_one_output(fields)
-        })
-        .collect()
+pub(crate) fn is_hardware_field(key: &str) -> bool {
+    matches!(
+        key,
+        "width"
+            | "height"
+            | "offset-x"
+            | "offset_x"
+            | "offset-y"
+            | "offset_y"
+            | "rate"
+            | "refresh-rate"
+            | "refresh_rate"
+            | "transform"
+            | "rotation"
+            | "vrr"
+    )
 }
 
-/// Strict output parsing for atomic live reload. The tolerant public parser
-/// above remains useful for its existing load-or-default callers, but a
-/// half-written output block must not make a live compositor temporarily
-/// drop that connector's last valid configuration.
-pub fn parse_outputs_checked(config: &RuneConfig) -> Result<Vec<OutputConfig>, OutputParseError> {
-    let Value::Object(root_items) = config
-        .get_value("")
-        .map_err(|err| OutputParseError(format!("output config: {err}")))?
-    else {
-        return Err(OutputParseError(
-            "output config root must be an object".to_string(),
-        ));
-    };
-
-    let mut outputs = Vec::new();
-    let mut names = HashSet::new();
-    for value in root_items.iter().filter_map(|item| match item {
-        ObjectItem::Assign(key, value) if key == "output" => Some(value),
-        _ => None,
-    }) {
-        let Value::Object(fields) = value else {
-            return Err(OutputParseError(
-                "output block must be an object".to_string(),
-            ));
-        };
-        validate_output_fields(fields)?;
-        let output = parse_one_output(fields)
-            .expect("validated output fields must produce an output config");
-        if !names.insert(output.name.clone()) {
+/// Parses only the hardware portion of a `view.output` entry. `None` means
+/// the entry intentionally contains policy (such as a focus ring) without a
+/// hardware override, so applying it must not trigger a modeset.
+pub(crate) fn parse_hardware_output(
+    name: &str,
+    fields: &[ObjectItem],
+) -> Result<Option<OutputConfig>, OutputParseError> {
+    for aliases in [
+        &["width"][..],
+        &["height"][..],
+        &["offset-x", "offset_x"][..],
+        &["offset-y", "offset_y"][..],
+        &["rate", "refresh-rate", "refresh_rate"][..],
+        &["transform", "rotation"][..],
+        &["vrr"][..],
+    ] {
+        if assigned_keys(fields)
+            .filter(|key| aliases.contains(key))
+            .count()
+            > 1
+        {
             return Err(OutputParseError(format!(
-                "duplicate output block for {:?}",
-                output.name
+                "output {name:?}: {} may only be specified once",
+                aliases[0]
             )));
         }
-        outputs.push(output);
     }
 
-    Ok(outputs)
-}
+    let width = field(fields, &["width"]);
+    let height = field(fields, &["height"]);
+    match (width, height) {
+        (None, None) => {
+            if let Some(key) = assigned_keys(fields)
+                .find(|key| is_hardware_field(key) && *key != "width" && *key != "height")
+            {
+                return Err(OutputParseError(format!(
+                    "output {name:?}: {key} requires width and height"
+                )));
+            }
+            return Ok(None);
+        }
+        (Some(_), None) => {
+            return Err(OutputParseError(format!(
+                "output {name:?}: width and height must be specified together"
+            )));
+        }
+        (None, Some(_)) => {
+            return Err(OutputParseError(format!(
+                "output {name:?}: width and height must be specified together"
+            )));
+        }
+        (Some(_), Some(_)) => {}
+    }
 
-fn validate_output_fields(fields: &[ObjectItem]) -> Result<(), OutputParseError> {
-    let name = field(fields, &["name"])
-        .and_then(as_str)
-        .ok_or_else(|| OutputParseError("output block requires a string name".to_string()))?;
-    let width = field(fields, &["width"])
-        .and_then(as_i32)
-        .ok_or_else(|| OutputParseError(format!("output {name:?} requires a numeric width")))?;
-    let height = field(fields, &["height"])
-        .and_then(as_i32)
-        .ok_or_else(|| OutputParseError(format!("output {name:?} requires a numeric height")))?;
+    let width = width.and_then(as_i32).ok_or_else(|| {
+        OutputParseError(format!("output {name:?}: width must be a whole number"))
+    })?;
+    let height = height.and_then(as_i32).ok_or_else(|| {
+        OutputParseError(format!("output {name:?}: height must be a whole number"))
+    })?;
     if width <= 0 || height <= 0 {
         return Err(OutputParseError(format!(
             "output {name:?}: width/height must be positive"
@@ -195,18 +185,6 @@ fn validate_output_fields(fields: &[ObjectItem]) -> Result<(), OutputParseError>
         }
     }
 
-    Ok(())
-}
-
-fn parse_one_output(fields: &[ObjectItem]) -> Option<OutputConfig> {
-    let name = as_str(field(fields, &["name"])?)?;
-    let width = as_i32(field(fields, &["width"])?)?;
-    let height = as_i32(field(fields, &["height"])?)?;
-    if width <= 0 || height <= 0 {
-        eprintln!("output {name:?}: width/height must be positive, skipping");
-        return None;
-    }
-
     let offset_x = field(fields, &["offset-x", "offset_x"])
         .and_then(as_i32)
         .unwrap_or(0);
@@ -216,21 +194,14 @@ fn parse_one_output(fields: &[ObjectItem]) -> Option<OutputConfig> {
     let rate = field(fields, &["rate", "refresh-rate", "refresh_rate"]).and_then(as_f64);
     let transform = field(fields, &["transform", "rotation"])
         .and_then(as_u16)
-        .map(|degrees| match degrees {
-            0 | 90 | 180 | 270 => degrees,
-            other => {
-                eprintln!("output {name:?}: invalid transform {other}, falling back to 0");
-                0
-            }
-        })
         .unwrap_or(0);
     let vrr = field(fields, &["vrr"])
         .and_then(as_str)
         .map(|raw| parse_vrr(&raw))
         .unwrap_or_default();
 
-    Some(OutputConfig {
-        name,
+    Ok(Some(OutputConfig {
+        name: name.to_string(),
         width,
         height,
         offset_x,
@@ -238,7 +209,7 @@ fn parse_one_output(fields: &[ObjectItem]) -> Option<OutputConfig> {
         rate,
         transform,
         vrr,
-    })
+    }))
 }
 
 fn parse_vrr(raw: &str) -> Vrr {
@@ -256,9 +227,16 @@ fn field<'a>(fields: &'a [ObjectItem], keys: &[&str]) -> Option<&'a Value> {
     })
 }
 
+fn assigned_keys(fields: &[ObjectItem]) -> impl Iterator<Item = &str> {
+    fields.iter().filter_map(|item| match item {
+        ObjectItem::Assign(key, _) => Some(key.as_str()),
+        _ => None,
+    })
+}
+
 fn as_str(value: &Value) -> Option<String> {
     match value {
-        Value::String(s) => Some(s.clone()),
+        Value::String(value) => Some(value.clone()),
         _ => None,
     }
 }
@@ -271,149 +249,26 @@ fn as_f64(value: &Value) -> Option<f64> {
 }
 
 fn as_i32(value: &Value) -> Option<i32> {
-    as_f64(value).map(|n| n as i32)
+    let number = as_f64(value)?;
+    (number.is_finite()
+        && number.fract() == 0.0
+        && number >= i32::MIN as f64
+        && number <= i32::MAX as f64)
+        .then_some(number as i32)
 }
 
 fn as_u16(value: &Value) -> Option<u16> {
-    as_f64(value).map(|n| n as u16)
-}
-
-/// Loads the configured outputs, falling back to an empty list (auto-detect
-/// every connected connector's default mode, handled entirely in the
-/// backend) on any failure - a config typo shouldn't crash compositor
-/// startup, matching `load_decorations`/`load_zoom`/`load_keybinds`.
-pub fn load_outputs() -> Vec<OutputConfig> {
-    let Some(path) = crate::config_path() else {
-        eprintln!("output: no config path resolvable, using auto-detected outputs");
-        return Vec::new();
-    };
-
-    if let Err(err) = crate::bootstrap_default_config_at(&path) {
-        eprintln!("output: failed to bootstrap default config: {err}");
-    }
-
-    match RuneConfig::from_file(&path) {
-        Ok(config) => parse_outputs(&config),
-        Err(err) => {
-            eprintln!("output: failed to load {path:?}, using auto-detected outputs: {err}");
-            Vec::new()
-        }
-    }
+    let number = as_f64(value)?;
+    (number.is_finite()
+        && number.fract() == 0.0
+        && number >= u16::MIN as f64
+        && number <= u16::MAX as f64)
+        .then_some(number as u16)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn parses_single_output_block() {
-        let config = RuneConfig::from_str(
-            r##"
-output:
-  name "DP-1"
-  width 2560
-  height 1440
-  offset-x 0
-  offset-y 0
-  rate 179.998
-  transform 0
-  vrr "auto"
-end
-"##,
-        )
-        .expect("valid rune-cfg source");
-
-        let outputs = parse_outputs(&config);
-        assert_eq!(outputs.len(), 1);
-        assert_eq!(
-            outputs[0],
-            OutputConfig {
-                name: "DP-1".to_string(),
-                width: 2560,
-                height: 1440,
-                offset_x: 0,
-                offset_y: 0,
-                rate: Some(179.998),
-                transform: 0,
-                vrr: Vrr::Auto,
-            }
-        );
-    }
-
-    #[test]
-    fn parses_multiple_repeated_output_blocks_in_order() {
-        let config = RuneConfig::from_str(
-            r##"
-output:
-  name "DP-1"
-  width 2560
-  height 1440
-  offset-x 0
-  offset-y 0
-end
-
-output:
-  name "HDMI-A-1"
-  width 1920
-  height 1080
-  offset-x 2560
-  offset-y 0
-end
-"##,
-        )
-        .expect("valid rune-cfg source");
-
-        let outputs = parse_outputs(&config);
-        assert_eq!(outputs.len(), 2);
-        assert_eq!(outputs[0].name, "DP-1");
-        assert_eq!(outputs[1].name, "HDMI-A-1");
-        assert_eq!(outputs[1].offset_x, 2560);
-    }
-
-    #[test]
-    fn missing_width_skips_entry_but_keeps_the_rest() {
-        let config = RuneConfig::from_str(
-            r##"
-output:
-  name "DP-1"
-end
-
-output:
-  name "HDMI-A-1"
-  width 1920
-  height 1080
-end
-"##,
-        )
-        .expect("valid rune-cfg source");
-
-        let outputs = parse_outputs(&config);
-        assert_eq!(outputs.len(), 1);
-        assert_eq!(outputs[0].name, "HDMI-A-1");
-    }
-
-    #[test]
-    fn no_output_sections_returns_empty() {
-        let config = RuneConfig::from_str("keybinds:\n  mod \"super\"\nend\n")
-            .expect("valid rune-cfg source");
-        assert_eq!(parse_outputs(&config), Vec::new());
-    }
-
-    #[test]
-    fn vrr_defaults_to_off_when_absent() {
-        let config = RuneConfig::from_str(
-            r##"
-output:
-  name "DP-1"
-  width 2560
-  height 1440
-end
-"##,
-        )
-        .expect("valid rune-cfg source");
-
-        assert_eq!(parse_outputs(&config)[0].vrr, Vrr::Off);
-    }
 
     #[test]
     fn vrr_accepts_on_and_auto_spellings() {
@@ -429,30 +284,9 @@ end
     }
 
     #[test]
-    fn invalid_transform_falls_back_to_zero() {
-        let config = RuneConfig::from_str(
-            r##"
-output:
-  name "DP-1"
-  width 2560
-  height 1440
-  transform 45
-end
-"##,
-        )
-        .expect("valid rune-cfg source");
-
-        assert_eq!(parse_outputs(&config)[0].transform, 0);
-    }
-
-    #[test]
-    fn accepts_valid_transform_values() {
-        for degrees in [0, 90, 180, 270] {
-            let config = RuneConfig::from_str(&format!(
-                "output:\n  name \"DP-1\"\n  width 2560\n  height 1440\n  transform {degrees}\nend\n"
-            ))
-            .expect("valid rune-cfg source");
-            assert_eq!(parse_outputs(&config)[0].transform, degrees);
-        }
+    fn numeric_conversions_require_whole_finite_values() {
+        assert_eq!(as_i32(&Value::Number(42.0)), Some(42));
+        assert_eq!(as_i32(&Value::Number(42.5)), None);
+        assert_eq!(as_i32(&Value::Number(f64::INFINITY)), None);
     }
 }

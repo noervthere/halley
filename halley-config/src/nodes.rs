@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::fmt;
 
 use rune_cfg::RuneConfig;
@@ -149,64 +149,6 @@ impl Default for LandmarkPlacement {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Debug {
     pub show_focus_ring: bool,
-}
-
-pub fn parse_focus_rings(config: &RuneConfig) -> FocusRings {
-    parse_focus_rings_checked(config).unwrap_or_default()
-}
-
-pub fn parse_focus_rings_checked(config: &RuneConfig) -> Result<FocusRings, FocusRingParseError> {
-    let Value::Object(root) = config
-        .get_value("")
-        .map_err(|error| FocusRingParseError(format!("focus-ring config: {error}")))?
-    else {
-        return Err(FocusRingParseError(
-            "focus-ring config root must be an object".to_string(),
-        ));
-    };
-    let blocks = root.iter().filter_map(|item| match item {
-        ObjectItem::Assign(key, value) if key == "focus-ring" => Some(value),
-        _ => None,
-    });
-    let mut rings = FocusRings::default();
-    let mut outputs = HashSet::new();
-    let mut saw_fallback = false;
-    for block in blocks {
-        let Value::Object(fields) = block else {
-            return Err(FocusRingParseError(
-                "focus-ring block must be an object".to_string(),
-            ));
-        };
-        let output = object_field(fields, &["output", "name"])
-            .map(|value| match value {
-                Value::String(value) if !value.trim().is_empty() => Ok(value.trim().to_string()),
-                _ => Err(FocusRingParseError(
-                    "focus-ring output must be a non-empty string".to_string(),
-                )),
-            })
-            .transpose()?;
-        let ring = parse_one_focus_ring(fields, output.as_deref())?;
-        if let Some(output) = output {
-            if !outputs.insert(output.clone()) {
-                return Err(FocusRingParseError(format!(
-                    "duplicate focus-ring block for {output:?}"
-                )));
-            }
-            rings.by_output.insert(output, ring);
-        } else if saw_fallback {
-            return Err(FocusRingParseError(
-                "only one unkeyed focus-ring fallback is allowed".to_string(),
-            ));
-        } else {
-            saw_fallback = true;
-            rings.fallback = ring;
-        }
-    }
-    Ok(rings)
-}
-
-pub fn parse_focus_ring(config: &RuneConfig) -> FocusRing {
-    parse_focus_rings(config).fallback
 }
 
 pub fn parse_landmark_placement(config: &RuneConfig) -> LandmarkPlacement {
@@ -411,26 +353,65 @@ fn parse_hex_rgb(value: &str) -> Option<[f32; 3]> {
     ])
 }
 
-fn parse_one_focus_ring(
+pub(crate) fn parse_focus_ring_fields(
     fields: &[ObjectItem],
-    output: Option<&str>,
+    output: &str,
 ) -> Result<FocusRing, FocusRingParseError> {
+    for item in fields {
+        let ObjectItem::Assign(key, _) = item else {
+            continue;
+        };
+        if !matches!(
+            key.as_str(),
+            "radius-x"
+                | "radius_x"
+                | "radius-y"
+                | "radius_y"
+                | "offset-x"
+                | "offset_x"
+                | "offset-y"
+                | "offset_y"
+        ) {
+            return Err(FocusRingParseError(format!(
+                "focus-ring for output {output:?}: unknown setting {key:?}"
+            )));
+        }
+    }
+    for aliases in [
+        &["radius-x", "radius_x"][..],
+        &["radius-y", "radius_y"][..],
+        &["offset-x", "offset_x"][..],
+        &["offset-y", "offset_y"][..],
+    ] {
+        let count = fields
+            .iter()
+            .filter(|item| {
+                matches!(item, ObjectItem::Assign(key, _) if aliases.contains(&key.as_str()))
+            })
+            .count();
+        if count > 1 {
+            return Err(FocusRingParseError(format!(
+                "focus-ring for output {output:?}: {} may only be specified once",
+                aliases[0]
+            )));
+        }
+    }
+
     let defaults = FocusRing::default();
-    let label = output.unwrap_or("fallback");
     let read = |names: &[&str], default: f32, positive: bool| {
         let Some(value) = object_field(fields, names) else {
             return Ok(default);
         };
         let Value::Number(value) = value else {
             return Err(FocusRingParseError(format!(
-                "focus-ring {label:?}: {} must be numeric",
+                "focus-ring for output {output:?}: {} must be numeric",
                 names[0]
             )));
         };
         let value = *value as f32;
         if !value.is_finite() || (positive && value <= 0.0) {
             return Err(FocusRingParseError(format!(
-                "focus-ring {label:?}: {} must be {}finite",
+                "focus-ring for output {output:?}: {} must be {}finite",
                 names[0],
                 if positive { "positive and " } else { "" }
             )));
@@ -483,14 +464,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_node_decay_ring_and_debug_sections() {
+    fn parses_node_decay_and_debug_sections() {
         let config = RuneConfig::from_str(
             r#"
-focus-ring:
-  radius-x 900.0
-  radius-y 500.0
-  offset-x 20.0
-end
 decay:
   enabled false
   outside-delay-seconds 9
@@ -509,8 +485,6 @@ end
         )
         .unwrap();
 
-        assert_eq!(parse_focus_ring(&config).radius_x, 900.0);
-        assert_eq!(parse_focus_ring(&config).offset_x, 20.0);
         assert_eq!(parse_decay(&config).outside_delay_seconds, 9);
         assert!(!parse_decay(&config).enabled);
         assert_eq!(parse_nodes(&config).shape, NodeShape::Square);
@@ -519,66 +493,6 @@ end
             RestoreCentering::IfOffscreen
         );
         assert!(parse_debug(&config).show_focus_ring);
-    }
-
-    #[test]
-    fn parses_repeatable_per_output_focus_rings() {
-        let config = RuneConfig::from_str(
-            r#"
-focus-ring:
-  output "DP-1"
-  radius-x 900
-  radius-y 500
-end
-focus-ring:
-  output "DP-2"
-  radius-x 700
-  offset-x 40
-end
-"#,
-        )
-        .unwrap();
-        let rings = parse_focus_rings_checked(&config).unwrap();
-        assert_eq!(rings.for_output("DP-1").radius_x, 900.0);
-        assert_eq!(rings.for_output("DP-2").radius_x, 700.0);
-        assert_eq!(rings.for_output("DP-2").offset_x, 40.0);
-        assert_eq!(rings.for_output("HDMI-A-1"), FocusRing::default());
-    }
-
-    #[test]
-    fn duplicate_focus_ring_output_rejects_atomic_reload() {
-        let config = RuneConfig::from_str(
-            r#"
-focus-ring:
-  output "DP-1"
-end
-focus-ring:
-  output "DP-1"
-end
-"#,
-        )
-        .unwrap();
-        assert!(parse_focus_rings_checked(&config).is_err());
-    }
-
-    #[test]
-    fn legacy_unkeyed_focus_ring_is_the_fallback() {
-        let config = RuneConfig::from_str(
-            r#"
-focus-ring:
-  radius-x 640
-  radius-y 360
-end
-"#,
-        )
-        .unwrap();
-        assert_eq!(
-            parse_focus_rings_checked(&config)
-                .unwrap()
-                .for_output("DP-9")
-                .radius_x,
-            640.0
-        );
     }
 
     #[test]

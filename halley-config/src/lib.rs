@@ -23,6 +23,7 @@ pub mod rules;
 pub mod runtime;
 pub mod screenshot;
 pub mod terminal;
+pub mod view;
 pub mod zoom;
 
 pub use animations::{
@@ -64,14 +65,11 @@ pub use keybinds::{
 };
 pub use launch::{Autostart, LaunchConfigError, parse_autostart, parse_env};
 pub use nodes::{
-    Debug, Decay, FocusRing, FocusRingParseError, FocusRings, LandmarkPlacement,
-    NodeBackgroundColor, NodeBorderColor, NodeDisplayPolicy, NodeParseError, NodeShape, Nodes,
-    RestoreCentering, parse_debug, parse_decay, parse_focus_ring, parse_focus_rings,
-    parse_focus_rings_checked, parse_landmark_placement, parse_nodes, parse_nodes_checked,
+    Debug, Decay, FocusRing, FocusRings, LandmarkPlacement, NodeBackgroundColor, NodeBorderColor,
+    NodeDisplayPolicy, NodeParseError, NodeShape, Nodes, RestoreCentering, parse_debug,
+    parse_decay, parse_landmark_placement, parse_nodes, parse_nodes_checked,
 };
-pub use output::{
-    OutputConfig, OutputParseError, Vrr, load_outputs, parse_outputs, parse_outputs_checked,
-};
+pub use output::{OutputConfig, Vrr};
 pub use overlays::{
     DEFAULT_ERROR_DURATION_MS, DEFAULT_SUCCESS_DURATION_MS, NotificationPosition, Notifications,
     OverlayColorMode, OverlayParseError, Overlays, parse_overlays_checked,
@@ -91,4 +89,5 @@ pub use terminal::{
     TERMINAL_PRIORITY, resolve_default_terminal, resolve_default_terminal_from_path,
     resolve_default_terminal_in_path,
 };
+pub use view::{ViewConfig, ViewParseError, parse_view, parse_view_checked};
 pub use zoom::{Zoom, load_zoom, parse_zoom};

@@ -6,15 +6,16 @@ use rune_cfg::RuneConfig;
 
 use crate::{
     Animations, Apogee, Autostart, Background, BackgroundParseError, Bearings, Clusters, Cursor,
-    Debug, Decay, Decorations, Effects, EffectsParseError, Field, FieldParseError,
-    FocusRingParseError, FocusRings, Font, Input, InputParseError, Keybinds, LaunchConfigError,
-    NodeParseError, Nodes, OutputConfig, OutputParseError, OverlayParseError, Overlays, Physics,
-    Screenshot, WindowRule, WindowRuleParseError, parse_animations, parse_apogee, parse_autostart,
-    parse_background, parse_bearings, parse_clusters, parse_cursor, parse_debug, parse_decay,
-    parse_decorations, parse_effects, parse_env, parse_field_checked, parse_focus_rings_checked,
-    parse_font, parse_input, parse_keybinds, parse_nodes_checked, parse_outputs_checked,
-    parse_overlays_checked, parse_physics, parse_screenshot, parse_window_rules,
+    Debug, Decay, Decorations, Effects, EffectsParseError, Field, FieldParseError, FocusRings,
+    Font, Input, InputParseError, Keybinds, LaunchConfigError, NodeParseError, Nodes, OutputConfig,
+    OverlayParseError, Overlays, Physics, Screenshot, WindowRule, WindowRuleParseError,
+    parse_animations, parse_apogee, parse_autostart, parse_background, parse_bearings,
+    parse_clusters, parse_cursor, parse_debug, parse_decay, parse_decorations, parse_effects,
+    parse_env, parse_field_checked, parse_font, parse_input, parse_keybinds, parse_nodes_checked,
+    parse_overlays_checked, parse_physics, parse_screenshot, parse_view_checked,
+    parse_window_rules,
 };
+use crate::{ViewConfig, ViewParseError};
 
 /// One validated snapshot of every setting the running compositor currently
 /// understands. Loading the file once avoids independently parsing the same
@@ -52,8 +53,7 @@ pub enum RuntimeConfigError {
     Keybind(crate::ParseError),
     Launch(LaunchConfigError),
     Input(InputParseError),
-    Output(OutputParseError),
-    FocusRing(FocusRingParseError),
+    View(ViewParseError),
     Node(NodeParseError),
     Overlay(OverlayParseError),
     Effects(EffectsParseError),
@@ -69,8 +69,7 @@ impl fmt::Display for RuntimeConfigError {
             Self::Keybind(err) => write!(f, "{err}"),
             Self::Launch(err) => write!(f, "{err}"),
             Self::Input(err) => write!(f, "{err}"),
-            Self::Output(err) => write!(f, "{err}"),
-            Self::FocusRing(err) => write!(f, "{err}"),
+            Self::View(err) => write!(f, "{err}"),
             Self::Node(err) => write!(f, "{err}"),
             Self::Overlay(err) => write!(f, "{err}"),
             Self::Effects(err) => write!(f, "{err}"),
@@ -101,21 +100,15 @@ impl From<LaunchConfigError> for RuntimeConfigError {
     }
 }
 
-impl From<OutputParseError> for RuntimeConfigError {
-    fn from(value: OutputParseError) -> Self {
-        Self::Output(value)
-    }
-}
-
 impl From<InputParseError> for RuntimeConfigError {
     fn from(value: InputParseError) -> Self {
         Self::Input(value)
     }
 }
 
-impl From<FocusRingParseError> for RuntimeConfigError {
-    fn from(value: FocusRingParseError) -> Self {
-        Self::FocusRing(value)
+impl From<ViewParseError> for RuntimeConfigError {
+    fn from(value: ViewParseError) -> Self {
+        Self::View(value)
     }
 }
 
@@ -156,6 +149,10 @@ impl From<WindowRuleParseError> for RuntimeConfigError {
 }
 
 pub fn parse_runtime_config(config: &RuneConfig) -> Result<RuntimeConfig, RuntimeConfigError> {
+    let ViewConfig {
+        outputs,
+        focus_rings,
+    } = parse_view_checked(config)?;
     Ok(RuntimeConfig {
         env: parse_env(config)?,
         autostart: parse_autostart(config)?,
@@ -171,7 +168,7 @@ pub fn parse_runtime_config(config: &RuneConfig) -> Result<RuntimeConfig, Runtim
         apogee: parse_apogee(config),
         bearings: parse_bearings(config),
         clusters: parse_clusters(config),
-        focus_rings: parse_focus_rings_checked(config)?,
+        focus_rings,
         font: parse_font(config),
         physics: parse_physics(config),
         decay: parse_decay(config),
@@ -179,7 +176,7 @@ pub fn parse_runtime_config(config: &RuneConfig) -> Result<RuntimeConfig, Runtim
         overlays: parse_overlays_checked(config)?,
         effects: parse_effects(config)?,
         debug: parse_debug(config),
-        outputs: parse_outputs_checked(config)?,
+        outputs,
     })
 }
 
@@ -209,10 +206,12 @@ mod tests {
     fn parses_all_supported_sections_as_one_snapshot() {
         let config = RuneConfig::from_str(
             r##"
-output:
-  name "DP-1"
-  width 2560
-  height 1440
+view:
+  output:
+    name "DP-1"
+    width 2560
+    height 1440
+  end
 end
 
 zoom:
@@ -288,9 +287,11 @@ end
     fn rejects_an_incomplete_output_block() {
         let config = RuneConfig::from_str(
             r##"
-output:
-  name "DP-1"
-  width 2560
+view:
+  output:
+    name "DP-1"
+    width 2560
+  end
 end
 
 keybinds:
@@ -302,7 +303,7 @@ end
 
         assert!(matches!(
             parse_runtime_config(&config),
-            Err(RuntimeConfigError::Output(_))
+            Err(RuntimeConfigError::View(_))
         ));
     }
 
