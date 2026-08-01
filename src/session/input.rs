@@ -48,6 +48,10 @@ fn drag_threshold_reached(press: Point<f64, Logical>, current: (f64, f64)) -> bo
     dx.hypot(dy) >= NODE_DRAG_THRESHOLD_PX
 }
 
+fn forward_pointer_button(intercepted: bool, finishing_client_move: bool) -> bool {
+    !intercepted || finishing_client_move
+}
+
 fn shortcut_policy_allows_bindings(focus_bypasses_shortcuts: bool, inhibitor_active: bool) -> bool {
     !focus_bypasses_shortcuts && !inhibitor_active
 }
@@ -1899,6 +1903,7 @@ where
             wayland::focus::select_output(&mut session.wayland, &route.output);
         }
         let mut intercepted = false;
+        let mut finishing_client_move = false;
         let bloom_token =
             (button == BTN_LEFT && state == ButtonState::Pressed && !session.focus_cycle.is_open())
                 .then(|| cluster_bloom_at_pointer(session, crate::frame_clock::monotonic_now()))
@@ -2171,6 +2176,12 @@ where
                         _ => None,
                     };
                     if let Some((id, window, cluster_drag, last_world)) = released_window {
+                        // Client-side title bars start from Smithay's implicit
+                        // click grab. Halley owns the interactive move after
+                        // that request, but Smithay must still see the release
+                        // that ends its grab. Compositor-only Mod moves have no
+                        // Smithay grab and continue to consume both events.
+                        finishing_client_move = pointer_handle.is_grabbed();
                         let now = crate::frame_clock::monotonic_now();
                         if session.nodes.physics.enabled {
                             let _ = crate::nodes::tick_physics(session, now);
@@ -2352,7 +2363,7 @@ where
             intercepted = true;
         }
 
-        if !intercepted {
+        if forward_pointer_button(intercepted, finishing_client_move) {
             pointer_handle.button(
                 session,
                 &ButtonEvent {
@@ -2889,8 +2900,8 @@ mod tests {
 
     use super::{
         CaptureKeyRouting, bloom_drag_handoff, capture_key_routing, cluster_blocks_zoom,
-        drag_threshold_reached, sampled_drag_velocity, shortcut_policy_allows_bindings,
-        stacking_cycle_direction, window_action_output,
+        drag_threshold_reached, forward_pointer_button, sampled_drag_velocity,
+        shortcut_policy_allows_bindings, stacking_cycle_direction, window_action_output,
     };
     fn sample_constant_motion(report_hz: u32) -> Vec2 {
         let step = Duration::from_secs_f64(1.0 / f64::from(report_hz));
@@ -2938,6 +2949,13 @@ mod tests {
 
         assert!(!drag_threshold_reached(press, (403.0, 254.0)));
         assert!(drag_threshold_reached(press, (408.0, 250.0)));
+    }
+
+    #[test]
+    fn client_titlebar_move_forwards_its_consumed_release() {
+        assert!(forward_pointer_button(true, true));
+        assert!(!forward_pointer_button(true, false));
+        assert!(forward_pointer_button(false, false));
     }
 
     #[test]
