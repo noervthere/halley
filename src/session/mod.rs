@@ -632,18 +632,26 @@ fn toggle_field_maximize<D: SessionDriver>(
     );
     let now = crate::frame_clock::monotonic_now();
     let entering = !session.maximize.contains(&record.surface);
+    // A maximize entry owns the original windowed placement for its entire
+    // lifetime, including an in-flight unmaximize/re-maximize reversal. The
+    // live Space geometry is already the maximized configure by the time a
+    // client requests unmaximize and must never replace this snapshot.
+    let tracked_restore = session.maximize.restore(&record.surface);
     let cluster_restore = cluster_presentation_restore(session, &record.surface, now, entering);
     let inherited_restore = session.fullscreen.restore_placement(&record.surface);
-    let Some(restore_geometry) = inherited_restore
+    let Some(restore_geometry) = tracked_restore
         .as_ref()
-        .map(|(geometry, _)| *geometry)
+        .map(|restore| restore.geometry)
+        .or_else(|| inherited_restore.as_ref().map(|(geometry, _)| *geometry))
         .or_else(|| cluster_restore.as_ref().map(|restore| restore.geometry))
         .or_else(|| session.wayland.space.element_geometry(&record.window))
     else {
         return false;
     };
-    let restore_output = inherited_restore
-        .and_then(|(_, output)| output)
+    let restore_output = tracked_restore
+        .as_ref()
+        .map(|restore| restore.output.clone())
+        .or_else(|| inherited_restore.and_then(|(_, output)| output))
         .or_else(|| {
             cluster_restore
                 .as_ref()

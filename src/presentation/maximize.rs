@@ -110,6 +110,13 @@ impl FieldMaximizeManager {
             output: restore_output,
         } = restore;
         let output_name = output.name();
+        let (restore_geometry, restore_output) = authoritative_restore(
+            self.outputs
+                .get(&output_name)
+                .filter(|entry| entry.surface == surface)
+                .map(|entry| (entry.restore_geometry, entry.restore_output.clone())),
+            (restore_geometry, restore_output),
+        );
         match self.outputs.get_mut(&output_name) {
             Some(entry) if entry.surface == surface && entry.active => {
                 let (window_progress, window_velocity) =
@@ -458,6 +465,13 @@ fn motion_state(timeline: Option<MotionTimeline>, active: bool, now: Duration) -
         .unwrap_or_else(|| (if active { 1.0 } else { 0.0 }, 0.0))
 }
 
+fn authoritative_restore(
+    existing: Option<(Rectangle<i32, Logical>, String)>,
+    requested: (Rectangle<i32, Logical>, String),
+) -> (Rectangle<i32, Logical>, String) {
+    existing.unwrap_or(requested)
+}
+
 fn interpolate_rect(
     from: Rectangle<i32, Physical>,
     to: Rectangle<i32, Physical>,
@@ -506,6 +520,24 @@ mod tests {
         let from = Rectangle::new((100, 80).into(), (800, 600).into());
         let to = Rectangle::new((20, 20).into(), (1880, 1040).into());
         assert_eq!(interpolate_rect(from, to, 1.0), to);
+    }
+
+    #[test]
+    fn existing_maximize_cycle_keeps_its_original_windowed_restore() {
+        let original = Rectangle::new((120, 90).into(), (900, 650).into());
+        let maximized = Rectangle::new((20, 20).into(), (1880, 1040).into());
+
+        assert_eq!(
+            authoritative_restore(
+                Some((original, "DP-1".to_string())),
+                (maximized, "DP-2".to_string()),
+            ),
+            (original, "DP-1".to_string())
+        );
+        assert_eq!(
+            authoritative_restore(None, (maximized, "DP-2".to_string())),
+            (maximized, "DP-2".to_string())
+        );
     }
 
     #[test]
