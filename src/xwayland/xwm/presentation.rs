@@ -55,6 +55,31 @@ pub(super) fn set_external_fullscreen<D: SessionDriver>(
         return;
     };
     let now = crate::frame_clock::monotonic_now();
+    let opening_animation = window.wl_surface().is_some_and(|wl_surface| {
+        session
+            .window_open_animations
+            .is_animating(wl_surface.as_ref(), now)
+    });
+    // Source-engine clients briefly request fullscreen off/on while loading.
+    // Once the old-style direct fullscreen settle has happened, keep that
+    // geometry untouched until the ordinary window-open animation finishes.
+    // Explicit compositor actions (including Mod+F) bypass this branch.
+    if origin == FullscreenRequestOrigin::Client
+        && opening_animation
+        && session.fullscreen.external_desired_matches(&window, true)
+    {
+        if !surface.is_fullscreen()
+            && let Err(err) = surface.set_fullscreen(true)
+        {
+            eventline::warn!("xwayland: failed to retain startup fullscreen state: {err}");
+        }
+        eventline::debug!(
+            "xwayland: ignored startup fullscreen chatter xid={} requested={fullscreen}",
+            surface.window_id()
+        );
+        crate::session::reconcile_pointer_constraints(session);
+        return;
+    }
     let cluster_restore = window.wl_surface().and_then(|wl_surface| {
         crate::session::cluster_presentation_restore(session, wl_surface.as_ref(), now, fullscreen)
     });
@@ -109,16 +134,12 @@ pub(super) fn set_external_fullscreen<D: SessionDriver>(
         crate::session::reconcile_pointer_constraints(session);
         return;
     }
-    let opening = client_geometry_guarded
-        || window.wl_surface().is_some_and(|wl_surface| {
-            session
-                .window_open_animations
-                .is_animating(wl_surface.as_ref(), now)
-        });
+    let opening = client_geometry_guarded || opening_animation;
     let policy = external_presentation_policy(
         origin,
         opening,
         crate::session::has_active_pointer_confinement(session),
+        fullscreen,
     );
     if policy == ExternalPresentationPolicy::Opening {
         preserve_opening_center(session, surface, &window);

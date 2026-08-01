@@ -84,13 +84,24 @@ fn external_presentation_policy(
     origin: FullscreenRequestOrigin,
     opening: bool,
     confined: bool,
+    fullscreen: bool,
 ) -> ExternalPresentationPolicy {
-    if confined {
+    if !fullscreen && origin == FullscreenRequestOrigin::Compositor {
+        // The original X11 path settled fullscreen exit synchronously. Games
+        // such as TF2 may never acknowledge an animated windowed configure;
+        // direct settle makes Mod+F immediately restore Field/cluster state.
+        ExternalPresentationPolicy::Initial
+    } else if confined {
         ExternalPresentationPolicy::Confined
-    } else if opening {
-        ExternalPresentationPolicy::Opening
     } else if origin == FullscreenRequestOrigin::Initial {
         ExternalPresentationPolicy::Initial
+    } else if opening && origin == FullscreenRequestOrigin::Client {
+        // Match the original X11 fullscreen path: settle the client directly
+        // into fullscreen and let the already-running window-open animation
+        // provide the only visual motion.
+        ExternalPresentationPolicy::Initial
+    } else if opening {
+        ExternalPresentationPolicy::Opening
     } else {
         ExternalPresentationPolicy::Animated
     }
@@ -524,13 +535,7 @@ fn admit_window<D: SessionDriver>(session: &mut Session<D>, xid: u32) {
             session.clusters.defer_surface_layout_until(id, quiet_until);
         }
     }
-    let stack_managed = window
-        .wl_surface()
-        .and_then(|surface| session.nodes.id_for_surface(surface.as_ref()))
-        .and_then(|id| session.clusters.active_layout_for_member(id))
-        == Some(halley_core::cluster::layout::ClusterWorkspaceLayoutKind::Stacking);
     let started = !initially_iconic
-        && !stack_managed
         && window.wl_surface().is_some_and(|wl_surface| {
             crate::session::opening::start(
                 session,
@@ -800,28 +805,27 @@ mod tests {
     }
 
     #[test]
-    fn initial_fullscreen_uses_the_existing_opening_when_available() {
+    fn initial_fullscreen_always_uses_the_direct_settle() {
         assert_eq!(
-            external_presentation_policy(FullscreenRequestOrigin::Initial, false, false),
+            external_presentation_policy(FullscreenRequestOrigin::Initial, false, false, true),
             ExternalPresentationPolicy::Initial
         );
         assert_eq!(
-            external_presentation_policy(FullscreenRequestOrigin::Initial, true, false),
-            ExternalPresentationPolicy::Opening
+            external_presentation_policy(FullscreenRequestOrigin::Initial, true, false, true),
+            ExternalPresentationPolicy::Initial
         );
     }
 
     #[test]
-    fn opening_fullscreen_retargets_the_existing_opening() {
-        for origin in [
-            FullscreenRequestOrigin::Client,
-            FullscreenRequestOrigin::Compositor,
-        ] {
-            assert_eq!(
-                external_presentation_policy(origin, true, false),
-                ExternalPresentationPolicy::Opening
-            );
-        }
+    fn client_fullscreen_settles_under_the_existing_window_open_animation() {
+        assert_eq!(
+            external_presentation_policy(FullscreenRequestOrigin::Client, true, false, true),
+            ExternalPresentationPolicy::Initial
+        );
+        assert_eq!(
+            external_presentation_policy(FullscreenRequestOrigin::Compositor, true, false, true),
+            ExternalPresentationPolicy::Opening
+        );
     }
 
     #[test]
@@ -832,7 +836,7 @@ mod tests {
             FullscreenRequestOrigin::Compositor,
         ] {
             assert_eq!(
-                external_presentation_policy(origin, true, true),
+                external_presentation_policy(origin, true, true, true),
                 ExternalPresentationPolicy::Confined
             );
         }
@@ -845,9 +849,17 @@ mod tests {
             FullscreenRequestOrigin::Compositor,
         ] {
             assert_eq!(
-                external_presentation_policy(origin, false, false),
+                external_presentation_policy(origin, false, false, true),
                 ExternalPresentationPolicy::Animated
             );
         }
+    }
+
+    #[test]
+    fn compositor_fullscreen_exit_uses_the_direct_settle() {
+        assert_eq!(
+            external_presentation_policy(FullscreenRequestOrigin::Compositor, false, false, false,),
+            ExternalPresentationPolicy::Initial
+        );
     }
 }
