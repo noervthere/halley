@@ -16,7 +16,9 @@ use smithay::xwayland::{X11Surface, X11Wm, XwmHandler};
 use crate::session::{Session, SessionDriver};
 use crate::wayland::fullscreen::{ExternalConfigureResult, ExternalTransactionRequest};
 
-use super::lifecycle::{MapAdmission, OpeningPlacement, map_admission};
+use super::lifecycle::{
+    MapAdmission, OpeningPlacement, map_admission, opening_placement_is_authoritative,
+};
 use super::{
     OverrideRedirectPlacement, PendingOverrideRedirect, PendingWindow, SavedNormalSize,
     WindowIdentity,
@@ -63,6 +65,10 @@ impl FullscreenRequestOrigin {
             Self::Maximize => crate::wayland::fullscreen::FullscreenOrigin::Maximize,
             Self::Initial | Self::Client => crate::wayland::fullscreen::FullscreenOrigin::Client,
         }
+    }
+
+    fn client_owns_geometry(self) -> bool {
+        matches!(self, Self::Initial | Self::Client)
     }
 }
 
@@ -268,6 +274,29 @@ pub(super) fn handle_commit<D: SessionDriver>(
                 .then_some(*xid)
         });
     if let Some(xid) = xid {
+        if let Some(x11) = session
+            .xwayland
+            .pending_windows
+            .get(&xid)
+            .map(|pending| pending.surface.clone())
+        {
+            let buffer = with_renderer_surface_state(surface, |state| {
+                (state.buffer().is_some(), state.surface_size())
+            })
+            .unwrap_or((false, None));
+            crate::session::trace::x11_event(
+                session,
+                &x11,
+                "surface-commit",
+                format_args!(
+                    "wl_surface={:?} has_buffer={} buffer_size={:?} drawable={:?}",
+                    surface,
+                    buffer.0,
+                    buffer.1,
+                    x11.geometry(),
+                ),
+            );
+        }
         consider_map(session, xid, Some(surface));
     }
 }
@@ -417,6 +446,17 @@ fn admit_window<D: SessionDriver>(session: &mut Session<D>, xid: u32) {
     }
     opening_size = constrained_size;
     let opening_geometry = Rectangle::new(location, opening_size);
+    crate::session::trace::x11_event(
+        session,
+        &surface,
+        "admission-configure",
+        format_args!(
+            "initial_size={initial_size:?} opening={opening_geometry:?} output={:?} saved_maximize={} rule_cluster={:?}",
+            output.name(),
+            saved_maximize.is_some(),
+            rule.cluster_participation,
+        ),
+    );
     if let Err(err) = surface.configure(opening_geometry) {
         eventline::warn!("xwayland: failed to prepare centered opening geometry: {err}");
     }
@@ -446,6 +486,17 @@ fn admit_window<D: SessionDriver>(session: &mut Session<D>, xid: u32) {
                 session.request_redraw();
             }
             crate::nodes::displace_landmarks_for_new_window(session, id);
+            crate::session::trace::x11_event(
+                session,
+                &surface,
+                "admitted",
+                format_args!(
+                    "node={id:?} cluster={:?} layout={:?} space_geometry={:?}",
+                    session.clusters.cluster_for_member(id),
+                    session.clusters.active_layout_for_member(id),
+                    session.wayland.space.element_geometry(&window),
+                ),
+            );
         }
         crate::session::closing::mapped(session, wl_surface.as_ref());
     }
@@ -458,6 +509,21 @@ fn admit_window<D: SessionDriver>(session: &mut Session<D>, xid: u32) {
                 .map_or(initial_size, |restore| restore.geometry.size),
         ),
     );
+    let cluster_managed = window
+        .wl_surface()
+        .and_then(|surface| session.nodes.id_for_surface(surface.as_ref()))
+        .is_some_and(|id| session.clusters.cluster_for_member(id).is_some());
+    if cluster_managed {
+        let quiet_until = session
+            .xwayland
+            .arm_client_geometry_guard(xid, crate::frame_clock::monotonic_now());
+        if let Some(id) = window
+            .wl_surface()
+            .and_then(|surface| session.nodes.id_for_surface(surface.as_ref()))
+        {
+            session.clusters.defer_surface_layout_until(id, quiet_until);
+        }
+    }
     let stack_managed = window
         .wl_surface()
         .and_then(|surface| session.nodes.id_for_surface(surface.as_ref()))
@@ -567,6 +633,14 @@ mod tests {
         ] {
             assert_eq!(origin.presentation_origin(), FullscreenOrigin::Client);
         }
+    }
+
+    #[test]
+    fn only_client_fullscreen_requests_own_x11_geometry_negotiation() {
+        assert!(FullscreenRequestOrigin::Initial.client_owns_geometry());
+        assert!(FullscreenRequestOrigin::Client.client_owns_geometry());
+        assert!(!FullscreenRequestOrigin::Compositor.client_owns_geometry());
+        assert!(!FullscreenRequestOrigin::Maximize.client_owns_geometry());
     }
 
     #[test]

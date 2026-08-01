@@ -594,6 +594,14 @@ impl ClusterSystem {
         if member_cluster != Some(active) {
             return WindowPresentation::Hidden;
         }
+        // A member whose client geometry is still owned by its admission
+        // transaction must retain the ordinary Field transform as well.
+        // Splitting geometry and presentation ownership would expose a
+        // scaled cluster-local pointer coordinate before the first layout
+        // configure has become authoritative.
+        if self.surfaces.layout_is_deferred(id, now) {
+            return WindowPresentation::Field;
+        }
         let Some(layout) = self.workspace_layout(active, work_area) else {
             return WindowPresentation::Hidden;
         };

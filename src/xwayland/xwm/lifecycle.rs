@@ -38,6 +38,9 @@ fn sync_urgency(surface: &X11Surface) {
 pub(super) fn forget_window<D: SessionDriver>(session: &mut Session<D>, surface: &X11Surface) {
     session
         .xwayland
+        .forget_client_geometry_guard(surface.window_id());
+    session
+        .xwayland
         .pending_windows
         .remove(&surface.window_id());
     session
@@ -77,6 +80,12 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
 
     fn new_window(&mut self, _xwm: XwmId, window: X11Surface) {
         let generation = self.xwayland.managed_states.register(window.window_id());
+        crate::session::trace::x11_event(
+            self,
+            &window,
+            "new-window",
+            format_args!("generation={generation} geometry={:?}", window.geometry()),
+        );
         eventline::debug!(
             "xwayland: registered managed window xid={} generation={generation}",
             window.window_id()
@@ -91,6 +100,18 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
     }
 
     fn map_window_request(&mut self, _xwm: XwmId, surface: X11Surface) {
+        crate::session::trace::x11_event(
+            self,
+            &surface,
+            "map-request",
+            format_args!(
+                "geometry={:?} fullscreen={} maximized={} mapped={}",
+                surface.geometry(),
+                surface.is_fullscreen(),
+                surface.is_maximized(),
+                surface.is_mapped(),
+            ),
+        );
         if window_for_surface(self, &surface).is_some()
             || self
                 .xwayland
@@ -170,6 +191,12 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
     }
 
     fn unmapped_window(&mut self, _xwm: XwmId, surface: X11Surface) {
+        crate::session::trace::x11_event(
+            self,
+            &surface,
+            "unmapped",
+            format_args!("geometry={:?}", surface.geometry()),
+        );
         cancel_pending_override_redirect(self, surface.window_id());
         self.xwayland
             .override_redirect_placements
@@ -190,6 +217,12 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
     }
 
     fn destroyed_window(&mut self, _xwm: XwmId, surface: X11Surface) {
+        crate::session::trace::x11_event(
+            self,
+            &surface,
+            "destroyed",
+            format_args!("geometry={:?}", surface.geometry()),
+        );
         cancel_pending_override_redirect(self, surface.window_id());
         self.xwayland
             .known_override_redirects
@@ -199,6 +232,7 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
             .remove(&surface.window_id());
         forget_window(self, &surface);
         self.xwayland.managed_states.destroy(surface.window_id());
+        crate::session::trace::forget_x11(self, &surface);
         refresh_override_redirect_owners(self);
         crate::session::sync_keyboard_focus(self, SERIAL_COUNTER.next_serial());
         self.request_redraw();
@@ -224,6 +258,15 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
         // and reorder requests still receive Smithay's synthetic
         // ConfigureNotify for the final compositor-owned geometry.
         let geometry = super::configure::requested_geometry(&surface, x, y, width, height);
+        crate::session::trace::x11_event(
+            self,
+            &surface,
+            "configure-request",
+            format_args!(
+                "requested={{x:{x:?},y:{y:?},width:{width:?},height:{height:?}}} resolved={geometry:?} current={:?}",
+                surface.geometry(),
+            ),
+        );
         if let Err(err) = surface.configure(geometry) {
             eventline::warn!("xwayland: configure request failed: {err}");
         }
@@ -236,6 +279,12 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
         geometry: Rectangle<i32, Logical>,
         above: Option<u32>,
     ) {
+        crate::session::trace::x11_sampled_event(
+            self,
+            &surface,
+            "configure-notify",
+            format_args!("geometry={geometry:?} above={above:?}"),
+        );
         if self
             .xwayland
             .pending_windows
@@ -295,6 +344,9 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
                     self.window_open_animations
                         .is_animating(wl_surface.as_ref(), now)
                 });
+                let client_geometry_guarded = self
+                    .xwayland
+                    .client_geometry_guarded(surface.window_id(), now);
                 let grabbed = window.wl_surface().is_some_and(|wl_surface| {
                     crate::input::grab::belongs_to_surface(&self.grab, wl_surface.as_ref())
                 });
@@ -302,7 +354,12 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
                     self.fullscreen
                         .is_fullscreen_or_pending(wl_surface.as_ref())
                 });
-                let placement = if opening && !grabbed && !fullscreen {
+                let placement = if opening_placement_is_authoritative(
+                    opening,
+                    client_geometry_guarded,
+                    grabbed,
+                    fullscreen,
+                ) {
                     self.xwayland
                         .opening_placements
                         .get(&surface.window_id())
@@ -452,11 +509,23 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
     }
 
     fn fullscreen_request(&mut self, _xwm: XwmId, surface: X11Surface) {
+        crate::session::trace::x11_event(
+            self,
+            &surface,
+            "fullscreen-request",
+            format_args!("geometry={:?}", surface.geometry()),
+        );
         enter_fullscreen(self, &surface, FullscreenRequestOrigin::Client);
         self.request_redraw();
     }
 
     fn unfullscreen_request(&mut self, _xwm: XwmId, surface: X11Surface) {
+        crate::session::trace::x11_event(
+            self,
+            &surface,
+            "unfullscreen-request",
+            format_args!("geometry={:?}", surface.geometry()),
+        );
         leave_fullscreen(self, &surface, FullscreenRequestOrigin::Client);
         self.request_redraw();
     }

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use halley_core::camera::Camera;
 use halley_core::field::Vec2;
@@ -58,12 +58,14 @@ pub struct OutputCameras {
     cameras: HashMap<String, Camera>,
     fullscreen: HashMap<String, FullscreenCameraRestore>,
     field_maximize: HashMap<String, FieldMaximizeCameraRestore>,
+    cluster_locked: HashSet<String>,
 }
 
 impl OutputCameras {
     pub fn insert(&mut self, output_name: String, output_size: Size<i32, Physical>) {
         self.fullscreen.remove(&output_name);
         self.field_maximize.remove(&output_name);
+        self.cluster_locked.remove(&output_name);
         self.cameras
             .insert(output_name, camera_at_rest(output_size));
     }
@@ -76,6 +78,7 @@ impl OutputCameras {
         self.cameras.remove(output_name);
         self.fullscreen.remove(output_name);
         self.field_maximize.remove(output_name);
+        self.cluster_locked.remove(output_name);
     }
 
     pub fn get(&self, output_name: &str) -> Option<&Camera> {
@@ -85,6 +88,7 @@ impl OutputCameras {
     pub fn get_mut(&mut self, output_name: &str) -> Option<&mut Camera> {
         if self.fullscreen.contains_key(output_name)
             || self.field_maximize.contains_key(output_name)
+            || self.cluster_locked.contains(output_name)
         {
             return None;
         }
@@ -96,9 +100,13 @@ impl OutputCameras {
             cameras,
             fullscreen,
             field_maximize,
+            cluster_locked,
         } = self;
         cameras.iter_mut().filter_map(move |(name, camera)| {
-            (!fullscreen.contains_key(name) && !field_maximize.contains_key(name)).then_some(camera)
+            (!fullscreen.contains_key(name)
+                && !field_maximize.contains_key(name)
+                && !cluster_locked.contains(name))
+            .then_some(camera)
         })
     }
 
@@ -107,6 +115,37 @@ impl OutputCameras {
             center: Point::from((camera.center.x, camera.center.y)),
             scale: scale(camera),
         })
+    }
+
+    /// Pins an active cluster workspace to the same native camera used by an
+    /// unpanned, unzoomed Field. Cluster rendering still consumes this camera;
+    /// the lock only rejects user and inertial mutations until the workspace
+    /// closes. Leaving a cluster keeps the native view as the new Field view.
+    pub fn set_cluster_active(&mut self, output_name: &str, active: bool) -> bool {
+        if !active {
+            self.cluster_locked.remove(output_name);
+            return false;
+        }
+        self.cluster_locked.insert(output_name.to_string());
+        if self.fullscreen.contains_key(output_name)
+            || self.field_maximize.contains_key(output_name)
+        {
+            return false;
+        }
+        let Some(camera) = self.cameras.get_mut(output_name) else {
+            return false;
+        };
+        let before = *camera;
+        camera.center = Vec2 {
+            x: camera.base_size.x / 2.0,
+            y: camera.base_size.y / 2.0,
+        };
+        camera.view_size = camera.base_size;
+        camera.target_center = camera.center;
+        camera.target_view_size = camera.base_size;
+        camera.pan_vel = Vec2 { x: 0.0, y: 0.0 };
+        camera.zoom_log_vel = 0.0;
+        *camera != before
     }
 
     /// Applies or releases fullscreen ownership of one output camera.
@@ -406,6 +445,32 @@ mod tests {
             cameras.view("DP-2").unwrap().center,
             Point::from((1060.0, 600.0))
         );
+    }
+
+    #[test]
+    fn active_cluster_pins_and_owns_native_camera_view() {
+        let mut cameras = OutputCameras::default();
+        cameras.insert("DP-1".into(), Size::from((2560, 1440)));
+        let camera = cameras.get_mut("DP-1").unwrap();
+        camera.center = Vec2 { x: 900.0, y: 500.0 };
+        camera.view_size = Vec2 {
+            x: 5120.0,
+            y: 2880.0,
+        };
+        camera.target_center = camera.center;
+        camera.target_view_size = camera.view_size;
+
+        assert!(cameras.set_cluster_active("DP-1", true));
+        assert_eq!(cameras.view("DP-1").unwrap().scale, 1.0);
+        assert_eq!(
+            cameras.view("DP-1").unwrap().center,
+            Point::from((1280.0, 720.0))
+        );
+        assert!(cameras.get_mut("DP-1").is_none());
+
+        assert!(!cameras.set_cluster_active("DP-1", false));
+        assert!(cameras.get_mut("DP-1").is_some());
+        assert_eq!(cameras.view("DP-1").unwrap().scale, 1.0);
     }
 
     #[test]

@@ -58,6 +58,27 @@ pub(super) fn set_external_fullscreen<D: SessionDriver>(
     let cluster_restore = window.wl_surface().and_then(|wl_surface| {
         crate::session::cluster_presentation_restore(session, wl_surface.as_ref(), now, fullscreen)
     });
+    let client_cluster_request = cluster_restore.is_some() && origin.client_owns_geometry();
+    if client_cluster_request {
+        let quiet_until = session
+            .xwayland
+            .arm_client_geometry_guard(surface.window_id(), now);
+        if let Some(id) = window
+            .wl_surface()
+            .and_then(|surface| session.nodes.id_for_surface(surface.as_ref()))
+        {
+            session.clusters.defer_surface_layout_until(id, quiet_until);
+        }
+    }
+    let client_geometry_guarded = client_cluster_request
+        && session
+            .xwayland
+            .client_geometry_guarded(surface.window_id(), now);
+    let cluster_restore = if client_geometry_guarded {
+        None
+    } else {
+        cluster_restore
+    };
     if !fullscreen && let Some(restore) = cluster_restore.as_ref() {
         session.fullscreen.override_restore_from_cluster(
             window
@@ -88,11 +109,12 @@ pub(super) fn set_external_fullscreen<D: SessionDriver>(
         crate::session::reconcile_pointer_constraints(session);
         return;
     }
-    let opening = window.wl_surface().is_some_and(|wl_surface| {
-        session
-            .window_open_animations
-            .is_animating(wl_surface.as_ref(), now)
-    });
+    let opening = client_geometry_guarded
+        || window.wl_surface().is_some_and(|wl_surface| {
+            session
+                .window_open_animations
+                .is_animating(wl_surface.as_ref(), now)
+        });
     let policy = external_presentation_policy(
         origin,
         opening,

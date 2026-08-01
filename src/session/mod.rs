@@ -26,6 +26,7 @@ mod protocol;
 mod spawn;
 mod state;
 pub(crate) mod touch;
+pub(crate) mod trace;
 
 pub mod environment;
 pub mod tty;
@@ -244,6 +245,7 @@ pub(crate) fn reconcile_cluster_surfaces<D: SessionDriver>(
     session: &mut Session<D>,
     output_name: &str,
 ) {
+    let now = crate::frame_clock::monotonic_now();
     let Some(output) = session
         .wayland
         .space
@@ -262,6 +264,12 @@ pub(crate) fn reconcile_cluster_surfaces<D: SessionDriver>(
             .clusters
             .workspace_surface_targets(output_name, work_area, output_geometry);
     for target in targets {
+        if session
+            .clusters
+            .surface_layout_is_deferred(target.node_id, now)
+        {
+            continue;
+        }
         let Some((window, surface, current)) = session.nodes.record(target.node_id).map(|record| {
             (
                 record.window.clone(),
@@ -278,6 +286,13 @@ pub(crate) fn reconcile_cluster_surfaces<D: SessionDriver>(
         if session.fullscreen.is_fullscreen_or_pending(&surface)
             || session.maximize.contains(&surface)
         {
+            continue;
+        }
+        if window.x11_surface().is_some_and(|x11| {
+            session
+                .xwayland
+                .client_geometry_guarded(x11.window_id(), now)
+        }) {
             continue;
         }
         if !session
@@ -304,6 +319,16 @@ pub(crate) fn reconcile_cluster_surfaces<D: SessionDriver>(
             crate::xwayland::configure_window(&window, target.geometry);
         }
     }
+}
+
+pub(crate) fn sync_cluster_camera<D: SessionDriver>(
+    session: &mut Session<D>,
+    output_name: &str,
+) -> bool {
+    session.cameras.set_cluster_active(
+        output_name,
+        session.clusters.active_on(output_name).is_some(),
+    )
 }
 
 pub(crate) fn has_active_pointer_confinement<D: SessionDriver>(session: &Session<D>) -> bool {

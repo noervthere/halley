@@ -63,6 +63,10 @@ fn logical_focus_after_collapse(
     }
 }
 
+fn participates_in_decay(collapsed: bool, attached: bool, cluster_member: bool) -> bool {
+    attached && !collapsed && !cluster_member
+}
+
 #[derive(Clone, Copy)]
 struct LandmarkSlide {
     from: Vec2,
@@ -688,6 +692,7 @@ impl NodesState {
         &mut self,
         camera_centers: &HashMap<String, Vec2>,
         focused: Option<&WlSurface>,
+        excluded: impl Fn(NodeId) -> bool,
         protected: impl Fn(&WlSurface) -> bool,
         now_ms: u64,
     ) -> Vec<NodeId> {
@@ -705,7 +710,7 @@ impl NodesState {
         let records = self.records.values().cloned().collect::<Vec<_>>();
         let mut ready = Vec::new();
         for record in records {
-            if record.collapsed || !record.attached {
+            if !participates_in_decay(record.collapsed, record.attached, excluded(record.id)) {
                 self.decay.remove(record.id);
                 continue;
             }
@@ -999,8 +1004,8 @@ mod tests {
     use super::{
         HoverPreviewState, advance_hover_preview, hover_preview_ready,
         logical_focus_after_collapse, minimal_reveal_delta, nearest_free_landmark,
-        nearest_free_window_rect, physics_frame_delta, release_lock_deadline,
-        release_lock_is_active,
+        nearest_free_window_rect, participates_in_decay, physics_frame_delta,
+        release_lock_deadline, release_lock_is_active,
     };
     use halley_core::field::{NodeId, NodeState, Vec2};
     use smithay::utils::{Logical, Rectangle};
@@ -1089,6 +1094,14 @@ mod tests {
             Some(focused)
         );
         assert_eq!(logical_focus_after_collapse(None, collapsed, false), None);
+    }
+
+    #[test]
+    fn cluster_members_never_participate_in_decay() {
+        assert!(participates_in_decay(false, true, false));
+        assert!(!participates_in_decay(false, true, true));
+        assert!(!participates_in_decay(true, true, false));
+        assert!(!participates_in_decay(false, false, false));
     }
 
     #[test]

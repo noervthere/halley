@@ -270,6 +270,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
         touch: super::touch::TouchState::default(),
         gestures: super::gesture::GestureState::default(),
         pointer_constraints: super::pointer::PointerConstraintLifecycle::default(),
+        window_trace: super::trace::WindowTrace::from_env(),
         keyboard_monitor: None,
         opening_origins: super::opening::OpeningOrigins::default(),
         window_open_animations: crate::animation::WindowOpenAnimations::new(
@@ -337,7 +338,9 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                 let output_name = output.name();
                 super::reconcile_cluster_surfaces(app, &output_name);
                 let view_before = app.cameras.view(&output_name);
-                let mut animating = app.sync_fullscreen_camera(&output, target_presentation_time);
+                let cluster_camera_changed = super::sync_cluster_camera(app, &output_name);
+                let mut animating = cluster_camera_changed
+                    | app.sync_fullscreen_camera(&output, target_presentation_time);
                 for camera in app.cameras.iter_mut() {
                     animating |= crate::input::zoom::tick(
                         camera,
@@ -387,12 +390,13 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                     || app
                         .clusters
                         .labels_animating_on_output(&output.name(), app.nodes.config.show_labels);
-                if fullscreen_animating || maximize_animating || cluster_animating {
-                    super::pointer::update_client_state(
-                        app,
-                        app.start_time.elapsed().as_millis() as u32,
-                    );
+                let pointer_time = app.start_time.elapsed().as_millis() as u32;
+                if fullscreen_animating || maximize_animating {
+                    super::pointer::update_client_state(app, pointer_time);
+                } else if cluster_animating {
+                    super::pointer::refresh_client_focus(app, pointer_time);
                 }
+                super::trace::snapshot(app);
                 let position = app.pointer.position();
                 let show_cursor = super::pointer::cursor_visible(app);
                 let cursor_override = super::pointer::cursor_override(app);

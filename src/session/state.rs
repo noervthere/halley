@@ -150,6 +150,7 @@ pub struct Session<D: SessionDriver> {
     pub(super) touch: super::touch::TouchState,
     pub(super) gestures: super::gesture::GestureState,
     pub pointer_constraints: super::pointer::PointerConstraintLifecycle,
+    pub(super) window_trace: super::trace::WindowTrace,
     pub keyboard_monitor: Option<crate::accessibility::KeyboardMonitorService>,
     pub opening_origins: super::opening::OpeningOrigins,
     pub window_open_animations: crate::animation::WindowOpenAnimations,

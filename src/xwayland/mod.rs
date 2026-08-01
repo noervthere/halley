@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::process::Stdio;
 
+use calloop::timer::{TimeoutAction, Timer};
 use calloop::{LoopHandle, RegistrationToken};
 use smithay::desktop::Window;
 use smithay::reexports::wayland_protocols::xwayland::keyboard_grab::zv1::server::{
@@ -69,6 +70,7 @@ pub struct State<D: SessionDriver> {
     display: Option<u32>,
     pending_windows: HashMap<u32, PendingWindow>,
     opening_placements: HashMap<u32, lifecycle::OpeningPlacement>,
+    client_geometry_guards: HashMap<u32, lifecycle::ClientGeometryGuard>,
     loop_handle: LoopHandle<'static, Session<D>>,
     known_override_redirects: HashSet<u32>,
     pending_override_redirects: HashMap<u32, PendingOverrideRedirect>,
@@ -96,6 +98,7 @@ impl<D: SessionDriver> State<D> {
             display: None,
             pending_windows: HashMap::new(),
             opening_placements: HashMap::new(),
+            client_geometry_guards: HashMap::new(),
             loop_handle,
             known_override_redirects: HashSet::new(),
             pending_override_redirects: HashMap::new(),
@@ -163,6 +166,46 @@ impl<D: SessionDriver> State<D> {
         }
     }
 
+    /// Temporarily keeps cluster layout from configuring an X11 client while
+    /// its own fullscreen/mode negotiation is still changing. A one-shot
+    /// redraw at the end ensures a stable windowed client is subsequently
+    /// reconciled into its tile even when no animation is running.
+    pub(crate) fn arm_client_geometry_guard(
+        &mut self,
+        xid: u32,
+        now: std::time::Duration,
+    ) -> std::time::Duration {
+        let guard = lifecycle::ClientGeometryGuard::arm(now);
+        let quiet_until = guard.quiet_until();
+        self.client_geometry_guards.insert(xid, guard);
+        let loop_handle = self.loop_handle.clone();
+        if let Err(err) = loop_handle.insert_source(
+            Timer::from_duration(lifecycle::CLIENT_GEOMETRY_QUIET_PERIOD),
+            move |_, _, session| {
+                if !session
+                    .xwayland
+                    .client_geometry_guarded(xid, crate::frame_clock::monotonic_now())
+                {
+                    session.request_redraw();
+                }
+                TimeoutAction::Drop
+            },
+        ) {
+            eventline::warn!("xwayland: failed to schedule client geometry reconciliation: {err}");
+        }
+        quiet_until
+    }
+
+    pub(crate) fn client_geometry_guarded(&self, xid: u32, now: std::time::Duration) -> bool {
+        self.client_geometry_guards
+            .get(&xid)
+            .is_some_and(|guard| guard.is_active(now))
+    }
+
+    pub(crate) fn forget_client_geometry_guard(&mut self, xid: u32) {
+        self.client_geometry_guards.remove(&xid);
+    }
+
     fn clear(&mut self) {
         self.control = None;
         for (_, pending) in self.pending_override_redirects.drain() {
@@ -172,6 +215,7 @@ impl<D: SessionDriver> State<D> {
         self.display = None;
         self.pending_windows.clear();
         self.opening_placements.clear();
+        self.client_geometry_guards.clear();
         self.known_override_redirects.clear();
         self.override_redirect_placements.clear();
         self.normal_sizes.clear();

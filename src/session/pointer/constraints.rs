@@ -1,5 +1,6 @@
 use smithay::backend::renderer::utils::with_renderer_surface_state;
 use smithay::input::pointer::PointerHandle;
+use smithay::reexports::wayland_server::Resource;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{IsAlive, Logical, Point, Rectangle, Size};
 use smithay::wayland::compositor::RegionAttributes;
@@ -8,6 +9,8 @@ use smithay::wayland::seat::WaylandFocus;
 
 use crate::presentation::window::WindowPresentation;
 use crate::session::{Session, SessionDriver};
+
+use super::ConstraintDiagnostic;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ConstraintKind {
@@ -140,6 +143,46 @@ fn descriptor<D: SessionDriver>(
             position_hint,
         })
     })
+}
+
+pub(super) fn diagnostic<D: SessionDriver>(
+    session: &Session<D>,
+    pointer: &PointerHandle<Session<D>>,
+    surface: &WlSurface,
+) -> ConstraintDiagnostic {
+    let protocol = with_pointer_constraint(surface, pointer, |constraint| {
+        constraint.map(|constraint| {
+            let kind = match &*constraint {
+                PointerConstraint::Confined(_) => "confined",
+                PointerConstraint::Locked(_) => "locked",
+            };
+            let constraint_data: &PointerConstraint = &constraint;
+            let debug = format!("{constraint_data:?}");
+            let resource = debug
+                .split(", region:")
+                .next()
+                .unwrap_or(debug.as_str())
+                .to_string();
+            (resource, kind, constraint.is_active())
+        })
+    });
+    let root = crate::wayland::compositor::root_surface(surface);
+    let tracked = session
+        .pointer_constraints
+        .active
+        .as_ref()
+        .filter(|tracked| crate::wayland::compositor::root_surface(&tracked.surface) == root);
+    ConstraintDiagnostic {
+        protocol_resource: protocol.as_ref().map(|(resource, _, _)| resource.clone()),
+        protocol_kind: protocol.as_ref().map(|(_, kind, _)| *kind),
+        protocol_active: protocol.is_some_and(|(_, _, active)| active),
+        halley_tracked: tracked.is_some(),
+        tracked_kind: tracked.map(|tracked| match tracked.kind {
+            ConstraintKind::Confined => "confined",
+            ConstraintKind::Locked => "locked",
+        }),
+        tracked_surface_id: tracked.map(|tracked| tracked.surface.id().protocol_id()),
+    }
 }
 
 pub(super) fn constraint_kind<D: SessionDriver>(
@@ -284,6 +327,12 @@ fn deactivate_tracked<D: SessionDriver>(
     tracked: &TrackedConstraint,
     reason: DeactivationReason,
 ) {
+    crate::session::trace::surface_event(
+        session,
+        &tracked.surface,
+        "constraint-deactivate",
+        format_args!("kind={:?} reason={:?}", tracked.kind, reason),
+    );
     eventline::debug!(
         "pointer-constraint: deactivate kind={:?} surface={:?} reason={:?}",
         tracked.kind,
@@ -545,6 +594,12 @@ pub(super) fn reconcile<D: SessionDriver>(
             "pointer-constraint: activate kind={:?} surface={:?}",
             constraint.kind,
             candidate
+        );
+        crate::session::trace::surface_event(
+            session,
+            &candidate,
+            "constraint-activate",
+            format_args!("kind={:?}", constraint.kind),
         );
         constraint.active = true;
     }

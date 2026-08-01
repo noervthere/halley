@@ -398,6 +398,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
         touch: super::touch::TouchState::default(),
         gestures: super::gesture::GestureState::default(),
         pointer_constraints: super::pointer::PointerConstraintLifecycle::default(),
+        window_trace: super::trace::WindowTrace::from_env(),
         keyboard_monitor,
         opening_origins: super::opening::OpeningOrigins::default(),
         window_open_animations: crate::animation::WindowOpenAnimations::new(
@@ -824,6 +825,7 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
     let view_before = pointer_is_on_output
         .then(|| app.cameras.view(&output.name()))
         .flatten();
+    let cluster_camera_changed = super::sync_cluster_camera(app, &output.name());
     let fullscreen_camera_changed = app.sync_fullscreen_camera(output, target_presentation_time);
     let camera_animating = app.cameras.get_mut(&output.name()).is_some_and(|camera| {
         crate::input::zoom::tick(
@@ -894,8 +896,13 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
         || fullscreen_animating
         || maximize_animating
         || cursor_animating;
-    if (fullscreen_animating || maximize_animating || cluster_animating) && pointer_is_on_output {
-        super::pointer::update_client_state(app, app.start_time.elapsed().as_millis() as u32);
+    if pointer_is_on_output {
+        let time = app.start_time.elapsed().as_millis() as u32;
+        if cluster_camera_changed || fullscreen_animating || maximize_animating {
+            super::pointer::update_client_state(app, time);
+        } else if cluster_animating {
+            super::pointer::refresh_client_focus(app, time);
+        }
     }
     let view_after = pointer_is_on_output
         .then(|| app.cameras.view(&output.name()))
@@ -903,6 +910,7 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
     if view_before != view_after {
         super::pointer::update_client_state(app, app.start_time.elapsed().as_millis() as u32);
     }
+    super::trace::snapshot(app);
     let vrr_auto_eligible = auto_vrr_eligible(app, output, target_presentation_time);
 
     let outcome = match app.driver.backend.render(

@@ -8,6 +8,16 @@ use smithay::utils::{Logical, Point, SERIAL_COUNTER};
 
 use super::{Session, SessionDriver};
 
+#[derive(Debug)]
+pub(super) struct ConstraintDiagnostic {
+    pub(super) protocol_resource: Option<String>,
+    pub(super) protocol_kind: Option<&'static str>,
+    pub(super) protocol_active: bool,
+    pub(super) halley_tracked: bool,
+    pub(super) tracked_kind: Option<&'static str>,
+    pub(super) tracked_surface_id: Option<u32>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AbsoluteMotionPolicy {
     PositionChanged,
@@ -97,6 +107,23 @@ pub(super) fn has_active_constraint<D: SessionDriver>(session: &Session<D>) -> b
         .is_some_and(|pointer| constraints::active(session, &pointer).is_some())
 }
 
+pub(super) fn constraint_diagnostic<D: SessionDriver>(
+    session: &Session<D>,
+    surface: &WlSurface,
+) -> ConstraintDiagnostic {
+    let Some(pointer) = session.seat.get_pointer() else {
+        return ConstraintDiagnostic {
+            protocol_resource: None,
+            protocol_kind: None,
+            protocol_active: false,
+            halley_tracked: false,
+            tracked_kind: None,
+            tracked_surface_id: None,
+        };
+    };
+    constraints::diagnostic(session, &pointer, surface)
+}
+
 fn constraint_requires_stable_presentation(kind: Option<constraints::ConstraintKind>) -> bool {
     kind != Some(constraints::ConstraintKind::Locked)
 }
@@ -184,6 +211,19 @@ pub(super) fn update_client_state<D: SessionDriver>(session: &mut Session<D>, ti
         .get_pointer()
         .expect("pointer capability added at seat setup");
     route_for_motion(session, time);
+    finish_frame(session, &pointer);
+}
+
+/// Re-evaluates presentation-driven pointer focus without inventing physical
+/// mouse motion. A moving cluster card may enter or leave the stationary
+/// pointer, but changing its visual transform must not stream new absolute
+/// coordinates to the same client every frame.
+pub(super) fn refresh_client_focus<D: SessionDriver>(session: &mut Session<D>, time: u32) {
+    let pointer = session
+        .seat
+        .get_pointer()
+        .expect("pointer capability added at seat setup");
+    route_for_discrete_input(session, time);
     finish_frame(session, &pointer);
 }
 

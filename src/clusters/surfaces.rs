@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::time::Duration;
 
 use halley_core::field::NodeId;
 use smithay::utils::{Logical, Rectangle};
@@ -15,6 +16,7 @@ pub(crate) struct WorkspaceSurfaceTarget {
 pub(super) struct WorkspaceSurfaceState {
     requested: HashMap<NodeId, Rectangle<i32, Logical>>,
     restore: HashMap<NodeId, Rectangle<i32, Logical>>,
+    layout_deferred_until: HashMap<NodeId, Duration>,
 }
 
 impl WorkspaceSurfaceState {
@@ -35,10 +37,24 @@ impl WorkspaceSurfaceState {
     fn forget(&mut self, node_id: NodeId) {
         self.requested.remove(&node_id);
         self.restore.remove(&node_id);
+        self.layout_deferred_until.remove(&node_id);
     }
 
     pub(super) fn invalidate_target(&mut self, node_id: NodeId) {
         self.requested.remove(&node_id);
+    }
+
+    fn defer_layout_until(&mut self, node_id: NodeId, until: Duration) {
+        self.layout_deferred_until
+            .entry(node_id)
+            .and_modify(|current| *current = (*current).max(until))
+            .or_insert(until);
+    }
+
+    pub(super) fn layout_is_deferred(&self, node_id: NodeId, now: Duration) -> bool {
+        self.layout_deferred_until
+            .get(&node_id)
+            .is_some_and(|until| now < *until)
     }
 }
 
@@ -105,6 +121,14 @@ impl ClusterSystem {
         target: Rectangle<i32, Logical>,
     ) -> bool {
         self.surfaces.prepare(node_id, current, target)
+    }
+
+    pub(crate) fn defer_surface_layout_until(&mut self, node_id: NodeId, until: Duration) {
+        self.surfaces.defer_layout_until(node_id, until);
+    }
+
+    pub(crate) fn surface_layout_is_deferred(&self, node_id: NodeId, now: Duration) -> bool {
+        self.surfaces.layout_is_deferred(node_id, now)
     }
 
     pub(super) fn forget_surface_state(&mut self, node_id: NodeId) {
@@ -212,5 +236,43 @@ mod tests {
 
         assert_eq!(targets.len(), 2);
         assert_ne!(targets[0].geometry.size, targets[1].geometry.size);
+    }
+
+    #[test]
+    fn deferred_admission_keeps_field_presentation_until_the_deadline() {
+        let mut system =
+            active_system(halley_core::cluster::layout::ClusterWorkspaceLayoutKind::Tiling);
+        let member = system.member_ids(system.active_on("DP-1").unwrap())[0];
+        let deadline = Duration::from_secs(2);
+        system.defer_surface_layout_until(member, deadline);
+        let work_area = Rectangle::new((0, 0).into(), (1_600, 900).into());
+
+        assert!(system.surface_layout_is_deferred(member, deadline - Duration::from_nanos(1)));
+        assert_eq!(
+            system.window_presentation(
+                member,
+                "DP-1",
+                work_area,
+                None,
+                deadline - Duration::from_nanos(1),
+            ),
+            crate::clusters::WindowPresentation::Field
+        );
+        assert!(!system.surface_layout_is_deferred(member, deadline));
+        assert!(matches!(
+            system.window_presentation(member, "DP-1", work_area, None, deadline),
+            crate::clusters::WindowPresentation::Workspace { .. }
+        ));
+    }
+
+    #[test]
+    fn rearming_deferred_admission_never_shortens_the_lease() {
+        let mut state = WorkspaceSurfaceState::default();
+        let id = NodeId::new(7);
+        state.defer_layout_until(id, Duration::from_secs(4));
+        state.defer_layout_until(id, Duration::from_secs(3));
+
+        assert!(state.layout_is_deferred(id, Duration::from_secs(3)));
+        assert!(!state.layout_is_deferred(id, Duration::from_secs(4)));
     }
 }

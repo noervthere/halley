@@ -963,6 +963,12 @@ pub fn tick_decay<D: crate::session::SessionDriver>(
         );
     }
     let focused = session.wayland.focused_window.clone();
+    let cluster_members = session
+        .nodes
+        .records()
+        .filter(|record| session.clusters.is_member(record.id))
+        .map(|record| record.id)
+        .collect::<HashSet<_>>();
     let protected = session
         .nodes
         .records()
@@ -977,6 +983,7 @@ pub fn tick_decay<D: crate::session::SessionDriver>(
     let ready = session.nodes.decay_candidates(
         &centers,
         focused.as_ref(),
+        |id| cluster_members.contains(&id),
         |surface| protected.iter().any(|candidate| candidate == surface),
         now_ms,
     );

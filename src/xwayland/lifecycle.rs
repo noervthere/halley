@@ -1,4 +1,42 @@
+use std::time::Duration;
+
 use smithay::utils::{Logical, Rectangle, Size};
+
+/// Quiet period in which a client-driven X11 mode change retains geometry
+/// ownership. X11 clients can publish fullscreen off/on as a short burst while
+/// changing modes; applying cluster layout between those requests exposes an
+/// intermediate size that Field never sends.
+pub(super) const CLIENT_GEOMETRY_QUIET_PERIOD: Duration = Duration::from_millis(250);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct ClientGeometryGuard {
+    quiet_until: Duration,
+}
+
+impl ClientGeometryGuard {
+    pub(super) fn arm(now: Duration) -> Self {
+        Self {
+            quiet_until: now.saturating_add(CLIENT_GEOMETRY_QUIET_PERIOD),
+        }
+    }
+
+    pub(super) fn is_active(self, now: Duration) -> bool {
+        now < self.quiet_until
+    }
+
+    pub(super) fn quiet_until(self) -> Duration {
+        self.quiet_until
+    }
+}
+
+pub(super) fn opening_placement_is_authoritative(
+    opening_animation: bool,
+    client_geometry_guarded: bool,
+    grabbed: bool,
+    fullscreen: bool,
+) -> bool {
+    (opening_animation || client_geometry_guarded) && !grabbed && !fullscreen
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum MapAdmission {
@@ -68,7 +106,10 @@ impl OpeningPlacement {
 mod tests {
     use smithay::utils::Rectangle;
 
-    use super::{MapAdmission, OpeningPlacement, map_admission};
+    use super::{
+        CLIENT_GEOMETRY_QUIET_PERIOD, ClientGeometryGuard, MapAdmission, OpeningPlacement,
+        map_admission, opening_placement_is_authoritative,
+    };
 
     #[test]
     fn pending_window_waits_for_surface_and_buffer() {
@@ -122,5 +163,51 @@ mod tests {
             OpeningPlacement::preferred_size((0, 0).into(), (2560, 1440).into()),
             (2560, 1440).into()
         );
+    }
+
+    #[test]
+    fn client_geometry_guard_ends_after_a_quiet_period() {
+        let now = std::time::Duration::from_secs(7);
+        let guard = ClientGeometryGuard::arm(now);
+
+        assert!(guard.is_active(now));
+        assert!(
+            guard
+                .is_active(now + CLIENT_GEOMETRY_QUIET_PERIOD - std::time::Duration::from_nanos(1))
+        );
+        assert!(!guard.is_active(now + CLIENT_GEOMETRY_QUIET_PERIOD));
+    }
+
+    #[test]
+    fn rearming_client_geometry_guard_extends_ownership() {
+        let first = std::time::Duration::from_secs(3);
+        let second = first + std::time::Duration::from_millis(100);
+        let guard = ClientGeometryGuard::arm(second);
+
+        assert!(guard.is_active(first + CLIENT_GEOMETRY_QUIET_PERIOD));
+        assert!(!guard.is_active(second + CLIENT_GEOMETRY_QUIET_PERIOD));
+    }
+
+    #[test]
+    fn guarded_x11_startup_retains_placement_without_visual_animation() {
+        assert!(opening_placement_is_authoritative(
+            false, true, false, false
+        ));
+        assert!(opening_placement_is_authoritative(
+            true, false, false, false
+        ));
+    }
+
+    #[test]
+    fn grab_or_fullscreen_ends_opening_placement_authority() {
+        assert!(!opening_placement_is_authoritative(
+            false, true, true, false
+        ));
+        assert!(!opening_placement_is_authoritative(
+            false, true, false, true
+        ));
+        assert!(!opening_placement_is_authoritative(
+            false, false, false, false
+        ));
     }
 }
