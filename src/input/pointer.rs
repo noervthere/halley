@@ -390,6 +390,16 @@ fn window_under(
             Some((stack_index, window, presentation))
         })
         .collect::<Vec<_>>();
+    let exclusive_anchor = exclusive.and_then(|exclusive| {
+        windows
+            .iter()
+            .filter(|(_, window, _)| {
+                exclusive_member_for_window(context.space, context.nodes, window)
+                    == Some(exclusive.member)
+            })
+            .map(|(stack_index, _, _)| *stack_index)
+            .max()
+    });
     let cluster_anchor = windows
         .iter()
         .filter_map(|(stack_index, _, presentation)| {
@@ -400,13 +410,21 @@ fn window_under(
         presentation_stack_key(*stack_index, presentation.cluster_depth(), cluster_anchor)
     });
 
-    for (_, window, presentation) in windows.into_iter().rev() {
+    for (stack_index, window, presentation) in windows.into_iter().rev() {
         if !crate::wayland::window_is_on_output(window, output, context.primary) {
             continue;
         }
         if let Some(exclusive) = exclusive {
             let member = exclusive_member_for_window(context.space, context.nodes, window);
-            if member != Some(exclusive.member) {
+            let member_floating =
+                member.is_some_and(|member| context.clusters.is_member_floating(member));
+            if !exclusive_pointer_member_is_allowed(
+                member,
+                exclusive.member,
+                member_floating,
+                stack_index,
+                exclusive_anchor,
+            ) {
                 continue;
             }
         }
@@ -436,6 +454,17 @@ fn window_under(
         });
     }
     None
+}
+
+fn exclusive_pointer_member_is_allowed(
+    member: Option<halley_core::field::NodeId>,
+    exclusive: halley_core::field::NodeId,
+    member_floating: bool,
+    stack_index: usize,
+    exclusive_anchor: Option<usize>,
+) -> bool {
+    member == Some(exclusive)
+        || (member_floating && exclusive_anchor.is_some_and(|exclusive| stack_index > exclusive))
 }
 
 fn presentation_stack_key(
@@ -574,7 +603,8 @@ mod tests {
 
     use super::{
         WheelAccumulator, axis_frame, axis_frame_filtered, clamp_to_outputs, desktop_bounds,
-        presentation_stack_key, process_wheel_bindings, wheel_delta_v120, wheel_direction,
+        exclusive_pointer_member_is_allowed, presentation_stack_key, process_wheel_bindings,
+        wheel_delta_v120, wheel_direction,
     };
     use crate::input::keybinds::WheelDirection;
 
@@ -911,6 +941,34 @@ mod tests {
         let later_layout_member = presentation_stack_key(8, Some(3), anchor);
 
         assert!(floating > later_layout_member);
+    }
+
+    #[test]
+    fn raised_float_can_receive_input_above_cluster_fullscreen() {
+        let fullscreen = halley_core::field::NodeId::new(1);
+        let floating = halley_core::field::NodeId::new(2);
+
+        assert!(exclusive_pointer_member_is_allowed(
+            Some(fullscreen),
+            fullscreen,
+            false,
+            4,
+            Some(4),
+        ));
+        assert!(exclusive_pointer_member_is_allowed(
+            Some(floating),
+            fullscreen,
+            true,
+            5,
+            Some(4),
+        ));
+        assert!(!exclusive_pointer_member_is_allowed(
+            Some(floating),
+            fullscreen,
+            true,
+            3,
+            Some(4),
+        ));
     }
 
     #[test]

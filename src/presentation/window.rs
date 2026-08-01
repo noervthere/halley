@@ -25,6 +25,7 @@ pub(crate) struct WindowVisualState {
     pub(crate) zoom_scale: f32,
     pub(crate) presentation_space: PresentationSpace,
     pub(crate) cluster_depth: Option<usize>,
+    pub(crate) cluster_floating: bool,
     pub(crate) cluster_exclusive: bool,
     inherited_presentation: bool,
 }
@@ -275,6 +276,8 @@ pub(crate) fn window_visual_state_with_cluster_presentation(
         view.scale
     };
     let mut inherited_cluster_depth = cluster_depth.filter(|_| !cluster_exclusive);
+    let mut inherited_cluster_floating = window_node
+        .is_some_and(|node| clusters.is_some_and(|clusters| clusters.is_member_floating(node)));
     let mut inherited_cluster_exclusive = cluster_exclusive;
 
     if let Some(owner_xid) = crate::wayland::window_presentation_owner(window)
@@ -310,6 +313,7 @@ pub(crate) fn window_visual_state_with_cluster_presentation(
         inherited_camera_center = owner_visual.camera_center;
         inherited_zoom_scale = owner_visual.zoom_scale;
         inherited_cluster_depth = owner_visual.cluster_depth;
+        inherited_cluster_floating = owner_visual.cluster_floating;
         inherited_cluster_exclusive = owner_visual.cluster_exclusive;
         presentation_space = owner_visual.presentation_space;
         inherited_presentation = true;
@@ -327,6 +331,7 @@ pub(crate) fn window_visual_state_with_cluster_presentation(
         zoom_scale: inherited_zoom_scale,
         presentation_space,
         cluster_depth: inherited_cluster_depth,
+        cluster_floating: inherited_cluster_floating,
         cluster_exclusive: inherited_cluster_exclusive,
         inherited_presentation,
     })

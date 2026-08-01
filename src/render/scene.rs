@@ -626,6 +626,16 @@ pub fn build(
             }
         }
     }
+    let exclusive_anchor = exclusive_windows
+        .iter()
+        .map(|(stack_index, _)| *stack_index)
+        .max();
+    let (floating_foreground, live_windows) = match exclusive_anchor {
+        Some(exclusive_anchor) => live_windows.into_iter().partition(|(stack_index, scene)| {
+            cluster_float_is_above_exclusive(scene.cluster_floating, *stack_index, exclusive_anchor)
+        }),
+        None => (Vec::new(), live_windows),
+    };
     // A cluster workspace is one coherent stack. Preserve its position
     // relative to non-cluster windows at the topmost member's existing Space
     // slot, then use the layout's explicit depth for member overlap.
@@ -651,11 +661,17 @@ pub fn build(
     if let Some(exclusive) = cluster_exclusive {
         // Popups owned by the selected X11 member inherit the exclusive flag.
         // Keep every such scene and retain normal front-to-back Space order.
-        let mut foreground = exclusive_windows
+        let mut foreground = floating_foreground
             .into_iter()
             .rev()
             .flat_map(|(_, scene)| scene.elements)
             .collect::<Vec<_>>();
+        foreground.extend(
+            exclusive_windows
+                .into_iter()
+                .rev()
+                .flat_map(|(_, scene)| scene.elements),
+        );
         if exclusive.progress > 0.0 {
             foreground.push(SceneElement::Border(SolidColorRenderElement::new(
                 Id::new(),
@@ -748,6 +764,14 @@ pub fn build(
     Ok(elements)
 }
 
+fn cluster_float_is_above_exclusive(
+    cluster_floating: bool,
+    stack_index: usize,
+    exclusive_anchor: usize,
+) -> bool {
+    cluster_floating && stack_index > exclusive_anchor
+}
+
 struct BackgroundSceneRequest<'a> {
     output: &'a Output,
     output_geometry: Rectangle<i32, Logical>,
@@ -792,6 +816,13 @@ fn append_background(
 mod tests {
     use super::*;
     use smithay::utils::{Physical, Rectangle};
+
+    #[test]
+    fn raised_cluster_float_crosses_the_exclusive_boundary() {
+        assert!(!cluster_float_is_above_exclusive(true, 3, 4));
+        assert!(!cluster_float_is_above_exclusive(false, 5, 4));
+        assert!(cluster_float_is_above_exclusive(true, 5, 4));
+    }
 
     #[test]
     fn hover_preview_aspect_fit_centers_wide_and_tall_windows() {

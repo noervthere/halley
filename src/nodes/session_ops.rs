@@ -723,6 +723,7 @@ pub fn pan_after_close_restore<D: crate::session::SessionDriver>(
     };
     if session.fullscreen.is_fullscreen_or_pending(&record.surface)
         || session.maximize.contains(&record.surface)
+        || session.clusters.is_member_floating(id)
     {
         return;
     }

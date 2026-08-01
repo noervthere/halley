@@ -15,6 +15,7 @@ pub(super) fn sort_stack_groups(groups: &mut [StackGroup]) {
 pub(super) struct LiveWindowScene {
     pub(super) elements: Vec<SceneElement>,
     pub(super) cluster_depth: Option<usize>,
+    pub(super) cluster_floating: bool,
     pub(super) cluster_exclusive: bool,
 }
 
@@ -71,6 +72,7 @@ pub(super) fn live_window_elements(
         return Ok(LiveWindowScene {
             elements: Vec::new(),
             cluster_depth: None,
+            cluster_floating: false,
             cluster_exclusive: false,
         });
     };
@@ -78,6 +80,7 @@ pub(super) fn live_window_elements(
         return Ok(LiveWindowScene {
             elements: Vec::new(),
             cluster_depth: None,
+            cluster_floating: false,
             cluster_exclusive: false,
         });
     };
@@ -105,6 +108,7 @@ pub(super) fn live_window_elements(
         return Ok(LiveWindowScene {
             elements: Vec::new(),
             cluster_depth: None,
+            cluster_floating: false,
             cluster_exclusive: false,
         });
     };
@@ -112,6 +116,7 @@ pub(super) fn live_window_elements(
         return Ok(LiveWindowScene {
             elements: Vec::new(),
             cluster_depth: visual.cluster_depth,
+            cluster_floating: visual.cluster_floating,
             cluster_exclusive: visual.cluster_exclusive,
         });
     }
@@ -420,6 +425,7 @@ pub(super) fn live_window_elements(
     Ok(LiveWindowScene {
         elements,
         cluster_depth: visual.cluster_depth,
+        cluster_floating: visual.cluster_floating,
         cluster_exclusive: visual.cluster_exclusive,
     })
 }
