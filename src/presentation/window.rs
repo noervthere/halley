@@ -41,7 +41,7 @@ pub(crate) enum PresentationSpace {
     OutputLocal,
 }
 
-fn presentation_source_rect(
+fn output_local_or_field_rect(
     output_local: Option<Rectangle<i32, Physical>>,
     world: Rectangle<i32, Logical>,
     camera_center: Point<f32, Physical>,
@@ -51,17 +51,6 @@ fn presentation_source_rect(
     output_local.unwrap_or_else(|| {
         crate::render::camera_rect(world.to_physical(1), camera_center, output_size, zoom_scale)
     })
-}
-
-fn project_output_local_rect(
-    rect: Rectangle<i32, Physical>,
-    output_geometry: Rectangle<i32, Logical>,
-    camera_center: Point<f32, Physical>,
-    output_size: smithay::utils::Size<i32, Physical>,
-    zoom_scale: f32,
-) -> Rectangle<i32, Physical> {
-    let world = Rectangle::new(output_geometry.loc.to_physical(1) + rect.loc, rect.size);
-    crate::render::camera_rect(world, camera_center, output_size, zoom_scale)
 }
 
 pub(crate) fn cluster_exclusive_presentation(
@@ -199,8 +188,8 @@ pub(crate) fn window_visual_state_with_cluster_presentation(
                         crate::nodes::screen_from_world(
                             metadata.core_position,
                             cameras
-                                .cluster_anchor_camera(&output.name())
-                                .expect("an output view always has a cluster anchor camera"),
+                                .get(&output.name())
+                                .expect("an output view always has a backing camera"),
                             output_geometry,
                         ) - output_geometry.loc
                     });
@@ -224,23 +213,13 @@ pub(crate) fn window_visual_state_with_cluster_presentation(
             (Some(rect.to_physical(1)), Some(depth), alpha)
         }
     };
-    let cluster_camera_rect = cluster_rect.map(|rect| {
-        project_output_local_rect(
-            rect,
-            output_geometry,
-            camera_center,
-            output_size,
-            view.scale,
-        )
-    });
-    let mut camera_rect = cluster_camera_rect.unwrap_or_else(|| {
-        crate::render::camera_rect(
-            source_geometry.to_physical(1),
-            camera_center,
-            output_size,
-            view.scale,
-        )
-    });
+    let mut camera_rect = output_local_or_field_rect(
+        cluster_rect,
+        source_geometry,
+        camera_center,
+        output_size,
+        view.scale,
+    );
     let opening_visual = window_open_animations
         .visual(window_surface.as_ref(), now, camera_rect)
         .unwrap_or_default();
@@ -254,8 +233,8 @@ pub(crate) fn window_visual_state_with_cluster_presentation(
             let windowed = presentation.windowed_geometry.map_or_else(
                 || presentation.fullscreen_rect(output_size),
                 |geometry| {
-                    presentation_source_rect(
-                        presentation.windowed_output_rect.or(cluster_camera_rect),
+                    output_local_or_field_rect(
+                        presentation.windowed_output_rect.or(cluster_rect),
                         geometry,
                         camera_center,
                         output_size,
@@ -267,8 +246,8 @@ pub(crate) fn window_visual_state_with_cluster_presentation(
         })
         .or_else(|| {
             maximize_presentation.map(|presentation| {
-                let windowed = presentation_source_rect(
-                    presentation.windowed_output_rect.or(cluster_camera_rect),
+                let windowed = output_local_or_field_rect(
+                    presentation.windowed_output_rect.or(cluster_rect),
                     presentation.windowed_rect,
                     camera_center,
                     output_size,
@@ -281,14 +260,20 @@ pub(crate) fn window_visual_state_with_cluster_presentation(
     let mut animated_rect = opening_visual.transform_rect(presentation_rect, presentation_rect);
     let mut opening_alpha = opening_visual.alpha() * cluster_alpha;
     let mut inherited_presentation = cluster_rect.is_some();
-    let mut presentation_space =
-        if fullscreen_presentation.is_some() || maximize_presentation.is_some() {
-            PresentationSpace::OutputLocal
-        } else {
-            PresentationSpace::Field
-        };
+    let mut presentation_space = if cluster_rect.is_some()
+        || fullscreen_presentation.is_some()
+        || maximize_presentation.is_some()
+    {
+        PresentationSpace::OutputLocal
+    } else {
+        PresentationSpace::Field
+    };
     let mut inherited_camera_center = camera_center;
-    let mut inherited_zoom_scale = view.scale;
+    let mut inherited_zoom_scale = if cluster_rect.is_some() {
+        1.0
+    } else {
+        view.scale
+    };
     let mut inherited_cluster_depth = cluster_depth.filter(|_| !cluster_exclusive);
     let mut inherited_cluster_exclusive = cluster_exclusive;
 
@@ -651,43 +636,30 @@ mod tests {
     }
 
     #[test]
-    fn output_local_handoff_source_ignores_camera_motion() {
-        let output_local = Rectangle::<i32, Physical>::new((20, 30).into(), (1880, 1020).into());
+    fn cluster_workspace_rect_ignores_the_parked_field_camera() {
+        let cluster = Rectangle::<i32, Physical>::new((200, 100).into(), (800, 600).into());
         let world = Rectangle::<i32, Logical>::new((400, 250).into(), (900, 700).into());
 
         assert_eq!(
-            presentation_source_rect(
-                Some(output_local),
+            output_local_or_field_rect(
+                Some(cluster),
                 world,
-                Point::from((1400.0, 900.0)),
+                Point::from((1_400.0, 900.0)),
                 (1920, 1080).into(),
-                0.55,
+                0.5,
             ),
-            output_local
+            cluster
         );
-    }
-
-    #[test]
-    fn cluster_rect_passes_through_output_camera_coordinates() {
-        let output = Rectangle::<i32, Logical>::new((2560, 0).into(), (1920, 1200).into());
-        let cluster = Rectangle::<i32, Physical>::new((200, 100).into(), (800, 600).into());
-        let native = project_output_local_rect(
-            cluster,
-            output,
-            Point::from((3520.0, 600.0)),
-            (1920, 1200).into(),
-            1.0,
+        assert_ne!(
+            output_local_or_field_rect(
+                None,
+                world,
+                Point::from((1_400.0, 900.0)),
+                (1920, 1080).into(),
+                0.5,
+            ),
+            cluster
         );
-        assert_eq!(native, cluster);
-
-        let zoomed = project_output_local_rect(
-            cluster,
-            output,
-            Point::from((3520.0, 600.0)),
-            (1920, 1200).into(),
-            0.5,
-        );
-        assert_eq!(zoomed, Rectangle::new((580, 350).into(), (400, 300).into()));
     }
 
     #[test]
