@@ -2,11 +2,13 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 mod frame;
+mod vt;
 
 use calloop::generic::Generic;
 use calloop::timer::{TimeoutAction, Timer};
 use calloop::{EventLoop, Interest, LoopHandle, LoopSignal, Mode, PostAction};
 use smithay::backend::drm::{DrmEvent, DrmEventMetadata, DrmEventTime};
+use smithay::backend::input::KeyboardKeyEvent;
 use smithay::backend::libinput::{LibinputInputBackend, LibinputSessionInterface};
 use smithay::backend::session::Event as SessionEvent;
 use smithay::backend::session::Session;
@@ -255,12 +257,18 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
         }
     };
     eventline::info!("TtyBackend constructed successfully");
+    let initially_paused = !backend.session().is_active();
 
     let mut libinput_context =
         Libinput::new_with_udev::<LibinputSessionInterface<_>>(backend.session().into());
     libinput_context
         .udev_assign_seat(&backend.session().seat())
         .expect("failed to assign udev seat for libinput");
+    if initially_paused {
+        eventline::debug!("tty input: session starts inactive; suspending libinput");
+        libinput_context.suspend();
+    }
+    let mut libinput_for_session = libinput_context.clone();
     let libinput_backend = LibinputInputBackend::new(libinput_context);
 
     let mut event_loop: EventLoop<TtyApp> =
@@ -278,6 +286,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
     seat.add_pointer();
 
     let outputs: Vec<_> = backend.outputs().cloned().collect();
+    let now = crate::frame_clock::monotonic_now();
 
     // Smithay's `Output` is its stable identity handle and is the key used
     // throughout its own per-output state maps despite containing an Arc.
@@ -290,6 +299,9 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
             let vrr_active = backend.output_vrr_active(&output);
             let mut state = OutputFrameState::new(interval);
             state.set_vrr(vrr_active);
+            if initially_paused {
+                state.suspend(now);
+            }
             (output, state)
         })
         .collect();
@@ -300,7 +312,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
         loop_handle: loop_handle.clone(),
         loop_signal,
         output_frames,
-        paused: false,
+        paused: initially_paused,
         pending_output_config: None,
     };
     let mut wayland = TtyApp::create_wayland_state(dh.clone(), &mut driver);
@@ -468,6 +480,31 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
     event_loop
         .handle()
         .insert_source(libinput_backend, move |event, _, app| {
+            if let smithay::backend::input::InputEvent::Keyboard { event } = &event {
+                let modifiers = app
+                    .seat
+                    .get_keyboard()
+                    .expect("keyboard capability added at seat setup")
+                    .modifier_state();
+                if let Some(vt) = vt::target_from_keycode(
+                    event.key_code().raw(),
+                    event.state() == smithay::backend::input::KeyState::Pressed,
+                    modifiers,
+                ) {
+                    // The switch may prevent every held key's release from
+                    // reaching this VT. Do not retain compositor release-pair
+                    // bookkeeping across that boundary.
+                    app.suppressed_keys.clear();
+                    match app.driver.backend.change_vt(vt) {
+                        Ok(()) => eventline::debug!("tty input: requested VT switch to {vt}"),
+                        Err(err) => {
+                            eventline::warn!("tty input: failed to switch to VT {vt}: {err}")
+                        }
+                    }
+                    return;
+                }
+            }
+
             let wake_before = match &event {
                 smithay::backend::input::InputEvent::Keyboard { .. } => {
                     crate::wayland::focus::selected_output(&app.wayland).cloned()
@@ -520,22 +557,29 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                 SessionEvent::PauseSession => {
                     eventline::info!("session event: pause");
                     app.driver.paused = true;
+                    libinput_for_session.suspend();
+                    suspend_redraw_state(app, &loop_handle);
                     app.driver.backend.pause();
                 }
                 SessionEvent::ActivateSession => {
                     eventline::info!("session event: activate");
-                    app.driver.paused = false;
+                    if libinput_for_session.resume().is_err() {
+                        eventline::warn!(
+                            "tty input: failed to resume libinput after VT activation"
+                        );
+                    }
                     match app.driver.backend.resume() {
                         // The whole DRM pipeline (and any frame that was in
                         // flight before the switch away) is gone - reset
                         // clean rather than trusting whatever redraw states
                         // said before the switch.
                         Ok(()) => {
+                            app.driver.paused = false;
                             super::pointer::recover_after_session_resume(app);
                             if let Some(outputs) = app.driver.pending_output_config.take() {
                                 apply_tty_output_config(app, &outputs);
                             }
-                            reset_redraw_state(app, &loop_handle);
+                            resume_redraw_state(app);
                         }
                         Err(err) => eventline::error!("resume failed: {err}"),
                     }
@@ -1085,11 +1129,18 @@ fn on_estimated_vblank_timer(app: &mut TtyApp, output: &Output) {
     }
 }
 
-fn reset_redraw_state(app: &mut TtyApp, loop_handle: &LoopHandle<'_, TtyApp>) {
+fn suspend_redraw_state(app: &mut TtyApp, loop_handle: &LoopHandle<'_, TtyApp>) {
     let now = crate::frame_clock::monotonic_now();
     for state in app.driver.output_frames.values_mut() {
-        if let Some(token) = state.reset(now) {
+        if let Some(token) = state.suspend(now) {
             loop_handle.remove(token);
         }
+    }
+}
+
+fn resume_redraw_state(app: &mut TtyApp) {
+    let now = crate::frame_clock::monotonic_now();
+    for state in app.driver.output_frames.values_mut() {
+        state.resume(now);
     }
 }

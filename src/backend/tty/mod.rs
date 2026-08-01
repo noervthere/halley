@@ -929,6 +929,11 @@ impl TtyBackend {
         // output from rendering again (its VBlank is never coming).
         for entry in &mut self.drm_outputs {
             entry.pending = false;
+            // The manager activation above refreshes each compositor's KMS
+            // state. Drop its pre-switch scan-out buffers as well so the
+            // first frame after returning cannot reuse storage owned by the
+            // previous DRM-master epoch.
+            entry.drm_output.reset_buffers();
             if let Err(err) = entry
                 .gamma
                 .restore_after_resume(self.drm_output_manager.device())
@@ -959,6 +964,16 @@ impl TtyBackend {
     /// Drop DRM master before a VT switch away.
     pub fn pause(&mut self) {
         self.drm_output_manager.pause();
+    }
+
+    /// Ask the active libseat session to switch virtual terminals.
+    ///
+    /// This stays TTY-backend-specific: nested sessions have no VT to own,
+    /// and the session notifier remains the sole authority for the ensuing
+    /// pause/resume lifecycle.
+    pub fn change_vt(&mut self, vt: i32) -> Result<(), Box<dyn Error>> {
+        self.session.change_vt(vt)?;
+        Ok(())
     }
 
     /// A cheap clone of the session, for building a libinput context

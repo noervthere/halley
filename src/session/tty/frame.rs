@@ -162,27 +162,6 @@ impl OutputFrameState {
         }
     }
 
-    /// Resets presentation history after a VT resume and returns any timer
-    /// registration that the event loop must remove.
-    pub fn reset(&mut self, now: Duration) -> Option<RegistrationToken> {
-        if matches!(self.redraw, RedrawState::Suspended) {
-            self.clock.reset();
-            self.last_camera_sample = now;
-            self.unfinished_animations = false;
-            return None;
-        }
-        let timer = match std::mem::take(&mut self.redraw) {
-            RedrawState::WaitingForEstimatedVBlank(token)
-            | RedrawState::WaitingForEstimatedVBlankAndQueued(token) => Some(token),
-            _ => None,
-        };
-        self.clock.reset();
-        self.last_camera_sample = now;
-        self.unfinished_animations = false;
-        self.redraw = RedrawState::Queued;
-        timer
-    }
-
     pub fn suspend(&mut self, now: Duration) -> Option<RegistrationToken> {
         let timer = match std::mem::take(&mut self.redraw) {
             RedrawState::WaitingForEstimatedVBlank(token)
