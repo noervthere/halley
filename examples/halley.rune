@@ -258,8 +258,8 @@ screenshot:
   directory "$env.HOME/Pictures/Screenshots/"
 end
 
-# Global font for compositor-owned UI. The size is the base (scale 2) size;
-# smaller text uses size - 2 and larger marker glyphs use size + 4.
+# Global font for compositor-owned UI. Every compositor label, badge, dialog,
+# notification, and overlay uses this exact size.
 font:
   family "monospace"
   size 11

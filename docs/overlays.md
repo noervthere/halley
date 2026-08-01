@@ -6,6 +6,10 @@ configuration notices, and the exit confirmation. It deliberately does not
 restyle client window decorations or node labels; those retain their existing
 sections.
 
+All overlay text uses the exact family and size from the global
+[`font:`](fonts.md) section. Overlays do not apply private small, normal, or
+large font tiers.
+
 ```rune
 overlays:
   background-colour "auto"

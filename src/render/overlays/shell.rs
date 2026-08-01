@@ -258,17 +258,17 @@ fn exit_elements(
     const TITLE: &str = "Are you sure you want to leave?";
     const ACTIONS: [(&str, &str); 2] = [("Enter", "leave"), ("Esc", "cancel")];
     let title_size = ui_text
-        .measure(renderer, TITLE, 2, visuals.text.bytes())?
+        .measure(renderer, TITLE, visuals.text.bytes())?
         .unwrap_or((0, 0).into());
     let mut action_width = 0;
     let mut action_height = 0;
     let mut action_sizes = Vec::new();
     for (key, label) in ACTIONS {
         let key_size = ui_text
-            .measure(renderer, key, 1, visuals.text.bytes())?
+            .measure(renderer, key, visuals.text.bytes())?
             .unwrap_or((0, 0).into());
         let label_size = ui_text
-            .measure(renderer, label, 1, visuals.subtext.bytes())?
+            .measure(renderer, label, visuals.subtext.bytes())?
             .unwrap_or((0, 0).into());
         let chip_width = key_size.w + 16;
         action_width += chip_width + 8 + label_size.w + 22;
@@ -294,7 +294,6 @@ fn exit_elements(
         renderer,
         (title_x, title_y).into(),
         TITLE,
-        2,
         visuals.text.bytes(),
         mix,
     )? {
@@ -308,7 +307,6 @@ fn exit_elements(
             renderer,
             (chip.loc.x + 8, chip.loc.y + (chip.size.h - key_size.h) / 2).into(),
             key,
-            1,
             visuals.text.bytes(),
             mix,
         )? {
@@ -330,7 +328,6 @@ fn exit_elements(
             renderer,
             (x, action_y + (action_height - label_size.h) / 2).into(),
             label,
-            1,
             visuals.subtext.bytes(),
             mix,
         )? {
@@ -410,7 +407,6 @@ fn notification_elements(
         )
             .into(),
         &message,
-        1,
         color.bytes(),
         notification.mix,
     )? {
@@ -435,7 +431,7 @@ fn fit_middle(
     max_width: i32,
 ) -> Result<(String, smithay::utils::Size<i32, Buffer>), Box<dyn Error>> {
     let measured = ui_text
-        .measure(renderer, value, 1, color)?
+        .measure(renderer, value, color)?
         .unwrap_or((0, 0).into());
     if measured.w <= max_width {
         return Ok((value.to_string(), measured));
@@ -450,7 +446,7 @@ fn fit_middle(
             chars[chars.len() - right..].iter().collect::<String>()
         );
         let measured = ui_text
-            .measure(renderer, &candidate, 1, color)?
+            .measure(renderer, &candidate, color)?
             .unwrap_or((0, 0).into());
         if measured.w <= max_width {
             return Ok((candidate, measured));

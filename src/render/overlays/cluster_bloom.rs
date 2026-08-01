@@ -139,12 +139,11 @@ pub(crate) fn elements(
             .and_then(|label| label.chars().find(char::is_ascii_alphanumeric))
             .map(|character| character.to_ascii_uppercase().to_string())
             .unwrap_or_else(|| "?".to_string());
-        if let Some(size) = ui_text.measure(renderer, &glyph, 2, text)?
+        if let Some(size) = ui_text.measure(renderer, &glyph, text)?
             && let Some(prepared) = ui_text.element(
                 renderer,
                 (center.x - size.w / 2, center.y - size.h / 2).into(),
                 &glyph,
-                2,
                 text,
                 nodes.config.opacity * token.alpha,
             )?

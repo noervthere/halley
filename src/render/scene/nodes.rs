@@ -280,7 +280,6 @@ pub(crate) fn landmark_label_elements(
             )
                 .into(),
             &text,
-            2,
             text_rgb,
             0.94 * label.alpha * fade,
         )?
@@ -304,19 +303,18 @@ pub(super) fn fit_node_label(
     rgb: [u8; 3],
     available: i32,
 ) -> Result<(String, smithay::utils::Size<i32, smithay::utils::Buffer>), Box<dyn Error>> {
-    fit_ui_text(renderer, ui_text, source, 2, rgb, available)
+    fit_ui_text(renderer, ui_text, source, rgb, available)
 }
 
 pub(super) fn fit_ui_text(
     renderer: &mut GlesRenderer,
     ui_text: &mut crate::render::text::UiTextRenderer,
     source: &str,
-    scale: i32,
     rgb: [u8; 3],
     available: i32,
 ) -> Result<(String, smithay::utils::Size<i32, smithay::utils::Buffer>), Box<dyn Error>> {
     let text = source.trim();
-    let Some(size) = ui_text.measure(renderer, text, scale, rgb)? else {
+    let Some(size) = ui_text.measure(renderer, text, rgb)? else {
         return Ok((String::new(), (0, 0).into()));
     };
     if size.w <= available {
@@ -330,7 +328,7 @@ pub(super) fn fit_ui_text(
             .copied()
             .chain(std::iter::once('…'))
             .collect::<String>();
-        let Some(size) = ui_text.measure(renderer, &candidate, scale, rgb)? else {
+        let Some(size) = ui_text.measure(renderer, &candidate, rgb)? else {
             continue;
         };
         if size.w <= available {

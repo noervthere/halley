@@ -39,7 +39,6 @@ const CLUSTER_DIALOG_MAX_WIDTH: i32 = 560;
 const CLUSTER_DIALOG_INPUT_MIN_H: i32 = 38;
 const CLUSTER_DIALOG_BUTTON_MIN_W: i32 = 110;
 const CLUSTER_DIALOG_GAP_Y: i32 = 12;
-const SCALE: i32 = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CreationOverlayHit {
@@ -161,11 +160,10 @@ fn text_size(
     renderer: &mut GlesRenderer,
     ui_text: &mut UiTextRenderer,
     text: &str,
-    scale: i32,
     color: [u8; 3],
 ) -> Result<Size<i32, Buffer>, Box<dyn Error>> {
     Ok(ui_text
-        .measure(renderer, text, scale, color)?
+        .measure(renderer, text, color)?
         .unwrap_or((0, 0).into()))
 }
 
@@ -176,11 +174,10 @@ fn push_text(
     elements: &mut Vec<SceneElement>,
     origin: Point<i32, Physical>,
     text: &str,
-    scale: i32,
     color: [u8; 3],
     alpha: f32,
 ) -> Result<(), Box<dyn Error>> {
-    if let Some(text) = ui_text.element(renderer, origin, text, scale, color, alpha)? {
+    if let Some(text) = ui_text.element(renderer, origin, text, color, alpha)? {
         elements.push(SceneElement::UiText(text.element));
     }
     Ok(())
@@ -204,8 +201,8 @@ fn banner_elements(
     } else {
         [("Enter", "name cluster"), ("Esc", "cancel")]
     };
-    let title_size = text_size(renderer, ui_text, title, SCALE, visuals.text.bytes())?;
-    let subtitle_size = text_size(renderer, ui_text, subtitle, SCALE, visuals.subtext.bytes())?;
+    let title_size = text_size(renderer, ui_text, title, visuals.text.bytes())?;
+    let subtitle_size = text_size(renderer, ui_text, subtitle, visuals.subtext.bytes())?;
     let action_size = action_row_size(renderer, ui_text, &actions, visuals)?;
     let width = title_size.w.max(subtitle_size.w).max(action_size.w) + BANNER_PAD_X * 2;
     let height = BANNER_PAD_Y * 2
@@ -226,7 +223,6 @@ fn banner_elements(
         &mut elements,
         (card.loc.x + BANNER_PAD_X, y).into(),
         title,
-        SCALE,
         visuals.text.bytes(),
         1.0,
     )?;
@@ -237,7 +233,6 @@ fn banner_elements(
         &mut elements,
         (card.loc.x + BANNER_PAD_X, y).into(),
         subtitle,
-        SCALE,
         visuals.subtext.bytes(),
         0.96,
     )?;
@@ -281,7 +276,7 @@ fn selection_marker_elements(
         return Ok(Vec::new());
     };
     let label = "SEL";
-    let text_size = text_size(renderer, ui_text, label, SCALE, visuals.text.bytes())?;
+    let text_size = text_size(renderer, ui_text, label, visuals.text.bytes())?;
     let mut elements = Vec::new();
     for id in &creation.selected {
         let Some(node) = nodes.field.node(*id) else {
@@ -311,7 +306,6 @@ fn selection_marker_elements(
             )
                 .into(),
             label,
-            SCALE,
             visuals.text.bytes(),
             1.0,
         )?;
@@ -345,9 +339,9 @@ fn naming_dialog_elements(
 ) -> Result<(Vec<SceneElement>, NamingHitLayout), Box<dyn Error>> {
     let title = "Create cluster";
     let subtitle = "Choose a name for your new cluster";
-    let title_size = text_size(renderer, ui_text, title, SCALE, visuals.text.bytes())?;
-    let subtitle_size = text_size(renderer, ui_text, subtitle, SCALE, visuals.subtext.bytes())?;
-    let confirm_size = text_size(renderer, ui_text, "Confirm", SCALE, visuals.text.bytes())?;
+    let title_size = text_size(renderer, ui_text, title, visuals.text.bytes())?;
+    let subtitle_size = text_size(renderer, ui_text, subtitle, visuals.subtext.bytes())?;
+    let confirm_size = text_size(renderer, ui_text, "Confirm", visuals.text.bytes())?;
     let button_width =
         (confirm_size.w + CLUSTER_DIALOG_BUTTON_PAD_X * 2).max(CLUSTER_DIALOG_BUTTON_MIN_W);
     let button_height = (confirm_size.h + CLUSTER_DIALOG_BUTTON_PAD_Y * 2).max(34);
@@ -411,21 +405,14 @@ fn naming_dialog_elements(
     )?;
     let visible_text = char_slice(&creation.name_buffer, visible_start, visible_end);
     let caret_prefix = char_slice(&creation.name_buffer, visible_start, creation.caret_char);
-    let caret_width = text_size(
-        renderer,
-        ui_text,
-        &caret_prefix,
-        SCALE,
-        visuals.text.bytes(),
-    )?
-    .w;
+    let caret_width = text_size(renderer, ui_text, &caret_prefix, visuals.text.bytes())?.w;
     let caret_x = text_x + caret_width;
     let mut char_edges = Vec::new();
     for index in (visible_start + 1)..=visible_end {
         let prefix = char_slice(&creation.name_buffer, visible_start, index);
         char_edges.push((
             index,
-            text_size(renderer, ui_text, &prefix, SCALE, visuals.text.bytes())?.w,
+            text_size(renderer, ui_text, &prefix, visuals.text.bytes())?.w,
         ));
     }
     let selection = selection_range(creation).and_then(|(start, end)| {
@@ -462,7 +449,6 @@ fn naming_dialog_elements(
         )
             .into(),
         title,
-        SCALE,
         visuals.text.bytes(),
         1.0,
     )?;
@@ -476,7 +462,6 @@ fn naming_dialog_elements(
         )
             .into(),
         subtitle,
-        SCALE,
         visuals.subtext.bytes(),
         0.98,
     )?;
@@ -486,23 +471,15 @@ fn naming_dialog_elements(
         &mut elements,
         (text_x, text_y).into(),
         &visible_text,
-        SCALE,
         visuals.text.bytes(),
         1.0,
     )?;
     if let Some((start, end)) = selection {
         let start_prefix = char_slice(&creation.name_buffer, visible_start, start);
         let selected = char_slice(&creation.name_buffer, start, end);
-        let selection_x = text_x
-            + text_size(
-                renderer,
-                ui_text,
-                &start_prefix,
-                SCALE,
-                visuals.text.bytes(),
-            )?
-            .w;
-        let selection_width = text_size(renderer, ui_text, &selected, SCALE, visuals.text.bytes())?
+        let selection_x =
+            text_x + text_size(renderer, ui_text, &start_prefix, visuals.text.bytes())?.w;
+        let selection_width = text_size(renderer, ui_text, &selected, visuals.text.bytes())?
             .w
             .max(1);
         elements.push(SceneElement::Border(SolidColorRenderElement::new(
@@ -549,7 +526,6 @@ fn naming_dialog_elements(
         )
             .into(),
         "Confirm",
-        SCALE,
         visuals.text.bytes(),
         1.0,
     )?;
@@ -634,14 +610,14 @@ fn visible_text_range(
     let mut start = creation.scroll_char.min(creation.caret_char).min(char_len);
     while start < creation.caret_char {
         let before = char_slice(&creation.name_buffer, start, creation.caret_char);
-        if text_size(renderer, ui_text, &before, SCALE, color)?.w <= visible_width.max(1) - 12 {
+        if text_size(renderer, ui_text, &before, color)?.w <= visible_width.max(1) - 12 {
             break;
         }
         start += 1;
     }
     while start > 0 {
         let candidate = char_slice(&creation.name_buffer, start - 1, creation.caret_char);
-        if text_size(renderer, ui_text, &candidate, SCALE, color)?.w > visible_width.max(1) - 18 {
+        if text_size(renderer, ui_text, &candidate, color)?.w > visible_width.max(1) - 18 {
             break;
         }
         start -= 1;
@@ -649,7 +625,7 @@ fn visible_text_range(
     let mut end = start;
     while end < char_len {
         let candidate = char_slice(&creation.name_buffer, start, end + 1);
-        if text_size(renderer, ui_text, &candidate, SCALE, color)?.w > visible_width.max(1) {
+        if text_size(renderer, ui_text, &candidate, color)?.w > visible_width.max(1) {
             break;
         }
         end += 1;
@@ -666,8 +642,8 @@ fn action_row_size(
     let mut width = 0;
     let mut height = 0;
     for (index, (key, label)) in actions.iter().enumerate() {
-        let key_size = text_size(renderer, ui_text, key, SCALE, visuals.text.bytes())?;
-        let label_size = text_size(renderer, ui_text, label, SCALE, visuals.subtext.bytes())?;
+        let key_size = text_size(renderer, ui_text, key, visuals.text.bytes())?;
+        let label_size = text_size(renderer, ui_text, label, visuals.subtext.bytes())?;
         let key_width = (key_size.w + ACTION_KEY_PAD_X * 2).max(ACTION_KEY_MIN_W);
         width += key_width + ACTION_LABEL_GAP + label_size.w;
         if index + 1 < actions.len() {
@@ -691,8 +667,8 @@ fn push_action_row(
     let row_size = action_row_size(renderer, ui_text, actions, visuals)?;
     let mut x = origin.x;
     for (index, (key, label)) in actions.iter().enumerate() {
-        let key_size = text_size(renderer, ui_text, key, SCALE, visuals.text.bytes())?;
-        let label_size = text_size(renderer, ui_text, label, SCALE, visuals.subtext.bytes())?;
+        let key_size = text_size(renderer, ui_text, key, visuals.text.bytes())?;
+        let label_size = text_size(renderer, ui_text, label, visuals.subtext.bytes())?;
         let key_width = (key_size.w + ACTION_KEY_PAD_X * 2).max(ACTION_KEY_MIN_W);
         let chip = Rectangle::new((x, origin.y).into(), (key_width, row_size.h).into());
         push_text(
@@ -705,7 +681,6 @@ fn push_action_row(
             )
                 .into(),
             key,
-            SCALE,
             visuals.text.bytes(),
             1.0,
         )?;
@@ -727,7 +702,6 @@ fn push_action_row(
             elements,
             (x, origin.y + (row_size.h - label_size.h) / 2).into(),
             label,
-            SCALE,
             visuals.subtext.bytes(),
             1.0,
         )?;

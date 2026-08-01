@@ -32,6 +32,11 @@ struct TextKey {
     rgb: [u8; 3],
 }
 
+/// Shared renderer for compositor-owned text.
+///
+/// Size is intentionally absent from the measurement and element APIs. The
+/// live `font.size` setting is the single authority, so a new overlay cannot
+/// silently create another typography tier at its call site.
 pub struct UiTextRenderer {
     context: Option<ContextId<GlesTexture>>,
     font_system: FontSystem,
@@ -73,10 +78,9 @@ impl UiTextRenderer {
         &mut self,
         renderer: &mut GlesRenderer,
         text: &str,
-        scale: i32,
         rgb: [u8; 3],
     ) -> Result<Option<smithay::utils::Size<i32, Buffer>>, Box<dyn Error>> {
-        let Some(key) = self.prepare_key(renderer, text, scale, rgb)? else {
+        let Some(key) = self.prepare_key(renderer, text, rgb)? else {
             return Ok(None);
         };
         let entry = self.text.get_mut(&key).expect("text entry prepared");
@@ -89,14 +93,13 @@ impl UiTextRenderer {
         renderer: &mut GlesRenderer,
         origin: Point<i32, Physical>,
         text: &str,
-        scale: i32,
         rgb: [u8; 3],
         alpha: f32,
     ) -> Result<Option<PreparedUiText>, Box<dyn Error>> {
         if alpha <= 0.001 {
             return Ok(None);
         }
-        let Some(key) = self.prepare_key(renderer, text, scale, rgb)? else {
+        let Some(key) = self.prepare_key(renderer, text, rgb)? else {
             return Ok(None);
         };
         let context = self.context.as_ref().expect("context prepared").clone();
@@ -130,7 +133,6 @@ impl UiTextRenderer {
         &mut self,
         renderer: &mut GlesRenderer,
         text: &str,
-        scale: i32,
         rgb: [u8; 3],
     ) -> Result<Option<TextKey>, Box<dyn Error>> {
         if text.is_empty() {
@@ -143,7 +145,7 @@ impl UiTextRenderer {
         let key = TextKey {
             text: text.to_string(),
             family: normalized_family(&self.font),
-            size_px: font_size_for_scale(&self.font, scale),
+            size_px: configured_font_size(&self.font),
             rgb,
         };
         if !self.text.contains_key(&key) {
@@ -198,15 +200,8 @@ fn normalized_family(font: &halley_config::Font) -> String {
     }
 }
 
-fn font_size_for_scale(font: &halley_config::Font, scale: i32) -> u16 {
-    match scale.max(1) {
-        1 => font.size.saturating_sub(2).max(8),
-        2 => font.size,
-        3 => font.size.saturating_add(4),
-        value => font
-            .size
-            .saturating_add(((value - 2) as u16).saturating_mul(4)),
-    }
+fn configured_font_size(font: &halley_config::Font) -> u16 {
+    font.size.max(1)
 }
 
 fn raster_text(
@@ -460,15 +455,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn legacy_scales_map_from_the_global_base_size() {
+    fn configured_size_is_used_without_per_overlay_offsets() {
         let font = halley_config::Font {
             family: "monospace".to_string(),
             size: 11,
         };
-        assert_eq!(font_size_for_scale(&font, 1), 9);
-        assert_eq!(font_size_for_scale(&font, 2), 11);
-        assert_eq!(font_size_for_scale(&font, 3), 15);
-        assert_eq!(font_size_for_scale(&font, 4), 19);
+        assert_eq!(configured_font_size(&font), 11);
+        assert_eq!(
+            configured_font_size(&halley_config::Font {
+                family: "monospace".to_string(),
+                size: 0,
+            }),
+            1
+        );
     }
 
     #[test]

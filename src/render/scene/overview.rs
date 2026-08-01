@@ -106,7 +106,6 @@ pub(super) fn apogee_elements(
                 renderer,
                 ui_text,
                 &record.title,
-                2,
                 overlay_visuals.text.bytes(),
                 caption.size.w - 16,
             )?;
@@ -119,7 +118,6 @@ pub(super) fn apogee_elements(
                     )
                         .into(),
                     &title,
-                    2,
                     overlay_visuals.text.bytes(),
                     chrome_alpha,
                 )?
@@ -148,12 +146,11 @@ pub(super) fn apogee_elements(
         }
         if record.collapsed {
             let badge = "NODE";
-            if let Some(size) = ui_text.measure(renderer, badge, 1, [151, 205, 255])?
+            if let Some(size) = ui_text.measure(renderer, badge, [151, 205, 255])?
                 && let Some(text) = ui_text.element(
                     renderer,
                     (card.loc.x + card.size.w - size.w - 10, card.loc.y + 8).into(),
                     badge,
-                    1,
                     [151, 205, 255],
                     chrome_alpha,
                 )?
@@ -399,7 +396,7 @@ pub(super) fn focus_cycle_elements(
 
         // Top-right monitor badge, over the preview.
         let monitor = truncate_chars(&record.output, 10);
-        if let Some(size) = ui_text.measure(renderer, &monitor, 1, overlay_visuals.text.bytes())? {
+        if let Some(size) = ui_text.measure(renderer, &monitor, overlay_visuals.text.bytes())? {
             let badge = Rectangle::<i32, Physical>::new(
                 (body.loc.x + body.size.w - size.w - 22, body.loc.y + 8).into(),
                 (size.w + 14, size.h + 8).into(),
@@ -408,7 +405,6 @@ pub(super) fn focus_cycle_elements(
                 renderer,
                 (badge.loc.x + 7, badge.loc.y + 4).into(),
                 &monitor,
-                1,
                 overlay_visuals.text.bytes(),
                 alpha,
             )? {
@@ -427,8 +423,7 @@ pub(super) fn focus_cycle_elements(
         }
 
         if record.collapsed
-            && let Some(size) =
-                ui_text.measure(renderer, "NODE", 1, overlay_visuals.border.bytes())?
+            && let Some(size) = ui_text.measure(renderer, "NODE", overlay_visuals.border.bytes())?
         {
             let badge = Rectangle::<i32, Physical>::new(
                 (body.loc.x + 8, body.loc.y + 8).into(),
@@ -438,7 +433,6 @@ pub(super) fn focus_cycle_elements(
                 renderer,
                 (badge.loc.x + 7, badge.loc.y + 4).into(),
                 "NODE",
-                1,
                 overlay_visuals.border.bytes(),
                 alpha,
             )? {
@@ -458,11 +452,6 @@ pub(super) fn focus_cycle_elements(
 
         // Old Halley put the title and app icon in a caption band over the
         // bottom of the thumbnail instead of growing a giant footer.
-        let title_scale = match distance_step {
-            0 => 3,
-            1 => 2,
-            _ => 1,
-        };
         let title = truncate_chars(
             &record.title,
             match distance_step {
@@ -472,7 +461,7 @@ pub(super) fn focus_cycle_elements(
             },
         );
         let text_size = ui_text
-            .measure(renderer, &title, title_scale, overlay_visuals.text.bytes())?
+            .measure(renderer, &title, overlay_visuals.text.bytes())?
             .unwrap_or_default();
         let band_margin = 6;
         let band_h = (text_size.h + 10)
@@ -505,7 +494,6 @@ pub(super) fn focus_cycle_elements(
             renderer,
             (text_x, band.loc.y + (band_h - text_size.h) / 2).into(),
             &title,
-            title_scale,
             overlay_visuals.text.bytes(),
             alpha,
         )? {
@@ -570,12 +558,11 @@ pub(super) fn focus_cycle_elements(
     }
 
     let hints = "Tab  next     Shift+Tab  previous     Esc  cancel";
-    if let Some(size) = ui_text.measure(renderer, hints, 1, overlay_visuals.subtext.bytes())?
+    if let Some(size) = ui_text.measure(renderer, hints, overlay_visuals.subtext.bytes())?
         && let Some(text) = ui_text.element(
             renderer,
             ((screen.w - size.w) / 2, screen.h - size.h - 28).into(),
             hints,
-            1,
             overlay_visuals.subtext.bytes(),
             alpha,
         )?
@@ -668,7 +655,7 @@ pub(super) fn hover_preview_elements(
 
     let title = truncate_chars(&record.title, 24);
     if !title.is_empty()
-        && let Some(text_size) = ui_text.measure(renderer, &title, 2, visuals.text.bytes())?
+        && let Some(text_size) = ui_text.measure(renderer, &title, visuals.text.bytes())?
         && let Some(text) = ui_text.element(
             renderer,
             (
@@ -677,7 +664,6 @@ pub(super) fn hover_preview_elements(
             )
                 .into(),
             &title,
-            2,
             visuals.text.bytes(),
             0.94 * alpha,
         )?

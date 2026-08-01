@@ -219,7 +219,7 @@ pub fn elements(
     let mut backgrounds = Vec::new();
     for layout in layouts {
         let label_size = ui_text
-            .measure(renderer, &layout.label, 2, overlay_visuals.text.bytes())?
+            .measure(renderer, &layout.label, overlay_visuals.text.bytes())?
             .unwrap_or((0, 0).into());
         let text_x = layout.chip.loc.x
             + CHIP_PAD_X
@@ -236,7 +236,6 @@ pub fn elements(
             )
                 .into(),
             &layout.label,
-            2,
             overlay_visuals.text.bytes(),
             layout.alpha,
         )? {
@@ -272,7 +271,7 @@ pub fn elements(
 
         if let Some((distance, rect)) = layout.distance {
             let text_size = ui_text
-                .measure(renderer, &distance, 2, overlay_visuals.text.bytes())?
+                .measure(renderer, &distance, overlay_visuals.text.bytes())?
                 .unwrap_or((0, 0).into());
             if let Some(text) = ui_text.element(
                 renderer,
@@ -282,7 +281,6 @@ pub fn elements(
                 )
                     .into(),
                 &distance,
-                2,
                 overlay_visuals.text.bytes(),
                 layout.alpha * 0.96,
             )? {
@@ -597,7 +595,7 @@ fn measure_size(
     distance: Option<&str>,
 ) -> Result<Size, Box<dyn Error>> {
     let label_size = ui_text
-        .measure(renderer, label, 2, TEXT_RGB)?
+        .measure(renderer, label, TEXT_RGB)?
         .unwrap_or((0, 0).into());
     let chip_w = (CHIP_PAD_X * 2
         + label_size.w
@@ -610,7 +608,7 @@ fn measure_size(
     let chip_h = (CHIP_PAD_Y * 2 + label_size.h.max(if show_icon { ICON_SIZE } else { 0 })).max(24);
     let distance_size = match distance {
         Some(distance) => ui_text
-            .measure(renderer, distance, 2, TEXT_RGB)?
+            .measure(renderer, distance, TEXT_RGB)?
             .unwrap_or((0, 0).into()),
         None => (0, 0).into(),
     };

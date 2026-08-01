@@ -140,7 +140,7 @@ pub(crate) fn elements(
             .and_then(|label| label.chars().find(char::is_ascii_alphanumeric))
             .map(|ch| ch.to_ascii_uppercase().to_string())
             .unwrap_or_else(|| "?".to_string());
-        if let Some(size) = ui_text.measure(renderer, &glyph, 2, visuals.text.bytes())?
+        if let Some(size) = ui_text.measure(renderer, &glyph, visuals.text.bytes())?
             && let Some(text) = ui_text.element(
                 renderer,
                 (
@@ -149,7 +149,6 @@ pub(crate) fn elements(
                 )
                     .into(),
                 &glyph,
-                2,
                 visuals.text.bytes(),
                 alpha,
             )?
