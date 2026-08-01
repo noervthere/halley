@@ -77,16 +77,12 @@ impl ClusterSystem {
         work_area: Rectangle<i32, Logical>,
         output_geometry: Rectangle<i32, Logical>,
     ) -> Vec<WorkspaceSurfaceTarget> {
-        let Some(cluster_id) = self.active_on(output) else {
-            return Vec::new();
-        };
-        let Some(layout) = self.workspace_layout(cluster_id, work_area) else {
-            return Vec::new();
-        };
         let dragging = self.dragged_window.as_ref().map(|drag| drag.member);
-        let mut targets = layout
-            .placements
+        let mut targets = self
+            .active_on(output)
+            .and_then(|cluster_id| self.workspace_layout(cluster_id, work_area))
             .into_iter()
+            .flat_map(|layout| layout.placements)
             .filter(|placement| {
                 !self.admission_floats.contains(&placement.node_id)
                     && !self.member_floats.is_floating(placement.node_id)
@@ -112,15 +108,20 @@ impl ClusterSystem {
             })
             .collect::<Vec<_>>();
         targets.extend(
-            self.member_ids(cluster_id)
+            self.member_floats
+                .placements_on(output)
                 .into_iter()
-                .filter(|member| dragging != Some(*member))
-                .filter_map(|member| {
-                    let local = self.member_floats.rect(member)?;
-                    Some(WorkspaceSurfaceTarget {
-                        node_id: member,
-                        geometry: Rectangle::new(output_geometry.loc + local.loc, local.size),
-                    })
+                .filter(|(member, _)| dragging != Some(*member))
+                .filter(|(member, _)| {
+                    let Some(cluster) = self.cluster_for_member(*member) else {
+                        return false;
+                    };
+                    self.metadata(cluster)
+                        .is_some_and(|metadata| self.active_on(&metadata.output) == Some(cluster))
+                })
+                .map(|(member, local)| WorkspaceSurfaceTarget {
+                    node_id: member,
+                    geometry: Rectangle::new(output_geometry.loc + local.loc, local.size),
                 }),
         );
         targets

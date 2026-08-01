@@ -52,7 +52,14 @@ fn toggle_focused_cluster_float<D: SessionDriver>(
     let Some(cluster) = session.clusters.cluster_for_member(record.id) else {
         return;
     };
-    if session.clusters.active_on(output_name) != Some(cluster)
+    let Some(cluster_output_name) = session
+        .clusters
+        .metadata(cluster)
+        .map(|metadata| metadata.output.clone())
+    else {
+        return;
+    };
+    if session.clusters.active_on(&cluster_output_name) != Some(cluster)
         || session.fullscreen.is_fullscreen_or_pending(&record.surface)
         || session.maximize.contains(&record.surface)
         || crate::input::grab::belongs_to_surface(&session.interactions.grab, &record.surface)
@@ -60,6 +67,19 @@ fn toggle_focused_cluster_float<D: SessionDriver>(
         return;
     }
     let Some(output_geometry) = session.wayland.space.output_geometry(&output) else {
+        return;
+    };
+    let Some(cluster_output) = session
+        .wayland
+        .space
+        .outputs()
+        .find(|candidate| candidate.name() == cluster_output_name)
+        .cloned()
+    else {
+        return;
+    };
+    let Some(cluster_output_geometry) = session.wayland.space.output_geometry(&cluster_output)
+    else {
         return;
     };
     let now = crate::frame_clock::monotonic_now();
@@ -75,15 +95,37 @@ fn toggle_focused_cluster_float<D: SessionDriver>(
     let Some(current) = current else {
         return;
     };
-    let work_area = smithay::desktop::layer_map_for_output(&output).non_exclusive_zone();
-    let Some(floating) =
-        session
-            .clusters
-            .toggle_member_floating(output_name, record.id, work_area, current, now)
-    else {
+    let cluster_local_current = Rectangle::new(
+        output_geometry.loc + current.loc - cluster_output_geometry.loc,
+        current.size,
+    );
+    let work_area = smithay::desktop::layer_map_for_output(&cluster_output).non_exclusive_zone();
+    let Some(floating) = session.clusters.toggle_member_floating(
+        &cluster_output_name,
+        record.id,
+        work_area,
+        cluster_local_current,
+        now,
+    ) else {
         return;
     };
-    super::super::reconcile_cluster_surfaces(session, output_name);
+    let member_output_name = session
+        .clusters
+        .member_floating_output(record.id)
+        .map(str::to_owned)
+        .unwrap_or_else(|| cluster_output_name.clone());
+    let member_output = session
+        .wayland
+        .space
+        .outputs()
+        .find(|candidate| candidate.name() == member_output_name)
+        .cloned()
+        .unwrap_or_else(|| cluster_output.clone());
+    crate::nodes::set_collapsed_output(session, record.id, &member_output);
+    super::super::reconcile_cluster_surfaces(session, &cluster_output_name);
+    if member_output_name != cluster_output_name {
+        super::super::reconcile_cluster_surfaces(session, &member_output_name);
+    }
     if floating {
         crate::window::raise_managed(&mut session.wayland, &record.window);
         session.xwayland.raise_window(&record.window);

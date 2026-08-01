@@ -537,6 +537,10 @@ impl ClusterSystem {
         self.member_floats.rect(member)
     }
 
+    pub fn member_floating_output(&self, member: NodeId) -> Option<&str> {
+        self.member_floats.output(member)
+    }
+
     /// Moves one member between the active cluster's layout and its
     /// cluster-local floating layer without changing registry membership.
     /// The returned boolean is the member's new floating state.
@@ -559,8 +563,8 @@ impl ClusterSystem {
         }
         let before = self.workspace_layout(cluster, work_area)?;
         self.surfaces.invalidate_target(member);
-        if let Some(origin) = self.member_floats.tile(member) {
-            self.begin_reflow_with_origin(output, cluster, before, member, origin, now);
+        if self.member_floats.tile(member).is_some() {
+            self.begin_reflow_with_origin(output, cluster, before, member, current_rect, now);
             Some(false)
         } else {
             let promotion = (self.metadata(cluster).map(|metadata| metadata.layout)
@@ -575,7 +579,8 @@ impl ClusterSystem {
                 })
             })
             .flatten();
-            self.member_floats.float(member, current_rect, work_area);
+            self.member_floats
+                .float(member, output, current_rect, work_area);
             let duration_ms = self
                 .metadata(cluster)
                 .map(|metadata| match metadata.layout {
@@ -602,11 +607,17 @@ impl ClusterSystem {
         rect: Rectangle<i32, Logical>,
         work_area: Rectangle<i32, Logical>,
     ) -> bool {
-        let Some(cluster) = self.active_on(output) else {
+        let Some(cluster) = self.cluster_for_member(member) else {
             return false;
         };
-        if self.cluster_for_member(member) != Some(cluster)
-            || !self.member_floats.update(member, rect, work_area)
+        let Some(home_output) = self
+            .metadata(cluster)
+            .map(|metadata| metadata.output.clone())
+        else {
+            return false;
+        };
+        if self.active_on(&home_output) != Some(cluster)
+            || !self.member_floats.update(member, output, rect, work_area)
         {
             return false;
         }
@@ -706,6 +717,50 @@ impl ClusterSystem {
             };
         }
         let member_cluster = self.cluster_for_member(id);
+        if let Some(target) = self.member_floats.rect_on(id, output) {
+            let Some(cluster) = member_cluster else {
+                return WindowPresentation::Hidden;
+            };
+            let Some(home_output) = self
+                .metadata(cluster)
+                .map(|metadata| metadata.output.as_str())
+            else {
+                return WindowPresentation::Hidden;
+            };
+            let presented = self.active_on(home_output) == Some(cluster)
+                || self.transition_cluster_on(home_output, now) == Some(cluster);
+            if !presented {
+                return WindowPresentation::Hidden;
+            }
+            let transition_core = (home_output == output).then_some(core).flatten();
+            if let Some(visual) =
+                self.transition_visual(home_output, cluster, id, target, transition_core, now)
+            {
+                return WindowPresentation::Workspace {
+                    rect: visual.rect,
+                    depth: usize::MAX,
+                    alpha: visual.alpha,
+                };
+            }
+            if home_output == output
+                && let Some(visual) =
+                    self.reflow_visual(home_output, cluster, id, Some((target, usize::MAX)), now)
+            {
+                return WindowPresentation::Workspace {
+                    rect: visual.rect,
+                    depth: visual.depth,
+                    alpha: visual.alpha,
+                };
+            }
+            return WindowPresentation::Workspace {
+                rect: target,
+                depth: usize::MAX,
+                alpha: 1.0,
+            };
+        }
+        if self.member_floats.is_floating(id) {
+            return WindowPresentation::Hidden;
+        }
         let active = self.active_on(output);
         let closing = self
             .transitions
@@ -727,29 +782,6 @@ impl ClusterSystem {
         }
         if member_cluster != Some(active) {
             return WindowPresentation::Hidden;
-        }
-        if let Some(target) = self.member_floats.rect(id) {
-            if let Some(visual) = self.transition_visual(output, active, id, target, core, now) {
-                return WindowPresentation::Workspace {
-                    rect: visual.rect,
-                    depth: usize::MAX,
-                    alpha: visual.alpha,
-                };
-            }
-            if let Some(visual) =
-                self.reflow_visual(output, active, id, Some((target, usize::MAX)), now)
-            {
-                return WindowPresentation::Workspace {
-                    rect: visual.rect,
-                    depth: visual.depth,
-                    alpha: visual.alpha,
-                };
-            }
-            return WindowPresentation::Workspace {
-                rect: target,
-                depth: usize::MAX,
-                alpha: 1.0,
-            };
         }
         // A member whose client geometry is still owned by its admission
         // transaction must retain the ordinary Field transform as well.
@@ -938,11 +970,12 @@ impl ClusterSystem {
 
     pub fn begin_floating_member_drag(
         &mut self,
-        output: &str,
+        cluster_output: &str,
+        member_output: &str,
         member: NodeId,
         rect: Rectangle<i32, Logical>,
     ) -> bool {
-        let Some(cluster) = self.active_on(output) else {
+        let Some(cluster) = self.active_on(cluster_output) else {
             return false;
         };
         if self.cluster_for_member(member) != Some(cluster)
@@ -953,7 +986,7 @@ impl ClusterSystem {
         self.surfaces.invalidate_target(member);
         self.dragged_window = Some(DraggedWindow {
             member,
-            presentation: Some((output.to_string(), rect)),
+            presentation: Some((member_output.to_string(), rect)),
         });
         true
     }
@@ -1162,7 +1195,8 @@ impl ClusterSystem {
 
     pub fn finish_floating_member_drag(
         &mut self,
-        output: &str,
+        cluster_output: &str,
+        member_output: &str,
         member: NodeId,
         work_area: Rectangle<i32, Logical>,
         rect: Rectangle<i32, Logical>,
@@ -1171,7 +1205,7 @@ impl ClusterSystem {
             return false;
         }
         self.dragged_window = None;
-        let Some(cluster) = self.active_on(output) else {
+        let Some(cluster) = self.active_on(cluster_output) else {
             return false;
         };
         if self.cluster_for_member(member) != Some(cluster)
@@ -1179,7 +1213,9 @@ impl ClusterSystem {
         {
             return false;
         }
-        let changed = self.member_floats.update(member, rect, work_area);
+        let changed = self
+            .member_floats
+            .update(member, member_output, rect, work_area);
         self.surfaces.invalidate_target(member);
         changed || self.member_floats.rect(member).is_some()
     }
@@ -2093,7 +2129,7 @@ mod tests {
             system.toggle_member_floating("DP-1", members[0], work_area, initial, Duration::ZERO,),
             Some(true)
         );
-        assert!(system.begin_floating_member_drag("DP-1", members[0], initial));
+        assert!(system.begin_floating_member_drag("DP-1", "DP-1", members[0], initial));
         assert_eq!(
             system
                 .workspace_surface_targets(
@@ -2112,8 +2148,98 @@ mod tests {
                 .window_presentation(members[0], "DP-1", work_area, None, Duration::from_secs(2),),
             WindowPresentation::PointerDrag { rect: moved }
         );
-        assert!(system.finish_floating_member_drag("DP-1", members[0], work_area, moved,));
+        assert!(system.finish_floating_member_drag("DP-1", "DP-1", members[0], work_area, moved,));
         assert_eq!(system.member_floating_rect(members[0]), Some(moved));
+        assert_eq!(
+            system.registry.cluster(cluster).unwrap().members(),
+            original_order
+        );
+    }
+
+    #[test]
+    fn floating_member_can_leave_and_return_without_losing_cluster_state() {
+        let (_field, mut system, cluster, members) =
+            active_test_cluster(3, ClusterWorkspaceLayoutKind::Tiling);
+        let work_area = Rectangle::new((0, 0).into(), (1_000, 700).into());
+        let original_order = system.registry.cluster(cluster).unwrap().members().to_vec();
+        let initial = Rectangle::new((120, 90).into(), (520, 400).into());
+        let external = Rectangle::new((80, 60).into(), initial.size);
+
+        assert_eq!(
+            system.toggle_member_floating("DP-1", members[0], work_area, initial, Duration::ZERO,),
+            Some(true)
+        );
+        assert!(system.begin_floating_member_drag("DP-1", "DP-1", members[0], initial));
+        assert!(system.update_workspace_drag(members[0], "DP-2", external.loc));
+        assert_eq!(
+            system.window_presentation(members[0], "DP-2", work_area, None, Duration::ZERO),
+            WindowPresentation::PointerDrag { rect: external }
+        );
+        assert!(
+            system.finish_floating_member_drag("DP-1", "DP-2", members[0], work_area, external,)
+        );
+
+        assert_eq!(system.member_floating_output(members[0]), Some("DP-2"));
+        assert_eq!(system.member_floating_rect(members[0]), Some(external));
+        assert_eq!(
+            system.window_presentation(members[0], "DP-1", work_area, None, Duration::MAX),
+            WindowPresentation::Hidden
+        );
+        assert_eq!(
+            system.window_presentation(members[0], "DP-2", work_area, None, Duration::MAX),
+            WindowPresentation::Workspace {
+                rect: external,
+                depth: usize::MAX,
+                alpha: 1.0,
+            }
+        );
+        assert_eq!(
+            system.workspace_surface_targets(
+                "DP-2",
+                work_area,
+                Rectangle::new((1_000, 0).into(), work_area.size),
+            ),
+            vec![surfaces::WorkspaceSurfaceTarget {
+                node_id: members[0],
+                geometry: Rectangle::new((1_080, 60).into(), external.size),
+            }]
+        );
+
+        assert!(system.activate_slot("DP-1", 1, Duration::from_secs(1)));
+        assert_eq!(
+            system.window_presentation(
+                members[0],
+                "DP-2",
+                work_area,
+                None,
+                Duration::from_secs(20),
+            ),
+            WindowPresentation::Hidden
+        );
+        assert!(system.activate_slot("DP-1", 1, Duration::from_secs(20)));
+        assert_eq!(
+            system.window_presentation(
+                members[0],
+                "DP-2",
+                work_area,
+                None,
+                Duration::from_secs(40),
+            ),
+            WindowPresentation::Workspace {
+                rect: external,
+                depth: usize::MAX,
+                alpha: 1.0,
+            }
+        );
+
+        assert!(system.begin_floating_member_drag("DP-1", "DP-2", members[0], external));
+        assert!(system.update_workspace_drag(members[0], "DP-1", initial.loc));
+        assert!(
+            system.finish_floating_member_drag("DP-1", "DP-1", members[0], work_area, initial,)
+        );
+        assert_eq!(system.member_floating_output(members[0]), Some("DP-1"));
+        assert!(system.is_member_floating(members[0]));
+        assert_eq!(system.cluster_for_member(members[0]), Some(cluster));
         assert_eq!(
             system.registry.cluster(cluster).unwrap().members(),
             original_order

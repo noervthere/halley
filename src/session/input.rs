@@ -1184,13 +1184,7 @@ where
                 );
                 if let Some(drag) = cluster_drag.as_mut() {
                     drag.on_origin_output = drag.output == output_name;
-                    let tracks_this_output = !matches!(
-                        drag.kind,
-                        crate::input::grab::ClusterWindowDragKind::Floating
-                    ) || drag.on_origin_output;
-                    if let Some(id) = id
-                        && tracks_this_output
-                    {
+                    if let Some(id) = id {
                         let screen_location = Point::<i32, Logical>::from((
                             (position_after.0 + f64::from(screen_offset.x)).round() as i32
                                 - output_geometry.loc.x,
@@ -1219,20 +1213,8 @@ where
                         )
                     ) && drag.on_origin_output
                 });
-                let cluster_tracks_pointer = cluster_drag.as_ref().is_some_and(|drag| {
-                    !matches!(
-                        drag.kind,
-                        crate::input::grab::ClusterWindowDragKind::Floating
-                    ) || drag.on_origin_output
-                });
-                if output_changed
-                    && !cluster_drag.as_ref().is_some_and(|drag| {
-                        matches!(
-                            drag.kind,
-                            crate::input::grab::ClusterWindowDragKind::Floating
-                        )
-                    })
-                {
+                let cluster_tracks_pointer = cluster_drag.is_some();
+                if output_changed {
                     if let Some(id) = id {
                         crate::nodes::set_collapsed_output(session, id, &output);
                     } else {
@@ -2154,16 +2136,28 @@ where
                             let _ = crate::nodes::tick_physics(session, now);
                         }
                         let cluster_release = cluster_drag.as_ref().and_then(|drag| {
-                            let output = session
-                                .wayland
-                                .space
-                                .outputs()
-                                .find(|output| output.name() == drag.output)?;
-                            let output_geometry = session.wayland.space.output_geometry(output)?;
-                            let work_area =
-                                smithay::desktop::layer_map_for_output(output).non_exclusive_zone();
+                            let (output, output_geometry) = if matches!(
+                                drag.kind,
+                                crate::input::grab::ClusterWindowDragKind::Floating
+                            ) {
+                                output_at_pointer(
+                                    &session.wayland.space,
+                                    session.pointer.position(),
+                                )?
+                            } else {
+                                let output = session
+                                    .wayland
+                                    .space
+                                    .outputs()
+                                    .find(|output| output.name() == drag.output)?
+                                    .clone();
+                                let geometry = session.wayland.space.output_geometry(&output)?;
+                                (output, geometry)
+                            };
+                            let work_area = smithay::desktop::layer_map_for_output(&output)
+                                .non_exclusive_zone();
                             let origin =
-                                super::presented_window_rect(session, &window, output, now)
+                                super::presented_window_rect(session, &window, &output, now)
                                     .map(|geometry| geometry.to_logical(1))
                                     .or_else(|| {
                                         let geometry =
@@ -2181,7 +2175,13 @@ where
                             >::from(
                                 session.pointer.position(),
                             ));
-                            Some((drag.clone(), work_area, origin, pointer_inside))
+                            Some((
+                                drag.clone(),
+                                output.name(),
+                                work_area,
+                                origin,
+                                pointer_inside,
+                            ))
                         });
                         let active_workspace_release =
                             (cluster_drag.is_none())
@@ -2230,14 +2230,17 @@ where
                         session.interactions.grab = crate::input::grab::Grab::None;
                         session.cursor.set_override(None);
                         let mut cluster_drop_handled = false;
-                        if let (Some(id), Some((drag, work_area, origin, pointer_inside))) =
-                            (id, cluster_release)
+                        if let (
+                            Some(id),
+                            Some((drag, member_output, work_area, origin, pointer_inside)),
+                        ) = (id, cluster_release)
                         {
                             match drag.kind {
                                 crate::input::grab::ClusterWindowDragKind::Floating => {
                                     cluster_drop_handled =
                                         session.clusters.finish_floating_member_drag(
                                             &drag.output,
+                                            &member_output,
                                             id,
                                             work_area,
                                             origin,
@@ -2272,6 +2275,9 @@ where
                             if cluster_drop_handled {
                                 session.nodes.clear_direct_motion(id);
                                 super::reconcile_cluster_surfaces(session, &drag.output);
+                                if member_output != drag.output {
+                                    super::reconcile_cluster_surfaces(session, &member_output);
+                                }
                                 session.request_redraw();
                             }
                         }

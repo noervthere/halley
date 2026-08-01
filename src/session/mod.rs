@@ -361,7 +361,11 @@ pub(crate) fn sync_cluster_floating_geometry<D: SessionDriver>(
             let cluster = session.clusters.cluster_for_member(member)?;
             let metadata = session.clusters.metadata(cluster)?;
             (session.clusters.active_on(&metadata.output) == Some(cluster))
-                .then(|| (member, record.window.clone(), metadata.output.clone()))
+                .then(|| {
+                    let output = session.clusters.member_floating_output(member)?;
+                    Some((member, record.window.clone(), output.to_string()))
+                })
+                .flatten()
         })
     else {
         return;
@@ -1298,21 +1302,22 @@ fn begin_pointer_move_active<D: SessionDriver>(
     let mut cluster_drag = id.and_then(|id| {
         let cluster_id = session.clusters.cluster_for_member(id)?;
         let metadata = session.clusters.metadata(cluster_id)?;
-        (metadata.output == output_name
-            && session.clusters.active_on(&output_name) == Some(cluster_id))
-        .then(|| {
-            let kind = if session.clusters.is_member_floating(id) {
-                crate::input::grab::ClusterWindowDragKind::Floating
-            } else {
-                crate::input::grab::ClusterWindowDragKind::Layout(metadata.layout)
-            };
-            crate::input::grab::ClusterWindowDrag {
-                cluster_id,
-                output: output_name.clone(),
-                kind,
-                on_origin_output: true,
-            }
-        })
+        let floating = session.clusters.is_member_floating(id);
+        (session.clusters.active_on(&metadata.output) == Some(cluster_id)
+            && (floating || metadata.output == output_name))
+            .then(|| {
+                let kind = if floating {
+                    crate::input::grab::ClusterWindowDragKind::Floating
+                } else {
+                    crate::input::grab::ClusterWindowDragKind::Layout(metadata.layout)
+                };
+                crate::input::grab::ClusterWindowDrag {
+                    cluster_id,
+                    output: metadata.output.clone(),
+                    kind,
+                    on_origin_output: metadata.output == output_name,
+                }
+            })
     });
     if cluster_drag.as_ref().is_some_and(|drag| {
         matches!(
@@ -1397,7 +1402,7 @@ fn begin_pointer_move_active<D: SessionDriver>(
                 .begin_workspace_drag(&drag.output, id, rect),
             crate::input::grab::ClusterWindowDragKind::Floating => session
                 .clusters
-                .begin_floating_member_drag(&drag.output, id, rect),
+                .begin_floating_member_drag(&drag.output, &output_name, id, rect),
         };
         if !began {
             return false;

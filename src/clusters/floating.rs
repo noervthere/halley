@@ -3,8 +3,9 @@ use std::collections::HashMap;
 use halley_core::field::NodeId;
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct MemberFloat {
+    output: String,
     rect: Rectangle<i32, Logical>,
     active: bool,
 }
@@ -29,17 +30,44 @@ impl ClusterFloatingState {
             .map(|state| state.rect)
     }
 
+    pub(super) fn output(&self, member: NodeId) -> Option<&str> {
+        self.members
+            .get(&member)
+            .filter(|state| state.active)
+            .map(|state| state.output.as_str())
+    }
+
+    pub(super) fn rect_on(&self, member: NodeId, output: &str) -> Option<Rectangle<i32, Logical>> {
+        self.members
+            .get(&member)
+            .filter(|state| state.active && state.output == output)
+            .map(|state| state.rect)
+    }
+
+    pub(super) fn placements_on(&self, output: &str) -> Vec<(NodeId, Rectangle<i32, Logical>)> {
+        self.members
+            .iter()
+            .filter_map(|(member, state)| {
+                (state.active && state.output == output).then_some((*member, state.rect))
+            })
+            .collect()
+    }
+
     pub(super) fn float(
         &mut self,
         member: NodeId,
+        output: &str,
         fallback: Rectangle<i32, Logical>,
         work_area: Rectangle<i32, Logical>,
     ) -> Rectangle<i32, Logical> {
         let state = self.members.entry(member).or_insert(MemberFloat {
+            output: output.to_string(),
             rect: fallback,
             active: false,
         });
-        state.rect = clamp_to_work_area(state.rect, work_area);
+        if state.output == output {
+            state.rect = clamp_to_work_area(state.rect, work_area);
+        }
         state.active = true;
         state.rect
     }
@@ -56,6 +84,7 @@ impl ClusterFloatingState {
     pub(super) fn update(
         &mut self,
         member: NodeId,
+        output: &str,
         rect: Rectangle<i32, Logical>,
         work_area: Rectangle<i32, Logical>,
     ) -> bool {
@@ -63,9 +92,10 @@ impl ClusterFloatingState {
             return false;
         };
         let rect = clamp_to_work_area(rect, work_area);
-        if state.rect == rect {
+        if state.output == output && state.rect == rect {
             return false;
         }
+        state.output = output.to_string();
         state.rect = rect;
         true
     }
@@ -105,13 +135,16 @@ mod tests {
         let mut state = ClusterFloatingState::default();
         let first = Rectangle::new((120, 80).into(), (500, 400).into());
 
-        assert_eq!(state.float(member, first, work_area), first);
+        assert_eq!(state.float(member, "DP-1", first, work_area), first);
         let moved = Rectangle::new((320, 220).into(), (420, 310).into());
-        assert!(state.update(member, moved, work_area));
+        assert!(state.update(member, "DP-1", moved, work_area));
         assert_eq!(state.tile(member), Some(moved));
 
         let unrelated_tile = Rectangle::new((0, 0).into(), (1_000, 700).into());
-        assert_eq!(state.float(member, unrelated_tile, work_area), moved);
+        assert_eq!(
+            state.float(member, "DP-1", unrelated_tile, work_area),
+            moved
+        );
     }
 
     #[test]
@@ -122,8 +155,26 @@ mod tests {
         let oversized = Rectangle::new((-500, 900).into(), (1_200, 900).into());
 
         assert_eq!(
-            state.float(member, oversized, work_area),
+            state.float(member, "DP-1", oversized, work_area),
             Rectangle::new((10, 20).into(), (800, 600).into())
         );
+    }
+
+    #[test]
+    fn output_and_geometry_survive_retiling_for_the_cluster_lifetime() {
+        let member = NodeId::new(9);
+        let work_area = Rectangle::new((0, 0).into(), (1_000, 700).into());
+        let mut state = ClusterFloatingState::default();
+        let initial = Rectangle::new((100, 80).into(), (500, 400).into());
+        let external = Rectangle::new((40, 60).into(), (500, 400).into());
+
+        state.float(member, "DP-1", initial, work_area);
+        assert!(state.update(member, "DP-2", external, work_area));
+        assert_eq!(state.output(member), Some("DP-2"));
+        assert_eq!(state.tile(member), Some(external));
+
+        state.float(member, "DP-1", initial, work_area);
+        assert_eq!(state.output(member), Some("DP-2"));
+        assert_eq!(state.rect_on(member, "DP-2"), Some(external));
     }
 }
