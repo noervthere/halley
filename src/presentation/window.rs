@@ -29,14 +29,10 @@ pub(crate) struct WindowVisualState {
     inherited_presentation: bool,
 }
 
-/// The cluster member with sole presentation and input authority.
-///
-/// Existence establishes ownership; `transition_progress` only controls the
-/// visual handoff. Input must never reopen sibling hit targets at progress 0.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct ClusterExclusiveOwner {
+pub(crate) struct ClusterExclusivePresentation {
     pub(crate) member: halley_core::field::NodeId,
-    pub(crate) transition_progress: f32,
+    pub(crate) progress: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,7 +53,7 @@ fn presentation_source_rect(
     })
 }
 
-pub(crate) fn cluster_exclusive_owner(
+pub(crate) fn cluster_exclusive_presentation(
     clusters: &crate::clusters::ClusterSystem,
     nodes: &crate::nodes::NodesState,
     fullscreen: &crate::wayland::fullscreen::FullscreenManager,
@@ -65,7 +61,7 @@ pub(crate) fn cluster_exclusive_owner(
     output: &Output,
     output_geometry: Rectangle<i32, Logical>,
     now: std::time::Duration,
-) -> Option<ClusterExclusiveOwner> {
+) -> Option<ClusterExclusivePresentation> {
     let cluster = clusters.active_on(&output.name())?;
     clusters.member_ids(cluster).into_iter().find_map(|member| {
         let surface = &nodes.record(member)?.surface;
@@ -77,16 +73,13 @@ pub(crate) fn cluster_exclusive_owner(
                     .presentation(surface, output, output_geometry, now)
                     .map(|presentation| presentation.progress as f32)
             })?;
-        Some(ClusterExclusiveOwner {
-            member,
-            transition_progress: progress,
-        })
+        Some(ClusterExclusivePresentation { member, progress })
     })
 }
 
 fn is_cluster_exclusive_window(
     window_node: Option<halley_core::field::NodeId>,
-    presentation: Option<ClusterExclusiveOwner>,
+    presentation: Option<ClusterExclusivePresentation>,
     has_cluster_override: bool,
 ) -> bool {
     !has_cluster_override
@@ -168,7 +161,7 @@ pub(crate) fn window_visual_state_with_cluster_presentation(
     let window_surface = window.wl_surface()?;
     let window_node = nodes.and_then(|nodes| nodes.id_for_surface(window_surface.as_ref()));
     let exclusive_presentation = clusters.zip(nodes).and_then(|(clusters, nodes)| {
-        cluster_exclusive_owner(
+        cluster_exclusive_presentation(
             clusters,
             nodes,
             fullscreen,
@@ -550,12 +543,12 @@ mod tests {
     }
 
     #[test]
-    fn exclusive_cluster_owner_promotes_the_target_at_transition_start() {
+    fn exclusive_cluster_presentation_promotes_only_the_live_target() {
         let target = halley_core::field::NodeId::new(4);
         let sibling = halley_core::field::NodeId::new(5);
-        let presentation = Some(ClusterExclusiveOwner {
+        let presentation = Some(ClusterExclusivePresentation {
             member: target,
-            transition_progress: 0.0,
+            progress: 0.5,
         });
 
         assert!(is_cluster_exclusive_window(

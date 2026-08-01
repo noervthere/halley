@@ -49,7 +49,7 @@ pub(super) fn route_client<D: SessionDriver>(
     )?;
     let output_geometry = session.wayland.space.output_geometry(&route.output)?;
     let camera = session.cameras.get(&route.output.name())?;
-    let cluster_exclusive = crate::presentation::window::cluster_exclusive_owner(
+    let cluster_exclusive = crate::presentation::window::cluster_exclusive_presentation(
         &session.clusters,
         &session.nodes,
         &session.fullscreen,
@@ -58,7 +58,7 @@ pub(super) fn route_client<D: SessionDriver>(
         output_geometry,
         crate::frame_clock::monotonic_now(),
     )
-    .is_some();
+    .is_some_and(|presentation| presentation.progress > 0.0);
     if !cluster_exclusive
         && session
             .nodes
