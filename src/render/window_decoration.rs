@@ -266,6 +266,50 @@ impl WindowDecorationRenderer {
             clip,
             radius: clamp_radius(radius, clip.size.w, clip.size.h),
             program: resources.surface.clone(),
+            content_color: (1.0, 1.0, 1.0, 1.0),
+        })
+    }
+
+    pub fn tint_element(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        destination: Rectangle<i32, Physical>,
+        radius: f32,
+        color: smithay::backend::renderer::Color32F,
+        alpha: f32,
+    ) -> Option<RoundedTextureElement> {
+        if destination.size.w <= 0 || destination.size.h <= 0 || alpha <= 0.0 {
+            return None;
+        }
+        self.available(renderer);
+        let resources = self.resources.as_ref()?;
+        let source = Rectangle::<f64, Logical>::from_size(
+            resources
+                .white
+                .size()
+                .to_logical(1, Transform::Normal)
+                .to_f64(),
+        );
+        let base = TextureRenderElement::from_static_texture(
+            Id::new(),
+            resources.context.clone(),
+            destination.loc.to_f64(),
+            resources.white.clone(),
+            1,
+            Transform::Normal,
+            Some(alpha.clamp(0.0, 1.0)),
+            Some(source),
+            Some(destination.size.to_logical(1)),
+            None,
+            Kind::Unspecified,
+        );
+        Some(RoundedTextureElement {
+            base,
+            texture: resources.white.clone(),
+            clip: destination,
+            radius: clamp_radius(radius, destination.size.w, destination.size.h),
+            program: resources.surface.clone(),
+            content_color: (color.r(), color.g(), color.b(), color.a()),
         })
     }
 
@@ -438,6 +482,7 @@ pub struct RoundedTextureElement {
     clip: Rectangle<i32, Physical>,
     radius: f32,
     program: GlesTexProgram,
+    content_color: (f32, f32, f32, f32),
 }
 
 impl Element for RoundedTextureElement {
@@ -495,7 +540,7 @@ impl RenderElement<GlesRenderer> for RoundedTextureElement {
             &self.program,
             self.clip,
             self.radius,
-            (1.0, 1.0, 1.0, 1.0),
+            self.content_color,
         )
     }
 

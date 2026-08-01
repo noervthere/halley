@@ -15,11 +15,8 @@ pub(crate) struct BloomElementContext<'a> {
     pub(crate) nodes: &'a crate::nodes::NodesState,
     pub(crate) cameras: &'a crate::presentation::camera::OutputCameras,
     pub(crate) decorations: &'a halley_config::Decorations,
-    pub(crate) blur: halley_config::Blur,
     pub(crate) now: std::time::Duration,
     pub(crate) cluster_renderer: &'a mut crate::clusters::render::ClusterRenderer,
-    pub(crate) backdrop_blur_renderer:
-        &'a mut crate::render::effects::backdrop_blur::BackdropBlurRenderer,
     pub(crate) node_renderer: &'a mut NodeRenderer,
     pub(crate) ui_text: &'a mut UiTextRenderer,
 }
@@ -35,10 +32,8 @@ pub(crate) fn elements(
         nodes,
         cameras,
         decorations,
-        blur,
         now,
         cluster_renderer,
-        backdrop_blur_renderer,
         node_renderer,
         ui_text,
     } = context;
@@ -165,45 +160,22 @@ pub(crate) fn elements(
     if let Some(affordance) = affordance {
         let center = crate::nodes::screen_from_world(affordance.center, camera, output_geometry)
             - output_geometry.loc;
-        let destination = join_affordance_rect(center);
+        let destination = join_ring_rect(center);
         let focused = decorations.border_color_focused;
-        let fill =
-            crate::render::scene::node_fill_color(nodes.config, (focused.r, focused.g, focused.b));
         labels.insert(
             0,
-            SceneElement::ClusterCore(cluster_renderer.join_affordance(
+            SceneElement::ClusterCore(cluster_renderer.join_ring(
                 renderer,
                 destination,
-                fill,
+                (focused.r, focused.g, focused.b),
             )?),
         );
-        let patches = (blur.enabled && blur.overlays)
-            .then_some(crate::render::effects::backdrop_blur::BlurPatch {
-                rect: destination,
-                radius: 30.0,
-                alpha: 0.9,
-                clip: None,
-            })
-            .into_iter()
-            .collect();
-        if let Some(blur) = backdrop_blur_renderer.blur_element(
-            renderer,
-            &output.name(),
-            crate::render::effects::backdrop_blur::BlurIdentity::Overlay(
-                "cluster-join-affordance".to_string(),
-            ),
-            output_geometry.size,
-            patches,
-            blur,
-        )? {
-            labels.push(SceneElement::BackdropBlur(blur));
-        }
     }
     Ok(labels)
 }
 
-fn join_affordance_rect(center: smithay::utils::Point<i32, Logical>) -> Rectangle<i32, Physical> {
-    const RADIUS: i32 = 30;
+fn join_ring_rect(center: smithay::utils::Point<i32, Logical>) -> Rectangle<i32, Physical> {
+    const RADIUS: i32 = 38;
     Rectangle::new(
         (center.x - RADIUS, center.y - RADIUS).into(),
         (RADIUS * 2, RADIUS * 2).into(),
@@ -215,10 +187,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn old_halley_join_affordance_is_sixty_pixels_centered_on_the_core() {
+    fn join_ring_sits_outside_the_core_without_covering_its_icon() {
         assert_eq!(
-            join_affordance_rect((120, 80).into()),
-            Rectangle::new((90, 50).into(), (60, 60).into())
+            join_ring_rect((120, 80).into()),
+            Rectangle::new((82, 42).into(), (76, 76).into())
         );
     }
 }

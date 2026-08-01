@@ -105,17 +105,16 @@ impl ClusterRenderer {
         })
     }
 
-    pub fn join_affordance(
+    pub fn join_ring(
         &mut self,
         renderer: &mut GlesRenderer,
         destination: Rectangle<i32, Physical>,
-        fill_rgb: (f32, f32, f32),
+        ring_rgb: (f32, f32, f32),
     ) -> Result<ClusterCoreElement, Box<dyn Error>> {
         let mut element =
-            self.core_with_alpha(renderer, destination, fill_rgb, fill_rgb, 1.0, 0.9)?;
-        element.border.3 = 0.0;
-        element.flat_fill = 1.0;
-        element.center_flat_fill = 1.0;
+            self.core_with_alpha(renderer, destination, ring_rgb, ring_rgb, 0.0, 0.95)?;
+        let radius = destination.size.w.min(destination.size.h).max(1) as f32 * 0.5;
+        element.border.3 = 3.0 / radius;
         Ok(element)
     }
 

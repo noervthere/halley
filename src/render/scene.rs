@@ -61,7 +61,7 @@ render_elements! {
     RoundedCropped=CropRenderElement<super::window_decoration::RoundedSurfaceElement>,
     FullscreenBlend=super::fullscreen_texture::FullscreenBlendElement,
     WindowBorder=super::window_decoration::RoundedBorderElement,
-    RoundedClosing=super::window_decoration::RoundedTextureElement,
+    RoundedTexture=super::window_decoration::RoundedTextureElement,
     ClusterCore=crate::clusters::render::ClusterCoreElement,
     ClusterIcon=crate::clusters::render::ClusterIconElement,
     Node=super::node::NodeRenderElement,
@@ -468,7 +468,7 @@ pub fn build(
                         closing.content_radius,
                     )
                     .expect("rounded resources were checked above");
-                elements.push(SceneElement::RoundedClosing(texture));
+                elements.push(SceneElement::RoundedTexture(texture));
             } else {
                 elements.push(SceneElement::Closing(closing.texture));
             }
@@ -533,10 +533,8 @@ pub fn build(
             nodes: request.desktop.nodes,
             cameras: request.desktop.cameras,
             decorations: request.visuals.decorations,
-            blur: request.visuals.blur,
             now: request.frame.target_presentation_time,
             cluster_renderer: request.resources.cluster_renderer,
-            backdrop_blur_renderer: request.resources.backdrop_blur_renderer,
             node_renderer: request.resources.node_renderer,
             ui_text: request.resources.ui_text,
         },

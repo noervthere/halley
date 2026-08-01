@@ -512,9 +512,9 @@ clusters:
   default-layout "stacking"
 
   # Bloom a collapsed cluster, then Mod-drag a normal window until it docks
-  # against the fixed core. Hold it there for this long; a borderless circle
-  # highlights the core when the join is armed, and releasing adds the window.
-  # Moving away, closing the bloom, or releasing early cancels the join.
+  # against the fixed core. Hold it there for this long; an outer core ring and
+  # a light dim over the dragged window show that the join is armed. Releasing
+  # adds the window; moving away, closing the bloom, or releasing early cancels.
   join-dwell-ms 2000
 
   # Older configs may still contain join-distance-px. It remains accepted for

@@ -81,6 +81,24 @@ fn plain_background_press_dismisses_bloom(intercepted: bool, on_background: bool
     !intercepted && on_background
 }
 
+fn typing_abandons_bloom(window_drag_active: bool, focused_owns_bloom: bool) -> bool {
+    !window_drag_active && !focused_owns_bloom
+}
+
+fn is_modifier_keysym(keysym: Keysym) -> bool {
+    matches!(
+        keysym,
+        Keysym::Shift_L
+            | Keysym::Shift_R
+            | Keysym::Control_L
+            | Keysym::Control_R
+            | Keysym::Alt_L
+            | Keysym::Alt_R
+            | Keysym::Super_L
+            | Keysym::Super_R
+    )
+}
+
 fn shortcut_policy_allows_bindings(focus_bypasses_shortcuts: bool, inhibitor_active: bool) -> bool {
     !focus_bypasses_shortcuts && !inhibitor_active
 }
@@ -408,6 +426,46 @@ fn close_blooms_for_keybind<D: SessionDriver>(
             .nodes
             .focus(focus_core, session.start_time.elapsed().as_millis() as u64);
         super::sync_keyboard_focus(session, SERIAL_COUNTER.next_serial());
+        session.request_redraw();
+    }
+    changed
+}
+
+fn close_blooms_for_typing_away<D: SessionDriver>(session: &mut Session<D>) -> bool {
+    let window_drag_active = matches!(
+        &session.grab,
+        crate::input::grab::Grab::PendingWindowMove(_)
+            | crate::input::grab::Grab::MoveWindow { .. }
+    );
+    let focused = session
+        .seat
+        .get_keyboard()
+        .and_then(|keyboard| keyboard.current_focus())
+        .and_then(|focus| focus.wl_surface().map(|surface| surface.into_owned()))
+        .and_then(|surface| session.nodes.id_for_surface(&surface));
+    let open = session
+        .wayland
+        .space
+        .outputs()
+        .filter_map(|output| {
+            let output = output.name();
+            let cluster = session.clusters.bloom_open_on_output(&output)?;
+            Some((output, cluster))
+        })
+        .collect::<Vec<_>>();
+    let now = crate::frame_clock::monotonic_now();
+    let changed = open.into_iter().fold(false, |changed, (output, cluster)| {
+        let focused_owns_bloom = focused.is_some_and(|node| {
+            session.clusters.cluster_for_member(node) == Some(cluster)
+                || session.clusters.cluster_for_core(node) == Some(cluster)
+        });
+        if typing_abandons_bloom(window_drag_active, focused_owns_bloom) {
+            session.clusters.close_bloom(&output, now) || changed
+        } else {
+            changed
+        }
+    });
+    if changed {
         session.request_redraw();
     }
     changed
@@ -2513,6 +2571,7 @@ where
             .get_keyboard()
             .expect("keyboard capability added at seat setup");
         let bindings_enabled = bindings_enabled(session);
+        let mut forwarded_non_modifier_press = false;
         let action = keyboard.input::<KeyboardOutcome, _>(
             session,
             keycode,
@@ -2650,20 +2709,27 @@ where
                         _ => FilterResult::Intercept(KeyboardOutcome::CaptureIntercept),
                     };
                 }
-                if state != KeyState::Pressed || !bindings_enabled {
+                if state != KeyState::Pressed {
                     return FilterResult::Forward;
                 }
-                match match_keyboard_bind(
-                    &data.keyboard.binds,
-                    modifiers,
-                    handle.raw_latin_sym_or_raw_current_sym(),
-                    keycode,
-                ) {
+                let sym = handle.raw_latin_sym_or_raw_current_sym();
+                let non_modifier = sym.is_some_and(|sym| !is_modifier_keysym(sym));
+                if !bindings_enabled {
+                    forwarded_non_modifier_press = non_modifier;
+                    return FilterResult::Forward;
+                }
+                match match_keyboard_bind(&data.keyboard.binds, modifiers, sym, keycode) {
                     Some(action) => FilterResult::Intercept(KeyboardOutcome::Action(action)),
-                    None => FilterResult::Forward,
+                    None => {
+                        forwarded_non_modifier_press = non_modifier;
+                        FilterResult::Forward
+                    }
                 }
             },
         );
+        if forwarded_non_modifier_press {
+            close_blooms_for_typing_away(session);
+        }
         let pointer_output = session
             .wayland
             .space
@@ -2964,7 +3030,7 @@ mod tests {
         drag_threshold_reached, forward_pointer_button, pending_window_move_motion,
         plain_background_press_dismisses_bloom, releases_pending_window_move,
         sampled_drag_velocity, shortcut_policy_allows_bindings, stacking_cycle_direction,
-        window_action_output,
+        typing_abandons_bloom, window_action_output,
     };
     fn sample_constant_motion(report_hz: u32) -> Vec2 {
         let step = Duration::from_secs_f64(1.0 / f64::from(report_hz));
@@ -3033,6 +3099,13 @@ mod tests {
         assert!(!plain_background_press_dismisses_bloom(false, false));
         assert!(!plain_background_press_dismisses_bloom(true, true));
         assert!(plain_background_press_dismisses_bloom(false, true));
+    }
+
+    #[test]
+    fn typing_away_closes_a_bloom_after_the_window_drag_is_over() {
+        assert!(!typing_abandons_bloom(true, false));
+        assert!(!typing_abandons_bloom(false, true));
+        assert!(typing_abandons_bloom(false, false));
     }
 
     #[test]

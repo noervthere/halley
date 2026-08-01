@@ -107,8 +107,14 @@ impl ClusterSystem {
             return None;
         }
         Some(JoinAffordance {
+            member: candidate.member,
             center: self.metadata(candidate.cluster_id)?.core_position,
         })
+    }
+
+    pub(crate) fn join_ready_for(&self, member: NodeId, output: &str) -> bool {
+        self.join_affordance_on_output(output)
+            .is_some_and(|affordance| affordance.member == member)
     }
 }
 
@@ -237,8 +243,12 @@ mod tests {
         assert!(system.tick_join_candidate_ready(Duration::from_millis(2_500)));
         assert_eq!(
             system.join_affordance_on_output("DP-1"),
-            Some(JoinAffordance { center: core })
+            Some(JoinAffordance {
+                member: joining,
+                center: core,
+            })
         );
+        assert!(system.join_ready_for(joining, "DP-1"));
         assert_eq!(
             system.commit_join_candidate(&mut field, joining),
             Some(cluster)

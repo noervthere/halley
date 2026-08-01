@@ -45,6 +45,7 @@ struct JoinCandidate {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct JoinAffordance {
+    pub(crate) member: NodeId,
     pub(crate) center: Vec2,
 }
 

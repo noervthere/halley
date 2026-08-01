@@ -79,6 +79,14 @@ pub(super) fn live_window_elements(
             cluster_exclusive: false,
         });
     };
+    let join_ready = context
+        .nodes
+        .id_for_surface(window_surface.as_ref())
+        .is_some_and(|member| {
+            context
+                .clusters
+                .join_ready_for(member, &context.output.name())
+        });
     let Some(visual) = window_visual_state_with_cluster_presentation(
         context.space,
         context.cameras,
@@ -124,6 +132,31 @@ pub(super) fn live_window_elements(
         * chrome_visibility;
     let rounded = managed && content_radius > 0.0;
     let rounded_available = rounded && window_decoration_renderer.available(renderer);
+    if join_ready {
+        let tint_alpha = alpha * 0.14;
+        let tint_color = smithay::backend::renderer::Color32F::new(0.0, 0.0, 0.0, 1.0);
+        if let Some(tint) = window_decoration_renderer.tint_element(
+            renderer,
+            visual.animated_rect,
+            if rounded_available {
+                content_radius
+            } else {
+                0.0
+            },
+            tint_color,
+            tint_alpha,
+        ) {
+            elements.push(SceneElement::RoundedTexture(tint));
+        } else {
+            elements.push(SceneElement::Border(SolidColorRenderElement::new(
+                Id::new(),
+                visual.animated_rect,
+                CommitCounter::default(),
+                tint_color * tint_alpha,
+                Kind::Unspecified,
+            )));
+        }
+    }
     let surface_location = crate::render::window_surface_location(location, window.geometry());
     let (popup_elements, surface_elements) =
         crate::render::window_surface_elements(renderer, window, surface_location, alpha);

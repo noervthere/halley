@@ -174,7 +174,7 @@ pub(super) fn apogee_elements(
                 let preview = window_decoration_renderer
                     .texture_element(renderer, preview, texture, body, preview_radius)
                     .expect("rounded resources were checked above");
-                elements.push(SceneElement::RoundedClosing(preview));
+                elements.push(SceneElement::RoundedTexture(preview));
             }
             Ok((preview, _)) => elements.push(SceneElement::Closing(preview)),
             Err(_) => {
@@ -529,7 +529,7 @@ pub(super) fn focus_cycle_elements(
                 let preview = window_decoration_renderer
                     .texture_element(renderer, preview, texture, body, preview_radius)
                     .expect("rounded resources were checked above");
-                elements.push(SceneElement::RoundedClosing(preview));
+                elements.push(SceneElement::RoundedTexture(preview));
             }
             Ok((preview, _)) => elements.push(SceneElement::Closing(preview)),
             Err(_) => {
@@ -678,7 +678,7 @@ pub(super) fn hover_preview_elements(
             let preview = window_decoration_renderer
                 .texture_element(renderer, preview, texture, body, preview_radius)
                 .expect("rounded resources were checked above");
-            elements.push(SceneElement::RoundedClosing(preview));
+            elements.push(SceneElement::RoundedTexture(preview));
         }
         Ok((preview, _)) => elements.push(SceneElement::Closing(preview)),
         Err(_) => elements.push(SceneElement::Border(SolidColorRenderElement::new(
