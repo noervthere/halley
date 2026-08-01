@@ -1,39 +1,45 @@
 use std::time::Duration;
 
 use halley_core::cluster::ClusterId;
-use halley_core::field::{Field, NodeId, Vec2};
+use halley_core::field::{Field, NodeId, NodeState};
 
-use super::{ClusterSystem, JoinCandidate};
+use super::{ClusterSystem, JoinAffordance, JoinCandidate, JoinContact};
 
 impl ClusterSystem {
-    /// Tracks an ordinary Field window held near a collapsed cluster core.
-    ///
-    /// The candidate belongs to the cluster subsystem; pointer grabbing only
-    /// supplies the current window center and never learns cluster policy.
-    pub fn update_join_candidate(
+    /// Tracks an ordinary Field window docked against the currently bloomed
+    /// collapsed-cluster core.
+    pub(crate) fn update_join_candidate(
         &mut self,
+        field: &Field,
         output: &str,
         member: NodeId,
-        center: Vec2,
+        contact: JoinContact,
         now: Duration,
     ) -> bool {
-        if self.registry.is_cluster_member(member) || self.active_on(output).is_some() {
+        let eligible_surface = field
+            .node(member)
+            .is_some_and(|node| matches!(node.state, NodeState::Active | NodeState::Drifting));
+        if !eligible_surface
+            || self.registry.is_cluster_member(member)
+            || self.active_on(output).is_some()
+        {
             return self.cancel_join_candidate();
         }
-        let max_distance_sq = self.config.join_distance_px.max(0.0).powi(2);
-        let target = self
-            .clusters_for_output(output)
-            .filter_map(|(_, id, metadata)| {
-                let dx = center.x - metadata.core_position.x;
-                let dy = center.y - metadata.core_position.y;
-                let distance_sq = dx * dx + dy * dy;
-                (distance_sq <= max_distance_sq).then_some((distance_sq, id))
-            })
-            .min_by(|(left, _), (right, _)| left.total_cmp(right))
-            .map(|(_, id)| id);
-        let Some(cluster_id) = target else {
+        let Some(cluster_id) = self.bloom.join_target_on_output(output) else {
             return self.cancel_join_candidate();
         };
+        let Some(metadata) = self.metadata(cluster_id) else {
+            return self.cancel_join_candidate();
+        };
+        let gap = contact.gap.max(0.0);
+        let core_radius = contact.core_radius.max(0.0);
+        let touching_gap = (contact.center.x - metadata.core_position.x).abs()
+            <= contact.member_half.x.max(0.0) + core_radius + gap
+            && (contact.center.y - metadata.core_position.y).abs()
+                <= contact.member_half.y.max(0.0) + core_radius + gap;
+        if !touching_gap {
+            return self.cancel_join_candidate();
+        }
         if self.join_candidate.as_ref().is_some_and(|candidate| {
             candidate.member == member
                 && candidate.cluster_id == cluster_id
@@ -46,7 +52,24 @@ impl ClusterSystem {
             cluster_id,
             output: output.to_string(),
             started_at: now,
+            ready: false,
         });
+        true
+    }
+
+    pub fn tick_join_candidate_ready(&mut self, now: Duration) -> bool {
+        let Some(candidate) = self.join_candidate.as_mut() else {
+            return false;
+        };
+        if candidate.ready {
+            return false;
+        }
+        if now.saturating_sub(candidate.started_at)
+            < Duration::from_millis(self.config.join_dwell_ms)
+        {
+            return false;
+        }
+        candidate.ready = true;
         true
     }
 
@@ -54,19 +77,18 @@ impl ClusterSystem {
         self.join_candidate.take().is_some()
     }
 
-    /// Completes a dwell join on button release. Releasing early cancels the
-    /// candidate, so accidental passes over a core do not absorb a window.
+    /// Completes an armed join on button release. Releasing before readiness
+    /// consumes the candidate without absorbing the window.
     pub fn commit_join_candidate(
         &mut self,
         field: &mut Field,
         member: NodeId,
-        now: Duration,
     ) -> Option<ClusterId> {
         let candidate = self.join_candidate.take()?;
         if candidate.member != member
-            || now.saturating_sub(candidate.started_at)
-                < Duration::from_millis(self.config.join_dwell_ms)
+            || !candidate.ready
             || self.active_on(&candidate.output).is_some()
+            || self.bloom.join_target_on_output(&candidate.output) != Some(candidate.cluster_id)
         {
             return None;
         }
@@ -75,25 +97,38 @@ impl ClusterSystem {
             .ok()?;
         Some(candidate.cluster_id)
     }
+
+    pub(crate) fn join_affordance_on_output(&self, output: &str) -> Option<JoinAffordance> {
+        let candidate = self.join_candidate.as_ref()?;
+        if !candidate.ready
+            || candidate.output != output
+            || self.bloom.join_target_on_output(output) != Some(candidate.cluster_id)
+        {
+            return None;
+        }
+        Some(JoinAffordance {
+            center: self.metadata(candidate.cluster_id)?.core_position,
+        })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::clusters::bloom::HOLD_DURATION;
+    use halley_core::field::Vec2;
 
     fn surface(field: &mut Field, label: &str, x: f32) -> NodeId {
         field.spawn_surface(label, Vec2 { x, y: 100.0 }, Vec2 { x: 320.0, y: 200.0 })
     }
 
-    #[test]
-    fn dwell_join_requires_one_stable_candidate_and_release_after_deadline() {
+    fn clustered_system() -> (ClusterSystem, Field, ClusterId, NodeId) {
         let mut field = Field::new();
         let first = surface(&mut field, "first", 80.0);
         let second = surface(&mut field, "second", 120.0);
         let joining = surface(&mut field, "joining", 500.0);
         let config = halley_config::Clusters {
             join_dwell_ms: 500,
-            join_distance_px: 100.0,
             ..halley_config::Clusters::default()
         };
         let mut system = ClusterSystem::new(config, halley_config::ClusterAnimation::default());
@@ -102,20 +137,129 @@ mod tests {
         assert!(system.toggle_creation_member(second, "DP-1"));
         assert!(system.begin_naming());
         let cluster = system.finish_creation(&mut field).unwrap();
+        (system, field, cluster, joining)
+    }
+
+    fn open_bloom(system: &mut ClusterSystem, cluster: ClusterId) {
+        assert!(system.set_hovered_core(Some(cluster), Duration::ZERO));
+        assert!(system.bloom_wakeup(HOLD_DURATION));
+    }
+
+    fn update_at(
+        system: &mut ClusterSystem,
+        field: &Field,
+        member: NodeId,
+        center: Vec2,
+        now: Duration,
+    ) -> bool {
+        system.update_join_candidate(
+            field,
+            "DP-1",
+            member,
+            JoinContact {
+                center,
+                member_half: Vec2 { x: 160.0, y: 100.0 },
+                core_radius: 34.0,
+                gap: 20.0,
+            },
+            now,
+        )
+    }
+
+    #[test]
+    fn only_an_open_non_closing_bloom_accepts_a_join_candidate() {
+        let (mut system, field, cluster, joining) = clustered_system();
         let core = system.metadata(cluster).unwrap().core_position;
+        assert!(!update_at(
+            &mut system,
+            &field,
+            joining,
+            core,
+            Duration::ZERO
+        ));
 
-        assert!(system.update_join_candidate("DP-1", joining, core, Duration::from_millis(100),));
+        open_bloom(&mut system, cluster);
+        assert!(update_at(&mut system, &field, joining, core, HOLD_DURATION));
+        assert!(system.close_bloom("DP-1", HOLD_DURATION));
+        assert!(system.join_candidate.is_none());
+        assert!(!update_at(
+            &mut system,
+            &field,
+            joining,
+            core,
+            HOLD_DURATION
+        ));
+    }
+
+    #[test]
+    fn bounds_plus_landmark_gap_control_candidate_contact() {
+        let (mut system, field, cluster, joining) = clustered_system();
+        open_bloom(&mut system, cluster);
+        let core = system.metadata(cluster).unwrap().core_position;
+        let contact = Vec2 {
+            x: core.x + 160.0 + 34.0 + 20.0,
+            y: core.y,
+        };
+        assert!(update_at(
+            &mut system,
+            &field,
+            joining,
+            contact,
+            HOLD_DURATION
+        ));
+        assert!(update_at(
+            &mut system,
+            &field,
+            joining,
+            Vec2 {
+                x: contact.x + 0.1,
+                y: contact.y,
+            },
+            HOLD_DURATION
+        ));
+        assert!(system.join_candidate.is_none());
+    }
+
+    #[test]
+    fn dwell_readiness_arms_the_affordance_and_release_join() {
+        let (mut system, mut field, cluster, joining) = clustered_system();
+        open_bloom(&mut system, cluster);
+        let core = system.metadata(cluster).unwrap().core_position;
+        assert!(update_at(
+            &mut system,
+            &field,
+            joining,
+            core,
+            Duration::from_millis(2_000)
+        ));
+        assert!(!system.tick_join_candidate_ready(Duration::from_millis(2_499)));
+        assert!(system.join_affordance_on_output("DP-1").is_none());
+        assert!(system.tick_join_candidate_ready(Duration::from_millis(2_500)));
         assert_eq!(
-            system.commit_join_candidate(&mut field, joining, Duration::from_millis(599)),
-            None
+            system.join_affordance_on_output("DP-1"),
+            Some(JoinAffordance { center: core })
         );
-        assert!(!system.registry().is_cluster_member(joining));
-
-        assert!(system.update_join_candidate("DP-1", joining, core, Duration::from_millis(700),));
         assert_eq!(
-            system.commit_join_candidate(&mut field, joining, Duration::from_millis(1_200)),
+            system.commit_join_candidate(&mut field, joining),
             Some(cluster)
         );
         assert!(system.registry().is_cluster_member(joining));
+    }
+
+    #[test]
+    fn early_release_consumes_candidate_without_joining() {
+        let (mut system, mut field, cluster, joining) = clustered_system();
+        open_bloom(&mut system, cluster);
+        let core = system.metadata(cluster).unwrap().core_position;
+        assert!(update_at(
+            &mut system,
+            &field,
+            joining,
+            core,
+            Duration::from_millis(2_000)
+        ));
+        assert_eq!(system.commit_join_candidate(&mut field, joining), None);
+        assert!(!system.registry().is_cluster_member(joining));
+        assert!(system.join_candidate.is_none());
     }
 }

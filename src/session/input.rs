@@ -457,6 +457,7 @@ pub(crate) fn wakeup_cluster_interactions<D: SessionDriver>(
 ) -> bool {
     let mut changed = session.clusters.repeat_name_input_if_due(now);
     changed |= session.clusters.overflow_wakeup(now);
+    changed |= session.clusters.tick_join_candidate_ready(now);
 
     let Some((cluster_id, member_id, output_name, tether_started)) = session.clusters.bloom_pull()
     else {
@@ -1357,6 +1358,7 @@ where
                     x: desired_location.x as f32 + size.w as f32 * 0.5,
                     y: desired_location.y as f32 + size.h as f32 * 0.5,
                 };
+                let camera_scale = crate::presentation::camera::scale(camera).max(0.05);
                 let now = crate::frame_clock::monotonic_now();
                 let sampled = sampled_drag_velocity(
                     previous,
@@ -1427,9 +1429,18 @@ where
                         });
                     let join_candidate_changed = cluster_drag.is_none()
                         && session.clusters.update_join_candidate(
+                            &session.nodes.field,
                             &output_name,
                             id,
-                            desired_center,
+                            crate::clusters::JoinContact {
+                                center: desired_center,
+                                member_half: halley_core::field::Vec2 {
+                                    x: size.w.max(1) as f32 * 0.5,
+                                    y: size.h.max(1) as f32 * 0.5,
+                                },
+                                core_radius: crate::clusters::CORE_DIAMETER_PX * 0.5 / camera_scale,
+                                gap: session.nodes.landmarks.gap_px / camera_scale,
+                            },
                             now,
                         );
                     if cluster_reordered || join_candidate_changed {
@@ -2301,11 +2312,9 @@ where
                         let joined = if cluster_drag.is_none() && active_workspace_release.is_none()
                         {
                             id.and_then(|member| {
-                                session.clusters.commit_join_candidate(
-                                    &mut session.nodes.field,
-                                    member,
-                                    now,
-                                )
+                                session
+                                    .clusters
+                                    .commit_join_candidate(&mut session.nodes.field, member)
                             })
                         } else {
                             None

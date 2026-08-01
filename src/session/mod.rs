@@ -222,6 +222,11 @@ fn install_overlay_timer<D: SessionDriver>(
                 let now = crate::frame_clock::monotonic_now();
                 let overlays_changed = session.overlays.wakeup(now);
                 let bloom_changed = session.clusters.bloom_wakeup(now);
+                if bloom_changed {
+                    for core in session.clusters.bloom_pinned_core_nodes() {
+                        session.nodes.clear_direct_motion(core);
+                    }
+                }
                 let interactions_changed = input::wakeup_cluster_interactions(session, now);
                 if overlays_changed || bloom_changed || interactions_changed {
                     session.request_redraw();

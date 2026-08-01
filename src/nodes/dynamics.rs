@@ -550,6 +550,27 @@ mod tests {
     }
 
     #[test]
+    fn physics_drag_yields_to_a_pinned_core() {
+        let window = body(1, BodyKind::Window, -40.0);
+        let mut core = body(2, BodyKind::Node, 0.0);
+        core.pinned = true;
+        let mut velocities = HashMap::new();
+        let positions = solve_physics_swept(
+            vec![window, core],
+            &mut velocities,
+            (
+                NodeId::new(1),
+                Vec2 { x: 0.0, y: 0.0 },
+                Vec2 { x: 420.0, y: 0.0 },
+            ),
+            1.0 / 60.0,
+            0.25,
+        );
+        assert!(positions[&NodeId::new(1)].x < 0.0);
+        assert_eq!(positions[&NodeId::new(2)], Vec2 { x: 0.0, y: 0.0 });
+    }
+
+    #[test]
     fn damping_depends_on_render_time_not_step_count() {
         fn simulate(frames: usize) -> f32 {
             let mut bodies = vec![body(1, BodyKind::Node, 0.0)];

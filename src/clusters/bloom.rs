@@ -197,6 +197,13 @@ impl BloomState {
         self.open.get(output).map(|bloom| bloom.cluster_id)
     }
 
+    pub(super) fn join_target_on_output(&self, output: &str) -> Option<ClusterId> {
+        self.open
+            .get(output)
+            .filter(|bloom| bloom.closing_at.is_none())
+            .map(|bloom| bloom.cluster_id)
+    }
+
     fn is_closing(&self, output: &str) -> bool {
         self.open
             .get(output)
@@ -243,6 +250,13 @@ impl ClusterSystem {
             .unwrap_or_default();
         let closed = self.bloom.close(output, now);
         if closed {
+            if self
+                .join_candidate
+                .as_ref()
+                .is_some_and(|candidate| candidate.output == output)
+            {
+                self.join_candidate = None;
+            }
             if let Some(cluster) = cluster {
                 self.label_hover.borrow_mut().remove(&cluster);
             }
@@ -264,6 +278,13 @@ impl ClusterSystem {
     pub fn force_close_bloom(&mut self, output: &str) -> bool {
         let closed = self.bloom.force_close(output);
         if closed {
+            if self
+                .join_candidate
+                .as_ref()
+                .is_some_and(|candidate| candidate.output == output)
+            {
+                self.join_candidate = None;
+            }
             self.overlay_hovered = None;
         }
         closed
@@ -558,6 +579,53 @@ mod tests {
         assert!(system.bloom_wakeup(HOLD_DURATION));
         assert_eq!(system.hovered_core(), None);
         assert_eq!(system.bloom_open_on_output("DP-1"), Some(id));
+    }
+
+    #[test]
+    fn open_bloom_temporarily_pins_its_core_until_closing_starts() {
+        let (mut system, id, _) = clustered_system();
+        let core = system.core_node(id).expect("core");
+        assert!(!system.collapsed_core_landmarks()[0].4);
+
+        system.set_hovered_core(Some(id), Duration::ZERO);
+        assert!(system.bloom_wakeup(HOLD_DURATION));
+        assert!(system.collapsed_core_landmarks()[0].4);
+        assert_eq!(system.bloom_pinned_core_nodes(), vec![core]);
+
+        assert!(system.close_bloom("DP-1", HOLD_DURATION));
+        assert!(!system.collapsed_core_landmarks()[0].4);
+        assert!(system.bloom_pinned_core_nodes().is_empty());
+    }
+
+    #[test]
+    fn temporary_bloom_pin_does_not_clear_a_persistent_cluster_pin() {
+        let mut field = Field::new();
+        let first = field.spawn_surface(
+            "first",
+            Vec2 { x: 0.0, y: 0.0 },
+            Vec2 { x: 200.0, y: 120.0 },
+        );
+        let second = field.spawn_surface(
+            "second",
+            Vec2 { x: 220.0, y: 0.0 },
+            Vec2 { x: 200.0, y: 120.0 },
+        );
+        assert!(field.set_pinned(first, true));
+        let mut system = ClusterSystem::new(
+            halley_config::Clusters::default(),
+            halley_config::ClusterAnimation::default(),
+        );
+        assert!(system.begin_creation("DP-1".into()));
+        assert!(system.toggle_creation_member(first, "DP-1"));
+        assert!(system.toggle_creation_member(second, "DP-1"));
+        assert!(system.begin_naming());
+        let id = system.finish_creation(&mut field).expect("cluster");
+        assert!(system.collapsed_core_landmarks()[0].4);
+
+        system.set_hovered_core(Some(id), Duration::ZERO);
+        assert!(system.bloom_wakeup(HOLD_DURATION));
+        assert!(system.close_bloom("DP-1", HOLD_DURATION));
+        assert!(system.collapsed_core_landmarks()[0].4);
     }
 
     #[test]

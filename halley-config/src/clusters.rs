@@ -70,6 +70,8 @@ impl Default for ClusterStacking {
 pub struct Clusters {
     pub default_layout: ClusterLayout,
     pub join_dwell_ms: u64,
+    /// Legacy compatibility setting. Manual bloom joining uses the real
+    /// window/core bounds plus the Field landmark gap.
     pub join_distance_px: f32,
     pub show_icons: bool,
     pub bloom_direction: ClusterBloomDirection,

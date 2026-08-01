@@ -40,6 +40,20 @@ struct JoinCandidate {
     cluster_id: ClusterId,
     output: String,
     started_at: Duration,
+    ready: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct JoinAffordance {
+    pub(crate) center: Vec2,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct JoinContact {
+    pub(crate) center: Vec2,
+    pub(crate) member_half: Vec2,
+    pub(crate) core_radius: f32,
+    pub(crate) gap: f32,
 }
 
 #[derive(Clone, Debug)]
@@ -457,8 +471,22 @@ impl ClusterSystem {
                     cluster.core_node()?,
                     metadata.output.clone(),
                     metadata.core_position,
-                    cluster.pinned,
+                    cluster.pinned
+                        || self.bloom.join_target_on_output(&metadata.output) == Some(*cluster_id),
                 ))
+            })
+            .collect()
+    }
+
+    pub(crate) fn bloom_pinned_core_nodes(&self) -> Vec<NodeId> {
+        self.metadata
+            .iter()
+            .filter_map(|(cluster_id, metadata)| {
+                if self.bloom.join_target_on_output(&metadata.output) == Some(*cluster_id) {
+                    self.core_node(*cluster_id)
+                } else {
+                    None
+                }
             })
             .collect()
     }
@@ -1199,6 +1227,13 @@ impl ClusterSystem {
         self.label_hover.borrow_mut().remove(&id);
         self.bloom.remove_cluster(id);
         self.overflow.remove_cluster(id);
+        if self
+            .join_candidate
+            .as_ref()
+            .is_some_and(|candidate| candidate.cluster_id == id)
+        {
+            self.join_candidate = None;
+        }
         let output = self.metadata.remove(&id).map(|metadata| metadata.output);
         if let Some(output) = output {
             if let Some(slots) = self.slots.get_mut(&output) {

@@ -40,6 +40,8 @@ pub struct ClusterCoreElement {
     fill: (f32, f32, f32, f32),
     fill_alpha: f32,
     element_alpha: f32,
+    flat_fill: f32,
+    center_flat_fill: f32,
 }
 
 #[derive(Debug)]
@@ -98,7 +100,23 @@ impl ClusterRenderer {
             fill: (fill_rgb.0, fill_rgb.1, fill_rgb.2, 1.0),
             fill_alpha: opacity.clamp(0.0, 1.0),
             element_alpha: alpha.clamp(0.0, 1.0),
+            flat_fill: 0.0,
+            center_flat_fill: 0.0,
         })
+    }
+
+    pub fn join_affordance(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        destination: Rectangle<i32, Physical>,
+        fill_rgb: (f32, f32, f32),
+    ) -> Result<ClusterCoreElement, Box<dyn Error>> {
+        let mut element =
+            self.core_with_alpha(renderer, destination, fill_rgb, fill_rgb, 1.0, 0.9)?;
+        element.border.3 = 0.0;
+        element.flat_fill = 1.0;
+        element.center_flat_fill = 1.0;
+        Ok(element)
     }
 
     pub fn icon(
@@ -266,8 +284,8 @@ impl RenderElement<GlesRenderer> for ClusterCoreElement {
             &[
                 Uniform::new("node_color", self.border),
                 Uniform::new("fill_color", self.fill),
-                Uniform::new("flat_fill", 0.0_f32),
-                Uniform::new("center_flat_fill", 0.0_f32),
+                Uniform::new("flat_fill", self.flat_fill),
+                Uniform::new("center_flat_fill", self.center_flat_fill),
                 Uniform::new("fill_alpha", self.fill_alpha),
             ],
         )
