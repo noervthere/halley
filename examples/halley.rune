@@ -511,11 +511,15 @@ clusters:
   # master window beside a vertical stack). Mod+L changes the active cluster.
   default-layout "stacking"
 
-  # While Mod-dragging a normal window, hold it near a cluster core for this
-  # long, then release to add it. Moving away or releasing early cancels the
-  # join. Distance is measured in the Field's logical coordinates.
+  # Bloom a collapsed cluster, then Mod-drag a normal window until it docks
+  # against the fixed core. Hold it there for this long; a borderless circle
+  # highlights the core when the join is armed, and releasing adds the window.
+  # Moving away, closing the bloom, or releasing early cancels the join.
   join-dwell-ms 2000
-  join-distance-px 280.0
+
+  # Older configs may still contain join-distance-px. It remains accepted for
+  # compatibility, but manual bloom joining now uses the actual window/core
+  # bounds plus field.gap instead of a center-distance threshold.
 
   # Draw the restored old-Halley cluster glyph inside each circular core.
   show-icons true

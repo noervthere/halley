@@ -138,8 +138,7 @@ supported keys; the redundant `node-shape` and `node-label-shape` spellings
 were removed. Labels use dedicated rectangle shaders and the shared Cosmic
 Text renderer, including configured font family/weight suffixes, measured
 centering, contrast-aware text, edge flipping, and the old hover
-slide/grow/fade. See [Fonts](fonts.md) for global typography behavior. Circle
-rendering remains reserved for future cluster/core work.
+slide/grow/fade. See [Fonts](fonts.md) for global typography behavior.
 
 Display policies accept `off`, `hover`, or `always`. Real application icons
 are resolved from desktop entries and icon themes in a background worker.
@@ -154,6 +153,23 @@ Leaving the marker, changing hover targets, pressing it, or beginning a node
 grab cancels the dwell and closes the hover UI. A grab keeps labels and
 previews suppressed until later pointer motion deliberately targets a node
 again.
+
+## Cluster bloom joining
+
+Rest the pointer on a collapsed cluster core to open its member bloom. While
+the bloom is open, its core is temporarily fixed in place. Mod+left-drag a
+normal Field window against the core: the window docks at the same non-overlap
+distance used by `field.gap` instead of pushing the core away.
+
+Hold the window there for `clusters.join-dwell-ms`. When the dwell completes,
+an old-Halley-style 60-pixel borderless circle highlights the core; releasing
+then adds the window to that cluster. Moving away, closing the bloom, changing
+outputs, cancelling the grab, or releasing before the highlight appears
+cancels the join. Closed and closing blooms never accept windows.
+
+The legacy `clusters.join-distance-px` key remains parseable so existing
+configurations continue to load, but it no longer affects this interaction.
+Contact is determined from the actual window and core bounds plus `field.gap`.
 
 ## Landmark non-overlap
 
