@@ -1096,6 +1096,7 @@ pub(crate) fn begin_pointer_move<D: SessionDriver>(
     focus::focus_window_from_pointer(session, window, serial);
 
     let mut cluster_grab_location = None;
+    let mut cluster_drag_rect = None;
     let screen_offset = if cluster_drag.is_some() {
         let visual = route.visual_geometry.unwrap_or_else(|| {
             session
@@ -1106,6 +1107,10 @@ pub(crate) fn begin_pointer_move<D: SessionDriver>(
         });
         let pointer = session.pointer.position();
         let offset = crate::input::grab::screen_grip_offset(pointer, visual.loc);
+        cluster_drag_rect = Some(Rectangle::new(
+            visual.loc - output_geometry.loc,
+            visual.size,
+        ));
         let camera = session
             .cameras
             .get(&output_name)
@@ -1153,7 +1158,13 @@ pub(crate) fn begin_pointer_move<D: SessionDriver>(
     if let (Some(id), Some(location), Some(drag)) =
         (id, cluster_grab_location, cluster_drag.as_mut())
     {
-        if !session.clusters.begin_workspace_drag(&drag.output, id) {
+        let Some(rect) = cluster_drag_rect else {
+            return false;
+        };
+        if !session
+            .clusters
+            .begin_workspace_drag(&drag.output, id, rect)
+        {
             return false;
         }
         reconcile_cluster_surfaces(session, &output_name);

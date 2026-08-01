@@ -42,10 +42,19 @@ struct JoinCandidate {
     started_at: Duration,
 }
 
+#[derive(Clone, Debug)]
+struct DraggedWindow {
+    member: NodeId,
+    presentation: Option<(String, Rectangle<i32, Logical>)>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum WindowPresentation {
     Field,
     Hidden,
+    PointerDrag {
+        rect: Rectangle<i32, Logical>,
+    },
     Workspace {
         rect: Rectangle<i32, Logical>,
         depth: usize,
@@ -76,7 +85,7 @@ pub struct ClusterSystem {
     transitions: HashMap<String, transition::WorkspaceTransition>,
     reflows: HashMap<String, transition::ReflowTransition>,
     floating: HashSet<NodeId>,
-    dragged_member: Option<NodeId>,
+    dragged_window: Option<DraggedWindow>,
     join_candidate: Option<JoinCandidate>,
     hovered_core: Option<ClusterId>,
     bloom: bloom::BloomState,
@@ -103,7 +112,7 @@ impl ClusterSystem {
             transitions: HashMap::new(),
             reflows: HashMap::new(),
             floating: HashSet::new(),
-            dragged_member: None,
+            dragged_window: None,
             join_candidate: None,
             hovered_core: None,
             bloom: bloom::BloomState::default(),
@@ -549,8 +558,18 @@ impl ClusterSystem {
         core: Option<Point<i32, Logical>>,
         now: Duration,
     ) -> WindowPresentation {
-        if self.dragged_member == Some(id) {
-            return WindowPresentation::Field;
+        if let Some(drag) = self
+            .dragged_window
+            .as_ref()
+            .filter(|drag| drag.member == id)
+        {
+            return match &drag.presentation {
+                Some((drag_output, rect)) if drag_output == output => {
+                    WindowPresentation::PointerDrag { rect: *rect }
+                }
+                Some(_) => WindowPresentation::Hidden,
+                None => WindowPresentation::Field,
+            };
         }
         let member_cluster = self.cluster_for_member(id);
         let active = self.active_on(output);
@@ -722,7 +741,12 @@ impl ClusterSystem {
     /// Gives one visible workspace member temporary pointer authority. The
     /// workspace keeps its slot in the layout while presentation and client
     /// sizing stop pinning the held window to that slot.
-    pub fn begin_workspace_drag(&mut self, output: &str, member: NodeId) -> bool {
+    pub fn begin_workspace_drag(
+        &mut self,
+        output: &str,
+        member: NodeId,
+        rect: Rectangle<i32, Logical>,
+    ) -> bool {
         let Some(cluster) = self.active_on(output) else {
             return false;
         };
@@ -730,8 +754,33 @@ impl ClusterSystem {
             return false;
         }
         self.surfaces.invalidate_target(member);
-        self.dragged_member = Some(member);
+        self.dragged_window = Some(DraggedWindow {
+            member,
+            presentation: Some((output.to_string(), rect)),
+        });
         true
+    }
+
+    pub fn update_workspace_drag(
+        &mut self,
+        member: NodeId,
+        output: &str,
+        location: Point<i32, Logical>,
+    ) -> bool {
+        let Some(drag) = self
+            .dragged_window
+            .as_mut()
+            .filter(|drag| drag.member == member)
+        else {
+            return false;
+        };
+        let Some((drag_output, rect)) = drag.presentation.as_mut() else {
+            return false;
+        };
+        let changed = drag_output != output || rect.loc != location;
+        *drag_output = output.to_string();
+        rect.loc = location;
+        changed
     }
 
     /// Keeps an ordinary Field window visible while it is held over an active
@@ -741,7 +790,10 @@ impl ClusterSystem {
             return false;
         }
         self.surfaces.invalidate_target(member);
-        self.dragged_member = Some(member);
+        self.dragged_window = Some(DraggedWindow {
+            member,
+            presentation: None,
+        });
         true
     }
 
@@ -771,8 +823,12 @@ impl ClusterSystem {
         let Some(before) = self.workspace_layout(cluster, work_area) else {
             return false;
         };
-        if self.dragged_member == Some(member) {
-            self.dragged_member = None;
+        if self
+            .dragged_window
+            .as_ref()
+            .is_some_and(|drag| drag.member == member)
+        {
+            self.dragged_window = None;
         }
         self.surfaces.invalidate_target(member);
         if !self.detach_member(field, cluster, member, position, now) {
@@ -833,7 +889,7 @@ impl ClusterSystem {
         output_local: Point<f64, Logical>,
         now: Duration,
     ) -> bool {
-        if self.dragged_member != Some(member) {
+        if self.dragged_window.as_ref().map(|drag| drag.member) != Some(member) {
             return false;
         }
         let Some(cluster) = self.active_on(output) else {
@@ -890,10 +946,10 @@ impl ClusterSystem {
         origin: Rectangle<i32, Logical>,
         now: Duration,
     ) -> bool {
-        if self.dragged_member != Some(member) {
+        if self.dragged_window.as_ref().map(|drag| drag.member) != Some(member) {
             return false;
         }
-        self.dragged_member = None;
+        self.dragged_window = None;
         let Some(cluster) = self.active_on(output) else {
             return false;
         };
@@ -908,7 +964,7 @@ impl ClusterSystem {
     }
 
     pub fn cancel_window_drag(&mut self) -> bool {
-        self.dragged_member.take().is_some()
+        self.dragged_window.take().is_some()
     }
 
     fn workspace_layout(
@@ -1031,8 +1087,12 @@ impl ClusterSystem {
     /// intentionally retained; only final surface destruction reaches here.
     pub fn forget_destroyed_member(&mut self, field: &mut Field, member: NodeId) -> bool {
         self.forget_surface_state(member);
-        if self.dragged_member == Some(member) {
-            self.dragged_member = None;
+        if self
+            .dragged_window
+            .as_ref()
+            .is_some_and(|drag| drag.member == member)
+        {
+            self.dragged_window = None;
         }
         if self
             .join_candidate
@@ -1446,7 +1506,11 @@ mod tests {
         let front = members[0];
         let now = Duration::from_secs(2);
 
-        assert!(system.begin_workspace_drag("DP-1", front));
+        assert!(system.begin_workspace_drag(
+            "DP-1",
+            front,
+            Rectangle::new((300, 200).into(), (500, 400).into()),
+        ));
         assert!(system.detach_active_member_for_drag(
             &mut field,
             "DP-1",
@@ -1503,7 +1567,11 @@ mod tests {
         let work_area = Rectangle::new((0, 0).into(), (1_000, 700).into());
         let front = members[0];
 
-        assert!(system.begin_workspace_drag("DP-1", front));
+        assert!(system.begin_workspace_drag(
+            "DP-1",
+            front,
+            Rectangle::new((300, 200).into(), (500, 400).into()),
+        ));
         assert_eq!(system.active_on("DP-1"), Some(cluster));
         assert_eq!(system.member_ids(cluster), members);
         assert!(system.finish_workspace_drag(
@@ -1515,6 +1583,29 @@ mod tests {
         ));
         assert_eq!(system.active_on("DP-1"), Some(cluster));
         assert_eq!(system.first_member(cluster), Some(front));
+    }
+
+    #[test]
+    fn workspace_drag_keeps_its_screen_size_across_outputs() {
+        let (_field, mut system, _cluster, members) =
+            active_test_cluster(2, ClusterWorkspaceLayoutKind::Stacking);
+        let work_area = Rectangle::new((0, 0).into(), (1_000, 700).into());
+        let member = members[0];
+        let original = Rectangle::new((140, 90).into(), (620, 510).into());
+        let moved_location = Point::from((35, 55));
+
+        assert!(system.begin_workspace_drag("DP-1", member, original));
+        assert!(system.update_workspace_drag(member, "DP-2", moved_location));
+        assert_eq!(
+            system.window_presentation(member, "DP-1", work_area, None, Duration::ZERO),
+            WindowPresentation::Hidden
+        );
+        assert_eq!(
+            system.window_presentation(member, "DP-2", work_area, None, Duration::ZERO),
+            WindowPresentation::PointerDrag {
+                rect: Rectangle::new(moved_location, original.size),
+            }
+        );
     }
 
     #[test]
@@ -1608,11 +1699,12 @@ mod tests {
             f64::from(target.y + target.h * 0.5),
         ));
 
-        assert!(system.begin_workspace_drag("DP-1", members[0]));
+        let held = Rectangle::new((120, 90).into(), (600, 500).into());
+        assert!(system.begin_workspace_drag("DP-1", members[0], held));
         assert_eq!(
             system
                 .window_presentation(members[0], "DP-1", work_area, None, Duration::from_secs(1),),
-            WindowPresentation::Field
+            WindowPresentation::PointerDrag { rect: held }
         );
         assert_eq!(
             system

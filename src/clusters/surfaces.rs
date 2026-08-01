@@ -72,7 +72,10 @@ impl ClusterSystem {
             .into_iter()
             .filter(|placement| {
                 !self.floating.contains(&placement.node_id)
-                    && self.dragged_member != Some(placement.node_id)
+                    && self
+                        .dragged_window
+                        .as_ref()
+                        .is_none_or(|drag| drag.member != placement.node_id)
             })
             .map(|placement| {
                 let local = Rectangle::<i32, Logical>::new(

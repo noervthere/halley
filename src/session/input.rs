@@ -1337,6 +1337,19 @@ where
                 );
                 if let Some(drag) = cluster_drag.as_mut() {
                     drag.on_origin_output = drag.output == output_name;
+                    if let Some(id) = id {
+                        let screen_location = Point::<i32, Logical>::from((
+                            (position_after.0 + f64::from(screen_offset.x)).round() as i32
+                                - output_geometry.loc.x,
+                            (position_after.1 + f64::from(screen_offset.y)).round() as i32
+                                - output_geometry.loc.y,
+                        ));
+                        let _ = session.clusters.update_workspace_drag(
+                            id,
+                            &output_name,
+                            screen_location,
+                        );
+                    }
                     if let crate::input::grab::Grab::MoveWindow {
                         cluster_drag: Some(live),
                         ..

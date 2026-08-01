@@ -206,6 +206,9 @@ pub(crate) fn window_visual_state_with_cluster_presentation(
     let (cluster_rect, cluster_depth, cluster_alpha) = match cluster_presentation {
         crate::clusters::WindowPresentation::Hidden => return None,
         crate::clusters::WindowPresentation::Field => (None, None, 1.0),
+        crate::clusters::WindowPresentation::PointerDrag { rect } => {
+            (Some(rect.to_physical(1)), None, 1.0)
+        }
         crate::clusters::WindowPresentation::Workspace { rect, depth, alpha } => {
             (Some(rect.to_physical(1)), Some(depth), alpha)
         }
