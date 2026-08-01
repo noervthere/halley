@@ -77,6 +77,10 @@ fn forward_pointer_button(intercepted: bool, finishing_client_move: bool) -> boo
     !intercepted || finishing_client_move
 }
 
+fn plain_background_press_dismisses_bloom(intercepted: bool, on_background: bool) -> bool {
+    !intercepted && on_background
+}
+
 fn shortcut_policy_allows_bindings(focus_bypasses_shortcuts: bool, inhibitor_active: bool) -> bool {
     !focus_bypasses_shortcuts && !inhibitor_active
 }
@@ -1961,24 +1965,6 @@ where
             (button == BTN_LEFT && state == ButtonState::Pressed && !session.focus_cycle.is_open())
                 .then(|| cluster_bloom_at_pointer(session, crate::frame_clock::monotonic_now()))
                 .flatten();
-        if button == BTN_LEFT && state == ButtonState::Pressed && bloom_token.is_none() {
-            let outputs = session
-                .wayland
-                .space
-                .outputs()
-                .map(|output| output.name().to_string())
-                .collect::<Vec<_>>();
-            let now = crate::frame_clock::monotonic_now();
-            let mut closed = false;
-            for output in outputs {
-                closed |= session.clusters.close_bloom(&output, now);
-            }
-            if closed {
-                session.clusters.set_overlay_hovered(None);
-                session.clusters.set_hovered_core(None, now);
-                session.request_redraw();
-            }
-        }
         if button == BTN_LEFT
             && state == ButtonState::Pressed
             && !session.focus_cycle.is_open()
@@ -2151,6 +2137,23 @@ where
                 };
             }
             intercepted = true;
+        }
+
+        // Old Halley kept a bloom open while another window or compositor
+        // marker was clicked or grabbed. Only an otherwise-unhandled press on
+        // the empty Field dismissed it; core presses close their own bloom in
+        // the dedicated core path above.
+        if button == BTN_LEFT
+            && state == ButtonState::Pressed
+            && plain_background_press_dismisses_bloom(intercepted, on_background)
+            && let Some(route) = route.as_ref()
+        {
+            let now = crate::frame_clock::monotonic_now();
+            if session.clusters.close_bloom(&route.output.name(), now) {
+                session.clusters.set_overlay_hovered(None);
+                session.clusters.set_hovered_core(None, now);
+                session.request_redraw();
+            }
         }
 
         if !intercepted && button == BTN_RIGHT {
@@ -2959,8 +2962,9 @@ mod tests {
     use super::{
         CaptureKeyRouting, bloom_drag_handoff, capture_key_routing, cluster_blocks_zoom,
         drag_threshold_reached, forward_pointer_button, pending_window_move_motion,
-        releases_pending_window_move, sampled_drag_velocity, shortcut_policy_allows_bindings,
-        stacking_cycle_direction, window_action_output,
+        plain_background_press_dismisses_bloom, releases_pending_window_move,
+        sampled_drag_velocity, shortcut_policy_allows_bindings, stacking_cycle_direction,
+        window_action_output,
     };
     fn sample_constant_motion(report_hz: u32) -> Vec2 {
         let step = Duration::from_secs_f64(1.0 / f64::from(report_hz));
@@ -3022,6 +3026,13 @@ mod tests {
         assert!(releases_pending_window_move(BTN_LEFT, BTN_LEFT, true));
         assert!(!releases_pending_window_move(BTN_LEFT, BTN_LEFT, false));
         assert!(!releases_pending_window_move(BTN_LEFT, BTN_RIGHT, true));
+    }
+
+    #[test]
+    fn bloom_stays_open_for_windows_and_compositor_targets_until_a_blank_click() {
+        assert!(!plain_background_press_dismisses_bloom(false, false));
+        assert!(!plain_background_press_dismisses_bloom(true, true));
+        assert!(plain_background_press_dismisses_bloom(false, true));
     }
 
     #[test]

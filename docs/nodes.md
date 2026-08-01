@@ -167,6 +167,10 @@ then adds the window to that cluster. Moving away, closing the bloom, changing
 outputs, cancelling the grab, or releasing before the highlight appears
 cancels the join. Closed and closing blooms never accept windows.
 
+Clicking or grabbing another window leaves the bloom open, matching old
+Halley. A plain click on the empty Field, clicking or dragging the bloomed core,
+activating a cluster, or an explicit keyboard action closes it.
+
 The legacy `clusters.join-distance-px` key remains parseable so existing
 configurations continue to load, but it no longer affects this interaction.
 Contact is determined from the actual window and core bounds plus `field.gap`.
