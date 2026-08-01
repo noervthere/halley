@@ -47,6 +47,7 @@ pub fn bootstrap_default_config_at(path: &Path) -> io::Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rune_cfg::RuneConfig;
 
     /// A fresh, uniquely-named scratch directory under the OS temp dir,
     /// scoped to one test so parallel test runs never collide.
@@ -150,5 +151,16 @@ mod tests {
                 "bootstrap template is missing {expected:?}"
             );
         }
+    }
+
+    #[test]
+    fn template_uses_ring_only_view_entries() {
+        let config = RuneConfig::from_str(DEFAULT_CONFIG).expect("bootstrap template parses");
+        let view = crate::parse_view_checked(&config).expect("bootstrap view parses");
+
+        assert!(view.outputs.is_empty());
+        assert_eq!(view.focus_rings.by_output.len(), 2);
+        assert!(view.focus_rings.by_output.contains_key("DP-1"));
+        assert!(view.focus_rings.by_output.contains_key("DP-2"));
     }
 }

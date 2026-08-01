@@ -74,34 +74,40 @@ interactive move/resize grab are hard-protected from decay. Changing between
 protected, inside-ring, and outside-ring status starts a fresh timer; stale
 time from an earlier status is never reused.
 
-Each output has its own camera-centered ellipse. Keep these as repeatable,
-standalone top-level blocks; they are not nested inside the hardware `output:`
-blocks:
+Each output has its own camera-centered ellipse. Configure it inside that
+connector's `view.output` entry. An entry may contain both hardware settings
+and a focus ring, or only a focus ring when no hardware override is wanted:
 
 ```rune
-focus-ring:
-  output "DP-1"
-  radius-x 820.0
-  radius-y 420.0
-  offset-x 0.0
-  offset-y 0.0
-end
+view:
+  output:
+    name "DP-1"
+    focus-ring:
+      radius-x 820.0
+      radius-y 420.0
+      offset-x 0.0
+      offset-y 0.0
+    end
+  end
 
-focus-ring:
-  output "DP-2"
-  radius-x 700.0
-  radius-y 360.0
-  offset-x 0.0
-  offset-y 20.0
+  output:
+    name "DP-2"
+    focus-ring:
+      radius-x 700.0
+      radius-y 360.0
+      offset-x 0.0
+      offset-y 20.0
+    end
+  end
 end
 ```
 
 A window uses the shorter outside delay only when at least 90% of its footprint
 is outside the ellipse for its owning output. Moving it to another output or
 changing that output's ring starts a fresh eligibility timer. Editing one
-output does not reset timers on the others. An output without a matching block
-uses the default 820×420 ring; an old unkeyed block remains accepted only as a
-migration fallback.
+output does not reset timers on the others. An output without a configured
+ring uses the built-in 820×420 default. Top-level `focus-ring:` and `output:`
+blocks are rejected; both belong under `view:`.
 
 The ring is normally hidden. Saving a changed focus-ring configuration previews
 it briefly; `debug.show-focus-ring true` keeps it visible:

@@ -37,47 +37,57 @@ autostart:
   # on-reload "notify-send 'Halley configuration reloaded'"
 end
 
-# One `output:` block per physical monitor - not a wrapper section, just
-# repeat the block for each one. Commented out by default: an active block
-# whose `name` happens to match a real connector on your machine would force
-# that exact mode, which is very likely wrong for hardware this file wasn't
-# written for. Uncomment and edit to match your actual monitor(s) (find real
-# connector names/modes with `halleyctl outputs`).
-#
-# output:
-#   # DRM connector name exactly as printed by `halleyctl outputs`.
-#   name "DP-1"
-#
-#   # Pixel dimensions of an advertised mode. Width and height are required
-#   # whenever an output block is present.
-#   width 2560
-#   height 1440
-#
-#   # Position in the shared desktop coordinate space. (0, 0) is the desktop
-#   # origin; place another output to the right by setting its offset-x to the
-#   # first output's width. Negative positions are allowed.
-#   offset-x 0
-#   offset-y 0
-#
-#   # Must match one of the connector's real modes exactly - no closest-rate
-#   # guessing. Omit this line to use the highest refresh available at this
-#   # resolution. If the entire output block is omitted, the connector uses
-#   # its hardware-preferred mode instead.
-#   rate 179.998
-#
-#   # Clockwise output rotation in degrees: 0, 90, 180, or 270.
-#   transform 0
-#
-#   # Variable refresh rate: "off", "on", or "auto". "on" enables VRR
-#   # whenever the connector supports it. "auto" enables VRR for a settled
-#   # fullscreen window and disables it while transitions or overlays are visible.
-#   # If the driver cannot switch VRR without a modeset, "auto" stays disabled;
-#   # use "on" to keep VRR enabled on that output instead.
-#   vrr "auto"
-# end
-#
-# Output reloads are diffed per connector. Changing one output does not force
-# an unchanged output through a redundant mode set.
+# `view` groups settings by physical output. Repeat `output:` inside this one
+# section for each connector (find connector names and modes with
+# `halleyctl outputs`). A ring-only entry is safe on any machine: it changes
+# Halley's view policy without selecting a hardware mode.
+view:
+  output:
+    # DRM connector name exactly as printed by `halleyctl outputs`.
+    name "DP-1"
+
+    # Uncomment and edit the complete hardware group to select a mode. Width
+    # and height must be supplied together; offset, rate, transform, and VRR
+    # are only valid when both are present.
+    # width 2560
+    # height 1440
+    # offset-x 0
+    # offset-y 0
+
+    # `rate` must exactly match an advertised mode. When omitted, Halley uses
+    # the highest advertised refresh for the configured width and height.
+    # rate 179.998
+
+    # Clockwise rotation in degrees: 0, 90, 180, or 270.
+    # transform 0
+
+    # "off", "on", or "auto". Auto enables VRR for a settled fullscreen
+    # window when the backend can switch without a modeset.
+    # vrr "auto"
+
+    # Camera-relative decay ellipse for this connector.
+    focus-ring:
+      radius-x 820.0
+      radius-y 420.0
+      offset-x 0.0
+      offset-y 0.0
+    end
+  end
+
+  output:
+    name "DP-2"
+    focus-ring:
+      radius-x 820.0
+      radius-y 420.0
+      offset-x 0.0
+      offset-y 0.0
+    end
+  end
+end
+
+# Hardware output reloads are diffed per connector. Changing one output does
+# not force an unchanged output through a redundant mode set. A ring-only
+# change never creates hardware output work.
 
 # Keyboard, pointer-focus, physical-device, touch, and gesture settings.
 # Keyboard/focus policy and client gesture protocols are backend-independent.
@@ -402,25 +412,6 @@ bearings:
   # One shared backdrop capture and blur chain is reused by every chip on an
   # output; disabling this removes the frosted backdrop entirely.
   blur true
-end
-
-# Focus rings are standalone and keyed by connector. They are intentionally
-# separate from output mode/position configuration so each monitor can tune
-# decay geometry without mixing presentation policy into hardware policy.
-focus-ring:
-  output "DP-1"
-  radius-x 820.0
-  radius-y 420.0
-  offset-x 0.0
-  offset-y 0.0
-end
-
-focus-ring:
-  output "DP-2"
-  radius-x 820.0
-  radius-y 420.0
-  offset-x 0.0
-  offset-y 0.0
 end
 
 decay:

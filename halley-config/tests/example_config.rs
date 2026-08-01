@@ -371,12 +371,12 @@ fn example_config_maximize_animation_parses() {
     );
 }
 
-/// The shipped example's `output:` block is commented out on purpose (an
-/// active block whose `name` happened to match a real connector would force
-/// a mode onto hardware this file wasn't written for) - confirm it really
-/// parses to zero outputs, not just that it happens to not error.
+/// The shipped example uses ring-only view entries by default. A connector
+/// name matching real hardware must not be enough to create modeset work.
 #[test]
-fn example_config_output_section_is_commented_out_by_default() {
+fn example_config_view_has_no_hardware_overrides_by_default() {
     let config = RuneConfig::from_file(EXAMPLE_PATH).expect("example config parses");
-    assert_eq!(halley_config::parse_outputs(&config), Vec::new());
+    let view = halley_config::parse_view_checked(&config).expect("example view parses");
+    assert_eq!(view.outputs, Vec::new());
+    assert_eq!(view.focus_rings.by_output.len(), 2);
 }
