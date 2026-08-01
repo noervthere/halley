@@ -26,10 +26,12 @@ use super::{
 mod configure;
 mod lifecycle;
 mod override_redirect;
+mod policy;
 mod presentation;
 mod state;
 
 use override_redirect::*;
+use policy::*;
 pub(super) use presentation::restore_maximized_window;
 use presentation::*;
 pub(super) use presentation::{configure_window, reconfigure_fullscreen, set_window_fullscreen};
@@ -49,63 +51,6 @@ struct MaximizeFullscreenState {
 
 #[derive(Default)]
 struct MaximizeFullscreen(Mutex<MaximizeFullscreenState>);
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum FullscreenRequestOrigin {
-    Initial,
-    Client,
-    Compositor,
-    Maximize,
-}
-
-impl FullscreenRequestOrigin {
-    fn presentation_origin(self) -> crate::wayland::fullscreen::FullscreenOrigin {
-        match self {
-            Self::Compositor => crate::wayland::fullscreen::FullscreenOrigin::Compositor,
-            Self::Maximize => crate::wayland::fullscreen::FullscreenOrigin::Maximize,
-            Self::Initial | Self::Client => crate::wayland::fullscreen::FullscreenOrigin::Client,
-        }
-    }
-
-    fn client_owns_geometry(self) -> bool {
-        matches!(self, Self::Initial | Self::Client)
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ExternalPresentationPolicy {
-    Initial,
-    Opening,
-    Confined,
-    Animated,
-}
-
-fn external_presentation_policy(
-    origin: FullscreenRequestOrigin,
-    opening: bool,
-    confined: bool,
-    fullscreen: bool,
-) -> ExternalPresentationPolicy {
-    if !fullscreen && origin == FullscreenRequestOrigin::Compositor {
-        // The original X11 path settled fullscreen exit synchronously. Games
-        // such as TF2 may never acknowledge an animated windowed configure;
-        // direct settle makes Mod+F immediately restore Field/cluster state.
-        ExternalPresentationPolicy::Initial
-    } else if confined {
-        ExternalPresentationPolicy::Confined
-    } else if origin == FullscreenRequestOrigin::Initial {
-        ExternalPresentationPolicy::Initial
-    } else if opening && origin == FullscreenRequestOrigin::Client {
-        // Match the original X11 fullscreen path: settle the client directly
-        // into fullscreen and let the already-running window-open animation
-        // provide the only visual motion.
-        ExternalPresentationPolicy::Initial
-    } else if opening {
-        ExternalPresentationPolicy::Opening
-    } else {
-        ExternalPresentationPolicy::Animated
-    }
-}
 
 fn window_for_surface<D: SessionDriver>(
     session: &Session<D>,
@@ -612,41 +557,12 @@ pub(super) fn constrain_window_size(
 #[cfg(test)]
 mod tests {
     use super::{
-        ExternalPresentationPolicy, FullscreenRequestOrigin, OverrideRedirectIdentity,
-        OverrideRedirectMapAdmission, OverrideRedirectStackAction,
-        compositor_fullscreen_should_raise, external_presentation_policy,
+        FullscreenRequestOrigin, OverrideRedirectIdentity, OverrideRedirectMapAdmission,
+        OverrideRedirectStackAction, compositor_fullscreen_should_raise,
         override_redirect_map_admission, override_redirect_owner_rank,
         override_redirect_stack_action, recovery_window_size, size_fills_output,
     };
     use smithay::utils::{Logical, Point, Rectangle, Size};
-
-    #[test]
-    fn external_fullscreen_origin_preserves_compositor_ownership() {
-        use crate::wayland::fullscreen::FullscreenOrigin;
-
-        assert_eq!(
-            FullscreenRequestOrigin::Compositor.presentation_origin(),
-            FullscreenOrigin::Compositor
-        );
-        assert_eq!(
-            FullscreenRequestOrigin::Maximize.presentation_origin(),
-            FullscreenOrigin::Maximize
-        );
-        for origin in [
-            FullscreenRequestOrigin::Initial,
-            FullscreenRequestOrigin::Client,
-        ] {
-            assert_eq!(origin.presentation_origin(), FullscreenOrigin::Client);
-        }
-    }
-
-    #[test]
-    fn only_client_fullscreen_requests_own_x11_geometry_negotiation() {
-        assert!(FullscreenRequestOrigin::Initial.client_owns_geometry());
-        assert!(FullscreenRequestOrigin::Client.client_owns_geometry());
-        assert!(!FullscreenRequestOrigin::Compositor.client_owns_geometry());
-        assert!(!FullscreenRequestOrigin::Maximize.client_owns_geometry());
-    }
 
     #[test]
     fn only_compositor_fullscreen_entry_promotes_the_x11_window() {
@@ -802,64 +718,5 @@ mod tests {
         assert!(size_fills_output(Size::from((1920, 1200)), output));
         assert!(size_fills_output(Size::from((2560, 1440)), output));
         assert!(!size_fills_output(Size::from((1440, 900)), output));
-    }
-
-    #[test]
-    fn initial_fullscreen_always_uses_the_direct_settle() {
-        assert_eq!(
-            external_presentation_policy(FullscreenRequestOrigin::Initial, false, false, true),
-            ExternalPresentationPolicy::Initial
-        );
-        assert_eq!(
-            external_presentation_policy(FullscreenRequestOrigin::Initial, true, false, true),
-            ExternalPresentationPolicy::Initial
-        );
-    }
-
-    #[test]
-    fn client_fullscreen_settles_under_the_existing_window_open_animation() {
-        assert_eq!(
-            external_presentation_policy(FullscreenRequestOrigin::Client, true, false, true),
-            ExternalPresentationPolicy::Initial
-        );
-        assert_eq!(
-            external_presentation_policy(FullscreenRequestOrigin::Compositor, true, false, true),
-            ExternalPresentationPolicy::Opening
-        );
-    }
-
-    #[test]
-    fn confined_fullscreen_never_animates() {
-        for origin in [
-            FullscreenRequestOrigin::Initial,
-            FullscreenRequestOrigin::Client,
-            FullscreenRequestOrigin::Compositor,
-        ] {
-            assert_eq!(
-                external_presentation_policy(origin, true, true, true),
-                ExternalPresentationPolicy::Confined
-            );
-        }
-    }
-
-    #[test]
-    fn settled_or_locked_fullscreen_animates_when_not_confined() {
-        for origin in [
-            FullscreenRequestOrigin::Client,
-            FullscreenRequestOrigin::Compositor,
-        ] {
-            assert_eq!(
-                external_presentation_policy(origin, false, false, true),
-                ExternalPresentationPolicy::Animated
-            );
-        }
-    }
-
-    #[test]
-    fn compositor_fullscreen_exit_uses_the_direct_settle() {
-        assert_eq!(
-            external_presentation_policy(FullscreenRequestOrigin::Compositor, false, false, false,),
-            ExternalPresentationPolicy::Initial
-        );
     }
 }

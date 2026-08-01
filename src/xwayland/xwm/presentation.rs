@@ -135,7 +135,7 @@ pub(super) fn set_external_fullscreen<D: SessionDriver>(
         return;
     }
     let opening = client_geometry_guarded || opening_animation;
-    let policy = external_presentation_policy(
+    let policy = ExternalPresentationPolicy::select(
         origin,
         opening,
         crate::session::has_active_pointer_confinement(session),
@@ -181,7 +181,7 @@ pub(super) fn set_external_fullscreen<D: SessionDriver>(
             }
         }
     } else {
-        let reason = presentation_policy_name(policy);
+        let reason = policy.name();
         eventline::debug!(
             "xwayland: fullscreen policy xid={} fullscreen={fullscreen} \
              origin={origin:?} policy={reason}",
@@ -339,15 +339,6 @@ pub(super) fn opening_target_bounds<D: SessionDriver>(
         output_size,
         view.scale,
     ))
-}
-
-pub(super) fn presentation_policy_name(policy: ExternalPresentationPolicy) -> &'static str {
-    match policy {
-        ExternalPresentationPolicy::Initial => "initial",
-        ExternalPresentationPolicy::Opening => "opening",
-        ExternalPresentationPolicy::Confined => "confined",
-        ExternalPresentationPolicy::Animated => "animated",
-    }
 }
 
 pub(super) fn settle_external_immediately<D: SessionDriver>(
