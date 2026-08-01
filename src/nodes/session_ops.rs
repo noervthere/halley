@@ -303,9 +303,7 @@ pub(crate) fn tick_physics<D: crate::session::SessionDriver>(
             last_world,
             velocity,
             ..
-        } if cluster_drag.as_ref().is_none_or(|drag| drag.detached) => {
-            Some((*id, *last_world, *velocity))
-        }
+        } if cluster_drag.is_none() => Some((*id, *last_world, *velocity)),
         crate::input::grab::Grab::MoveNode {
             id,
             last_world,

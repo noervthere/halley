@@ -141,12 +141,35 @@ pub(crate) fn cancel_grab_for_surface<D: SessionDriver>(
 
 /// Cancels compositor-owned pointer state and its cluster-side presentation
 /// authority as one transaction. Modal overlays, session locking, and surface
-/// destruction all use this path so a held tile cannot remain floating.
+/// destruction all use this path so a held workspace window cannot remain
+/// floating or assigned to the wrong output.
 pub(crate) fn cancel_compositor_grab<D: SessionDriver>(session: &mut Session<D>) {
+    let provisional_cluster = match &session.grab {
+        crate::input::grab::Grab::MoveWindow {
+            id: Some(id),
+            cluster_drag: Some(drag),
+            ..
+        } => Some((*id, drag.output.clone())),
+        _ => None,
+    };
     if matches!(&session.grab, crate::input::grab::Grab::ResizeWindow(_)) {
         crate::input::grab::release_resize_anchor(&mut session.resize_anchor);
     }
-    session.clusters.cancel_tiled_drag();
+    session.clusters.cancel_join_candidate();
+    session.clusters.cancel_window_drag();
+    if let Some((id, output_name)) = provisional_cluster {
+        let output = session
+            .wayland
+            .space
+            .outputs()
+            .find(|output| output.name() == output_name)
+            .cloned();
+        if let Some(output) = output {
+            crate::nodes::set_collapsed_output(session, id, &output);
+            reconcile_cluster_surfaces(session, &output_name);
+            session.request_redraw();
+        }
+    }
     session.grab = crate::input::grab::Grab::None;
     session.cursor.set_override(None);
 }
@@ -1056,7 +1079,7 @@ pub(crate) fn begin_pointer_move<D: SessionDriver>(
             cluster_id,
             output: output_name.clone(),
             layout: metadata.layout,
-            detached: false,
+            on_origin_output: true,
         })
     });
     if cluster_drag.as_ref().is_some_and(|drag| {
@@ -1125,43 +1148,20 @@ pub(crate) fn begin_pointer_move<D: SessionDriver>(
     if let (Some(id), Some(location), Some(drag)) =
         (id, cluster_grab_location, cluster_drag.as_mut())
     {
-        let size = session
-            .wayland
-            .space
-            .element_geometry(window)
-            .map(|geometry| geometry.size)
-            .unwrap_or((1, 1).into());
-        let center = halley_core::field::Vec2 {
-            x: location.x as f32 + size.w as f32 * 0.5,
-            y: location.y as f32 + size.h as f32 * 0.5,
-        };
-        let now = crate::frame_clock::monotonic_now();
-        let work_area = smithay::desktop::layer_map_for_output(&route.output).non_exclusive_zone();
-        match drag.layout {
-            halley_core::cluster::layout::ClusterWorkspaceLayoutKind::Tiling => {
-                if !session.clusters.begin_tiled_drag(&drag.output, id) {
-                    return false;
-                }
-            }
-            halley_core::cluster::layout::ClusterWorkspaceLayoutKind::Stacking => {
-                if !session.clusters.detach_active_member_for_drag(
-                    &mut session.nodes.field,
-                    &drag.output,
-                    crate::clusters::ClusterDragMember {
-                        cluster_id: drag.cluster_id,
-                        node_id: id,
-                    },
-                    work_area,
-                    center,
-                    now,
-                ) {
-                    return false;
-                }
-                drag.detached = true;
-                reconcile_cluster_surfaces(session, &output_name);
-            }
+        if !session.clusters.begin_workspace_drag(&drag.output, id) {
+            return false;
         }
+        reconcile_cluster_surfaces(session, &output_name);
         session.wayland.space.relocate_element(window, location);
+        // The held member no longer has cluster depth while it follows the
+        // pointer, so explicitly keep its normal Space slot above the
+        // remaining workspace for the duration of the grab.
+        crate::window::raise_managed(&mut session.wayland, window);
+        session.xwayland.raise_window(window);
+    } else if let Some(id) = id {
+        let _ = session.clusters.begin_field_drag(id);
+        crate::window::raise_managed(&mut session.wayland, window);
+        session.xwayland.raise_window(window);
     }
 
     if let Some(id) = id {

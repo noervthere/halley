@@ -50,7 +50,7 @@ struct ReflowPlacement {
 #[derive(Clone, Copy, Debug)]
 enum ReflowKind {
     Standard,
-    LayoutChange,
+    LayoutChange { preserve_source_depth: bool },
     StackCycle(ClusterCycleDirection),
 }
 
@@ -218,6 +218,7 @@ impl ClusterSystem {
         output: &str,
         cluster_id: ClusterId,
         before: halley_core::cluster::layout::ClusterWorkspaceLayoutResult,
+        target_layout: ClusterWorkspaceLayoutKind,
         now: Duration,
         duration_ms: u32,
     ) {
@@ -227,7 +228,9 @@ impl ClusterSystem {
             before,
             now,
             duration_ms,
-            ReflowKind::LayoutChange,
+            ReflowKind::LayoutChange {
+                preserve_source_depth: target_layout == ClusterWorkspaceLayoutKind::Tiling,
+            },
         );
     }
 
@@ -461,7 +464,7 @@ impl ClusterSystem {
         let linear = (elapsed.as_secs_f32() / reflow.duration.as_secs_f32()).clamp(0.0, 1.0);
         let eased = match reflow.kind {
             ReflowKind::StackCycle(_) => ease_in_out_cubic(linear),
-            ReflowKind::Standard | ReflowKind::LayoutChange => {
+            ReflowKind::Standard | ReflowKind::LayoutChange { .. } => {
                 linear * linear * (3.0 - 2.0 * linear)
             }
         };
@@ -476,15 +479,21 @@ impl ClusterSystem {
                     alpha: 1.0,
                 })
             }
-            ReflowKind::LayoutChange => {
+            ReflowKind::LayoutChange {
+                preserve_source_depth,
+            } => {
                 let from = from?;
-                let (target, _target_depth) = target?;
+                let (target, target_depth) = target?;
                 Some(ReflowVisual {
                     rect: lerp_rect(from.rect, target, eased),
-                    // Layout changes must not reshuffle cards before their
-                    // movement finishes. The final target depth takes over
-                    // naturally when this reflow expires.
-                    depth: from.depth,
+                    // Cards leaving a stack retain its established overlap
+                    // while separating. Cards entering a stack adopt their
+                    // destination overlap before their paths begin crossing.
+                    depth: if preserve_source_depth {
+                        from.depth
+                    } else {
+                        target_depth
+                    },
                     alpha: 1.0,
                 })
             }

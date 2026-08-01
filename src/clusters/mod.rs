@@ -76,7 +76,7 @@ pub struct ClusterSystem {
     transitions: HashMap<String, transition::WorkspaceTransition>,
     reflows: HashMap<String, transition::ReflowTransition>,
     floating: HashSet<NodeId>,
-    dragged_tile: Option<NodeId>,
+    dragged_member: Option<NodeId>,
     join_candidate: Option<JoinCandidate>,
     hovered_core: Option<ClusterId>,
     bloom: bloom::BloomState,
@@ -103,7 +103,7 @@ impl ClusterSystem {
             transitions: HashMap::new(),
             reflows: HashMap::new(),
             floating: HashSet::new(),
-            dragged_tile: None,
+            dragged_member: None,
             join_candidate: None,
             hovered_core: None,
             bloom: bloom::BloomState::default(),
@@ -310,7 +310,7 @@ impl ClusterSystem {
                 self.hide_overflow(output);
             }
         }
-        self.begin_layout_reflow(output, id, before, now, duration_ms);
+        self.begin_layout_reflow(output, id, before, layout, now, duration_ms);
         true
     }
 
@@ -549,7 +549,7 @@ impl ClusterSystem {
         core: Option<Point<i32, Logical>>,
         now: Duration,
     ) -> WindowPresentation {
-        if self.dragged_tile == Some(id) {
+        if self.dragged_member == Some(id) {
             return WindowPresentation::Field;
         }
         let member_cluster = self.cluster_for_member(id);
@@ -719,22 +719,29 @@ impl ClusterSystem {
         Some(current)
     }
 
-    /// Gives one visible tiling member temporary pointer authority. The
+    /// Gives one visible workspace member temporary pointer authority. The
     /// workspace keeps its slot in the layout while presentation and client
     /// sizing stop pinning the held window to that slot.
-    pub fn begin_tiled_drag(&mut self, output: &str, member: NodeId) -> bool {
+    pub fn begin_workspace_drag(&mut self, output: &str, member: NodeId) -> bool {
         let Some(cluster) = self.active_on(output) else {
             return false;
         };
-        if self.metadata(cluster).map(|metadata| metadata.layout)
-            != Some(ClusterWorkspaceLayoutKind::Tiling)
-            || self.floating.contains(&member)
-            || self.cluster_for_member(member) != Some(cluster)
-        {
+        if self.floating.contains(&member) || self.cluster_for_member(member) != Some(cluster) {
             return false;
         }
         self.surfaces.invalidate_target(member);
-        self.dragged_tile = Some(member);
+        self.dragged_member = Some(member);
+        true
+    }
+
+    /// Keeps an ordinary Field window visible while it is held over an active
+    /// workspace, where non-members are otherwise intentionally hidden.
+    pub fn begin_field_drag(&mut self, member: NodeId) -> bool {
+        if self.is_member(member) {
+            return false;
+        }
+        self.surfaces.invalidate_target(member);
+        self.dragged_member = Some(member);
         true
     }
 
@@ -764,8 +771,8 @@ impl ClusterSystem {
         let Some(before) = self.workspace_layout(cluster, work_area) else {
             return false;
         };
-        if self.dragged_tile == Some(member) {
-            self.dragged_tile = None;
+        if self.dragged_member == Some(member) {
+            self.dragged_member = None;
         }
         self.surfaces.invalidate_target(member);
         if !self.detach_member(field, cluster, member, position, now) {
@@ -781,23 +788,22 @@ impl ClusterSystem {
         true
     }
 
-    /// Reattaches a pulled-out member at the front of its original active
-    /// cluster. In stacking that is the only focusable/top card; in tiling it
-    /// becomes the master.
-    pub fn rejoin_dragged_member_front(
+    /// Admits a Field window at the front of the active workspace. In
+    /// stacking that is the only focusable/top card; in tiling it becomes the
+    /// master.
+    pub fn join_active_member_front(
         &mut self,
         field: &mut Field,
         output: &str,
-        dragged: ClusterDragMember,
+        member: NodeId,
         work_area: Rectangle<i32, Logical>,
         origin: Rectangle<i32, Logical>,
         now: Duration,
     ) -> bool {
-        let ClusterDragMember {
-            cluster_id: cluster,
-            node_id: member,
-        } = dragged;
-        if self.active_on(output) != Some(cluster) || self.is_member(member) {
+        let Some(cluster) = self.active_on(output) else {
+            return false;
+        };
+        if self.is_member(member) {
             return false;
         }
         let Some(before) = self.workspace_layout(cluster, work_area) else {
@@ -810,6 +816,7 @@ impl ClusterSystem {
         {
             return false;
         }
+        self.floating.remove(&member);
         self.surfaces.invalidate_target(member);
         self.begin_reflow_with_origin(output, cluster, before, member, origin, now);
         true
@@ -826,7 +833,7 @@ impl ClusterSystem {
         output_local: Point<f64, Logical>,
         now: Duration,
     ) -> bool {
-        if self.dragged_tile != Some(member) {
+        if self.dragged_member != Some(member) {
             return false;
         }
         let Some(cluster) = self.active_on(output) else {
@@ -873,9 +880,9 @@ impl ClusterSystem {
         true
     }
 
-    /// Returns a released tile to the layout from its actual pointer-owned
+    /// Returns a released workspace member to the layout from its actual pointer-owned
     /// rectangle, avoiding a snap before the normal reflow takes over.
-    pub fn finish_tiled_drag(
+    pub fn finish_workspace_drag(
         &mut self,
         output: &str,
         member: NodeId,
@@ -883,10 +890,10 @@ impl ClusterSystem {
         origin: Rectangle<i32, Logical>,
         now: Duration,
     ) -> bool {
-        if self.dragged_tile != Some(member) {
+        if self.dragged_member != Some(member) {
             return false;
         }
-        self.dragged_tile = None;
+        self.dragged_member = None;
         let Some(cluster) = self.active_on(output) else {
             return false;
         };
@@ -900,8 +907,8 @@ impl ClusterSystem {
         true
     }
 
-    pub fn cancel_tiled_drag(&mut self) -> bool {
-        self.dragged_tile.take().is_some()
+    pub fn cancel_window_drag(&mut self) -> bool {
+        self.dragged_member.take().is_some()
     }
 
     fn workspace_layout(
@@ -1024,8 +1031,8 @@ impl ClusterSystem {
     /// intentionally retained; only final surface destruction reaches here.
     pub fn forget_destroyed_member(&mut self, field: &mut Field, member: NodeId) -> bool {
         self.forget_surface_state(member);
-        if self.dragged_tile == Some(member) {
-            self.dragged_tile = None;
+        if self.dragged_member == Some(member) {
+            self.dragged_member = None;
         }
         if self
             .join_candidate
@@ -1439,6 +1446,7 @@ mod tests {
         let front = members[0];
         let now = Duration::from_secs(2);
 
+        assert!(system.begin_workspace_drag("DP-1", front));
         assert!(system.detach_active_member_for_drag(
             &mut field,
             "DP-1",
@@ -1453,19 +1461,60 @@ mod tests {
         assert_eq!(system.cluster_for_member(front), None);
         assert_eq!(system.member_ids(cluster), members[1..]);
 
-        assert!(system.rejoin_dragged_member_front(
+        assert!(system.join_active_member_front(
             &mut field,
             "DP-1",
-            ClusterDragMember {
-                cluster_id: cluster,
-                node_id: front,
-            },
+            front,
             work_area,
             Rectangle::new((300, 200).into(), (500, 400).into()),
             now + Duration::from_millis(10),
         ));
         assert_eq!(system.first_member(cluster), Some(front));
         assert_eq!(system.member_ids(cluster), members);
+    }
+
+    #[test]
+    fn field_window_stays_visible_while_dragged_over_an_active_workspace() {
+        let (mut field, mut system, _cluster, _members) =
+            active_test_cluster(2, ClusterWorkspaceLayoutKind::Stacking);
+        let work_area = Rectangle::new((0, 0).into(), (1_000, 700).into());
+        let joining = field.spawn_surface(
+            "joining",
+            Vec2 { x: 500.0, y: 350.0 },
+            Vec2 { x: 400.0, y: 300.0 },
+        );
+
+        assert_eq!(
+            system.window_presentation(joining, "DP-1", work_area, None, Duration::ZERO),
+            WindowPresentation::Hidden
+        );
+        assert!(system.begin_field_drag(joining));
+        assert_eq!(
+            system.window_presentation(joining, "DP-1", work_area, None, Duration::ZERO),
+            WindowPresentation::Field
+        );
+        assert!(system.cancel_window_drag());
+    }
+
+    #[test]
+    fn provisional_stack_drag_does_not_dissolve_a_two_member_cluster() {
+        let (_field, mut system, cluster, members) =
+            active_test_cluster(2, ClusterWorkspaceLayoutKind::Stacking);
+        let work_area = Rectangle::new((0, 0).into(), (1_000, 700).into());
+        let front = members[0];
+
+        assert!(system.begin_workspace_drag("DP-1", front));
+        assert_eq!(system.active_on("DP-1"), Some(cluster));
+        assert_eq!(system.member_ids(cluster), members);
+        assert!(system.finish_workspace_drag(
+            "DP-1",
+            front,
+            work_area,
+            Rectangle::new((300, 200).into(), (500, 400).into()),
+            Duration::from_secs(2),
+        ));
+        assert_eq!(system.active_on("DP-1"), Some(cluster));
+        assert_eq!(system.first_member(cluster), Some(front));
     }
 
     #[test]
@@ -1490,6 +1539,31 @@ mod tests {
                 panic!("every transitioning member should remain presented");
             };
             assert_eq!(depth, old_depths[&member]);
+        }
+    }
+
+    #[test]
+    fn tiled_to_stacked_reflow_uses_each_cards_destination_depth_immediately() {
+        let (_field, mut system, cluster, members) =
+            active_test_cluster(3, ClusterWorkspaceLayoutKind::Tiling);
+        let work_area = Rectangle::new((0, 0).into(), (1_000, 700).into());
+        let started = Duration::from_secs(2);
+
+        assert!(system.cycle_active_layout("DP-1", work_area, started));
+        let target_depths = system
+            .workspace_layout(cluster, work_area)
+            .unwrap()
+            .placements
+            .into_iter()
+            .map(|placement| (placement.node_id, placement.depth))
+            .collect::<HashMap<_, _>>();
+        for member in members {
+            let WindowPresentation::Workspace { depth, .. } =
+                system.window_presentation(member, "DP-1", work_area, None, started)
+            else {
+                panic!("every transitioning member should remain presented");
+            };
+            assert_eq!(depth, target_depths[&member]);
         }
     }
 
@@ -1534,7 +1608,7 @@ mod tests {
             f64::from(target.y + target.h * 0.5),
         ));
 
-        assert!(system.begin_tiled_drag("DP-1", members[0]));
+        assert!(system.begin_workspace_drag("DP-1", members[0]));
         assert_eq!(
             system
                 .window_presentation(members[0], "DP-1", work_area, None, Duration::from_secs(1),),
@@ -1570,7 +1644,7 @@ mod tests {
         ));
 
         let release = Rectangle::new((320, 180).into(), (400, 300).into());
-        assert!(system.finish_tiled_drag(
+        assert!(system.finish_workspace_drag(
             "DP-1",
             members[0],
             work_area,

@@ -431,6 +431,9 @@ where
         RouteChoice::Compositor => route
             .output
             .and_then(|output| {
+                if session.clusters.active_on(&output).is_some() {
+                    return None;
+                }
                 let camera = session.cameras.get_mut(&output)?;
                 Some(Sequence::Compositor(PinchGesture::new(output, camera)))
             })
@@ -466,7 +469,9 @@ where
         }
         Sequence::Client(_) => sequence = Sequence::Ignored,
         Sequence::Compositor(gesture) => {
-            if let Some(camera) = session.cameras.get_mut(&gesture.output) {
+            if session.clusters.active_on(&gesture.output).is_some() {
+                sequence = Sequence::Ignored;
+            } else if let Some(camera) = session.cameras.get_mut(&gesture.output) {
                 let delta = event.delta();
                 gesture.update(
                     camera,

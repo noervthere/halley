@@ -13,10 +13,10 @@ pub struct ClusterWindowDrag {
     pub cluster_id: halley_core::cluster::ClusterId,
     pub output: String,
     pub layout: halley_core::cluster::layout::ClusterWorkspaceLayoutKind,
-    /// Tiling keeps membership while rearranging on the source output. It
-    /// flips to detached when the pointer crosses to another monitor.
-    /// Stacking detaches as soon as the front card is pulled out.
-    pub detached: bool,
+    /// Membership remains provisional for the whole grab. This tracks whether
+    /// the pointer is currently over the source output: returning there keeps
+    /// the cluster intact, while release elsewhere commits the detach.
+    pub on_origin_output: bool,
 }
 
 /// What's currently being dragged with the left mouse button held, if
