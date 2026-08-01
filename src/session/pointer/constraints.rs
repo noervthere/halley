@@ -76,6 +76,22 @@ struct ReconcileDecision {
     activate_candidate: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DeactivationReason {
+    SurfaceDestroyed,
+    OwnerUnmapped,
+    CompositorFocusChanged,
+    KeyboardFocusChanged,
+    PointerFocusChanged,
+    ConstraintRemoved,
+    ProtocolDeactivated,
+    ConstraintKindChanged,
+    CandidateChanged,
+    RequestedKeyboardFocusChange,
+    RequestedPointerFocusChange,
+    RequestedOwnerUnmap,
+}
+
 fn reconcile_decision(
     current_present: bool,
     current_is_candidate: bool,
@@ -162,9 +178,12 @@ fn owner_context<D: SessionDriver>(
     })
 }
 
-fn owner_is_authoritative<D: SessionDriver>(session: &Session<D>, surface: &WlSurface) -> bool {
+fn owner_authority_loss<D: SessionDriver>(
+    session: &Session<D>,
+    surface: &WlSurface,
+) -> Option<DeactivationReason> {
     if !surface.alive() {
-        return false;
+        return Some(DeactivationReason::SurfaceDestroyed);
     }
     let root = crate::wayland::compositor::root_surface(surface);
     let mapped = session.wayland.space.elements().any(|window| {
@@ -172,17 +191,26 @@ fn owner_is_authoritative<D: SessionDriver>(session: &Session<D>, surface: &WlSu
             .wl_surface()
             .is_some_and(|candidate| candidate.as_ref() == &root)
     });
-    if !mapped || session.wayland.focused_window.as_ref() != Some(&root) {
-        return false;
+    if !mapped {
+        return Some(DeactivationReason::OwnerUnmapped);
     }
-    session
+    if session.wayland.focused_window.as_ref() != Some(&root) {
+        return Some(DeactivationReason::CompositorFocusChanged);
+    }
+    let keyboard_root = session
         .seat
         .get_keyboard()
         .and_then(|keyboard| keyboard.current_focus())
         .and_then(|focus| focus.wl_surface().map(|surface| surface.into_owned()))
-        .is_some_and(|keyboard_surface| {
-            crate::wayland::compositor::root_surface(&keyboard_surface) == root
-        })
+        .map(|surface| crate::wayland::compositor::root_surface(&surface));
+    if keyboard_root.as_ref() != Some(&root) {
+        return Some(DeactivationReason::KeyboardFocusChanged);
+    }
+    None
+}
+
+fn owner_is_authoritative<D: SessionDriver>(session: &Session<D>, surface: &WlSurface) -> bool {
+    owner_authority_loss(session, surface).is_none()
 }
 
 fn constraint_geometry(
@@ -198,15 +226,35 @@ fn constraint_geometry(
     })
 }
 
+fn active_owner_loss<D: SessionDriver>(
+    session: &Session<D>,
+    pointer: &PointerHandle<Session<D>>,
+    tracked: &TrackedConstraint,
+) -> Option<DeactivationReason> {
+    if pointer.current_focus().as_ref() != Some(&tracked.surface) {
+        return Some(DeactivationReason::PointerFocusChanged);
+    }
+    if let Some(reason) = owner_authority_loss(session, &tracked.surface) {
+        return Some(reason);
+    }
+    let Some(constraint) = descriptor(&tracked.surface, pointer) else {
+        return Some(DeactivationReason::ConstraintRemoved);
+    };
+    if !constraint.active {
+        return Some(DeactivationReason::ProtocolDeactivated);
+    }
+    if constraint.kind != tracked.kind {
+        return Some(DeactivationReason::ConstraintKindChanged);
+    }
+    None
+}
+
 fn valid_active_owner<D: SessionDriver>(
     session: &Session<D>,
     pointer: &PointerHandle<Session<D>>,
     tracked: &TrackedConstraint,
 ) -> bool {
-    pointer.current_focus().as_ref() == Some(&tracked.surface)
-        && owner_is_authoritative(session, &tracked.surface)
-        && descriptor(&tracked.surface, pointer)
-            .is_some_and(|constraint| constraint.active && constraint.kind == tracked.kind)
+    active_owner_loss(session, pointer, tracked).is_none()
 }
 
 fn deactivate_protocol<D: SessionDriver>(
@@ -234,11 +282,13 @@ fn deactivate_tracked<D: SessionDriver>(
     session: &mut Session<D>,
     pointer: &PointerHandle<Session<D>>,
     tracked: &TrackedConstraint,
+    reason: DeactivationReason,
 ) {
     eventline::debug!(
-        "pointer-constraint: deactivate kind={:?} surface={:?}",
+        "pointer-constraint: deactivate kind={:?} surface={:?} reason={:?}",
         tracked.kind,
-        tracked.surface
+        tracked.surface,
+        reason,
     );
     let state = descriptor(&tracked.surface, pointer);
     let position_hint = tracked
@@ -410,9 +460,10 @@ pub(super) fn reconcile<D: SessionDriver>(
 ) {
     let tracked = session.pointer_constraints.active.clone();
     let candidate = candidate_surface(session, pointer, preferred);
-    let current_valid = tracked
+    let current_loss = tracked
         .as_ref()
-        .is_some_and(|tracked| valid_active_owner(session, pointer, tracked));
+        .and_then(|tracked| active_owner_loss(session, pointer, tracked));
+    let current_valid = tracked.is_some() && current_loss.is_none();
     let retain_for_deferred_request = retain_while_unfocused_request_waits(
         current_valid,
         preferred.is_some(),
@@ -451,7 +502,8 @@ pub(super) fn reconcile<D: SessionDriver>(
     if decision.deactivate_current
         && let Some(tracked) = tracked.as_ref()
     {
-        deactivate_tracked(session, pointer, tracked);
+        let reason = current_loss.unwrap_or(DeactivationReason::CandidateChanged);
+        deactivate_tracked(session, pointer, tracked, reason);
         session.pointer_constraints.active = None;
     }
 
@@ -526,7 +578,12 @@ pub(super) fn deactivate_before_focus_change<D: SessionDriver>(
         });
     if should_deactivate {
         if let Some(tracked) = session.pointer_constraints.active.take() {
-            deactivate_tracked(session, &pointer, &tracked);
+            deactivate_tracked(
+                session,
+                &pointer,
+                &tracked,
+                DeactivationReason::RequestedKeyboardFocusChange,
+            );
         }
         pointer.frame(session);
     }
@@ -546,7 +603,12 @@ pub(super) fn deactivate_before_pointer_focus_change<D: SessionDriver>(
         .is_some_and(|tracked| Some(&tracked.surface) != next_focus);
     if should_deactivate {
         if let Some(tracked) = session.pointer_constraints.active.take() {
-            deactivate_tracked(session, &pointer, &tracked);
+            deactivate_tracked(
+                session,
+                &pointer,
+                &tracked,
+                DeactivationReason::RequestedPointerFocusChange,
+            );
         }
         pointer.frame(session);
     }
@@ -566,7 +628,12 @@ pub(super) fn deactivate_before_unmap<D: SessionDriver>(
         .is_some_and(|tracked| crate::wayland::compositor::root_surface(&tracked.surface) == *root);
     if should_deactivate {
         if let Some(tracked) = session.pointer_constraints.active.take() {
-            deactivate_tracked(session, &pointer, &tracked);
+            deactivate_tracked(
+                session,
+                &pointer,
+                &tracked,
+                DeactivationReason::RequestedOwnerUnmap,
+            );
         }
         pointer.frame(session);
     }
