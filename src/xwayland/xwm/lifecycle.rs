@@ -504,6 +504,9 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
         let Some(pointer) = self.seat.get_pointer() else {
             return;
         };
+        let Some(serial) = pointer.with_grab(|serial, _| serial) else {
+            return;
+        };
         let Some(start_data) = pointer.grab_start_data() else {
             return;
         };
@@ -522,7 +525,7 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
         let Some(window) = window_for_surface(self, &surface) else {
             return;
         };
-        if crate::session::begin_pointer_move(self, &window, SERIAL_COUNTER.next_serial()) {
+        if crate::session::begin_client_pointer_move(self, &window, serial, button) {
             self.request_redraw();
         }
     }

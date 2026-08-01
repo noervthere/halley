@@ -19,12 +19,28 @@ pub struct ClusterWindowDrag {
     pub on_origin_output: bool,
 }
 
+#[derive(Clone, Debug)]
+pub struct PendingWindowMove {
+    pub window: Window,
+    pub serial: Serial,
+    pub button: u32,
+    pub press_screen: Point<f64, Logical>,
+    pub output: String,
+    pub visual_geometry: Rectangle<i32, Logical>,
+    pub maximized: bool,
+}
+
 /// What's currently being dragged with the left mouse button held, if
 /// anything - `None` the rest of the time. Lives on `App`/`TtyApp` next to
 /// `pointer`/`camera`, mirroring how each of those was added for one
 /// concrete reason.
 pub enum Grab {
     None,
+    /// A client requested an interactive move on button press. Toolkits may
+    /// do this before they know whether the gesture is a click, double-click,
+    /// or drag, so no compositor move side effects happen until motion crosses
+    /// the shared drag threshold.
+    PendingWindowMove(PendingWindowMove),
     /// Cursor-to-window offset in screen pixels. Keeping this in screen
     /// space preserves the exact grip point when crossing between outputs
     /// with different zoom scales.
@@ -34,16 +50,15 @@ pub enum Grab {
         /// Origin and membership state for a window pulled from an active
         /// cluster. Ordinary Field moves leave this unset.
         cluster_drag: Option<ClusterWindowDrag>,
-        /// Maximized title-bar moves defer their restore until real pointer
-        /// motion. A click or double-click can then remain a pure state toggle
-        /// instead of being mistaken for the start of a drag.
-        maximize_restore: Option<(
-            crate::presentation::maximize::FieldRestore,
-            Point<f64, Logical>,
-        )>,
         /// Stable windowed size used while the client is acknowledging the
         /// restore configure from a maximized title-bar drag.
         drag_size: Option<Size<i32, Logical>>,
+        /// The physical button that owns this move.
+        button: u32,
+        /// Client title-bar moves must forward their release to retire the
+        /// client's implicit pointer grab. Compositor-only moves must not send
+        /// an orphan release for a press they intercepted.
+        client_owned: bool,
         screen_offset: Vec2,
         last_world: Vec2,
         last_update: Duration,
@@ -127,6 +142,7 @@ impl Grab {
 
 pub fn belongs_to_surface(grab: &Grab, surface: &WlSurface) -> bool {
     let window = match grab {
+        Grab::PendingWindowMove(pending) => Some(&pending.window),
         Grab::MoveWindow { window, .. } => Some(window),
         Grab::ResizeWindow(resize) => Some(&resize.window),
         Grab::None

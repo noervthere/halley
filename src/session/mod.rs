@@ -1019,18 +1019,17 @@ pub(crate) fn begin_pointer_resize<D: SessionDriver>(
     )
 }
 
-/// Starts Halley's existing interactive window move from the current pointer
-/// route. Callers must validate any protocol serial before reaching here.
-///
-/// Keeping grab construction here gives compositor key bindings, xdg-shell,
-/// and XWayland one movement implementation without coupling protocol handlers
-/// to the input dispatch loop.
-pub(crate) fn begin_pointer_move<D: SessionDriver>(
+/// Arms a client-requested move without committing any move side effects.
+/// Toolkits commonly send this request from their title-bar press handler,
+/// before they know whether the gesture will become a click or a drag.
+pub(crate) fn begin_client_pointer_move<D: SessionDriver>(
     session: &mut Session<D>,
     window: &smithay::desktop::Window,
     serial: smithay::utils::Serial,
+    button: u32,
 ) -> bool {
-    if !crate::window::accepts_compositor_grab(window)
+    if !matches!(session.grab, crate::input::grab::Grab::None)
+        || !crate::window::accepts_compositor_grab(window)
         || window.wl_surface().is_some_and(|surface| {
             session
                 .fullscreen
@@ -1048,33 +1047,149 @@ pub(crate) fn begin_pointer_move<D: SessionDriver>(
     ) {
         return false;
     }
+    let visual_geometry = route.visual_geometry.unwrap_or_else(|| {
+        session
+            .wayland
+            .space
+            .element_geometry(window)
+            .unwrap_or_else(|| window.geometry())
+    });
+    let maximized = window
+        .wl_surface()
+        .is_some_and(|surface| session.maximize.contains(surface.as_ref()));
+    session.grab =
+        crate::input::grab::Grab::PendingWindowMove(crate::input::grab::PendingWindowMove {
+            window: window.clone(),
+            serial,
+            button,
+            press_screen: smithay::utils::Point::from(session.pointer.position()),
+            output: route.output.name(),
+            visual_geometry,
+            maximized,
+        });
+    true
+}
+
+/// Starts a compositor-owned move immediately. Client title bars use
+/// `begin_client_pointer_move` and promote only after real pointer motion.
+pub(crate) fn begin_pointer_move<D: SessionDriver>(
+    session: &mut Session<D>,
+    window: &smithay::desktop::Window,
+    serial: smithay::utils::Serial,
+    button: u32,
+) -> bool {
+    begin_pointer_move_active(session, window, serial, button, false, None)
+}
+
+pub(crate) fn activate_client_pointer_move<D: SessionDriver>(
+    session: &mut Session<D>,
+    pending: crate::input::grab::PendingWindowMove,
+) -> bool {
+    let window = pending.window.clone();
+    begin_pointer_move_active(
+        session,
+        &window,
+        pending.serial,
+        pending.button,
+        true,
+        Some(pending),
+    )
+}
+
+fn begin_pointer_move_active<D: SessionDriver>(
+    session: &mut Session<D>,
+    window: &smithay::desktop::Window,
+    serial: smithay::utils::Serial,
+    button: u32,
+    client_owned: bool,
+    pending: Option<crate::input::grab::PendingWindowMove>,
+) -> bool {
+    if !crate::window::accepts_compositor_grab(window)
+        || window.wl_surface().is_some_and(|surface| {
+            session
+                .fullscreen
+                .is_fullscreen_or_pending(surface.as_ref())
+        })
+    {
+        return false;
+    }
+    let (output_name, visual_geometry, press_screen, was_maximized) =
+        if let Some(pending) = pending.as_ref() {
+            (
+                pending.output.clone(),
+                pending.visual_geometry,
+                pending.press_screen,
+                pending.maximized,
+            )
+        } else {
+            let Some(route) = pointer::route_client(session) else {
+                return false;
+            };
+            if !matches!(
+                route.target,
+                crate::input::pointer::PointerTarget::Window(ref routed) if routed == window
+            ) {
+                return false;
+            }
+            let visual = route.visual_geometry.unwrap_or_else(|| {
+                session
+                    .wayland
+                    .space
+                    .element_geometry(window)
+                    .unwrap_or_else(|| window.geometry())
+            });
+            let maximized = window
+                .wl_surface()
+                .is_some_and(|surface| session.maximize.contains(surface.as_ref()));
+            (
+                route.output.name(),
+                visual,
+                smithay::utils::Point::from(session.pointer.position()),
+                maximized,
+            )
+        };
+    let Some(output) = session
+        .wayland
+        .space
+        .outputs()
+        .find(|output| output.name() == output_name)
+        .cloned()
+    else {
+        return false;
+    };
+    let Some(output_geometry) = session.wayland.space.output_geometry(&output) else {
+        return false;
+    };
+    let Some(camera) = session.cameras.get(&output_name) else {
+        return false;
+    };
+    let scale = crate::input::zoom::scale(camera);
+    let pointer_position = session.pointer.position();
+    let pointer_world =
+        crate::input::grab::screen_to_world_on_output(pointer_position, camera, output_geometry);
+    let press_world = crate::input::grab::screen_to_world_on_output(
+        (press_screen.x, press_screen.y),
+        camera,
+        output_geometry,
+    );
     let world = halley_core::field::Vec2 {
-        x: route.location.x as f32,
-        y: route.location.y as f32,
+        x: pointer_world.x,
+        y: pointer_world.y,
     };
     let Some(window_location) = session.wayland.space.element_location(window) else {
         return false;
     };
-    let Some(scale) = session
-        .cameras
-        .get(&route.output.name())
-        .map(crate::input::zoom::scale)
-    else {
-        return false;
-    };
-    let Some(output_geometry) = session.wayland.space.output_geometry(&route.output) else {
-        return false;
-    };
-
-    let restore = window
-        .wl_surface()
-        .and_then(|surface| session.maximize.restore(surface.as_ref()));
-    let was_maximized = restore.is_some();
+    let restore = was_maximized
+        .then(|| {
+            window
+                .wl_surface()
+                .and_then(|surface| session.maximize.restore(surface.as_ref()))
+        })
+        .flatten();
 
     let id = window
         .wl_surface()
         .and_then(|surface| session.nodes.id_for_surface(surface.as_ref()));
-    let output_name = route.output.name();
     let mut cluster_drag = id.and_then(|id| {
         let cluster_id = session.clusters.cluster_for_member(id)?;
         let metadata = session.clusters.metadata(cluster_id)?;
@@ -1098,48 +1213,36 @@ pub(crate) fn begin_pointer_move<D: SessionDriver>(
     let mut cluster_grab_location = None;
     let mut cluster_drag_rect = None;
     let screen_offset = if cluster_drag.is_some() {
-        let visual = route.visual_geometry.unwrap_or_else(|| {
-            session
-                .wayland
-                .space
-                .element_geometry(window)
-                .unwrap_or_else(|| window.geometry())
-        });
-        let pointer = session.pointer.position();
-        let offset = crate::input::grab::screen_grip_offset(pointer, visual.loc);
+        let offset = crate::input::grab::screen_grip_offset(
+            (press_screen.x, press_screen.y),
+            visual_geometry.loc,
+        );
         cluster_drag_rect = Some(Rectangle::new(
-            visual.loc - output_geometry.loc,
-            visual.size,
+            visual_geometry.loc - output_geometry.loc,
+            visual_geometry.size,
         ));
         let camera = session
             .cameras
             .get(&output_name)
             .expect("the pointer output camera was validated above");
         cluster_grab_location = Some(crate::input::grab::world_location_from_screen_grip(
-            pointer,
+            pointer_position,
             offset,
             camera,
             output_geometry,
         ));
         offset
     } else if was_maximized {
-        let visual = route.visual_geometry.unwrap_or_else(|| {
-            session
-                .wayland
-                .space
-                .element_geometry(window)
-                .unwrap_or_else(|| window.geometry())
-        });
         let source = restore
             .as_ref()
             .map(|restore| restore.geometry)
             .or_else(|| session.wayland.space.element_geometry(window))
             .unwrap_or_else(|| window.geometry());
-        let ratio_x = ((session.pointer.position().0 - f64::from(visual.loc.x))
-            / f64::from(visual.size.w.max(1)))
+        let ratio_x = ((press_screen.x - f64::from(visual_geometry.loc.x))
+            / f64::from(visual_geometry.size.w.max(1)))
         .clamp(0.0, 1.0);
-        let ratio_y = ((session.pointer.position().1 - f64::from(visual.loc.y))
-            / f64::from(visual.size.h.max(1)))
+        let ratio_y = ((press_screen.y - f64::from(visual_geometry.loc.y))
+            / f64::from(visual_geometry.size.h.max(1)))
         .clamp(0.0, 1.0);
         halley_core::field::Vec2 {
             x: -(source.size.w as f32 * ratio_x as f32) * scale,
@@ -1147,14 +1250,25 @@ pub(crate) fn begin_pointer_move<D: SessionDriver>(
         }
     } else {
         halley_core::field::Vec2 {
-            x: (window_location.x as f32 - world.x) * scale,
-            y: (window_location.y as f32 - world.y) * scale,
+            x: (window_location.x as f32 - press_world.x) * scale,
+            y: (window_location.y as f32 - press_world.y) * scale,
         }
     };
 
-    // Pulling a cluster member changes it from output-local workspace
-    // presentation to a camera-transformed Field presentation. Move its source
-    // rectangle in the same transaction so the exact grabbed pixel stays put.
+    if let Some(expected) = restore.as_ref() {
+        let maximize_output = session
+            .maximize
+            .output_for_surface(&expected.surface)
+            .map(str::to_owned);
+        if let Some(restore) = session.maximize.take_restore(&expected.surface) {
+            session.render.fullscreen_textures.remove(&restore.surface);
+            configure_field_geometry(session, &restore);
+            if let Some(output) = maximize_output {
+                let _ = session.cameras.apply_field_maximize(&output, None);
+            }
+        }
+    }
+
     if let (Some(id), Some(location), Some(drag)) =
         (id, cluster_grab_location, cluster_drag.as_mut())
     {
@@ -1169,9 +1283,6 @@ pub(crate) fn begin_pointer_move<D: SessionDriver>(
         }
         reconcile_cluster_surfaces(session, &output_name);
         session.wayland.space.relocate_element(window, location);
-        // The held member no longer has cluster depth while it follows the
-        // pointer, so explicitly keep its normal Space slot above the
-        // remaining workspace for the duration of the grab.
         crate::window::raise_managed(&mut session.wayland, window);
         session.xwayland.raise_window(window);
     } else if let Some(id) = id {
@@ -1188,7 +1299,7 @@ pub(crate) fn begin_pointer_move<D: SessionDriver>(
         .and_then(|size| {
             let camera = session.cameras.get(&output_name)?;
             let location = crate::input::grab::world_location_from_screen_grip(
-                session.pointer.position(),
+                pointer_position,
                 screen_offset,
                 camera,
                 output_geometry,
@@ -1213,24 +1324,16 @@ pub(crate) fn begin_pointer_move<D: SessionDriver>(
         id,
         window: window.clone(),
         cluster_drag,
-        maximize_restore: restore.map(|restore| {
-            (
-                restore,
-                smithay::utils::Point::from(session.pointer.position()),
-            )
-        }),
         drag_size,
+        button,
+        client_owned,
         screen_offset,
         last_world: center,
         last_update: crate::frame_clock::monotonic_now(),
         velocity: halley_core::field::Vec2 { x: 0.0, y: 0.0 },
     };
-    // Some client-side title bars (notably DMS) request an interactive move
-    // immediately on press. A maximized window remains a plain click until
-    // motion crosses the threshold; only then does input.rs restore it and
-    // show the grabbing cursor. Ordinary window moves still begin immediately.
     session
         .cursor
-        .set_override((!was_maximized).then_some(smithay::input::pointer::CursorIcon::Grabbing));
+        .set_override(Some(smithay::input::pointer::CursorIcon::Grabbing));
     true
 }

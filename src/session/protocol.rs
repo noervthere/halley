@@ -553,6 +553,7 @@ impl<D: SessionDriver> XdgShellHandler for Session<D> {
         let Some(start_data) = pointer.grab_start_data() else {
             return;
         };
+        let button = start_data.button;
         let Some((focused, _)) = start_data.focus else {
             return;
         };
@@ -572,7 +573,7 @@ impl<D: SessionDriver> XdgShellHandler for Session<D> {
         else {
             return;
         };
-        if super::begin_pointer_move(self, &window, serial) {
+        if super::begin_client_pointer_move(self, &window, serial, button) {
             self.request_redraw();
         }
     }

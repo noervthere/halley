@@ -48,6 +48,31 @@ fn drag_threshold_reached(press: Point<f64, Logical>, current: (f64, f64)) -> bo
     dx.hypot(dy) >= NODE_DRAG_THRESHOLD_PX
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PendingWindowMoveMotion {
+    Wait,
+    Cancel,
+    Activate,
+}
+
+fn pending_window_move_motion(
+    pointer_grab_valid: bool,
+    press: Point<f64, Logical>,
+    current: (f64, f64),
+) -> PendingWindowMoveMotion {
+    if !pointer_grab_valid {
+        PendingWindowMoveMotion::Cancel
+    } else if drag_threshold_reached(press, current) {
+        PendingWindowMoveMotion::Activate
+    } else {
+        PendingWindowMoveMotion::Wait
+    }
+}
+
+fn releases_pending_window_move(pending_button: u32, event_button: u32, released: bool) -> bool {
+    released && pending_button == event_button
+}
+
 fn forward_pointer_button(intercepted: bool, finishing_client_move: bool) -> bool {
     !intercepted || finishing_client_move
 }
@@ -495,8 +520,9 @@ pub(crate) fn wakeup_cluster_interactions<D: SessionDriver>(
             id: Some(member_id),
             window: record.window.clone(),
             cluster_drag: None,
-            maximize_restore: None,
             drag_size: None,
+            button: BTN_LEFT,
+            client_owned: false,
             screen_offset,
             last_world: center,
             last_update: now,
@@ -1260,53 +1286,49 @@ where
         }
     }
 
+    if motion.is_some()
+        && let crate::input::grab::Grab::PendingWindowMove(pending) = &session.grab
+    {
+        let pending = pending.clone();
+        match pending_window_move_motion(
+            pointer_handle.has_grab(pending.serial),
+            pending.press_screen,
+            position_after,
+        ) {
+            PendingWindowMoveMotion::Wait => {}
+            PendingWindowMoveMotion::Cancel => {
+                session.grab = crate::input::grab::Grab::None;
+                session.cursor.set_override(None);
+            }
+            PendingWindowMoveMotion::Activate => {
+                session.grab = crate::input::grab::Grab::None;
+                if !super::activate_client_pointer_move(session, pending) {
+                    session.cursor.set_override(None);
+                }
+            }
+        }
+    }
+
     match &session.grab {
         crate::input::grab::Grab::MoveWindow {
             id,
             window,
             cluster_drag,
-            maximize_restore,
             drag_size,
             screen_offset,
             last_world,
             last_update,
             velocity,
+            ..
         } => {
             let id = *id;
             let window = window.clone();
             let mut cluster_drag = cluster_drag.clone();
-            let maximize_restore = maximize_restore.clone();
             let drag_size = *drag_size;
             let screen_offset = *screen_offset;
             let previous = *last_world;
             let last_update = *last_update;
             let previous_velocity = *velocity;
-            if let Some((expected, press_screen)) = maximize_restore {
-                if !drag_threshold_reached(press_screen, position_after) {
-                    super::pointer::finish_frame(session, &pointer_handle);
-                    return;
-                }
-                let maximize_output = session
-                    .maximize
-                    .output_for_surface(&expected.surface)
-                    .map(str::to_owned);
-                if let Some(restore) = session.maximize.take_restore(&expected.surface) {
-                    session.render.fullscreen_textures.remove(&restore.surface);
-                    super::configure_field_geometry(session, &restore);
-                    if let Some(output) = maximize_output {
-                        let _ = session.cameras.apply_field_maximize(&output, None);
-                    }
-                }
-                if let crate::input::grab::Grab::MoveWindow {
-                    maximize_restore, ..
-                } = &mut session.grab
-                {
-                    *maximize_restore = None;
-                }
-                session
-                    .cursor
-                    .set_override(Some(smithay::input::pointer::CursorIcon::Grabbing));
-            }
             if let Some((output, output_geometry)) =
                 output_at_pointer(&session.wayland.space, position_after)
             {
@@ -1592,6 +1614,7 @@ where
             }
         }
         crate::input::grab::Grab::None
+        | crate::input::grab::Grab::PendingWindowMove(_)
         | crate::input::grab::Grab::PendingNode { .. }
         | crate::input::grab::Grab::PendingClusterCore { .. } => {}
     }
@@ -1686,6 +1709,21 @@ where
         let state = button_event.state();
         let time = button_event.time_msec();
         let serial = SERIAL_COUNTER.next_serial();
+        if matches!(
+            &session.grab,
+            crate::input::grab::Grab::PendingWindowMove(pending)
+                if releases_pending_window_move(
+                    pending.button,
+                    button,
+                    state == ButtonState::Released,
+                )
+        ) {
+            // No compositor move began, so leave this release unconsumed. It
+            // completes the client's click and lets its double-click handler
+            // decide whether to toggle maximize.
+            session.grab = crate::input::grab::Grab::None;
+            session.cursor.set_override(None);
+        }
         if button == BTN_LEFT && state == ButtonState::Released {
             if session.clusters.bloom_pull().is_some() {
                 session.clusters.clear_bloom_pull();
@@ -2149,7 +2187,8 @@ where
                                         .is_fullscreen_or_pending(surface.as_ref())
                                 }) =>
                         {
-                            intercepted = super::begin_pointer_move(session, window, serial);
+                            intercepted =
+                                super::begin_pointer_move(session, window, serial, button);
                         }
                         Some(crate::input::pointer::PointerTarget::Window(window)) => {
                             super::focus::focus_window_from_pointer(session, window, serial);
@@ -2173,18 +2212,23 @@ where
                             id,
                             window,
                             cluster_drag,
+                            button: move_button,
+                            client_owned,
                             last_world,
                             ..
-                        } => Some((*id, window.clone(), cluster_drag.clone(), *last_world)),
+                        } if *move_button == button => Some((
+                            *id,
+                            window.clone(),
+                            cluster_drag.clone(),
+                            *last_world,
+                            *client_owned,
+                        )),
                         _ => None,
                     };
-                    if let Some((id, window, cluster_drag, last_world)) = released_window {
-                        // Client-side title bars start from Smithay's implicit
-                        // click grab. Halley owns the interactive move after
-                        // that request, but Smithay must still see the release
-                        // that ends its grab. Compositor-only Mod moves have no
-                        // Smithay grab and continue to consume both events.
-                        finishing_client_move = pointer_handle.is_grabbed();
+                    if let Some((id, window, cluster_drag, last_world, client_owned)) =
+                        released_window
+                    {
+                        finishing_client_move = client_owned;
                         let now = crate::frame_clock::monotonic_now();
                         if session.nodes.physics.enabled {
                             let _ = crate::nodes::tick_physics(session, now);
@@ -2901,10 +2945,12 @@ mod tests {
     use smithay::backend::input::KeyState;
     use smithay::utils::{Logical, Point, Size};
 
+    use super::{BTN_LEFT, BTN_RIGHT, PendingWindowMoveMotion};
     use super::{
         CaptureKeyRouting, bloom_drag_handoff, capture_key_routing, cluster_blocks_zoom,
-        drag_threshold_reached, forward_pointer_button, sampled_drag_velocity,
-        shortcut_policy_allows_bindings, stacking_cycle_direction, window_action_output,
+        drag_threshold_reached, forward_pointer_button, pending_window_move_motion,
+        releases_pending_window_move, sampled_drag_velocity, shortcut_policy_allows_bindings,
+        stacking_cycle_direction, window_action_output,
     };
     fn sample_constant_motion(report_hz: u32) -> Vec2 {
         let step = Duration::from_secs_f64(1.0 / f64::from(report_hz));
@@ -2959,6 +3005,31 @@ mod tests {
         assert!(forward_pointer_button(true, true));
         assert!(!forward_pointer_button(true, false));
         assert!(forward_pointer_button(false, false));
+    }
+
+    #[test]
+    fn client_titlebar_click_releases_without_activating_move() {
+        assert!(releases_pending_window_move(BTN_LEFT, BTN_LEFT, true));
+        assert!(!releases_pending_window_move(BTN_LEFT, BTN_LEFT, false));
+        assert!(!releases_pending_window_move(BTN_LEFT, BTN_RIGHT, true));
+    }
+
+    #[test]
+    fn client_titlebar_move_activates_only_after_valid_threshold_motion() {
+        let press = Point::<f64, Logical>::from((400.0, 250.0));
+
+        assert_eq!(
+            pending_window_move_motion(true, press, (403.0, 254.0)),
+            PendingWindowMoveMotion::Wait,
+        );
+        assert_eq!(
+            pending_window_move_motion(true, press, (408.0, 250.0)),
+            PendingWindowMoveMotion::Activate,
+        );
+        assert_eq!(
+            pending_window_move_motion(false, press, (420.0, 250.0)),
+            PendingWindowMoveMotion::Cancel,
+        );
     }
 
     #[test]
