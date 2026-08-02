@@ -46,7 +46,24 @@ fn reconcile_landmarks_inner<D: crate::session::SessionDriver>(
                 .map(crate::presentation::camera::scale)
                 .unwrap_or(1.0)
         });
-        let destination = session.nodes.nearest_free_position(id, current, scale);
+        let occupied_cores = session
+            .clusters
+            .collapsed_core_landmarks()
+            .into_iter()
+            .filter_map(|(_, _, core_output, position, _)| {
+                (core_output == output).then_some(position)
+            })
+            .collect::<Vec<_>>();
+        let destination = session.nodes.nearest_free_position(
+            id,
+            current,
+            scale,
+            &occupied_cores,
+            PlacementChrome {
+                decorations: &session.settings.decorations,
+                font: &session.settings.font,
+            },
+        );
         if destination == current {
             continue;
         }
@@ -81,20 +98,30 @@ fn dynamics_bodies<D: crate::session::SessionDriver>(
                 .map(crate::presentation::camera::scale)
                 .unwrap_or(1.0)
                 .max(0.05);
-            let (kind, half) = if record.collapsed {
+            let (kind, extents) = if record.collapsed {
                 (
                     dynamics::BodyKind::Node,
-                    Vec2 {
+                    dynamics::CollisionExtents::symmetric(Vec2 {
                         x: NODE_DIAMETER_PX * 0.5 / scale,
                         y: NODE_DIAMETER_PX * 0.5 / scale,
-                    },
+                    }),
                 )
             } else {
+                let outer = crate::titlebar::outer_rect_for_client(
+                    &record.window,
+                    record.geometry,
+                    &session.settings.decorations,
+                    &session.settings.font,
+                );
+                let center_x = record.geometry.loc.x as f32 + record.geometry.size.w as f32 * 0.5;
+                let center_y = record.geometry.loc.y as f32 + record.geometry.size.h as f32 * 0.5;
                 (
                     dynamics::BodyKind::Window,
-                    Vec2 {
-                        x: record.geometry.size.w.max(1) as f32 * 0.5,
-                        y: record.geometry.size.h.max(1) as f32 * 0.5,
+                    dynamics::CollisionExtents {
+                        left: center_x - outer.loc.x as f32,
+                        right: outer.loc.x as f32 + outer.size.w as f32 - center_x,
+                        top: center_y - outer.loc.y as f32,
+                        bottom: outer.loc.y as f32 + outer.size.h as f32 - center_y,
                     },
                 )
             };
@@ -102,7 +129,7 @@ fn dynamics_bodies<D: crate::session::SessionDriver>(
                 id: record.id,
                 kind,
                 pos: node.pos,
-                half,
+                extents,
                 gap: session.nodes.landmarks.gap_px / scale,
                 pinned: node.pinned || session.nodes.release_locked(record.id),
                 output: record.output.clone(),
@@ -121,10 +148,10 @@ fn dynamics_bodies<D: crate::session::SessionDriver>(
                 id,
                 kind: dynamics::BodyKind::Node,
                 pos,
-                half: Vec2 {
+                extents: dynamics::CollisionExtents::symmetric(Vec2 {
                     x: crate::clusters::CORE_DIAMETER_PX * 0.5 / scale,
                     y: crate::clusters::CORE_DIAMETER_PX * 0.5 / scale,
-                },
+                }),
                 gap: session.nodes.landmarks.gap_px / scale,
                 pinned,
                 output,
@@ -198,7 +225,7 @@ fn apply_dynamics_positions<D: crate::session::SessionDriver>(
         if let Some(record) = session.nodes.record_mut(id) {
             record.geometry = Rectangle::new(location, size);
         }
-        if window.x11_surface().is_some() {
+        if crate::xwayland::is_x11(&window) {
             crate::xwayland::configure_window(&window, Rectangle::new(location, size));
         }
         if authority != Some(id) {
@@ -439,14 +466,14 @@ pub fn close_focused_on_output<D: crate::session::SessionDriver>(
     };
     let targets = session.clusters.close_targets_for_node(id);
     for target in targets {
-        let Some(record) = session.nodes.record(target) else {
+        let Some(window) = session
+            .nodes
+            .record(target)
+            .map(|record| record.window.clone())
+        else {
             continue;
         };
-        if let Some(toplevel) = record.window.toplevel() {
-            toplevel.send_close();
-        } else {
-            crate::xwayland::close_window(&record.window);
-        }
+        crate::session::request_window_close(session, &window);
     }
 }
 
@@ -559,10 +586,8 @@ pub fn collapse<D: crate::session::SessionDriver>(
             .wayland
             .collapsed
             .insert(record.surface.clone(), record.window.clone());
-    } else if let Some(surface) = record.window.x11_surface()
-        && let Err(err) = surface.set_hidden(true)
-    {
-        eventline::warn!("xwayland: failed to mark collapsed window hidden: {err}");
+    } else {
+        crate::xwayland::set_hidden(&record.window, true);
     }
     session.xwayland.set_window_iconic(&record.window);
     let collapse_origin = rect_center(geometry);
@@ -571,9 +596,22 @@ pub fn collapse<D: crate::session::SessionDriver>(
         .get(&record.output)
         .map(crate::presentation::camera::scale)
         .unwrap_or(1.0);
-    let node_position = session
-        .nodes
-        .nearest_free_position(id, collapse_origin, scale);
+    let occupied_cores = session
+        .clusters
+        .collapsed_core_landmarks()
+        .into_iter()
+        .filter_map(|(_, _, output, position, _)| (output == record.output).then_some(position))
+        .collect::<Vec<_>>();
+    let node_position = session.nodes.nearest_free_position(
+        id,
+        collapse_origin,
+        scale,
+        &occupied_cores,
+        PlacementChrome {
+            decorations: &session.settings.decorations,
+            font: &session.settings.font,
+        },
+    );
     if let Some(node) = session.nodes.field.node_mut(id) {
         node.pos = node_position;
         node.intrinsic_size = vec_size(geometry);
@@ -652,11 +690,7 @@ fn restore_with_centering<D: crate::session::SessionDriver>(
         .wayland
         .space
         .map_element(record.window.clone(), location, true);
-    if let Some(surface) = record.window.x11_surface()
-        && let Err(err) = surface.set_hidden(false)
-    {
-        eventline::warn!("xwayland: failed to clear restored window hidden state: {err}");
-    }
+    crate::xwayland::set_hidden(&record.window, false);
     session.xwayland.set_window_normal(&record.window);
     session.wayland.collapsed.remove(&record.surface);
     let now = crate::frame_clock::monotonic_now();
@@ -827,6 +861,67 @@ pub fn focus_or_reveal_node<D: crate::session::SessionDriver>(
             x: camera.center.x + delta.x,
             y: camera.center.y + delta.y,
         };
+    }
+    session.request_redraw();
+    true
+}
+
+/// Select a collapsed cluster's logical core and pan only far enough to make
+/// that core visible. This intentionally does not activate the workspace.
+pub fn reveal_cluster_core<D: crate::session::SessionDriver>(
+    session: &mut crate::session::Session<D>,
+    core: NodeId,
+    serial: smithay::utils::Serial,
+) -> bool {
+    let Some(cluster) = session.clusters.cluster_for_core(core) else {
+        return false;
+    };
+    let Some(metadata) = session.clusters.metadata(cluster).cloned() else {
+        return false;
+    };
+    let Some(output) = session
+        .wayland
+        .space
+        .outputs()
+        .find(|output| output.name() == metadata.output)
+        .cloned()
+    else {
+        return false;
+    };
+    crate::window::clear_focus(&mut session.wayland);
+    session
+        .nodes
+        .focus(Some(core), session.start_time.elapsed().as_millis() as u64);
+    crate::session::sync_keyboard_focus(session, serial);
+
+    if let (Some(output_geometry), Some(view)) = (
+        session.wayland.space.output_geometry(&output),
+        session.cameras.view(&metadata.output),
+    ) {
+        let scale = view.scale.max(0.05);
+        let side = (crate::clusters::CORE_DIAMETER_PX / scale).round().max(1.0) as i32;
+        let core_rect = Rectangle::<i32, Logical>::new(
+            (
+                (metadata.core_position.x - side as f32 * 0.5).round() as i32,
+                (metadata.core_position.y - side as f32 * 0.5).round() as i32,
+            )
+                .into(),
+            (side, side).into(),
+        );
+        let delta = minimal_reveal_delta(
+            crate::presentation::camera::world_viewport(view, output_geometry),
+            core_rect,
+            (24.0 / scale).round() as i32,
+        );
+        if (delta.x != 0.0 || delta.y != 0.0)
+            && let Some(camera) = session.cameras.get_mut(&metadata.output)
+        {
+            camera.pan_vel = Vec2 { x: 0.0, y: 0.0 };
+            camera.target_center = Vec2 {
+                x: camera.center.x + delta.x,
+                y: camera.center.y + delta.y,
+            };
+        }
     }
     session.request_redraw();
     true

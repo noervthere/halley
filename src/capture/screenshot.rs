@@ -6,18 +6,19 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::allocator::dmabuf::Dmabuf;
-use smithay::backend::renderer::element::Kind;
 use smithay::backend::renderer::element::surface::{
     WaylandSurfaceRenderElement, render_elements_from_surface_tree,
 };
 use smithay::backend::renderer::element::utils::{Relocate, RelocateRenderElement};
+use smithay::backend::renderer::element::{Id, Kind};
 use smithay::backend::renderer::gles::{GlesRenderer, GlesTexture};
 use smithay::backend::renderer::sync::SyncPoint;
 use smithay::backend::renderer::utils::draw_render_elements;
-use smithay::backend::renderer::{Bind, Color32F, ExportMem, Frame, Offscreen, Renderer};
+use smithay::backend::renderer::{Bind, Color32F, ExportMem, Frame, Offscreen, Renderer, Texture};
 use smithay::output::Output;
 use smithay::reexports::wayland_server::Resource;
 use smithay::utils::{Buffer, Logical, Physical, Rectangle, Scale, Transform};
+use smithay::wayland::seat::WaylandFocus;
 
 use crate::render::{
     self, CursorContext, DesktopContext, FrameContext, OverlayContext, RenderRequest, VisualContext,
@@ -162,25 +163,16 @@ pub fn save_window<D: SessionDriver>(
         .elements()
         .find(|window| {
             window
-                .toplevel()
-                .is_some_and(|toplevel| toplevel.wl_surface() == surface)
+                .wl_surface()
+                .is_some_and(|candidate| candidate.as_ref() == surface)
         })
+        .cloned()
         .ok_or_else(|| io::Error::other("selected window is not mapped"))?;
-    let toplevel = window
-        .toplevel()
-        .ok_or_else(|| io::Error::other("selected window has no toplevel"))?;
-    let geometry = window.geometry();
-    if geometry.size.w <= 0 || geometry.size.h <= 0 {
-        return Err(io::Error::other("selected window has empty geometry").into());
-    }
-    let surface = toplevel.wl_surface().clone();
-    let pixels = session
-        .driver
-        .with_renderer(|renderer| capture_surface_tree(renderer, &surface, geometry))?;
+    let CapturedWindowPixels { pixels, size } = capture_decorated_window_pixels(session, &window)?;
     save_pixels(
         &session.settings.screenshot.directory,
-        geometry.size.w as u32,
-        geometry.size.h as u32,
+        size.w as u32,
+        size.h as u32,
         &pixels,
     )
 }
@@ -220,11 +212,9 @@ pub(crate) fn capture_source_pixels<D: SessionDriver>(
             width,
             height,
         } => {
-            let (surface, geometry) =
-                resolve_source_window(&session.wayland.space, *surface_id, *width, *height)?;
-            session
-                .driver
-                .with_renderer(|renderer| capture_surface_tree(renderer, &surface, geometry))
+            let window = resolve_source_window(&session.wayland.space, *surface_id)?;
+            validate_source_window_size(session, &window, *width, *height)?;
+            capture_decorated_window_pixels(session, &window).map(|capture| capture.pixels)
         }
     }
 }
@@ -262,17 +252,10 @@ pub(crate) fn render_source_dmabuf<D: SessionDriver>(
             width,
             height,
         } => {
-            let (surface, geometry) =
-                resolve_source_window(&session.wayland.space, *surface_id, *width, *height)?;
-            session.driver.with_renderer(|renderer| {
-                let elements = surface_tree_elements(renderer, &surface, geometry)?;
-                render_elements_to_dmabuf(
-                    renderer,
-                    dmabuf,
-                    geometry.size.to_physical(1),
-                    &elements,
-                    Color32F::TRANSPARENT,
-                )
+            let window = resolve_source_window(&session.wayland.space, *surface_id)?;
+            validate_source_window_size(session, &window, *width, *height)?;
+            with_decorated_window(session, &window, |renderer, element, size| {
+                render_elements_to_dmabuf(renderer, dmabuf, size, &[element], Color32F::TRANSPARENT)
             })
         }
     }
@@ -467,35 +450,97 @@ pub(crate) fn render_monitor_region_dmabuf<D: SessionDriver>(
 fn resolve_source_window(
     space: &smithay::desktop::Space<smithay::desktop::Window>,
     surface_id: u32,
-    width: i32,
-    height: i32,
-) -> Result<
-    (
-        smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
-        Rectangle<i32, Logical>,
-    ),
-    Box<dyn Error>,
-> {
+) -> Result<smithay::desktop::Window, Box<dyn Error>> {
     let window = space
         .elements()
         .find(|window| {
             window
-                .toplevel()
-                .is_some_and(|toplevel| toplevel.wl_surface().id().protocol_id() == surface_id)
+                .wl_surface()
+                .is_some_and(|surface| surface.id().protocol_id() == surface_id)
         })
+        .cloned()
         .ok_or_else(|| io::Error::other("selected window is no longer mapped"))?;
-    let geometry = window.geometry();
-    if geometry.size != (width, height).into() {
+    Ok(window)
+}
+
+fn validate_source_window_size<D: SessionDriver>(
+    session: &Session<D>,
+    window: &smithay::desktop::Window,
+    width: i32,
+    height: i32,
+) -> Result<(), Box<dyn Error>> {
+    if crate::capture::window_capture_size(session, window) != (width, height).into() {
         return Err(io::Error::other("selected window size changed").into());
     }
-    Ok((
-        window
-            .toplevel()
-            .expect("matched a toplevel above")
-            .wl_surface()
-            .clone(),
-        geometry,
-    ))
+    Ok(())
+}
+
+struct CapturedWindowPixels {
+    pixels: Vec<u8>,
+    size: smithay::utils::Size<i32, Physical>,
+}
+
+fn capture_decorated_window_pixels<D: SessionDriver>(
+    session: &mut Session<D>,
+    window: &smithay::desktop::Window,
+) -> Result<CapturedWindowPixels, Box<dyn Error>> {
+    with_decorated_window(session, window, |renderer, element, size| {
+        let pixels = capture_elements(
+            renderer,
+            Fourcc::Abgr8888,
+            size,
+            &[element],
+            Color32F::TRANSPARENT,
+        )?;
+        Ok(CapturedWindowPixels { pixels, size })
+    })
+}
+
+fn with_decorated_window<D, T>(
+    session: &mut Session<D>,
+    window: &smithay::desktop::Window,
+    consume: impl FnOnce(
+        &mut GlesRenderer,
+        smithay::backend::renderer::element::texture::TextureRenderElement<GlesTexture>,
+        smithay::utils::Size<i32, Physical>,
+    ) -> Result<T, Box<dyn Error>>,
+) -> Result<T, Box<dyn Error>>
+where
+    D: SessionDriver,
+{
+    let chrome_visible = crate::capture::window_chrome_visible(session, window);
+    let focused = window
+        .wl_surface()
+        .is_some_and(|surface| session.wayland.focused_window.as_ref() == Some(surface.as_ref()));
+    let maximized = window
+        .wl_surface()
+        .is_some_and(|surface| session.maximize.contains(surface.as_ref()));
+    let decorations = &session.settings.decorations;
+    let font = &session.settings.font;
+    let resources = &mut session.render;
+    session.driver.with_renderer(|renderer| {
+        let texture = crate::render::window_texture::capture_decorated(
+            renderer,
+            window,
+            None,
+            decorations,
+            font,
+            focused,
+            chrome_visible,
+            maximized,
+            &mut resources.titlebar_renderer,
+            &mut resources.window_decoration_renderer,
+            &mut resources.node_renderer,
+            &mut resources.ui_text,
+        )?;
+        let size = texture
+            .texture
+            .size()
+            .to_logical(1, Transform::Normal)
+            .to_physical(1);
+        let element = texture.render_element(Id::new(), Rectangle::from_size(size), 1.0);
+        consume(renderer, element, size)
+    })
 }
 
 pub(crate) fn render_elements_to_dmabuf<E>(

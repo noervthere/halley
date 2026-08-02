@@ -245,7 +245,8 @@ cursor:
   hide-after-ms 2000
 end
 
-# Window decoration settings for managed top-level windows.
+# Window appearance settings. Borders and titlebars apply only to managed
+# top-levels; the content radius also clips unmanaged X11 popup windows.
 decorations:
   border:
     # Border width in output pixels. It follows camera zoom visually.
@@ -266,6 +267,8 @@ decorations:
     enabled true
     # Left uses close/maximize/minimize; right uses minimize/maximize/close.
     button-position "left"
+    # The application icon follows the title as one left/center/right group.
+    title-position "center"
     show-buttons true
     show-icons false
     show-title true

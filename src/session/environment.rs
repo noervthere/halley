@@ -1,6 +1,12 @@
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::ffi::OsString;
+#[cfg(feature = "dinit")]
+use std::fs::File;
+#[cfg(feature = "dinit")]
+use std::io::Write as _;
+#[cfg(feature = "dinit")]
+use std::os::fd::FromRawFd;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -81,13 +87,13 @@ pub fn activate_session(wayland_display: &OsStr, cursor: &halley_config::Cursor)
     }
 
     let mut dbus = Command::new("dbus-update-activation-environment");
-    if systemd_is_booted() {
+    if systemd_is_enabled() {
         dbus.arg("--systemd");
     }
     dbus.args(SESSION_VARIABLES);
     run("dbus activation environment", &mut dbus);
 
-    if systemd_is_booted() {
+    if systemd_is_enabled() {
         let mut import = Command::new("systemctl");
         import
             .arg("--user")
@@ -113,6 +119,8 @@ pub fn activate_session(wayland_display: &OsStr, cursor: &halley_config::Cursor)
             .arg("--no-block")
             .arg("xdg-desktop-portal.service");
         run("portal refresh", &mut restart);
+    } else {
+        publish_dinit_variables(&SESSION_VARIABLES);
     }
     publish_cursor(cursor);
 }
@@ -122,19 +130,21 @@ pub fn activate_session(wayland_display: &OsStr, cursor: &halley_config::Cursor)
 pub fn publish_cursor(cursor: &halley_config::Cursor) {
     let assignments = cursor_assignments(cursor);
     let mut dbus = Command::new("dbus-update-activation-environment");
-    if systemd_is_booted() {
+    if systemd_is_enabled() {
         dbus.arg("--systemd");
     }
     dbus.args(&assignments);
     run("cursor D-Bus environment", &mut dbus);
 
-    if systemd_is_booted() {
+    if systemd_is_enabled() {
         let mut systemd = Command::new("systemctl");
         systemd
             .arg("--user")
             .arg("set-environment")
             .args(&assignments);
         run("cursor systemd environment", &mut systemd);
+    } else {
+        publish_dinit_assignments(&assignments);
     }
 }
 
@@ -143,24 +153,90 @@ pub fn activate_xwayland(display: &OsStr) {
     assignment.push(display);
 
     let mut dbus = Command::new("dbus-update-activation-environment");
-    if systemd_is_booted() {
+    if systemd_is_enabled() {
         dbus.arg("--systemd");
     }
     dbus.arg(&assignment);
     run("XWayland D-Bus environment", &mut dbus);
 
-    if systemd_is_booted() {
+    if systemd_is_enabled() {
         let mut systemd = Command::new("systemctl");
         systemd
             .arg("--user")
             .arg("set-environment")
             .arg(&assignment);
         run("XWayland systemd environment", &mut systemd);
+    } else {
+        publish_dinit_assignments(std::slice::from_ref(&assignment));
     }
 }
 
-fn systemd_is_booted() -> bool {
-    Path::new("/run/systemd/system").is_dir()
+fn systemd_is_enabled() -> bool {
+    cfg!(feature = "systemd") && Path::new("/run/systemd/system").is_dir()
+}
+
+#[cfg(feature = "dinit")]
+fn publish_dinit_variables(variables: &[&str]) {
+    if systemd_is_enabled() {
+        return;
+    }
+    let mut command = Command::new("dinitctl");
+    command
+        .arg("--quiet")
+        .arg("--user")
+        .arg("setenv")
+        .args(variables);
+    run_optional("dinit user environment", &mut command);
+}
+
+#[cfg(not(feature = "dinit"))]
+fn publish_dinit_variables(_variables: &[&str]) {}
+
+#[cfg(feature = "dinit")]
+fn publish_dinit_assignments(assignments: &[OsString]) {
+    if systemd_is_enabled() {
+        return;
+    }
+    let mut command = Command::new("dinitctl");
+    command
+        .arg("--quiet")
+        .arg("--user")
+        .arg("setenv")
+        .args(assignments);
+    run_optional("dinit user environment", &mut command);
+}
+
+#[cfg(not(feature = "dinit"))]
+fn publish_dinit_assignments(_assignments: &[OsString]) {}
+
+/// Announces that the compositor's Wayland and IPC listeners are usable.
+pub fn notify_ready() {
+    #[cfg(feature = "systemd")]
+    if let Err(err) = sd_notify::notify(&[sd_notify::NotifyState::Ready]) {
+        eventline::warn!("systemd readiness notification failed: {err}");
+    }
+
+    #[cfg(feature = "dinit")]
+    if let Err(err) = notify_dinit_ready() {
+        eventline::warn!("dinit readiness notification failed: {err}");
+    }
+}
+
+#[cfg(feature = "dinit")]
+fn notify_dinit_ready() -> Result<(), Box<dyn std::error::Error>> {
+    let fd = match std::env::var("NOTIFY_FD") {
+        Ok(value) => value.parse::<i32>()?,
+        Err(std::env::VarError::NotPresent) => return Ok(()),
+        Err(err) => return Err(err.into()),
+    };
+    if fd < 0 {
+        return Err("NOTIFY_FD must be non-negative".into());
+    }
+    // SAFETY: dinit gives the service ownership of this readiness pipe. Taking
+    // it as a File writes the one readiness record and closes our copy.
+    let mut pipe = unsafe { File::from_raw_fd(fd) };
+    pipe.write_all(b"READY=1\n")?;
+    Ok(())
 }
 
 fn run(label: &str, command: &mut Command) {

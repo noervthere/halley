@@ -2,6 +2,7 @@ use super::apogee_clusters::{ApogeeCoreTileContext, apogee_core_tile_elements};
 use super::nodes::{ease_in_out_cubic, fit_ui_text};
 use super::*;
 
+#[cfg(test)]
 pub(super) fn preview_content_radius(decorations: &halley_config::Decorations) -> f32 {
     decorations.border_radius_px.max(0) as f32
 }
@@ -15,12 +16,14 @@ pub(super) fn apogee_elements(
     config: halley_config::Apogee,
     overlay_config: &halley_config::Overlays,
     decorations: &halley_config::Decorations,
+    font: &halley_config::Font,
     space: &smithay::desktop::Space<smithay::desktop::Window>,
     cameras: &crate::presentation::camera::OutputCameras,
     nodes: &crate::nodes::NodesState,
     clusters: &crate::clusters::ClusterSystem,
     node_renderer: &mut crate::render::node::NodeRenderer,
     cluster_renderer: &mut crate::clusters::render::ClusterRenderer,
+    titlebar_renderer: &mut crate::render::titlebar::TitlebarRenderer,
     window_decoration_renderer: &mut crate::render::window_decoration::WindowDecorationRenderer,
     ui_text: &mut crate::render::text::UiTextRenderer,
     window_open_animations: &crate::animation::WindowOpenAnimations,
@@ -106,6 +109,7 @@ pub(super) fn apogee_elements(
                     .into(),
             )
         } else {
+            let chrome_visible = preview_chrome_visible(&record.window, fullscreen);
             window_visual_state(
                 space,
                 cameras,
@@ -116,10 +120,22 @@ pub(super) fn apogee_elements(
                 window_open_animations,
                 fullscreen,
                 maximize,
+                decorations,
+                font,
                 now,
             )
-            .map(|visual| visual.animated_rect)
-            .unwrap_or_else(|| record.geometry.to_physical(1))
+            .map(|visual| {
+                preview_visual_outer_rect(&record.window, visual, decorations, font, chrome_visible)
+            })
+            .unwrap_or_else(|| {
+                preview_outer_rect(
+                    &record.window,
+                    record.geometry.to_physical(1),
+                    decorations,
+                    font,
+                    chrome_visible,
+                )
+            })
         };
         let body = lerp_rect(source, target, progress);
         let selected = session.selected == Some(tile.id);
@@ -192,23 +208,30 @@ pub(super) fn apogee_elements(
             }
         }
 
-        let preview_radius = preview_content_radius(decorations);
+        let chrome_visible = preview_chrome_visible(&record.window, fullscreen);
         match overlay_previews.element_with_texture(
             renderer,
-            tile.id,
-            &record.window,
-            body,
-            visuals.preview_alpha,
-            config.live_previews,
+            crate::render::overlays::preview::OverlayPreviewRequest {
+                id: tile.id,
+                window: &record.window,
+                destination: body,
+                alpha: visuals.preview_alpha,
+                live: config.live_previews,
+                decorations,
+                font,
+                chrome_visible,
+                maximized: record
+                    .window
+                    .wl_surface()
+                    .is_some_and(|surface| maximize.contains(surface.as_ref())),
+            },
+            crate::render::overlays::preview::OverlayPreviewRenderers {
+                titlebar: titlebar_renderer,
+                decoration: window_decoration_renderer,
+                node: node_renderer,
+                text: ui_text,
+            },
         ) {
-            Ok((preview, texture))
-                if preview_radius > 0.0 && window_decoration_renderer.available(renderer) =>
-            {
-                let preview = window_decoration_renderer
-                    .texture_element(renderer, preview, texture, body, preview_radius)
-                    .expect("rounded resources were checked above");
-                elements.push(SceneElement::RoundedTexture(preview));
-            }
             Ok((preview, _)) => elements.push(SceneElement::Closing(preview)),
             Err(_) => {
                 if let Some(app_id) = record.app_id.as_deref()
@@ -332,6 +355,9 @@ pub(super) struct FocusCycleRenderContext<'a> {
     pub nodes: &'a crate::nodes::NodesState,
     pub overlay_config: &'a halley_config::Overlays,
     pub decorations: &'a halley_config::Decorations,
+    pub font: &'a halley_config::Font,
+    pub fullscreen: &'a crate::wayland::fullscreen::FullscreenManager,
+    pub maximize: &'a crate::presentation::maximize::FieldMaximizeManager,
     pub now: std::time::Duration,
 }
 
@@ -340,10 +366,14 @@ pub(super) fn focus_cycle_elements(
     output_geometry: Rectangle<i32, Logical>,
     context: FocusCycleRenderContext<'_>,
     overlay_previews: &mut crate::render::overlays::preview::OverlayPreviewCache,
-    node_renderer: &mut crate::render::node::NodeRenderer,
-    window_decoration_renderer: &mut crate::render::window_decoration::WindowDecorationRenderer,
-    ui_text: &mut crate::render::text::UiTextRenderer,
+    renderers: crate::render::overlays::preview::OverlayPreviewRenderers<'_>,
 ) -> Result<Vec<SceneElement>, Box<dyn Error>> {
+    let crate::render::overlays::preview::OverlayPreviewRenderers {
+        titlebar: titlebar_renderer,
+        decoration: window_decoration_renderer,
+        node: node_renderer,
+        text: ui_text,
+    } = renderers;
     let Some(session) = context.state.session() else {
         return Ok(Vec::new());
     };
@@ -421,9 +451,17 @@ pub(super) fn focus_cycle_elements(
             )
                 .into(),
         );
+        let chrome_visible = preview_chrome_visible(&record.window, context.fullscreen);
+        let fallback_size = preview_outer_size(
+            &record.window,
+            record.geometry.size,
+            context.decorations,
+            context.font,
+            chrome_visible,
+        );
         let (source_width, source_height) = overlay_previews
             .source_dimensions(id)
-            .unwrap_or((record.geometry.size.w, record.geometry.size.h));
+            .unwrap_or((fallback_size.w, fallback_size.h));
         let body = aspect_fit_rect(body_bounds, source_width, source_height);
         let card = outset_rect(body, pad);
 
@@ -547,23 +585,29 @@ pub(super) fn focus_cycle_elements(
             )?,
         ));
 
-        let preview_radius = preview_content_radius(context.decorations);
         match overlay_previews.element_with_texture(
             renderer,
-            id,
-            &record.window,
-            body,
-            alpha,
-            selected,
+            crate::render::overlays::preview::OverlayPreviewRequest {
+                id,
+                window: &record.window,
+                destination: body,
+                alpha,
+                live: selected,
+                decorations: context.decorations,
+                font: context.font,
+                chrome_visible,
+                maximized: record
+                    .window
+                    .wl_surface()
+                    .is_some_and(|surface| context.maximize.contains(surface.as_ref())),
+            },
+            crate::render::overlays::preview::OverlayPreviewRenderers {
+                titlebar: titlebar_renderer,
+                decoration: window_decoration_renderer,
+                node: node_renderer,
+                text: ui_text,
+            },
         ) {
-            Ok((preview, texture))
-                if preview_radius > 0.0 && window_decoration_renderer.available(renderer) =>
-            {
-                let preview = window_decoration_renderer
-                    .texture_element(renderer, preview, texture, body, preview_radius)
-                    .expect("rounded resources were checked above");
-                elements.push(SceneElement::RoundedTexture(preview));
-            }
             Ok((preview, _)) => elements.push(SceneElement::Closing(preview)),
             Err(_) => {
                 if let Some(app_id) = record.app_id.as_deref()
@@ -623,8 +667,11 @@ pub(super) fn hover_preview_elements(
     node_renderer: &mut crate::render::node::NodeRenderer,
     ui_text: &mut crate::render::text::UiTextRenderer,
     window_decoration_renderer: &mut crate::render::window_decoration::WindowDecorationRenderer,
+    titlebar_renderer: &mut crate::render::titlebar::TitlebarRenderer,
     overlay_config: &halley_config::Overlays,
     decorations: &halley_config::Decorations,
+    font: &halley_config::Font,
+    fullscreen: &crate::wayland::fullscreen::FullscreenManager,
     now: std::time::Duration,
 ) -> Result<Vec<SceneElement>, Box<dyn Error>> {
     let Some((id, raw_mix)) = nodes.preview_hover_mix(&output.name(), now) else {
@@ -653,7 +700,15 @@ pub(super) fn hover_preview_elements(
     let preview_size_base = ((screen.w.min(screen.h) as f32) * 0.30)
         .round()
         .clamp(220.0, 360.0) as i32;
-    let source = record.geometry.size.to_physical(1);
+    let chrome_visible = preview_chrome_visible(&record.window, fullscreen);
+    let source = preview_outer_size(
+        &record.window,
+        record.geometry.size,
+        decorations,
+        font,
+        chrome_visible,
+    )
+    .to_physical(1);
     let source_side = source.w.max(source.h).max(1);
     let base_side = (source_side + 24).clamp(120, preview_size_base);
     let preview_size = ((base_side as f32) * (0.94 + 0.06 * preview_mix))
@@ -681,9 +736,8 @@ pub(super) fn hover_preview_elements(
         )
             .into(),
     );
-    let body = aspect_fit_rect(body_bounds, record.geometry.size.w, record.geometry.size.h);
+    let body = aspect_fit_rect(body_bounds, source.w, source.h);
     let visuals = crate::render::overlays::shell::resolve_visuals(overlay_config, decorations);
-    let preview_radius = preview_content_radius(decorations);
     let mut elements = Vec::new();
 
     let title = truncate_chars(&record.title, 24);
@@ -704,15 +758,26 @@ pub(super) fn hover_preview_elements(
         elements.push(SceneElement::UiText(text.element));
     }
 
-    match overlay_previews.element_with_texture(renderer, id, &record.window, body, alpha, true) {
-        Ok((preview, texture))
-            if preview_radius > 0.0 && window_decoration_renderer.available(renderer) =>
-        {
-            let preview = window_decoration_renderer
-                .texture_element(renderer, preview, texture, body, preview_radius)
-                .expect("rounded resources were checked above");
-            elements.push(SceneElement::RoundedTexture(preview));
-        }
+    match overlay_previews.element_with_texture(
+        renderer,
+        crate::render::overlays::preview::OverlayPreviewRequest {
+            id,
+            window: &record.window,
+            destination: body,
+            alpha,
+            live: true,
+            decorations,
+            font,
+            chrome_visible,
+            maximized: false,
+        },
+        crate::render::overlays::preview::OverlayPreviewRenderers {
+            titlebar: titlebar_renderer,
+            decoration: window_decoration_renderer,
+            node: node_renderer,
+            text: ui_text,
+        },
+    ) {
         Ok((preview, _)) => elements.push(SceneElement::Closing(preview)),
         Err(_) => elements.push(SceneElement::Border(SolidColorRenderElement::new(
             Id::new(),
@@ -734,6 +799,91 @@ pub(super) fn hover_preview_elements(
         )?,
     ));
     Ok(elements)
+}
+
+fn preview_chrome_visible(
+    window: &smithay::desktop::Window,
+    fullscreen: &crate::wayland::fullscreen::FullscreenManager,
+) -> bool {
+    !crate::xwayland::is_fullscreen(window)
+        && window
+            .wl_surface()
+            .is_none_or(|surface| !fullscreen.suppresses_chrome(surface.as_ref()))
+}
+
+fn preview_outer_size(
+    window: &smithay::desktop::Window,
+    client: smithay::utils::Size<i32, Logical>,
+    decorations: &halley_config::Decorations,
+    font: &halley_config::Font,
+    chrome_visible: bool,
+) -> smithay::utils::Size<i32, Logical> {
+    if chrome_visible {
+        crate::titlebar::outer_size_for_client(window, client, decorations, font)
+    } else {
+        client
+    }
+}
+
+fn preview_outer_rect(
+    window: &smithay::desktop::Window,
+    client: Rectangle<i32, Physical>,
+    decorations: &halley_config::Decorations,
+    font: &halley_config::Font,
+    chrome_visible: bool,
+) -> Rectangle<i32, Physical> {
+    if !chrome_visible {
+        return client;
+    }
+    crate::titlebar::outer_rect_for_client(window, client.to_logical(1), decorations, font)
+        .to_physical(1)
+}
+
+fn preview_visual_outer_rect(
+    window: &smithay::desktop::Window,
+    visual: crate::presentation::window::WindowVisualState,
+    decorations: &halley_config::Decorations,
+    font: &halley_config::Font,
+    chrome_visible: bool,
+) -> Rectangle<i32, Physical> {
+    if !chrome_visible {
+        return visual.animated_rect;
+    }
+    let opening_scale_y = if visual.presentation_rect.size.h > 0 {
+        visual.animated_rect.size.h as f32 / visual.presentation_rect.size.h as f32
+    } else {
+        1.0
+    };
+    let titlebar_height = crate::render::window_decoration::scaled_metric(
+        crate::titlebar::effective_height(&decorations.titlebars, font.size),
+        visual.zoom_scale * opening_scale_y.max(0.0),
+    );
+    let border_width = crate::render::window_decoration::scaled_metric(
+        decorations.border_width_px,
+        visual.zoom_scale,
+    );
+    if crate::titlebar::uses_server_titlebar(window, &decorations.titlebars) {
+        crate::titlebar::DecorationLayout::new(
+            visual.animated_rect,
+            border_width,
+            titlebar_height,
+            &decorations.titlebars,
+        )
+        .outer
+    } else {
+        Rectangle::new(
+            (
+                visual.animated_rect.loc.x - border_width,
+                visual.animated_rect.loc.y - border_width,
+            )
+                .into(),
+            (
+                visual.animated_rect.size.w + border_width * 2,
+                visual.animated_rect.size.h + border_width * 2,
+            )
+                .into(),
+        )
+    }
 }
 
 pub(super) fn aspect_fit_rect(

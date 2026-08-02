@@ -7,7 +7,7 @@ Commands:
   node           List, inspect, focus, move, collapse, restore, toggle, or close nodes
   cluster        List, inspect, switch, or change cluster workspaces
   bearings       Show, hide, toggle, or inspect Bearings
-  config         Verify the configuration selected by the compositor
+  config         Edit or verify the configuration selected by the compositor
   quit           Open Halley's exit confirmation
 
 Options:
@@ -27,9 +27,14 @@ Without -o, current and control commands use the selected monitor.
 
 pub const CONFIG_HELP: &str = "\
 Usage:
+  halleyctl config edit
+  halleyctl config edit -c PATH
+  halleyctl config edit --config PATH
   halleyctl config verify
   halleyctl config verify -c PATH
   halleyctl config verify --config PATH
+
+`edit` uses $VISUAL, then $EDITOR, and falls back to vi.
 ";
 
 pub const NODE_HELP: &str = "\

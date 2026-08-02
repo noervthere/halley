@@ -9,5 +9,5 @@ Before=xdg-desktop-autostart.target
 
 [Service]
 Slice=session.slice
-Type=simple
-ExecStart=%h/.local/bin/halley --session
+Type=notify
+ExecStart=/usr/bin/halley --session

@@ -33,10 +33,20 @@ impl ClusterSystem {
         };
         let gap = contact.gap.max(0.0);
         let core_radius = contact.core_radius.max(0.0);
-        let touching_gap = (contact.center.x - metadata.core_position.x).abs()
-            <= contact.member_half.x.max(0.0) + core_radius + gap
-            && (contact.center.y - metadata.core_position.y).abs()
-                <= contact.member_half.y.max(0.0) + core_radius + gap;
+        let dx = contact.center.x - metadata.core_position.x;
+        let dy = contact.center.y - metadata.core_position.y;
+        let horizontal_extent = if dx >= 0.0 {
+            contact.member_left
+        } else {
+            contact.member_right
+        };
+        let vertical_extent = if dy >= 0.0 {
+            contact.member_top
+        } else {
+            contact.member_bottom
+        };
+        let touching_gap = dx.abs() <= horizontal_extent.max(0.0) + core_radius + gap
+            && dy.abs() <= vertical_extent.max(0.0) + core_radius + gap;
         if !touching_gap {
             return self.cancel_join_candidate();
         }
@@ -164,7 +174,10 @@ mod tests {
             member,
             JoinContact {
                 center,
-                member_half: Vec2 { x: 160.0, y: 100.0 },
+                member_left: 160.0,
+                member_right: 160.0,
+                member_top: 100.0,
+                member_bottom: 100.0,
                 core_radius: 34.0,
                 gap: 20.0,
             },

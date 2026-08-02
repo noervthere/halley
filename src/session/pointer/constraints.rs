@@ -213,6 +213,8 @@ fn owner_context<D: SessionDriver>(
         &session.window_open_animations,
         &session.fullscreen,
         &session.maximize,
+        &session.settings.decorations,
+        &session.settings.font,
         surface,
         crate::frame_clock::monotonic_now(),
     )?;

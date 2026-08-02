@@ -50,12 +50,12 @@ struct CapturedWindow {
     id: Id,
     texture: super::window_texture::WindowTexture,
     metadata: CloseSnapshotMetadata,
+    order: u64,
 }
 
 struct ActiveClose {
     captured: CapturedWindow,
     timeline: CloseTimeline,
-    order: u64,
 }
 
 pub struct ClosingWindowRender {
@@ -100,12 +100,14 @@ impl WindowCloseAnimations {
         }
 
         let texture = super::window_texture::capture(renderer, window, None)?;
+        self.next_order = self.next_order.wrapping_add(1);
         self.pending.insert(
             surface,
             CapturedWindow {
                 id: Id::new(),
                 texture,
                 metadata,
+                order: self.next_order,
             },
         );
         Ok(true)
@@ -120,13 +122,11 @@ impl WindowCloseAnimations {
         }
 
         let config = self.config.window_close;
-        self.next_order = self.next_order.wrapping_add(1);
         self.active.insert(
             surface.clone(),
             ActiveClose {
                 timeline: CloseTimeline::new(config, now, captured.metadata.start_alpha),
                 captured,
-                order: self.next_order,
             },
         );
         true
@@ -172,7 +172,16 @@ impl WindowCloseAnimations {
         now: Duration,
     ) -> Vec<ClosingWindowRender> {
         let context = renderer.context_id();
-        self.active
+        let pending = self.pending.values().filter_map(|captured| {
+            let metadata = &captured.metadata;
+            if metadata.output_name != output.name() || captured.texture.context != context {
+                return None;
+            }
+            let destination = destination_for(metadata, output, output_geometry, cameras)?;
+            closing_render(captured, destination, metadata.start_alpha)
+        });
+        let active = self
+            .active
             .values()
             .filter(|active| {
                 active.captured.metadata.output_name == output.name()
@@ -194,36 +203,47 @@ impl WindowCloseAnimations {
                 if destination.size.w <= 0 || destination.size.h <= 0 || visual.alpha <= 0.0 {
                     return None;
                 }
-                let border = metadata.border.map(|mut border| {
-                    let scale = (f64::from(destination.size.w) / f64::from(start.size.w.max(1)))
-                        .min(f64::from(destination.size.h) / f64::from(start.size.h.max(1)));
-                    border.width = (f64::from(border.width) * scale).round().max(1.0) as i32;
-                    border.color = border.color * visual.alpha;
-                    border
-                });
-                let scale = (destination.size.w as f32 / start.size.w.max(1) as f32)
-                    .min(destination.size.h as f32 / start.size.h.max(1) as f32);
-                Some(ClosingWindowRender {
-                    texture: active.captured.texture.render_element(
-                        active.captured.id.clone(),
-                        destination,
-                        visual.alpha,
-                    ),
-                    source_texture: active.captured.texture.texture.clone(),
-                    destination,
-                    border,
-                    content_radius: metadata.content_radius * scale.max(0.0),
-                    stack_index: metadata.stack_index,
-                    order: active.order,
-                })
-            })
-            .collect()
+                closing_render(&active.captured, destination, visual.alpha)
+            });
+        pending.chain(active).collect()
     }
 
     pub fn cleanup(&mut self, now: Duration) {
         self.active
             .retain(|_, active| !active.timeline.is_finished_at(now));
     }
+}
+
+fn closing_render(
+    captured: &CapturedWindow,
+    destination: Rectangle<i32, Physical>,
+    alpha: f32,
+) -> Option<ClosingWindowRender> {
+    if destination.size.w <= 0 || destination.size.h <= 0 || alpha <= 0.0 {
+        return None;
+    }
+    let metadata = &captured.metadata;
+    let start = metadata.initial_destination;
+    let border = metadata.border.map(|mut border| {
+        let scale = (f64::from(destination.size.w) / f64::from(start.size.w.max(1)))
+            .min(f64::from(destination.size.h) / f64::from(start.size.h.max(1)));
+        border.width = (f64::from(border.width) * scale).round().max(1.0) as i32;
+        border.color = border.color * alpha;
+        border
+    });
+    let scale = (destination.size.w as f32 / start.size.w.max(1) as f32)
+        .min(destination.size.h as f32 / start.size.h.max(1) as f32);
+    Some(ClosingWindowRender {
+        texture: captured
+            .texture
+            .render_element(captured.id.clone(), destination, alpha),
+        source_texture: captured.texture.texture.clone(),
+        destination,
+        border,
+        content_radius: metadata.content_radius * scale.max(0.0),
+        stack_index: metadata.stack_index,
+        order: captured.order,
+    })
 }
 
 fn collapse_destination(

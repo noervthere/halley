@@ -1,5 +1,4 @@
 use smithay::backend::renderer::utils::on_commit_buffer_handler;
-use smithay::output::Output;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::wayland::compositor::{get_parent, is_sync_subsurface};
 use smithay::wayland::seat::WaylandFocus;
@@ -19,14 +18,8 @@ pub fn prepare_commit<D: 'static>(surface: &WlSurface) {
 
 pub fn commit(
     wayland: &mut WaylandState,
-    cameras: &crate::presentation::camera::OutputCameras,
-    primary_output: &Output,
     surface: &WlSurface,
-    rule: crate::window::rules::ResolvedWindowRule,
-    cursor_position: smithay::utils::Point<f64, smithay::utils::Logical>,
-    gap: f32,
-    decorations: &halley_config::Decorations,
-    font: &halley_config::Font,
+    context: xdg_shell::ToplevelCommitContext<'_>,
 ) -> xdg_shell::ToplevelCommit {
     if is_sync_subsurface(surface) {
         return xdg_shell::ToplevelCommit::None;
@@ -56,17 +49,7 @@ pub fn commit(
         window.on_commit();
     }
 
-    xdg_shell::handle_commit(
-        wayland,
-        cameras,
-        primary_output,
-        &root,
-        rule,
-        cursor_position,
-        gap,
-        decorations,
-        font,
-    )
+    xdg_shell::handle_commit(wayland, &root, context)
 }
 
 pub fn root_surface(surface: &WlSurface) -> WlSurface {

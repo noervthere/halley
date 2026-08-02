@@ -200,23 +200,6 @@ impl WindowDecorationRenderer {
         }
     }
 
-    pub fn surface_element(
-        &mut self,
-        renderer: &mut GlesRenderer,
-        inner: WaylandSurfaceRenderElement<GlesRenderer>,
-        destination: Rectangle<i32, Physical>,
-        clip: Rectangle<i32, Physical>,
-        radius: f32,
-    ) -> Option<RoundedSurfaceElement> {
-        self.surface_element_with_radii(
-            renderer,
-            inner,
-            destination,
-            clip,
-            CornerRadii::all(radius),
-        )
-    }
-
     pub fn surface_element_with_radii(
         &mut self,
         renderer: &mut GlesRenderer,
@@ -396,23 +379,6 @@ impl WindowDecorationRenderer {
             program: resources.surface.clone(),
             content_color,
         })
-    }
-
-    pub fn tint_element(
-        &mut self,
-        renderer: &mut GlesRenderer,
-        destination: Rectangle<i32, Physical>,
-        radius: f32,
-        color: smithay::backend::renderer::Color32F,
-        alpha: f32,
-    ) -> Option<RoundedTextureElement> {
-        self.tint_element_with_radii(
-            renderer,
-            destination,
-            CornerRadii::all(radius),
-            color,
-            alpha,
-        )
     }
 
     pub fn tint_element_with_radii(

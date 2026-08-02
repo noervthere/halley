@@ -773,15 +773,15 @@ fn bearing_at_pointer(
     pointer: &crate::input::pointer::Pointer,
     space: &Space<Window>,
     bearings: &crate::shell::bearings::BearingsState,
-) -> Option<(halley_core::field::NodeId, Output)> {
+) -> Option<(crate::shell::bearings::BearingTarget, Output)> {
     let position = pointer.position();
     let (output, geometry) = output_at_pointer(space, position)?;
     let local = Point::<f64, Logical>::from((
         position.0 - f64::from(geometry.loc.x),
         position.1 - f64::from(geometry.loc.y),
     ));
-    let id = bearings.hit_test(&output.name(), local)?;
-    Some((id, output))
+    let target = bearings.hit_test(&output.name(), local)?;
+    Some((target, output))
 }
 
 pub fn handle<D, B>(session: &mut Session<D>, event: &InputEvent<B>, socket_name: &OsStr)
@@ -1247,6 +1247,13 @@ where
                                 now,
                             )
                         });
+                    let desired_client = Rectangle::<i32, Logical>::new(desired_location, size);
+                    let desired_outer = crate::titlebar::outer_rect_for_client(
+                        &window,
+                        desired_client,
+                        &session.settings.decorations,
+                        &session.settings.font,
+                    );
                     let join_candidate_changed = cluster_drag.is_none()
                         && session.clusters.update_join_candidate(
                             &session.nodes.field,
@@ -1254,10 +1261,14 @@ where
                             id,
                             crate::clusters::JoinContact {
                                 center: desired_center,
-                                member_half: halley_core::field::Vec2 {
-                                    x: size.w.max(1) as f32 * 0.5,
-                                    y: size.h.max(1) as f32 * 0.5,
-                                },
+                                member_left: desired_center.x - desired_outer.loc.x as f32,
+                                member_right: desired_outer.loc.x as f32
+                                    + desired_outer.size.w as f32
+                                    - desired_center.x,
+                                member_top: desired_center.y - desired_outer.loc.y as f32,
+                                member_bottom: desired_outer.loc.y as f32
+                                    + desired_outer.size.h as f32
+                                    - desired_center.y,
                                 core_radius: crate::clusters::CORE_DIAMETER_PX * 0.5 / camera_scale,
                                 gap: session.nodes.landmarks.gap_px / camera_scale,
                             },
@@ -1416,21 +1427,14 @@ where
             let Some(output_geometry) = session.wayland.space.output_geometry(&output) else {
                 return;
             };
-            let Some(camera) = session.cameras.get(&output.name()) else {
-                return;
-            };
-            let world = crate::input::grab::screen_to_world_on_output(
-                position_after,
-                camera,
-                output_geometry,
-            );
+            let world = crate::input::grab::resize_cursor_from_screen(state, position_after);
             let requested_size = crate::input::grab::resize_target_size(
                 state.handle,
                 state.start_rect,
                 state.start_cursor,
                 world,
             );
-            let size = if state.window.x11_surface().is_some() {
+            let size = if crate::xwayland::is_x11(&state.window) {
                 crate::xwayland::constrain_window_size(&state.window, requested_size)
             } else {
                 requested_size
@@ -2054,14 +2058,22 @@ where
         if button == BTN_LEFT
             && state == ButtonState::Pressed
             && !session.shell.focus_cycle.is_open()
-            && let Some((id, output)) = bearing_at_pointer(
+            && let Some((target, output)) = bearing_at_pointer(
                 &session.pointer,
                 &session.wayland.space,
                 &session.shell.bearings,
             )
         {
             wayland::focus::select_output(&mut session.wayland, &output);
-            if crate::nodes::focus_or_reveal_node(session, id, serial) {
+            let revealed = match target {
+                crate::shell::bearings::BearingTarget::Node(id) => {
+                    crate::nodes::focus_or_reveal_node(session, id, serial)
+                }
+                crate::shell::bearings::BearingTarget::ClusterCore { core, .. } => {
+                    crate::nodes::reveal_cluster_core(session, core, serial)
+                }
+            };
+            if revealed {
                 session.interactions.suppressed_buttons.suppress(button);
                 intercepted = true;
             }
@@ -2166,6 +2178,7 @@ where
                         && let Some(crate::input::pointer::PointerRoute {
                             target: crate::input::pointer::PointerTarget::Window(window),
                             location,
+                            visual_geometry,
                             ..
                         }) = route.as_ref()
                         && crate::window::accepts_compositor_grab(window)
@@ -2183,7 +2196,13 @@ where
                             let handle =
                                 crate::input::grab::handle_from_press_position(start_rect, world);
                             intercepted = super::begin_window_resize(
-                                session, window, handle, button, world, serial,
+                                session,
+                                window,
+                                handle,
+                                button,
+                                world,
+                                visual_geometry.unwrap_or(start_rect),
+                                serial,
                             );
                         }
                     }
@@ -2575,10 +2594,15 @@ fn update_capture_pointer<D: SessionDriver>(session: &mut Session<D>, position: 
                 height: output_geometry.size.h,
             };
             let window = match route.target {
-                crate::input::pointer::PointerTarget::Window(window) => {
+                crate::input::pointer::PointerTarget::Window(window)
+                | crate::input::pointer::PointerTarget::Decoration { window, .. } => {
                     window.wl_surface().and_then(|surface| {
-                        let geometry = route.visual_geometry?;
-                        let size = window.geometry().size;
+                        let geometry = crate::capture::window_capture_visual_geometry(
+                            session,
+                            &window,
+                            route.visual_geometry?,
+                        );
+                        let size = crate::capture::window_capture_size(session, &window);
                         Some((
                             halley_ipc::CaptureSource::Window {
                                 surface_id: surface.id().protocol_id(),
@@ -2597,11 +2621,18 @@ fn update_capture_pointer<D: SessionDriver>(session: &mut Session<D>, position: 
         }
         Some(crate::capture::CaptureKind::Window) => {
             let hovered = super::pointer::route_client(session).and_then(|route| {
-                let crate::input::pointer::PointerTarget::Window(window) = route.target else {
-                    return None;
+                let window = match route.target {
+                    crate::input::pointer::PointerTarget::Window(window)
+                    | crate::input::pointer::PointerTarget::Decoration { window, .. } => window,
+                    _ => return None,
                 };
                 let surface = window.wl_surface()?.into_owned();
-                Some((surface, route.visual_geometry?))
+                let geometry = crate::capture::window_capture_visual_geometry(
+                    session,
+                    &window,
+                    route.visual_geometry?,
+                );
+                Some((surface, geometry))
             });
             let (surface, geometry) = hovered
                 .map(|(surface, geometry)| (Some(surface), Some(geometry)))

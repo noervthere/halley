@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use smithay::desktop::{Space, Window};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point, Rectangle};
+use smithay::wayland::seat::WaylandFocus;
 
 use menu::{ScreenshotMenu, ScreenshotMode};
 use picker::RegionPicker;
@@ -18,6 +19,98 @@ pub use screenshot::{save_region, save_window};
 use source_chooser::{SourceChooser, SourceMode, SourcePhase};
 
 use crate::session::{Session, SessionDriver};
+
+pub(crate) fn window_chrome_visible<D: SessionDriver>(
+    session: &Session<D>,
+    window: &Window,
+) -> bool {
+    !crate::xwayland::is_fullscreen(window)
+        && window
+            .wl_surface()
+            .is_none_or(|surface| !session.fullscreen.suppresses_chrome(surface.as_ref()))
+}
+
+pub(crate) fn window_capture_size<D: SessionDriver>(
+    session: &Session<D>,
+    window: &Window,
+) -> smithay::utils::Size<i32, Logical> {
+    let client = window.geometry().size;
+    if window_chrome_visible(session, window) {
+        crate::titlebar::outer_size_for_client(
+            window,
+            client,
+            &session.settings.decorations,
+            &session.settings.font,
+        )
+    } else {
+        client
+    }
+}
+
+pub(crate) fn window_capture_client_offset<D: SessionDriver>(
+    session: &Session<D>,
+    window: &Window,
+) -> Point<i32, Logical> {
+    if !window_chrome_visible(session, window) {
+        return (0, 0).into();
+    }
+    let outer = crate::titlebar::outer_rect_for_client(
+        window,
+        Rectangle::new((0, 0).into(), window.geometry().size),
+        &session.settings.decorations,
+        &session.settings.font,
+    );
+    (-outer.loc.x, -outer.loc.y).into()
+}
+
+pub(crate) fn window_capture_visual_geometry<D: SessionDriver>(
+    session: &Session<D>,
+    window: &Window,
+    client: Rectangle<i32, Logical>,
+) -> Rectangle<i32, Logical> {
+    if !window_chrome_visible(session, window) {
+        return client;
+    }
+    let native_client = Rectangle::<i32, Logical>::from_size(window.geometry().size);
+    let native_outer = crate::titlebar::outer_rect_for_client(
+        window,
+        native_client,
+        &session.settings.decorations,
+        &session.settings.font,
+    );
+    let scale_x = client.size.w as f64 / native_client.size.w.max(1) as f64;
+    let scale_y = client.size.h as f64 / native_client.size.h.max(1) as f64;
+    let left = ((native_client.loc.x - native_outer.loc.x) as f64 * scale_x).round() as i32;
+    let right = ((native_outer.size.w
+        - native_client.size.w
+        - (native_client.loc.x - native_outer.loc.x)) as f64
+        * scale_x)
+        .round() as i32;
+    let top = ((native_client.loc.y - native_outer.loc.y) as f64 * scale_y).round() as i32;
+    let bottom = ((native_outer.size.h
+        - native_client.size.h
+        - (native_client.loc.y - native_outer.loc.y)) as f64
+        * scale_y)
+        .round() as i32;
+    Rectangle::new(
+        (client.loc.x - left, client.loc.y - top).into(),
+        (
+            client
+                .size
+                .w
+                .saturating_add(left)
+                .saturating_add(right)
+                .max(1),
+            client
+                .size
+                .h
+                .saturating_add(top)
+                .saturating_add(bottom)
+                .max(1),
+        )
+            .into(),
+    )
+}
 
 #[derive(Default)]
 pub struct CaptureState {
@@ -679,8 +772,17 @@ pub fn accept_selected<D: SessionDriver>(session: &mut Session<D>) -> bool {
         AcceptedTarget::Source(_) => unreachable!("handled above"),
     };
     match accepted.pending {
-        PendingCapture::Local { .. } => match result {
-            Ok(path) => eventline::info!("screenshot saved to {}", path.display()),
+        PendingCapture::Local { menu } => match result {
+            Ok(path) => {
+                eventline::info!("screenshot saved to {}", path.display());
+                let directory = path.parent().unwrap_or(path.as_path());
+                session.shell.overlays.show_screenshot_saved(
+                    menu.output_name().to_string(),
+                    directory,
+                    session.settings.overlays.notifications.success_duration_ms,
+                    crate::frame_clock::monotonic_now(),
+                );
+            }
             Err(err) => eventline::error!("screenshot failed: {err}"),
         },
         PendingCapture::Screenshot { reply, .. } => reply_with_capture(reply, result),

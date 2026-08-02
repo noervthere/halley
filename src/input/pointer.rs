@@ -389,6 +389,8 @@ fn window_under(
                 context.window_open_animations,
                 context.fullscreen,
                 context.maximize,
+                context.decorations,
+                context.font,
                 window,
                 output,
                 context.now,
@@ -445,13 +447,12 @@ fn window_under(
         {
             let source_height = presentation.source_geometry().size.h.max(1);
             let visual_scale = visual_geometry.size.h as f32 / source_height as f32;
-            let titlebar_height = crate::render::window_decoration::scaled_metric(
-                crate::titlebar::effective_height(
-                    &context.decorations.titlebars,
-                    context.font.size,
-                ),
+            let titlebar_height = crate::titlebar::rendered_metrics(
+                &context.decorations.titlebars,
+                context.font.size,
                 visual_scale,
-            );
+            )
+            .height;
             let border_width = crate::render::window_decoration::scaled_metric(
                 context.decorations.border_width_px,
                 visual_scale,
@@ -535,11 +536,7 @@ fn exclusive_member_for_window(
         .and_then(|surface| nodes.id_for_surface(surface.as_ref()))
         .or_else(|| {
             let owner = crate::wayland::window_presentation_owner(window)?;
-            let owner = space.elements().find(|candidate| {
-                candidate
-                    .x11_surface()
-                    .is_some_and(|surface| surface.window_id() == owner)
-            })?;
+            let owner = crate::xwayland::window_for_xid(space, owner)?;
             owner
                 .wl_surface()
                 .and_then(|surface| nodes.id_for_surface(surface.as_ref()))

@@ -86,14 +86,10 @@ pub fn handle_request<D: crate::session::SessionDriver>(
                 Ok(id) => id,
                 Err(error) => return halley_ipc::Response::Error(error),
             };
-            let Some(record) = session.nodes.record(id) else {
+            let Some(window) = session.nodes.record(id).map(|record| record.window.clone()) else {
                 return halley_ipc::Response::Error(format!("node {id} disappeared"));
             };
-            if let Some(toplevel) = record.window.toplevel() {
-                toplevel.send_close();
-            } else {
-                crate::xwayland::close_window(&record.window);
-            }
+            crate::session::request_window_close(session, &window);
             halley_ipc::Response::Ack
         }
         halley_ipc::NodeRequest::Collapse { selector, output } => {
@@ -267,7 +263,22 @@ fn move_node<D: crate::session::SessionDriver>(
             .get(&record.output)
             .map(crate::presentation::camera::scale)
             .unwrap_or(1.0);
-        let destination = session.nodes.nearest_free_position(id, desired, scale);
+        let occupied_cores = session
+            .clusters
+            .collapsed_core_landmarks()
+            .into_iter()
+            .filter_map(|(_, _, output, position, _)| (output == record.output).then_some(position))
+            .collect::<Vec<_>>();
+        let destination = session.nodes.nearest_free_position(
+            id,
+            desired,
+            scale,
+            &occupied_cores,
+            super::PlacementChrome {
+                decorations: &session.settings.decorations,
+                font: &session.settings.font,
+            },
+        );
         if let Some(node) = session.nodes.field.node_mut(id) {
             node.pos = destination;
         }
@@ -287,6 +298,12 @@ fn move_node<D: crate::session::SessionDriver>(
             .get(&record.output)
             .map(crate::presentation::camera::scale)
             .unwrap_or(1.0);
+        let occupied_cores = session
+            .clusters
+            .collapsed_core_landmarks()
+            .into_iter()
+            .filter_map(|(_, _, output, position, _)| (output == record.output).then_some(position))
+            .collect::<Vec<_>>();
         let next = session
             .nodes
             .nearest_free_active_rect(
@@ -294,10 +311,15 @@ fn move_node<D: crate::session::SessionDriver>(
                 Rectangle::new(desired, record.geometry.size),
                 &record.output,
                 scale,
+                &occupied_cores,
+                super::PlacementChrome {
+                    decorations: &session.settings.decorations,
+                    font: &session.settings.font,
+                },
             )
             .loc;
         session.wayland.space.relocate_element(&record.window, next);
-        if record.window.x11_surface().is_some() {
+        if crate::xwayland::is_x11(&record.window) {
             crate::xwayland::configure_window(
                 &record.window,
                 Rectangle::new(next, record.geometry.size),
@@ -359,7 +381,7 @@ fn relation_metadata<D: crate::session::SessionDriver>(
     bool,
     Option<halley_ipc::NodeRelationInfo>,
 ) {
-    if record.window.x11_surface().is_some() {
+    if crate::xwayland::is_x11(&record.window) {
         return (
             halley_ipc::NodeRole::NormalToplevel,
             halley_ipc::NodeProtocolFamily::Xwayland,

@@ -1,25 +1,57 @@
 use std::fmt::Write;
 use std::path::PathBuf;
-use std::process::ExitCode;
+use std::process::{Command, ExitCode};
 
 use halley_ipc::{Request, Response};
 
+pub fn edit(explicit: Option<PathBuf>) -> ExitCode {
+    let path = match resolve_config_path(explicit) {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("halleyctl: {error}");
+            return ExitCode::from(2);
+        }
+    };
+    if let Err(error) = halley_config::bootstrap_default_config_at(&path) {
+        eprintln!(
+            "halleyctl: could not prepare config file {}: {error}",
+            path.display()
+        );
+        return ExitCode::from(2);
+    }
+    let editor = match selected_editor() {
+        Ok(editor) => editor,
+        Err(error) => {
+            eprintln!("halleyctl: {error}");
+            return ExitCode::from(2);
+        }
+    };
+    let mut command = Command::new(&editor[0]);
+    command.args(&editor[1..]).arg(&path);
+    match command.status() {
+        Ok(status) if status.success() => ExitCode::SUCCESS,
+        Ok(status) => {
+            eprintln!("halleyctl: editor exited with {status}");
+            status
+                .code()
+                .and_then(|code| u8::try_from(code).ok())
+                .map(ExitCode::from)
+                .unwrap_or(ExitCode::FAILURE)
+        }
+        Err(error) => {
+            eprintln!("halleyctl: could not start editor {:?}: {error}", editor[0]);
+            ExitCode::from(2)
+        }
+    }
+}
+
 pub fn verify(explicit: Option<PathBuf>) -> ExitCode {
-    let path = match explicit {
-        Some(path) => match absolute_path(path) {
-            Ok(path) => path,
-            Err(error) => {
-                eprintln!("halleyctl: could not resolve config path: {error}");
-                return ExitCode::from(2);
-            }
-        },
-        None => match discover_config_path() {
-            Ok(path) => path,
-            Err(error) => {
-                eprintln!("halleyctl: {error}");
-                return ExitCode::from(2);
-            }
-        },
+    let path = match resolve_config_path(explicit) {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("halleyctl: {error}");
+            return ExitCode::from(2);
+        }
     };
 
     match halley_config::load_runtime_config_diagnostic_at(&path) {
@@ -33,6 +65,37 @@ pub fn verify(explicit: Option<PathBuf>) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn resolve_config_path(explicit: Option<PathBuf>) -> Result<PathBuf, String> {
+    match explicit {
+        Some(path) => match absolute_path(path) {
+            Ok(path) => Ok(path),
+            Err(error) => Err(format!("could not resolve config path: {error}")),
+        },
+        None => discover_config_path(),
+    }
+}
+
+fn selected_editor() -> Result<Vec<String>, String> {
+    for name in ["VISUAL", "EDITOR"] {
+        if let Some(value) = std::env::var_os(name) {
+            let value = value
+                .into_string()
+                .map_err(|_| format!("${name} contains non-Unicode text"))?;
+            if value.trim().is_empty() {
+                continue;
+            }
+            return parse_editor(name, &value);
+        }
+    }
+    Ok(vec!["vi".to_string()])
+}
+
+fn parse_editor(name: &str, value: &str) -> Result<Vec<String>, String> {
+    shlex::split(value)
+        .filter(|arguments| !arguments.is_empty())
+        .ok_or_else(|| format!("${name} is not a valid editor command"))
 }
 
 fn absolute_path(path: PathBuf) -> std::io::Result<PathBuf> {
@@ -159,5 +222,14 @@ mod tests {
         let formatted = format_diagnostic(&semantic);
         assert!(!formatted.contains("File:"));
         assert!(!formatted.contains("Location:"));
+    }
+
+    #[test]
+    fn editor_command_supports_arguments_and_quotes() {
+        assert_eq!(
+            parse_editor("EDITOR", "code --wait --name 'Halley config'").unwrap(),
+            ["code", "--wait", "--name", "Halley config"]
+        );
+        assert!(parse_editor("EDITOR", "editor '").is_err());
     }
 }

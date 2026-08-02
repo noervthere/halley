@@ -123,6 +123,8 @@ pub(crate) fn window_visual_state(
     window_open_animations: &crate::animation::WindowOpenAnimations,
     fullscreen: &crate::wayland::fullscreen::FullscreenManager,
     maximize: &crate::presentation::maximize::FieldMaximizeManager,
+    decorations: &halley_config::Decorations,
+    font: &halley_config::Font,
     now: std::time::Duration,
 ) -> Option<WindowVisualState> {
     window_visual_state_with_cluster_presentation(
@@ -135,6 +137,8 @@ pub(crate) fn window_visual_state(
         window_open_animations,
         fullscreen,
         maximize,
+        decorations,
+        font,
         now,
         None,
     )
@@ -151,6 +155,8 @@ pub(crate) fn window_visual_state_with_cluster_presentation(
     window_open_animations: &crate::animation::WindowOpenAnimations,
     fullscreen: &crate::wayland::fullscreen::FullscreenManager,
     maximize: &crate::presentation::maximize::FieldMaximizeManager,
+    decorations: &halley_config::Decorations,
+    font: &halley_config::Font,
     now: std::time::Duration,
     cluster_override: Option<crate::clusters::WindowPresentation>,
 ) -> Option<WindowVisualState> {
@@ -211,6 +217,16 @@ pub(crate) fn window_visual_state_with_cluster_presentation(
             (Some(rect.to_physical(1)), None, 1.0)
         }
         crate::clusters::WindowPresentation::Workspace { rect, depth, alpha } => {
+            let rect = if window_node.is_some_and(|node| {
+                clusters.is_some_and(|clusters| {
+                    clusters.member_layout(node)
+                        == Some(halley_core::cluster::layout::ClusterWorkspaceLayoutKind::Tiling)
+                })
+            }) {
+                crate::titlebar::client_rect_for_outer(window, rect, decorations, font)
+            } else {
+                rect
+            };
             (Some(rect.to_physical(1)), Some(depth), alpha)
         }
     };
@@ -281,21 +297,19 @@ pub(crate) fn window_visual_state_with_cluster_presentation(
     let mut inherited_cluster_exclusive = cluster_exclusive;
 
     if let Some(owner_xid) = crate::wayland::window_presentation_owner(window)
-        && let Some(owner) = space.elements().find(|candidate| {
-            candidate
-                .x11_surface()
-                .is_some_and(|surface| surface.window_id() == owner_xid)
-        })
+        && let Some(owner) = crate::xwayland::window_for_xid(space, owner_xid)
         && let Some(owner_visual) = window_visual_state_with_cluster_presentation(
             space,
             cameras,
             clusters,
             nodes,
-            owner,
+            &owner,
             output,
             window_open_animations,
             fullscreen,
             maximize,
+            decorations,
+            font,
             now,
             None,
         )
@@ -365,6 +379,8 @@ impl WindowPresentation {
         window_open_animations: &crate::animation::WindowOpenAnimations,
         fullscreen: &crate::wayland::fullscreen::FullscreenManager,
         maximize: &crate::presentation::maximize::FieldMaximizeManager,
+        decorations: &halley_config::Decorations,
+        font: &halley_config::Font,
         window: &Window,
         output: &Output,
         now: std::time::Duration,
@@ -381,6 +397,8 @@ impl WindowPresentation {
             window_open_animations,
             fullscreen,
             maximize,
+            decorations,
+            font,
             now,
         )?;
         let source_geometry = visual.source_geometry;
@@ -433,6 +451,8 @@ impl WindowPresentation {
         window_open_animations: &crate::animation::WindowOpenAnimations,
         fullscreen: &crate::wayland::fullscreen::FullscreenManager,
         maximize: &crate::presentation::maximize::FieldMaximizeManager,
+        decorations: &halley_config::Decorations,
+        font: &halley_config::Font,
         surface: &WlSurface,
         now: std::time::Duration,
     ) -> Option<Self> {
@@ -453,6 +473,8 @@ impl WindowPresentation {
             window_open_animations,
             fullscreen,
             maximize,
+            decorations,
+            font,
             window,
             output,
             now,

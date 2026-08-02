@@ -19,6 +19,17 @@ pub(super) struct LiveWindowScene {
     pub(super) cluster_exclusive: bool,
 }
 
+pub(super) struct LiveWindowRenderers<'a> {
+    pub fullscreen_textures:
+        &'a mut crate::render::fullscreen_texture::FullscreenTextureTransitions,
+    pub backdrop_blur: &'a mut crate::render::effects::backdrop_blur::BackdropBlurRenderer,
+    pub shadow: &'a mut crate::render::effects::shadow::ShadowRenderer,
+    pub decoration: &'a mut crate::render::window_decoration::WindowDecorationRenderer,
+    pub titlebar: &'a mut crate::render::titlebar::TitlebarRenderer,
+    pub node: &'a mut crate::render::node::NodeRenderer,
+    pub text: &'a mut crate::render::text::UiTextRenderer,
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct LiveWindowContext<'a> {
     pub(super) space: &'a smithay::desktop::Space<smithay::desktop::Window>,
@@ -64,14 +75,17 @@ pub(super) fn live_window_elements(
     renderer: &mut GlesRenderer,
     window: &smithay::desktop::Window,
     context: LiveWindowContext<'_>,
-    fullscreen_textures: &mut crate::render::fullscreen_texture::FullscreenTextureTransitions,
-    backdrop_blur_renderer: &mut crate::render::effects::backdrop_blur::BackdropBlurRenderer,
-    shadow_renderer: &mut crate::render::effects::shadow::ShadowRenderer,
-    window_decoration_renderer: &mut crate::render::window_decoration::WindowDecorationRenderer,
-    titlebar_renderer: &mut crate::render::titlebar::TitlebarRenderer,
-    node_renderer: &mut crate::render::node::NodeRenderer,
-    ui_text: &mut crate::render::text::UiTextRenderer,
+    renderers: LiveWindowRenderers<'_>,
 ) -> Result<LiveWindowScene, Box<dyn Error>> {
+    let LiveWindowRenderers {
+        fullscreen_textures,
+        backdrop_blur: backdrop_blur_renderer,
+        shadow: shadow_renderer,
+        decoration: window_decoration_renderer,
+        titlebar: titlebar_renderer,
+        node: node_renderer,
+        text: ui_text,
+    } = renderers;
     let Some(location) = context.space.element_location(window) else {
         return Ok(LiveWindowScene {
             elements: Vec::new(),
@@ -106,6 +120,8 @@ pub(super) fn live_window_elements(
         context.window_open_animations,
         context.fullscreen,
         context.maximize,
+        context.decorations,
+        context.font,
         context.target_presentation_time,
         context.cluster_presentation_override,
     ) else {
@@ -153,10 +169,12 @@ pub(super) fn live_window_elements(
         1.0
     };
     let decoration_scale = visual.zoom_scale * opening_scale_y.max(0.0);
-    let titlebar_height = crate::render::window_decoration::scaled_metric(
-        crate::titlebar::effective_height(&context.decorations.titlebars, context.font.size),
+    let titlebar_metrics = crate::titlebar::rendered_metrics(
+        &context.decorations.titlebars,
+        context.font.size,
         decoration_scale,
     );
+    let titlebar_height = titlebar_metrics.height;
     let content_radius = if chrome_visible {
         crate::render::window_decoration::scaled_metric(
             context.decorations.border_radius_px,
@@ -165,7 +183,11 @@ pub(super) fn live_window_elements(
     } else {
         0.0
     };
-    let rounded = managed && content_radius > 0.0;
+    // Override-redirect X11 windows are unmanaged for focus, borders, shadows,
+    // and titlebars, but their client content should still honor the configured
+    // window radius. This covers popup windows such as Steam menus without
+    // turning them into managed toplevels.
+    let rounded = content_radius > 0.0;
     let rounded_available = rounded && window_decoration_renderer.available(renderer);
     if join_ready {
         let tint_alpha = alpha * JOIN_READY_TINT_ALPHA;
@@ -229,14 +251,13 @@ pub(super) fn live_window_elements(
             window,
             visual.animated_rect,
             titlebar_height,
+            titlebar_metrics.glyph_size,
+            context.maximize.contains(window_surface.as_ref()),
             crate::render::window_decoration::scaled_metric(
                 context.decorations.border_width_px,
                 decoration_scale,
             ),
-            crate::render::window_decoration::scaled_metric(
-                context.decorations.titlebars.radius_px,
-                decoration_scale,
-            ) as f32,
+            titlebar_metrics.radius as f32,
             Some(window_surface.as_ref()) == context.focused,
             chrome_alpha,
             context.decorations,
@@ -506,10 +527,7 @@ pub(super) fn live_window_elements(
         };
         let caster_radii = if rounded_available && server_titlebar {
             crate::render::window_decoration::CornerRadii {
-                top: crate::render::window_decoration::scaled_metric(
-                    context.decorations.titlebars.radius_px,
-                    decoration_scale,
-                ) as f32,
+                top: titlebar_metrics.radius as f32,
                 bottom: content_radius + border_outset as f32,
             }
         } else if rounded_available {
@@ -544,11 +562,13 @@ pub(super) fn live_window_elements(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn append_titlebar_elements(
+pub(crate) fn append_titlebar_elements(
     renderer: &mut GlesRenderer,
     window: &smithay::desktop::Window,
     content: Rectangle<i32, Physical>,
     height: i32,
+    glyph_side: i32,
+    maximized: bool,
     border_width: i32,
     radius: f32,
     focused: bool,
@@ -604,7 +624,6 @@ fn append_titlebar_elements(
         } else {
             None
         };
-        let glyph_side = crate::titlebar::glyph_size(control.rect.size.h);
         let glyph = Rectangle::new(
             (
                 control.rect.loc.x + (control.rect.size.w - glyph_side) / 2,
@@ -617,6 +636,7 @@ fn append_titlebar_elements(
             renderer,
             window_decoration_renderer,
             control.control,
+            maximized,
             glyph,
             state_color,
             alpha * if enabled { 1.0 } else { 0.4 },
@@ -629,34 +649,42 @@ fn append_titlebar_elements(
     }
 
     let identity = crate::window::rules::identity(window);
-    if let Some(icon_rect) = layout.app_icon
-        && let Some(app_id) = identity.app_id.as_deref()
+    let app_id = config
+        .show_icons
+        .then_some(identity.app_id.as_deref())
+        .flatten();
+    let rgb = color_bytes(foreground);
+    let title = if config.show_title {
+        match identity.title.as_deref() {
+            Some(title) => fitted_title(
+                renderer,
+                ui_text,
+                title,
+                rgb,
+                layout.max_title_width(app_id.is_some()),
+            )?,
+            None => None,
+        }
+    } else {
+        None
+    };
+    let identity_layout = layout.identity_layout(
+        config.title_position,
+        title.as_ref().map(|title| (title.size.w, title.size.h)),
+        app_id.is_some(),
+    );
+    if let Some(icon_rect) = identity_layout.app_icon
+        && let Some(app_id) = app_id
         && let Some(icon) = node_renderer.app_icon_element(renderer, app_id, icon_rect, alpha)
     {
         elements.push(SceneElement::NodeTexture(icon));
     }
 
-    if config.show_title
-        && layout.title_clip.size.w > 0
-        && let Some(title) = identity.title.as_deref()
+    if let (Some(title), Some(title_rect)) = (title, identity_layout.title)
+        && let Some(prepared) =
+            ui_text.element(renderer, title_rect.loc, &title.text, rgb, alpha)?
     {
-        let rgb = color_bytes(foreground);
-        if let Some((title, size)) =
-            fitted_title(renderer, ui_text, title, rgb, layout.title_clip.size.w)?
-            && let Some(prepared) = ui_text.element(
-                renderer,
-                (
-                    layout.titlebar.loc.x + (layout.titlebar.size.w - size.w) / 2,
-                    layout.titlebar.loc.y + (layout.titlebar.size.h - size.h) / 2,
-                )
-                    .into(),
-                &title,
-                rgb,
-                alpha,
-            )?
-        {
-            elements.push(SceneElement::UiText(prepared.element));
-        }
+        elements.push(SceneElement::UiText(prepared.element));
     }
 
     if let Some(background_element) = window_decoration_renderer.tint_element_with_radii(
@@ -687,20 +715,28 @@ fn color_bytes(color: halley_config::BorderColor) -> [u8; 3] {
     ]
 }
 
+struct FittedTitle {
+    text: String,
+    size: smithay::utils::Size<i32, smithay::utils::Buffer>,
+}
+
 fn fitted_title(
     renderer: &mut GlesRenderer,
     ui_text: &mut crate::render::text::UiTextRenderer,
     title: &str,
     rgb: [u8; 3],
     max_width: i32,
-) -> Result<Option<(String, smithay::utils::Size<i32, smithay::utils::Buffer>)>, Box<dyn Error>> {
+) -> Result<Option<FittedTitle>, Box<dyn Error>> {
     if max_width <= 0 || title.is_empty() {
         return Ok(None);
     }
     if let Some(size) = ui_text.measure(renderer, title, rgb)?
         && size.w <= max_width
     {
-        return Ok(Some((title.to_string(), size)));
+        return Ok(Some(FittedTitle {
+            text: title.to_string(),
+            size,
+        }));
     }
     let characters = title.chars().collect::<Vec<_>>();
     let mut low = 0;
@@ -716,7 +752,10 @@ fn fitted_title(
             return Ok(None);
         };
         if size.w <= max_width {
-            best = Some((candidate, size));
+            best = Some(FittedTitle {
+                text: candidate,
+                size,
+            });
             low = middle + 1;
         } else if middle == 0 {
             break;

@@ -445,6 +445,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
     {
         eventline::error!("ipc: failed to start listener: {err}");
     }
+    super::environment::notify_ready();
     if let Some(path) = config_path
         && let Err(err) = crate::config::watch(&event_loop.handle(), path, apply_runtime_config)
     {

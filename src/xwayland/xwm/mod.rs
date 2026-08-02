@@ -176,6 +176,10 @@ fn size_fills_output(size: Size<i32, Logical>, output_size: Size<i32, Logical>) 
     size.w >= output_size.w && size.h >= output_size.h
 }
 
+fn presentation_configures_initial_geometry(saved_maximize: bool, fullscreen: bool) -> bool {
+    saved_maximize || fullscreen
+}
+
 fn steam_recovery_size(
     surface: &X11Surface,
     output_size: Size<i32, Logical>,
@@ -434,19 +438,24 @@ fn admit_window<D: SessionDriver>(session: &mut Session<D>, xid: u32) {
     }
     opening_size = constrained_size;
     let opening_geometry = Rectangle::new(location, opening_size);
+    let presentation_configures =
+        presentation_configures_initial_geometry(saved_maximize.is_some(), surface.is_fullscreen());
     crate::session::trace::x11_event(
         session,
         &surface,
         "admission-configure",
         format_args!(
-            "initial_size={initial_size:?} opening={opening_geometry:?} output={:?} saved_maximize={} rule_cluster={:?}",
+            "initial_size={initial_size:?} opening={opening_geometry:?} output={:?} saved_maximize={} presentation_configures={presentation_configures} rule_cluster={:?}",
             output.name(),
             saved_maximize.is_some(),
             rule.cluster_participation,
         ),
     );
-    if let Err(err) = surface.configure(opening_geometry) {
-        eventline::warn!("xwayland: failed to prepare centered opening geometry: {err}");
+    // Fullscreen/maximize owns its initial configure. Sending the centered
+    // windowed configure first lets games draw one intermediate centered frame
+    // before the fullscreen configure is processed.
+    if !presentation_configures && let Err(err) = surface.configure(opening_geometry) {
+        eventline::warn!("xwayland: failed to prepare opening geometry: {err}");
     }
     crate::wayland::set_window_output(&window, &output);
     if let Some(wl_surface) = window.wl_surface() {
@@ -512,15 +521,6 @@ fn admit_window<D: SessionDriver>(session: &mut Session<D>, xid: u32) {
             session.clusters.defer_surface_layout_until(id, quiet_until);
         }
     }
-    let started = !initially_iconic
-        && window.wl_surface().is_some_and(|wl_surface| {
-            crate::session::opening::start(
-                session,
-                wl_surface.into_owned(),
-                &output,
-                crate::frame_clock::monotonic_now(),
-            )
-        });
     if saved_maximize.is_some() {
         if let Err(err) = surface.set_maximized(true) {
             eventline::warn!("xwayland: failed to retain remapped maximized state: {err}");
@@ -536,6 +536,18 @@ fn admit_window<D: SessionDriver>(session: &mut Session<D>, xid: u32) {
             eventline::warn!("xwayland: failed to suppress initial maximized state: {err}");
         }
     }
+    // Establish the final presentation target before starting the independent
+    // window-open timeline. This mirrors Hyprland's target-then-animate model:
+    // fullscreen owns X11 geometry, while opening owns only visual motion.
+    let started = !initially_iconic
+        && window.wl_surface().is_some_and(|wl_surface| {
+            crate::session::opening::start(
+                session,
+                wl_surface.into_owned(),
+                &output,
+                crate::frame_clock::monotonic_now(),
+            )
+        });
     if initially_iconic {
         let collapsed = window
             .wl_surface()
@@ -592,7 +604,8 @@ mod tests {
         FullscreenRequestOrigin, OverrideRedirectIdentity, OverrideRedirectMapAdmission,
         OverrideRedirectStackAction, compositor_fullscreen_should_raise,
         override_redirect_map_admission, override_redirect_owner_rank,
-        override_redirect_stack_action, recovery_window_size, size_fills_output,
+        override_redirect_stack_action, presentation_configures_initial_geometry,
+        recovery_window_size, size_fills_output,
     };
     use smithay::utils::{Logical, Point, Rectangle, Size};
 
@@ -613,6 +626,13 @@ mod tests {
         ] {
             assert!(!compositor_fullscreen_should_raise(true, origin));
         }
+    }
+
+    #[test]
+    fn fullscreen_presentation_owns_the_only_initial_x11_configure() {
+        assert!(presentation_configures_initial_geometry(false, true));
+        assert!(presentation_configures_initial_geometry(true, false));
+        assert!(!presentation_configures_initial_geometry(false, false));
     }
 
     #[test]

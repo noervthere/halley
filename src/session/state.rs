@@ -340,6 +340,9 @@ impl<D: SessionDriver> Session<D> {
             super::environment::publish_cursor(&config.cursor);
         }
         let window_rules_redraw = self.window_rules_reload_changes_visuals(&config.window_rules);
+        if self.settings.decorations != config.decorations || self.settings.font != config.font {
+            self.render.overlay_previews.mark_all_dirty();
+        }
         let redraw = self.settings.visuals_changed(config)
             || window_rules_redraw
             || cursor_changed
@@ -460,6 +463,7 @@ impl<D: SessionDriver> Session<D> {
         }
     }
 
+    #[cfg(feature = "xwayland")]
     pub fn finish_x11_fullscreen_presentation(&mut self, surface: &WlSurface) -> bool {
         let root = crate::wayland::compositor::root_surface(surface);
         let window = self
@@ -472,16 +476,28 @@ impl<D: SessionDriver> Session<D> {
                         .wl_surface()
                         .is_some_and(|candidate| candidate.as_ref() == &root)
             })
-            .cloned();
+            .cloned()
+            .or_else(|| {
+                self.nodes
+                    .records()
+                    .find(|record| {
+                        record.window.x11_surface().is_some()
+                            && record
+                                .window
+                                .wl_surface()
+                                .is_some_and(|candidate| candidate.as_ref() == &root)
+                    })
+                    .map(|record| record.window.clone())
+            });
         let Some(window) = window else {
             return false;
         };
-        if !self
-            .fullscreen
+        self.fullscreen
             .finish_external_presentation(&mut self.wayland, &window)
-        {
-            return false;
-        }
-        true
+    }
+
+    #[cfg(not(feature = "xwayland"))]
+    pub fn finish_x11_fullscreen_presentation(&mut self, _surface: &WlSurface) -> bool {
+        false
     }
 }

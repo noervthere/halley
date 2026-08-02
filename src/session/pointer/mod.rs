@@ -95,18 +95,18 @@ pub(super) fn route_client<D: SessionDriver>(
     Some(route)
 }
 
-pub(super) fn has_active_confinement<D: SessionDriver>(session: &Session<D>) -> bool {
-    session
-        .seat
-        .get_pointer()
-        .is_some_and(|pointer| constraints::has_active_confinement(session, &pointer))
-}
-
 pub(super) fn has_active_constraint<D: SessionDriver>(session: &Session<D>) -> bool {
     session
         .seat
         .get_pointer()
         .is_some_and(|pointer| constraints::active(session, &pointer).is_some())
+}
+
+pub(super) fn has_active_confinement<D: SessionDriver>(session: &Session<D>) -> bool {
+    session
+        .seat
+        .get_pointer()
+        .is_some_and(|pointer| constraints::has_active_confinement(session, &pointer))
 }
 
 pub(super) fn constraint_diagnostic<D: SessionDriver>(

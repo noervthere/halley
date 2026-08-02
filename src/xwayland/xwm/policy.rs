@@ -42,19 +42,16 @@ impl ExternalPresentationPolicy {
         fullscreen: bool,
     ) -> Self {
         if !fullscreen && origin == FullscreenRequestOrigin::Compositor {
-            // The original X11 path settled fullscreen exit synchronously.
-            // Games such as TF2 may never acknowledge an animated windowed
-            // configure; direct settle makes Mod+F immediately restore
-            // Field/cluster state.
+            // Games such as TF2 may never acknowledge a compositor-requested
+            // windowed configure. Settle Mod+F exits synchronously.
             Self::Initial
         } else if confined {
             Self::Confined
         } else if origin == FullscreenRequestOrigin::Initial {
             Self::Initial
         } else if opening && origin == FullscreenRequestOrigin::Client {
-            // Match the original X11 fullscreen path: settle the client
-            // directly into fullscreen and let the already-running window-open
-            // animation provide the only visual motion.
+            // The window-open animation already owns the visual motion. The
+            // client geometry itself must settle directly beneath it.
             Self::Initial
         } else if opening {
             Self::Opening
@@ -116,7 +113,7 @@ mod tests {
             ExternalPresentationPolicy::Initial
         );
         assert_eq!(
-            ExternalPresentationPolicy::select(FullscreenRequestOrigin::Initial, true, false, true,),
+            ExternalPresentationPolicy::select(FullscreenRequestOrigin::Initial, true, false, true),
             ExternalPresentationPolicy::Initial
         );
     }
@@ -124,7 +121,7 @@ mod tests {
     #[test]
     fn client_fullscreen_settles_under_the_existing_window_open_animation() {
         assert_eq!(
-            ExternalPresentationPolicy::select(FullscreenRequestOrigin::Client, true, false, true,),
+            ExternalPresentationPolicy::select(FullscreenRequestOrigin::Client, true, false, true),
             ExternalPresentationPolicy::Initial
         );
         assert_eq!(

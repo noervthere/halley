@@ -61,9 +61,9 @@ pub(super) fn set_external_fullscreen<D: SessionDriver>(
             .is_animating(wl_surface.as_ref(), now)
     });
     // Source-engine clients briefly request fullscreen off/on while loading.
-    // Once the old-style direct fullscreen settle has happened, keep that
-    // geometry untouched until the ordinary window-open animation finishes.
-    // Explicit compositor actions (including Mod+F) bypass this branch.
+    // Once direct startup fullscreen has settled, preserve that geometry until
+    // the independent window-open animation finishes. Explicit compositor
+    // actions such as Mod+F still bypass this client-only guard.
     if origin == FullscreenRequestOrigin::Client
         && opening_animation
         && session.fullscreen.external_desired_matches(&window, true)
@@ -307,6 +307,8 @@ pub(super) fn opening_presentation_bounds<D: SessionDriver>(
         &session.window_open_animations,
         &session.fullscreen,
         &session.maximize,
+        &session.settings.decorations,
+        &session.settings.font,
         window,
         &output,
         now,

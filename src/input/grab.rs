@@ -216,6 +216,39 @@ pub struct ResizeState {
     pub button: u32,
     pub start_rect: Rectangle<i32, Logical>,
     pub start_cursor: Vec2,
+    pub start_screen: (f64, f64),
+    pub screen_to_source_scale: Vec2,
+}
+
+pub fn resize_cursor_from_screen(state: &ResizeState, screen: (f64, f64)) -> Vec2 {
+    source_cursor_from_screen(
+        state.start_cursor,
+        state.start_screen,
+        state.screen_to_source_scale,
+        screen,
+    )
+}
+
+fn source_cursor_from_screen(
+    start_cursor: Vec2,
+    start_screen: (f64, f64),
+    screen_to_source_scale: Vec2,
+    screen: (f64, f64),
+) -> Vec2 {
+    Vec2 {
+        x: start_cursor.x + (screen.0 - start_screen.0) as f32 * screen_to_source_scale.x,
+        y: start_cursor.y + (screen.1 - start_screen.1) as f32 * screen_to_source_scale.y,
+    }
+}
+
+pub fn resize_screen_to_source_scale(
+    source: Rectangle<i32, Logical>,
+    visual: Rectangle<i32, Logical>,
+) -> Vec2 {
+    Vec2 {
+        x: source.size.w.max(1) as f32 / visual.size.w.max(1) as f32,
+        y: source.size.h.max(1) as f32 / visual.size.h.max(1) as f32,
+    }
 }
 
 /// Left/top-edge anchoring state, kept *outside* `Grab` because it has to
@@ -694,6 +727,43 @@ mod tests {
         assert_eq!(
             resize_location_after_commit(ResizeHandle::BottomRight, rect.loc, rect.size, size,),
             Point::from((100, 100))
+        );
+    }
+
+    #[test]
+    fn output_local_floating_resize_keeps_screen_and_source_deltas_aligned() {
+        let source = Rectangle::new((100, 50).into(), (2_000, 1_000).into());
+        let visual = Rectangle::new((0, 0).into(), (1_000, 500).into());
+        let scale = resize_screen_to_source_scale(source, visual);
+        assert_eq!(scale, Vec2 { x: 2.0, y: 2.0 });
+
+        let cursor = source_cursor_from_screen(
+            Vec2 {
+                x: 2_100.0,
+                y: 1_050.0,
+            },
+            (1_000.0, 500.0),
+            scale,
+            (900.0, 450.0),
+        );
+        assert_eq!(
+            cursor,
+            Vec2 {
+                x: 1_900.0,
+                y: 950.0
+            }
+        );
+        assert_eq!(
+            resize_target_size(
+                ResizeHandle::BottomRight,
+                source,
+                Vec2 {
+                    x: 2_100.0,
+                    y: 1_050.0
+                },
+                cursor
+            ),
+            Size::from((1_800, 900))
         );
     }
 

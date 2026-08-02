@@ -6,9 +6,17 @@ use x11rb::connection::Connection;
 use x11rb::errors::ReplyError;
 use x11rb::protocol::ErrorKind;
 use x11rb::protocol::randr::ConnectionExt as _;
-use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as _, GetGeometryReply, PropMode, Window};
+use x11rb::protocol::xkb::{self, ConnectionExt as _};
+use x11rb::protocol::xproto::{
+    AtomEnum, AutoRepeatMode, ChangeKeyboardControlAux, ConnectionExt as _, GetGeometryReply,
+    PropMode, Window,
+};
 use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as _;
+
+fn is_destroyed_window(error: &ReplyError) -> bool {
+    matches!(error, ReplyError::X11Error(error) if error.error_kind == ErrorKind::Window)
+}
 
 x11rb::atom_manager! {
     pub Atoms: AtomsCookie {
@@ -129,7 +137,7 @@ impl X11Control {
             .delete_property(window, self.atoms.WM_STATE)?
             .check();
         if let Err(err) = result
-            && !matches!(err, ReplyError::X11Error(ref error) if error.error_kind == ErrorKind::Window)
+            && !is_destroyed_window(&err)
         {
             return Err(err.into());
         }
@@ -176,7 +184,8 @@ impl X11Control {
         if actions.fullscreen {
             atoms.push(self.atoms._NET_WM_ACTION_FULLSCREEN);
         }
-        self.connection
+        let result = self
+            .connection
             .change_property32(
                 PropMode::REPLACE,
                 window,
@@ -184,7 +193,12 @@ impl X11Control {
                 AtomEnum::ATOM,
                 &atoms,
             )?
-            .check()?;
+            .check();
+        if let Err(err) = result
+            && !is_destroyed_window(&err)
+        {
+            return Err(err.into());
+        }
         Ok(())
     }
 
@@ -207,6 +221,74 @@ impl X11Control {
         }
         Err(format!("RandR output {output_name:?} was not found").into())
     }
+
+    pub fn configure_key_repeat(&self, delay: i32, rate: i32) -> Result<(), Box<dyn Error>> {
+        let enabled = rate > 0;
+        self.connection
+            .change_keyboard_control(&ChangeKeyboardControlAux::new().auto_repeat_mode(
+                if enabled {
+                    AutoRepeatMode::ON
+                } else {
+                    AutoRepeatMode::OFF
+                },
+            ))?
+            .check()?;
+        if !enabled {
+            self.connection.flush()?;
+            return Ok(());
+        }
+
+        let extension = self.connection.xkb_use_extension(1, 0)?.reply()?;
+        if !extension.supported {
+            return Err("XWayland does not support XKB 1.0 keyboard controls".into());
+        }
+        let device = u16::from(xkb::ID::USE_CORE_KBD);
+        let current = self.connection.xkb_get_controls(device)?.reply()?;
+        let repeat_delay = u16::try_from(delay.clamp(1, i32::from(u16::MAX)))?;
+        let repeat_interval = repeat_interval_ms(rate);
+        self.connection
+            .xkb_set_controls(
+                device,
+                current.internal_mods_mask,
+                current.internal_mods_real_mods,
+                current.ignore_lock_mods_mask,
+                current.ignore_lock_mods_real_mods,
+                current.internal_mods_vmods,
+                current.internal_mods_vmods,
+                current.ignore_lock_mods_vmods,
+                current.ignore_lock_mods_vmods,
+                current.mouse_keys_dflt_btn,
+                current.groups_wrap,
+                current.access_x_option,
+                xkb::BoolCtrl::REPEAT_KEYS,
+                xkb::BoolCtrl::REPEAT_KEYS,
+                u32::from(xkb::BoolCtrl::REPEAT_KEYS).into(),
+                repeat_delay,
+                repeat_interval,
+                current.slow_keys_delay,
+                current.debounce_delay,
+                current.mouse_keys_delay,
+                current.mouse_keys_interval,
+                current.mouse_keys_time_to_max,
+                current.mouse_keys_max_speed,
+                current.mouse_keys_curve,
+                current.access_x_timeout,
+                current.access_x_timeout_mask,
+                current.access_x_timeout_values,
+                current.access_x_timeout_options_mask,
+                current.access_x_timeout_options_values,
+                &current.per_key_repeat,
+            )?
+            .check()?;
+        self.connection.flush()?;
+        Ok(())
+    }
+}
+
+fn repeat_interval_ms(rate: i32) -> u16 {
+    (1000.0 / rate.max(1) as f32)
+        .round()
+        .clamp(1.0, f32::from(u16::MAX)) as u16
 }
 
 fn supporting_wm_window(
@@ -322,4 +404,16 @@ fn publish_ewmh(
         &[0, 0, u32::from(geometry.width), u32::from(geometry.height)],
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::repeat_interval_ms;
+
+    #[test]
+    fn repeat_rate_converts_to_xkb_interval() {
+        assert_eq!(repeat_interval_ms(20), 50);
+        assert_eq!(repeat_interval_ms(30), 33);
+        assert_eq!(repeat_interval_ms(45), 22);
+    }
 }

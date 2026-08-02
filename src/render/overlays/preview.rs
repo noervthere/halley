@@ -14,6 +14,7 @@ use crate::render::window_texture::WindowTexture;
 struct Entry {
     id: Id,
     texture: WindowTexture,
+    maximized: bool,
 }
 
 /// GPU-local overview previews shared by Apogee and the focus cycle.
@@ -25,6 +26,25 @@ struct Entry {
 pub struct OverlayPreviewCache {
     entries: HashMap<NodeId, Entry>,
     dirty: HashSet<NodeId>,
+}
+
+pub struct OverlayPreviewRequest<'a> {
+    pub id: NodeId,
+    pub window: &'a Window,
+    pub destination: Rectangle<i32, Physical>,
+    pub alpha: f32,
+    pub live: bool,
+    pub decorations: &'a halley_config::Decorations,
+    pub font: &'a halley_config::Font,
+    pub chrome_visible: bool,
+    pub maximized: bool,
+}
+
+pub struct OverlayPreviewRenderers<'a> {
+    pub titlebar: &'a mut crate::render::titlebar::TitlebarRenderer,
+    pub decoration: &'a mut crate::render::window_decoration::WindowDecorationRenderer,
+    pub node: &'a mut crate::render::node::NodeRenderer,
+    pub text: &'a mut crate::render::text::UiTextRenderer,
 }
 
 impl OverlayPreviewCache {
@@ -41,6 +61,10 @@ impl OverlayPreviewCache {
         self.dirty.insert(id);
     }
 
+    pub fn mark_all_dirty(&mut self) {
+        self.dirty.extend(self.entries.keys().copied());
+    }
+
     pub fn remove(&mut self, id: NodeId) {
         self.entries.remove(&id);
         self.dirty.remove(&id);
@@ -55,13 +79,25 @@ impl OverlayPreviewCache {
     pub fn element_with_texture(
         &mut self,
         renderer: &mut GlesRenderer,
-        id: NodeId,
-        window: &Window,
-        destination: Rectangle<i32, Physical>,
-        alpha: f32,
-        live: bool,
+        request: OverlayPreviewRequest<'_>,
+        renderers: OverlayPreviewRenderers<'_>,
     ) -> Result<(TextureRenderElement<GlesTexture>, GlesTexture), Box<dyn Error>> {
-        let refresh = !self.entries.contains_key(&id) || live && self.dirty.remove(&id);
+        let OverlayPreviewRequest {
+            id,
+            window,
+            destination,
+            alpha,
+            live,
+            decorations,
+            font,
+            chrome_visible,
+            maximized,
+        } = request;
+        let refresh = self
+            .entries
+            .get(&id)
+            .is_none_or(|entry| entry.maximized != maximized)
+            || live && self.dirty.remove(&id);
         if refresh {
             let previous = self.entries.remove(&id);
             let element_id = previous
@@ -69,7 +105,20 @@ impl OverlayPreviewCache {
                 .map(|entry| entry.id.clone())
                 .unwrap_or_else(Id::new);
             let reusable = previous.map(|entry| entry.texture.texture);
-            match crate::render::window_texture::capture(renderer, window, reusable) {
+            match crate::render::window_texture::capture_decorated(
+                renderer,
+                window,
+                reusable,
+                decorations,
+                font,
+                false,
+                chrome_visible,
+                maximized,
+                renderers.titlebar,
+                renderers.decoration,
+                renderers.node,
+                renderers.text,
+            ) {
                 Ok(texture) => {
                     self.dirty.remove(&id);
                     self.entries.insert(
@@ -77,6 +126,7 @@ impl OverlayPreviewCache {
                         Entry {
                             id: element_id,
                             texture,
+                            maximized,
                         },
                     );
                 }

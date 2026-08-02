@@ -15,6 +15,17 @@ pub enum ToplevelCommit {
     Unmapped(WlSurface),
 }
 
+#[derive(Clone, Copy)]
+pub struct ToplevelCommitContext<'a> {
+    pub cameras: &'a OutputCameras,
+    pub primary_output: &'a Output,
+    pub rule: crate::window::rules::ResolvedWindowRule,
+    pub cursor_position: smithay::utils::Point<f64, smithay::utils::Logical>,
+    pub gap: f32,
+    pub decorations: &'a halley_config::Decorations,
+    pub font: &'a halley_config::Font,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MappingTransition {
     StayMapped,
@@ -90,15 +101,18 @@ pub fn toplevel_destroyed(wayland: &mut WaylandState, surface: &ToplevelSurface)
 /// "actually visible," not "present in `Space` but incidentally invisible."
 pub fn handle_commit(
     wayland: &mut WaylandState,
-    cameras: &OutputCameras,
-    primary_output: &Output,
     surface: &WlSurface,
-    rule: crate::window::rules::ResolvedWindowRule,
-    cursor_position: smithay::utils::Point<f64, smithay::utils::Logical>,
-    gap: f32,
-    decorations: &halley_config::Decorations,
-    font: &halley_config::Font,
+    context: ToplevelCommitContext<'_>,
 ) -> ToplevelCommit {
+    let ToplevelCommitContext {
+        cameras,
+        primary_output,
+        rule,
+        cursor_position,
+        gap,
+        decorations,
+        font,
+    } = context;
     let has_buffer =
         with_renderer_surface_state(surface, |state| state.buffer().is_some()).unwrap_or(false);
     let mapped = {

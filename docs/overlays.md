@@ -44,6 +44,8 @@ Notification positions are `top-left`, `top-center`, `top-right`,
 `bottom-left`, `bottom-center`, and `bottom-right`. Durations are positive
 milliseconds. The renderer builds every card at its final pixel dimensions,
 so changing its radius or output scale does not stretch a small blurred texture.
+After a native screenshot is saved, a success notification shows its destination
+directory for `success-duration-ms`.
 
 ## Configuration lifecycle
 
@@ -67,6 +69,7 @@ in-place edits are all observed.
 Use the terminal verifier for the complete structured diagnostic:
 
 ```text
+halleyctl config edit
 halleyctl config verify
 halleyctl config verify -c PATH
 halleyctl config verify --config PATH

@@ -203,6 +203,10 @@ fn example_config_cluster_sections_parse() {
     assert_eq!(runtime.clusters.tiling.max_stack, 4);
     assert_eq!(runtime.clusters.stacking.max_visible, 5);
     assert!(runtime.animations.cluster.enabled);
+    assert_eq!(
+        runtime.decorations.titlebars.title_position,
+        halley_config::TitlebarContentPosition::Center
+    );
     assert_eq!(runtime.animations.cluster.tiling.open_duration_ms, 300);
     assert_eq!(runtime.animations.cluster.stacking.cycle_duration_ms, 220);
     assert!(

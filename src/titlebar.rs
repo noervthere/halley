@@ -1,4 +1,4 @@
-use halley_config::{TitlebarButtonPosition, Titlebars};
+use halley_config::{TitlebarButtonPosition, TitlebarContentPosition, Titlebars};
 use smithay::desktop::Window;
 use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode;
 use smithay::utils::Rectangle;
@@ -9,7 +9,7 @@ pub const MIN_CONTENT_HEIGHT: i32 = 24;
 pub const TITLE_VERTICAL_PADDING: i32 = 8;
 pub const TITLE_HORIZONTAL_PADDING: i32 = 8;
 pub const APP_ICON_SIZE: i32 = 16;
-pub const APP_ICON_SLOT: i32 = 24;
+pub const APP_ICON_GAP: i32 = 8;
 pub const BUTTON_GLYPH_MAX: i32 = 16;
 pub const BUTTON_GLYPH_PADDING: i32 = 6;
 
@@ -51,10 +51,16 @@ pub struct DecorationLayout<K> {
     pub body_outer: Rectangle<i32, K>,
     pub outer: Rectangle<i32, K>,
     pub controls: Vec<ControlGeometry<K>>,
-    pub app_icon: Option<Rectangle<i32, K>>,
-    pub title_clip: Rectangle<i32, K>,
+    pub identity_area: Rectangle<i32, K>,
     pub border_width: i32,
     pub titlebar_height: i32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct IdentityLayout<K> {
+    pub group: Rectangle<i32, K>,
+    pub app_icon: Option<Rectangle<i32, K>>,
+    pub title: Option<Rectangle<i32, K>>,
 }
 
 impl<K> DecorationLayout<K> {
@@ -94,23 +100,12 @@ impl<K> DecorationLayout<K> {
             } else {
                 0
             };
-        let app_icon = config.show_icons.then(|| {
-            let slot_x = titlebar.loc.x + left_controls_width;
-            Rectangle::new(
-                (
-                    slot_x + (APP_ICON_SLOT - APP_ICON_SIZE) / 2,
-                    titlebar.loc.y + (titlebar_height - APP_ICON_SIZE) / 2,
-                )
-                    .into(),
-                (APP_ICON_SIZE, APP_ICON_SIZE).into(),
-            )
-        });
-        let left_occupied = left_controls_width + if config.show_icons { APP_ICON_SLOT } else { 0 };
-        let exclusion = left_occupied.max(right_controls_width) + TITLE_HORIZONTAL_PADDING;
-        let title_width = (titlebar.size.w - exclusion * 2).max(0);
-        let title_clip = Rectangle::new(
-            (titlebar.loc.x + exclusion, titlebar.loc.y).into(),
-            (title_width, titlebar_height).into(),
+        let identity_x = titlebar.loc.x + left_controls_width + TITLE_HORIZONTAL_PADDING;
+        let identity_right =
+            titlebar.loc.x + titlebar.size.w - right_controls_width - TITLE_HORIZONTAL_PADDING;
+        let identity_area = Rectangle::new(
+            (identity_x, titlebar.loc.y).into(),
+            ((identity_right - identity_x).max(0), titlebar_height).into(),
         );
 
         Self {
@@ -119,10 +114,79 @@ impl<K> DecorationLayout<K> {
             body_outer,
             outer,
             controls,
-            app_icon,
-            title_clip,
+            identity_area,
             border_width,
             titlebar_height,
+        }
+    }
+
+    pub fn max_title_width(&self, has_icon: bool) -> i32 {
+        let icon_width = if has_icon {
+            APP_ICON_SIZE + APP_ICON_GAP
+        } else {
+            0
+        };
+        self.identity_area.size.w.saturating_sub(icon_width).max(0)
+    }
+
+    pub fn identity_layout(
+        &self,
+        position: TitlebarContentPosition,
+        title_size: Option<(i32, i32)>,
+        has_icon: bool,
+    ) -> IdentityLayout<K> {
+        let has_icon = has_icon && self.identity_area.size.w >= APP_ICON_SIZE;
+        let title_size = title_size
+            .filter(|(width, height)| *width > 0 && *height > 0)
+            .and_then(|(width, height)| {
+                let width = width.min(self.max_title_width(has_icon));
+                (width > 0).then_some((width, height))
+            });
+        let gap = if has_icon && title_size.is_some() {
+            APP_ICON_GAP
+        } else {
+            0
+        };
+        let title_width = title_size.map_or(0, |size| size.0);
+        let group_width = (if has_icon { APP_ICON_SIZE } else { 0 }) + gap + title_width;
+        let group_x = match position {
+            TitlebarContentPosition::Left => self.identity_area.loc.x,
+            TitlebarContentPosition::Center => {
+                self.identity_area.loc.x + (self.identity_area.size.w - group_width) / 2
+            }
+            TitlebarContentPosition::Right => {
+                self.identity_area.loc.x + self.identity_area.size.w - group_width
+            }
+        };
+        let group = Rectangle::new(
+            (group_x, self.titlebar.loc.y).into(),
+            (group_width.max(0), self.titlebar.size.h).into(),
+        );
+        let app_icon = has_icon.then(|| {
+            Rectangle::new(
+                (
+                    group_x,
+                    self.titlebar.loc.y + (self.titlebar.size.h - APP_ICON_SIZE) / 2,
+                )
+                    .into(),
+                (APP_ICON_SIZE, APP_ICON_SIZE).into(),
+            )
+        });
+        let title_x = group_x + if has_icon { APP_ICON_SIZE + gap } else { 0 };
+        let title = title_size.map(|(width, height)| {
+            Rectangle::new(
+                (
+                    title_x,
+                    self.titlebar.loc.y + (self.titlebar.size.h - height) / 2,
+                )
+                    .into(),
+                (width, height).into(),
+            )
+        });
+        IdentityLayout {
+            group,
+            app_icon,
+            title,
         }
     }
 
@@ -186,6 +250,29 @@ pub fn glyph_size(titlebar_height: i32) -> i32 {
         .max(1)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RenderedMetrics {
+    pub height: i32,
+    pub glyph_size: i32,
+    pub radius: i32,
+}
+
+/// Scale titlebar metrics from their native values as a unit. In particular,
+/// glyph padding belongs to the native titlebar: subtracting it after the
+/// titlebar has already been scaled makes controls collapse much faster than
+/// their window while zooming out.
+pub fn rendered_metrics(config: &Titlebars, font_size_px: u16, scale: f32) -> RenderedMetrics {
+    let native_height = effective_height(config, font_size_px);
+    RenderedMetrics {
+        height: crate::render::window_decoration::scaled_metric(native_height, scale),
+        glyph_size: crate::render::window_decoration::scaled_metric(
+            glyph_size(native_height),
+            scale,
+        ),
+        radius: crate::render::window_decoration::scaled_metric(config.radius_px, scale),
+    }
+}
+
 pub fn uses_server_titlebar(window: &Window, config: &Titlebars) -> bool {
     if !config.enabled || crate::xwayland::is_override_redirect(window) {
         return false;
@@ -243,6 +330,51 @@ pub fn client_rect_for_outer(
             (
                 outer.size.w.saturating_sub(border.saturating_mul(2)).max(1),
                 outer.size.h.saturating_sub(border.saturating_mul(2)).max(1),
+            )
+                .into(),
+        )
+    }
+}
+
+pub fn outer_rect_for_client(
+    window: &Window,
+    client: Rectangle<i32, smithay::utils::Logical>,
+    decorations: &halley_config::Decorations,
+    font: &halley_config::Font,
+) -> Rectangle<i32, smithay::utils::Logical> {
+    let border = decorations.border_width_px.max(0);
+    if uses_server_titlebar(window, &decorations.titlebars) {
+        let height = effective_height(&decorations.titlebars, font.size);
+        Rectangle::new(
+            (client.loc.x - border, client.loc.y - height).into(),
+            (
+                client
+                    .size
+                    .w
+                    .saturating_add(border.saturating_mul(2))
+                    .max(1),
+                client
+                    .size
+                    .h
+                    .saturating_add(height.saturating_add(border))
+                    .max(1),
+            )
+                .into(),
+        )
+    } else {
+        Rectangle::new(
+            (client.loc.x - border, client.loc.y - border).into(),
+            (
+                client
+                    .size
+                    .w
+                    .saturating_add(border.saturating_mul(2))
+                    .max(1),
+                client
+                    .size
+                    .h
+                    .saturating_add(border.saturating_mul(2))
+                    .max(1),
             )
                 .into(),
         )
@@ -361,6 +493,22 @@ mod tests {
     }
 
     #[test]
+    fn button_glyph_scales_one_for_one_with_the_titlebar() {
+        let config = Titlebars::default();
+        let native = rendered_metrics(&config, 15, 1.0);
+        assert_eq!(native.height, 32);
+        assert_eq!(native.glyph_size, 16);
+
+        let half = rendered_metrics(&config, 15, 0.5);
+        assert_eq!(half.height, 16);
+        assert_eq!(half.glyph_size, 8);
+
+        let intermediate = rendered_metrics(&config, 15, 0.8);
+        assert_eq!(intermediate.height, 26);
+        assert_eq!(intermediate.glyph_size, 13);
+    }
+
+    #[test]
     fn controls_win_hit_testing_over_drag_region() {
         let config = Titlebars::default();
         let layout = DecorationLayout::<Logical>::new(
@@ -375,5 +523,78 @@ mod tests {
         );
         assert_eq!(layout.hit(Point::from((200.0, 10.0))), Some(Hit::Drag));
         assert_eq!(layout.hit(Point::from((200.0, 40.0))), None);
+    }
+
+    #[test]
+    fn title_and_icon_move_as_one_group() {
+        let config = Titlebars {
+            button_position: TitlebarButtonPosition::Right,
+            ..Titlebars::default()
+        };
+        let layout = DecorationLayout::<Logical>::new(
+            Rectangle::new((0, 32).into(), (400, 200).into()),
+            0,
+            32,
+            &config,
+        );
+
+        for position in [
+            TitlebarContentPosition::Left,
+            TitlebarContentPosition::Center,
+            TitlebarContentPosition::Right,
+        ] {
+            let identity = layout.identity_layout(position, Some((120, 18)), true);
+            let icon = identity.app_icon.expect("icon fits");
+            let title = identity.title.expect("title fits");
+            assert_eq!(title.loc.x - (icon.loc.x + icon.size.w), APP_ICON_GAP);
+            assert!(identity.group.loc.x >= layout.identity_area.loc.x);
+            assert!(
+                identity.group.loc.x + identity.group.size.w
+                    <= layout.identity_area.loc.x + layout.identity_area.size.w
+            );
+        }
+    }
+
+    #[test]
+    fn title_position_aligns_group_with_the_control_free_area() {
+        let config = Titlebars::default();
+        let layout = DecorationLayout::<Logical>::new(
+            Rectangle::new((0, 32).into(), (400, 200).into()),
+            0,
+            32,
+            &config,
+        );
+        let left = layout.identity_layout(TitlebarContentPosition::Left, Some((100, 18)), false);
+        let center =
+            layout.identity_layout(TitlebarContentPosition::Center, Some((100, 18)), false);
+        let right = layout.identity_layout(TitlebarContentPosition::Right, Some((100, 18)), false);
+
+        assert_eq!(left.group.loc.x, layout.identity_area.loc.x);
+        assert_eq!(
+            center.group.loc.x,
+            layout.identity_area.loc.x + (layout.identity_area.size.w - 100) / 2
+        );
+        assert_eq!(
+            right.group.loc.x + right.group.size.w,
+            layout.identity_area.loc.x + layout.identity_area.size.w
+        );
+    }
+
+    #[test]
+    fn narrow_titlebar_never_places_identity_over_controls() {
+        let config = Titlebars::default();
+        let layout = DecorationLayout::<Logical>::new(
+            Rectangle::new((0, 32).into(), (80, 200).into()),
+            0,
+            32,
+            &config,
+        );
+        let identity =
+            layout.identity_layout(TitlebarContentPosition::Center, Some((200, 18)), true);
+
+        assert_eq!(layout.identity_area.size.w, 0);
+        assert_eq!(identity.group.size.w, 0);
+        assert!(identity.app_icon.is_none());
+        assert!(identity.title.is_none());
     }
 }

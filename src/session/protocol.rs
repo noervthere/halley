@@ -137,6 +137,26 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
 
     fn new_surface(&mut self, surface: &WlSurface) {
         add_pre_commit_hook::<Self, _>(surface, |session, _dh, surface| {
+            // Capture the last attached buffer before any toplevel unmaps.
+            // Xwayland commits the buffer removal before its XWM unmap event,
+            // so waiting for that event produces an empty/black close texture.
+            // Installing this on every wl_surface gives X11 the same early
+            // snapshot timing that native XDG toplevels use; non-toplevel and
+            // override-redirect surfaces are rejected by capture_surface.
+            let removes_buffer = with_states(surface, |states| {
+                matches!(
+                    states
+                        .cached_state
+                        .get::<SurfaceAttributes>()
+                        .pending()
+                        .buffer,
+                    Some(BufferAssignment::Removed)
+                )
+            });
+            if removes_buffer {
+                super::closing::capture_surface(session, surface);
+            }
+
             if session.drm_syncobj_state.is_none() {
                 return;
             }
@@ -219,14 +239,16 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
         let primary_output = self.driver.primary_output().clone();
         let toplevel_commit = wayland::compositor::commit(
             &mut self.wayland,
-            &self.cameras,
-            &primary_output,
             surface,
-            rule,
-            smithay::utils::Point::from(self.pointer.position()),
-            self.settings.field.gap,
-            &self.settings.decorations,
-            &self.settings.font,
+            wayland::xdg_shell::ToplevelCommitContext {
+                cameras: &self.cameras,
+                primary_output: &primary_output,
+                rule,
+                cursor_position: smithay::utils::Point::from(self.pointer.position()),
+                gap: self.settings.field.gap,
+                decorations: &self.settings.decorations,
+                font: &self.settings.font,
+            },
         );
         match toplevel_commit.clone() {
             wayland::xdg_shell::ToplevelCommit::Mapped(mapped) => {
@@ -425,20 +447,6 @@ impl<D: SessionDriver> XdgShellHandler for Session<D> {
         }
         wayland::xdg_shell::new_toplevel(&mut self.wayland, surface);
         add_pre_commit_hook::<Self, _>(&wl_surface, |session, _display, surface| {
-            let removes_buffer = with_states(surface, |states| {
-                matches!(
-                    states
-                        .cached_state
-                        .get::<SurfaceAttributes>()
-                        .pending()
-                        .buffer,
-                    Some(BufferAssignment::Removed)
-                )
-            });
-            if removes_buffer {
-                super::closing::capture_surface(session, surface);
-            }
-
             let commit_serial = with_states(surface, |states| {
                 states
                     .data_map
@@ -841,8 +849,8 @@ impl<D: SessionDriver> FractionalScaleHandler for Session<D> {
 impl<D: SessionDriver> PointerConstraintsHandler for Session<D> {
     fn new_constraint(&mut self, surface: &WlSurface, pointer: &PointerHandle<Self>) {
         // Confined pointers consume absolute presentation geometry and must
-        // settle it first. Locked pointers remain relative-only, so their
-        // exact owner can stay active while the compositor presentation moves.
+        // settle it first. Locked pointers are relative-only, so they may stay
+        // active while the compositor presentation moves.
         if super::pointer::new_constraint_requires_stable_presentation(surface, pointer)
             && self.finish_x11_fullscreen_presentation(surface)
         {

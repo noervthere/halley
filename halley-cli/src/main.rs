@@ -33,6 +33,7 @@ fn main() -> ExitCode {
             transport::query(Request::Bearings(request), print::bearings)
         }
         Ok(Action::BearingsHelp) => show(help::BEARINGS_HELP),
+        Ok(Action::ConfigEdit(path)) => config::edit(path),
         Ok(Action::ConfigVerify(path)) => config::verify(path),
         Ok(Action::ConfigHelp) => show(help::CONFIG_HELP),
         Ok(Action::Quit) => transport::query(Request::Quit, print::ack),

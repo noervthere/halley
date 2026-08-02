@@ -75,6 +75,9 @@ where
         || requested.repeat_delay != session.settings.input.repeat_delay
     {
         keyboard.change_repeat_info(requested.repeat_rate, requested.repeat_delay);
+        session
+            .xwayland
+            .configure_key_repeat(requested.repeat_delay, requested.repeat_rate);
     }
 
     session.settings.input = applied;

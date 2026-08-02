@@ -15,9 +15,18 @@ struct OutputAnimation {
     last_tick: Duration,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum BearingTarget {
+    Node(NodeId),
+    ClusterCore {
+        cluster: halley_core::cluster::ClusterId,
+        core: NodeId,
+    },
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct BearingHitbox {
-    pub id: NodeId,
+    pub target: BearingTarget,
     pub rect: Rectangle<i32, Logical>,
 }
 
@@ -116,13 +125,13 @@ impl BearingsState {
             .insert(output.to_string(), hitboxes);
     }
 
-    pub fn hit_test(&self, output: &str, local: Point<f64, Logical>) -> Option<NodeId> {
+    pub fn hit_test(&self, output: &str, local: Point<f64, Logical>) -> Option<BearingTarget> {
         (self.mix(output) > 0.05)
             .then(|| self.hitboxes.borrow().get(output).cloned())
             .flatten()?
             .into_iter()
             .find(|hitbox| hitbox.rect.to_f64().contains(local))
-            .map(|hitbox| hitbox.id)
+            .map(|hitbox| hitbox.target)
     }
 }
 

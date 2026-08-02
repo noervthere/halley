@@ -35,7 +35,10 @@ use nodes::{NodeElementContext, node_elements};
 use overview::{
     FocusCycleRenderContext, apogee_elements, focus_cycle_elements, hover_preview_elements,
 };
-use windows::{LiveWindowContext, StackGroup, live_window_elements, sort_stack_groups};
+pub(crate) use windows::append_titlebar_elements;
+use windows::{
+    LiveWindowContext, LiveWindowRenderers, StackGroup, live_window_elements, sort_stack_groups,
+};
 
 pub(crate) use nodes::{contrast_text_rgb, node_fill_color, node_ring_color};
 
@@ -176,12 +179,14 @@ pub fn build(
             request.overlays.apogee_config,
             request.overlays.overlay_config,
             request.visuals.decorations,
+            request.visuals.font,
             request.desktop.space,
             request.desktop.cameras,
             request.desktop.nodes,
             request.desktop.clusters,
             request.resources.node_renderer,
             request.resources.cluster_renderer,
+            request.resources.titlebar_renderer,
             request.resources.window_decoration_renderer,
             request.resources.ui_text,
             request.desktop.window_open_animations,
@@ -269,10 +274,12 @@ pub fn build(
         output_geometry,
         request.overlays.bearings,
         request.desktop.nodes,
+        request.desktop.clusters,
         request.desktop.cameras,
         request.visuals.blur,
         request.resources.backdrop_blur_renderer,
         request.resources.node_renderer,
+        request.resources.cluster_renderer,
         request.resources.ui_text,
         request.overlays.overlay_config,
         request.visuals.decorations,
@@ -330,12 +337,18 @@ pub fn build(
             nodes: request.desktop.nodes,
             overlay_config: request.overlays.overlay_config,
             decorations: request.visuals.decorations,
+            font: request.visuals.font,
+            fullscreen: request.desktop.fullscreen,
+            maximize: request.desktop.maximize,
             now: request.frame.target_presentation_time,
         },
         request.resources.overlay_previews,
-        request.resources.node_renderer,
-        request.resources.window_decoration_renderer,
-        request.resources.ui_text,
+        crate::render::overlays::preview::OverlayPreviewRenderers {
+            titlebar: request.resources.titlebar_renderer,
+            decoration: request.resources.window_decoration_renderer,
+            node: request.resources.node_renderer,
+            text: request.resources.ui_text,
+        },
     )?;
     append_compositor_overlay_blur(
         renderer,
@@ -381,8 +394,11 @@ pub fn build(
         request.resources.node_renderer,
         request.resources.ui_text,
         request.resources.window_decoration_renderer,
+        request.resources.titlebar_renderer,
         request.overlays.overlay_config,
         request.visuals.decorations,
+        request.visuals.font,
+        request.desktop.fullscreen,
         request.frame.target_presentation_time,
     )?;
     append_compositor_overlay_blur(
@@ -586,17 +602,27 @@ pub fn build(
         if !crate::wayland::window_is_on_output(window, output, primary_output) {
             continue;
         }
+        if window.wl_surface().is_some_and(|surface| {
+            request
+                .resources
+                .window_close_animations
+                .has_pending(surface.as_ref())
+        }) {
+            continue;
+        }
         let window_scene = live_window_elements(
             renderer,
             window,
             context,
-            request.resources.fullscreen_textures,
-            request.resources.backdrop_blur_renderer,
-            request.resources.shadow_renderer,
-            request.resources.window_decoration_renderer,
-            request.resources.titlebar_renderer,
-            request.resources.node_renderer,
-            request.resources.ui_text,
+            LiveWindowRenderers {
+                fullscreen_textures: request.resources.fullscreen_textures,
+                backdrop_blur: request.resources.backdrop_blur_renderer,
+                shadow: request.resources.shadow_renderer,
+                decoration: request.resources.window_decoration_renderer,
+                titlebar: request.resources.titlebar_renderer,
+                node: request.resources.node_renderer,
+                text: request.resources.ui_text,
+            },
         )?;
         if window_scene.cluster_exclusive {
             exclusive_windows.push((stack_index, window_scene));
@@ -622,13 +648,15 @@ pub fn build(
                     instance_identity: Some("stack-cycle-extra"),
                     ..context
                 },
-                request.resources.fullscreen_textures,
-                request.resources.backdrop_blur_renderer,
-                request.resources.shadow_renderer,
-                request.resources.window_decoration_renderer,
-                request.resources.titlebar_renderer,
-                request.resources.node_renderer,
-                request.resources.ui_text,
+                LiveWindowRenderers {
+                    fullscreen_textures: request.resources.fullscreen_textures,
+                    backdrop_blur: request.resources.backdrop_blur_renderer,
+                    shadow: request.resources.shadow_renderer,
+                    decoration: request.resources.window_decoration_renderer,
+                    titlebar: request.resources.titlebar_renderer,
+                    node: request.resources.node_renderer,
+                    text: request.resources.ui_text,
+                },
             )?;
             if !extra_scene.elements.is_empty() {
                 live_windows.push((stack_index, extra_scene));

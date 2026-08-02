@@ -1,3 +1,5 @@
+#![cfg_attr(not(feature = "xwayland"), allow(dead_code))]
+
 mod accessibility;
 mod animation;
 mod backend;
@@ -17,6 +19,10 @@ mod shell;
 mod titlebar;
 mod wayland;
 mod window;
+#[cfg(feature = "xwayland")]
+mod xwayland;
+#[cfg(not(feature = "xwayland"))]
+#[path = "xwayland/disabled.rs"]
 mod xwayland;
 
 fn main() {
@@ -42,7 +48,14 @@ fn main() {
         session::environment::prepare_session();
         session::tty::run(args.config_path);
     } else if args.force_winit || detect_nested_session() {
+        #[cfg(feature = "winit")]
         session::winit::run(args.config_path);
+        #[cfg(not(feature = "winit"))]
+        {
+            eprintln!("halley: nested session detected, but the winit backend is not compiled in");
+            eprintln!("Rebuild with `--features winit`, or pass `--session` for a TTY session.");
+            std::process::exit(1);
+        }
     } else {
         // Reaching the DRM/KMS backend means this process is the desktop
         // session even when it was launched directly from a tty instead of

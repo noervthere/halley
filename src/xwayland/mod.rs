@@ -134,6 +134,14 @@ impl<D: SessionDriver> State<D> {
         }
     }
 
+    pub fn configure_key_repeat(&self, delay: i32, rate: i32) {
+        if let Some(control) = self.control.as_ref()
+            && let Err(err) = control.configure_key_repeat(delay, rate)
+        {
+            eventline::warn!("xwayland: failed to configure key repeat: {err}");
+        }
+    }
+
     fn transition_surface(
         &mut self,
         surface: &smithay::xwayland::X11Surface,
@@ -202,6 +210,16 @@ impl<D: SessionDriver> State<D> {
             .is_some_and(|guard| guard.is_active(now))
     }
 
+    pub(crate) fn client_geometry_guarded_for_window(
+        &self,
+        window: &Window,
+        now: std::time::Duration,
+    ) -> bool {
+        window
+            .x11_surface()
+            .is_some_and(|surface| self.client_geometry_guarded(surface.window_id(), now))
+    }
+
     pub(crate) fn forget_client_geometry_guard(&mut self, xid: u32) {
         self.client_geometry_guards.remove(&xid);
     }
@@ -265,6 +283,14 @@ where
                             if let Err(err) = control.set_randr_primary_output(&primary) {
                                 eventline::warn!(
                                     "xwayland: failed to publish RandR primary output {primary}: {err}"
+                                );
+                            }
+                            if let Err(err) = control.configure_key_repeat(
+                                session.settings.input.repeat_delay,
+                                session.settings.input.repeat_rate,
+                            ) {
+                                eventline::warn!(
+                                    "xwayland: failed to configure key repeat: {err}"
                                 );
                             }
                             session.xwayland.control = Some(control);
@@ -418,6 +444,7 @@ pub fn set_hidden(window: &Window, hidden: bool) {
 
 pub fn set_maximized(window: &Window, maximized: bool) {
     if let Some(surface) = window.x11_surface()
+        && surface.is_maximized() != maximized
         && let Err(err) = surface.set_maximized(maximized)
     {
         eventline::warn!("xwayland: failed to set maximized={maximized}: {err}");

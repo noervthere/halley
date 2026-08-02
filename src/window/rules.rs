@@ -108,10 +108,10 @@ pub fn identity(window: &Window) -> WindowIdentity {
                 .unwrap_or_default()
         });
     }
-    if let Some(surface) = window.x11_surface() {
+    if let Some((title, class)) = crate::xwayland::metadata(window) {
         return WindowIdentity {
-            app_id: nonempty(Some(surface.class())),
-            title: nonempty(Some(surface.title())),
+            app_id: nonempty(Some(class)),
+            title: nonempty(Some(title)),
         };
     }
     WindowIdentity::default()

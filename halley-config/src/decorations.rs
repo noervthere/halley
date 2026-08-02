@@ -16,6 +16,14 @@ pub enum TitlebarButtonPosition {
     Right,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum TitlebarContentPosition {
+    Left,
+    #[default]
+    Center,
+    Right,
+}
+
 /// Compositor-owned titlebar styling.
 ///
 /// `height_px` is the requested height. Rendering raises it when necessary to
@@ -24,6 +32,7 @@ pub enum TitlebarButtonPosition {
 pub struct Titlebars {
     pub enabled: bool,
     pub button_position: TitlebarButtonPosition,
+    pub title_position: TitlebarContentPosition,
     pub show_buttons: bool,
     pub show_icons: bool,
     pub show_title: bool,
@@ -42,6 +51,7 @@ impl Default for Titlebars {
         Self {
             enabled: true,
             button_position: TitlebarButtonPosition::Left,
+            title_position: TitlebarContentPosition::Center,
             show_buttons: true,
             show_icons: false,
             show_title: true,
@@ -81,10 +91,12 @@ impl Default for Titlebars {
     }
 }
 
-/// Primary compositor border styling.
+/// Primary compositor window styling.
 ///
 /// The radius describes the client-content corner. The renderer grows the
-/// outer border radius concentrically by the configured border width.
+/// outer border radius concentrically by the configured border width. It also
+/// clips unmanaged X11 popup content even though those surfaces receive no
+/// compositor border or titlebar.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Decorations {
     pub border_width_px: i32,
@@ -161,9 +173,20 @@ pub fn parse_decorations(config: &RuneConfig) -> Decorations {
         "right" => TitlebarButtonPosition::Right,
         _ => TitlebarButtonPosition::Left,
     };
+    let title_position = match config
+        .get_or("decorations.titlebars.title-position", "center".to_string())
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "left" => TitlebarContentPosition::Left,
+        "right" => TitlebarContentPosition::Right,
+        _ => TitlebarContentPosition::Center,
+    };
     let titlebars = Titlebars {
         enabled: config.get_or("decorations.titlebars.enabled", titlebar_defaults.enabled),
         button_position,
+        title_position,
         show_buttons: config.get_or(
             "decorations.titlebars.show-buttons",
             titlebar_defaults.show_buttons,
@@ -351,6 +374,7 @@ decorations:
   titlebars:
     enabled false
     button-position "right"
+    title-position "right"
     show-buttons false
     show-icons true
     show-title false
@@ -371,6 +395,7 @@ end
         let titlebars = parse_decorations(&config).titlebars;
         assert!(!titlebars.enabled);
         assert_eq!(titlebars.button_position, TitlebarButtonPosition::Right);
+        assert_eq!(titlebars.title_position, TitlebarContentPosition::Right);
         assert!(!titlebars.show_buttons);
         assert!(titlebars.show_icons);
         assert!(!titlebars.show_title);
@@ -429,7 +454,7 @@ end
     #[test]
     fn titlebar_metrics_are_clamped_and_invalid_positions_fall_back_left() {
         let config = RuneConfig::from_str(
-            "decorations:\n  titlebars:\n    height 0\n    radius 999\n    button-position \"middle\"\n  end\nend\n",
+            "decorations:\n  titlebars:\n    height 0\n    radius 999\n    button-position \"middle\"\n    title-position \"middle\"\n  end\nend\n",
         )
         .expect("valid rune-cfg source");
 
@@ -437,5 +462,24 @@ end
         assert_eq!(titlebars.height_px, 1);
         assert_eq!(titlebars.radius_px, 96);
         assert_eq!(titlebars.button_position, TitlebarButtonPosition::Left);
+        assert_eq!(titlebars.title_position, TitlebarContentPosition::Center);
+    }
+
+    #[test]
+    fn titlebar_title_position_accepts_every_alignment() {
+        for (value, expected) in [
+            ("left", TitlebarContentPosition::Left),
+            ("center", TitlebarContentPosition::Center),
+            ("right", TitlebarContentPosition::Right),
+        ] {
+            let config = RuneConfig::from_str(&format!(
+                "decorations:\n  titlebars:\n    title-position \"{value}\"\n  end\nend\n"
+            ))
+            .expect("valid rune-cfg source");
+            assert_eq!(
+                parse_decorations(&config).titlebars.title_position,
+                expected
+            );
+        }
     }
 }

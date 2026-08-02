@@ -53,7 +53,10 @@ pub(crate) struct JoinReadiness {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct JoinContact {
     pub(crate) center: Vec2,
-    pub(crate) member_half: Vec2,
+    pub(crate) member_left: f32,
+    pub(crate) member_right: f32,
+    pub(crate) member_top: f32,
+    pub(crate) member_bottom: f32,
     pub(crate) core_radius: f32,
     pub(crate) gap: f32,
 }
@@ -521,12 +524,18 @@ impl ClusterSystem {
     }
 
     pub fn active_layout_for_member(&self, id: NodeId) -> Option<ClusterWorkspaceLayoutKind> {
+        let layout = self.member_layout(id)?;
+        let cluster = self.cluster_for_member(id)?;
+        let metadata = self.metadata(cluster)?;
+        (self.active_on(&metadata.output) == Some(cluster)).then_some(layout)
+    }
+
+    pub(crate) fn member_layout(&self, id: NodeId) -> Option<ClusterWorkspaceLayoutKind> {
         if self.member_floats.is_floating(id) {
             return None;
         }
         let cluster = self.cluster_for_member(id)?;
-        let metadata = self.metadata(cluster)?;
-        (self.active_on(&metadata.output) == Some(cluster)).then_some(metadata.layout)
+        self.metadata(cluster).map(|metadata| metadata.layout)
     }
 
     pub fn is_member_floating(&self, member: NodeId) -> bool {

@@ -15,6 +15,7 @@ decorations:
   titlebars:
     enabled true
     button-position "left"
+    title-position "center"
     show-buttons true
     show-icons false
     show-title true
@@ -45,16 +46,22 @@ icon, or the global font need more room.
 
 Buttons are ordered close/maximize/minimize on the left and
 minimize/maximize/close on the right. Hover and pressed colors tint both the
-button glyph and a translucent backplate. The maximize glyph does not change
-when the window is field-maximized.
+button glyph and a translucent backplate. A field-maximized window uses the
+unmaximize glyph so the button reflects the action it will perform.
+
+`title-position` accepts `"left"`, `"center"`, or `"right"`. The application
+icon, when enabled, sits immediately before the title and follows it as one
+aligned group. The group stays inside the space not occupied by window
+buttons, so it cannot overlap the controls.
 
 Field-maximized windows retain their rounded border. Entering true fullscreen
 removes compositor chrome immediately, while the client content and geometry
 continue animating. The fullscreen surface is square and eligible for direct
 scanout from its first presented frame.
 
-Popups, override-redirect X11 surfaces, layer-shell surfaces, and isolated
-window capture sources are not decorated.
+Window screenshots, window screencasts, Alt+Tab previews, and Apogee previews
+include the server titlebar and border. Popups, override-redirect X11
+surfaces, and layer-shell surfaces are not decorated.
 
 ## Future custom button SVGs
 

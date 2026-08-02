@@ -1,15 +1,39 @@
+#[cfg(feature = "dbus")]
 mod dbus;
+#[cfg(feature = "dbus")]
 mod keyboard_monitor;
 
+#[cfg(feature = "dbus")]
 use std::time::Duration;
 
+#[cfg(feature = "dbus")]
 use smithay::backend::input::{KeyState, Keycode};
+#[cfg(feature = "dbus")]
 use smithay::input::keyboard::xkb;
 
+#[cfg(feature = "dbus")]
 pub use keyboard_monitor::{KeyboardDisposition, KeyboardMonitorService};
 
 use crate::session::{Session, SessionDriver};
 
+#[cfg(not(feature = "dbus"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum KeyboardDisposition {
+    Pass,
+    Intercept,
+}
+
+#[cfg(not(feature = "dbus"))]
+pub struct KeyboardMonitorService;
+
+#[cfg(not(feature = "dbus"))]
+impl KeyboardMonitorService {
+    pub fn start() -> Result<Self, std::convert::Infallible> {
+        Ok(Self)
+    }
+}
+
+#[cfg(feature = "dbus")]
 fn translate_xkb_state(state: &xkb::State, keycode: Keycode) -> (u32, xkb::Keysym, u32) {
     (
         state.serialize_mods(xkb::STATE_MODS_EFFECTIVE),
@@ -18,6 +42,7 @@ fn translate_xkb_state(state: &xkb::State, keycode: Keycode) -> (u32, xkb::Keysy
     )
 }
 
+#[cfg(feature = "dbus")]
 pub fn process_key<D: SessionDriver>(
     session: &mut Session<D>,
     time: Duration,
@@ -53,7 +78,17 @@ pub fn process_key<D: SessionDriver>(
         .process_key(event)
 }
 
-#[cfg(test)]
+#[cfg(not(feature = "dbus"))]
+pub fn process_key<D: SessionDriver>(
+    _session: &mut Session<D>,
+    _time: std::time::Duration,
+    _keycode: smithay::backend::input::Keycode,
+    _state: smithay::backend::input::KeyState,
+) -> KeyboardDisposition {
+    KeyboardDisposition::Pass
+}
+
+#[cfg(all(test, feature = "dbus"))]
 mod tests {
     use super::*;
 

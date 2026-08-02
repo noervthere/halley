@@ -26,6 +26,12 @@ Build the workspace with:
 cargo build --release --workspace
 ```
 
+The default compositor includes D-Bus accessibility, systemd session
+integration, native XWayland, and the nested winit backend. Distributions can
+select a different user manager or a smaller compositor with Cargo features;
+see [building and packaging](docs/packaging.md) for the supported combinations
+and resource install paths.
+
 Run `target/release/halley --winit` for a nested development session or
 `target/release/halley --session` for a real TTY session. Pass `-c PATH` (or
 `--config PATH`) to select a configuration explicitly. `halleyctl` exposes
@@ -54,3 +60,4 @@ References:
 - [Fonts](docs/fonts.md)
 - [Animations](docs/animations.md)
 - [Window decorations](docs/decorations.md)
+- [Building, session managers, and packaging](docs/packaging.md)

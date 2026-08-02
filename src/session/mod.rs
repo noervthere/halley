@@ -29,10 +29,15 @@ mod settings;
 mod spawn;
 mod state;
 pub(crate) mod touch;
+#[cfg(feature = "xwayland")]
+pub(crate) mod trace;
+#[cfg(not(feature = "xwayland"))]
+#[path = "trace_disabled.rs"]
 pub(crate) mod trace;
 
 pub mod environment;
 pub mod tty;
+#[cfg(feature = "winit")]
 pub mod winit;
 
 pub(crate) use focus::focus_window;
@@ -307,16 +312,27 @@ pub(crate) fn reconcile_cluster_surfaces<D: SessionDriver>(
         {
             continue;
         }
-        if window.x11_surface().is_some_and(|x11| {
-            session
-                .xwayland
-                .client_geometry_guarded(x11.window_id(), now)
-        }) {
+        if session
+            .xwayland
+            .client_geometry_guarded_for_window(&window, now)
+        {
             continue;
         }
+        let geometry = if session.clusters.member_layout(target.node_id)
+            == Some(halley_core::cluster::layout::ClusterWorkspaceLayoutKind::Tiling)
+        {
+            crate::titlebar::client_rect_for_outer(
+                &window,
+                target.geometry,
+                &session.settings.decorations,
+                &session.settings.font,
+            )
+        } else {
+            target.geometry
+        };
         if !session
             .clusters
-            .prepare_surface_target(target.node_id, current, target.geometry)
+            .prepare_surface_target(target.node_id, current, geometry)
         {
             continue;
         }
@@ -324,10 +340,10 @@ pub(crate) fn reconcile_cluster_surfaces<D: SessionDriver>(
         session
             .wayland
             .space
-            .relocate_element(&window, target.geometry.loc);
+            .relocate_element(&window, geometry.loc);
         if let Some(toplevel) = window.toplevel() {
             toplevel.with_pending_state(|pending| {
-                pending.size = Some(target.geometry.size);
+                pending.size = Some(geometry.size);
                 pending.bounds = Some(work_area.size);
                 if session.clusters.is_member_floating(target.node_id) {
                     crate::wayland::decoration::clear_tiled_hint(pending);
@@ -339,7 +355,7 @@ pub(crate) fn reconcile_cluster_surfaces<D: SessionDriver>(
                 toplevel.send_configure();
             }
         } else {
-            crate::xwayland::configure_window(&window, target.geometry);
+            crate::xwayland::configure_window(&window, geometry);
         }
     }
 }
@@ -430,6 +446,27 @@ pub(crate) fn note_pointer_activity<D: SessionDriver>(session: &mut Session<D>) 
     session.cursor_policy.pointer_activity();
 }
 
+/// Requests that a client close a managed window.
+///
+/// X11 clients may replace their contents before withdrawing the window.  In
+/// that case the later Xwayland buffer-removal hook can only preserve the
+/// replacement frame, so retain the currently visible frame before sending
+/// WM_DELETE_WINDOW. Native XDG clients keep using their pre-unmap capture.
+pub(crate) fn request_window_close<D: SessionDriver>(
+    session: &mut Session<D>,
+    window: &smithay::desktop::Window,
+) {
+    let frozen = crate::xwayland::is_x11(window) && closing::capture_window(session, window);
+    if let Some(toplevel) = window.toplevel() {
+        toplevel.send_close();
+    } else {
+        crate::xwayland::close_window(window);
+    }
+    if frozen {
+        session.request_redraw();
+    }
+}
+
 pub(crate) fn activate_titlebar_control<D: SessionDriver>(
     session: &mut Session<D>,
     target: &crate::titlebar::ButtonTarget,
@@ -440,11 +477,7 @@ pub(crate) fn activate_titlebar_control<D: SessionDriver>(
     }
     match target.control {
         crate::titlebar::Control::Close => {
-            if let Some(toplevel) = target.window.toplevel() {
-                toplevel.send_close();
-            } else {
-                crate::xwayland::close_window(&target.window);
-            }
+            request_window_close(session, &target.window);
         }
         crate::titlebar::Control::Minimize => {
             if let Some(id) = target
@@ -487,6 +520,8 @@ pub(crate) fn warp_pointer_to_window_center<D: SessionDriver>(
         &session.window_open_animations,
         &session.fullscreen,
         &session.maximize,
+        &session.settings.decorations,
+        &session.settings.font,
         window,
         &output,
         crate::frame_clock::monotonic_now(),
@@ -935,9 +970,21 @@ pub(crate) fn cluster_presentation_restore<D: SessionDriver>(
         output_geometry,
     )?;
     let window = session.nodes.record(id)?.window.clone();
+    let geometry = if session.clusters.member_layout(id)
+        == Some(halley_core::cluster::layout::ClusterWorkspaceLayoutKind::Tiling)
+    {
+        crate::titlebar::client_rect_for_outer(
+            &window,
+            target.geometry,
+            &session.settings.decorations,
+            &session.settings.font,
+        )
+    } else {
+        target.geometry
+    };
     let tiled = Rectangle::new(
-        (target.geometry.loc - output_geometry.loc).to_physical(1),
-        target.geometry.size.to_physical(1),
+        (geometry.loc - output_geometry.loc).to_physical(1),
+        geometry.size.to_physical(1),
     );
     // Entry must start at the member's live, possibly animated tile. Exit
     // must finish at the latest layout target rather than reusing the current
@@ -949,7 +996,7 @@ pub(crate) fn cluster_presentation_restore<D: SessionDriver>(
             .unwrap_or(tiled),
     );
     Some(ClusterPresentationRestore {
-        geometry: target.geometry,
+        geometry,
         output: metadata.output.clone(),
         presentation_output: presented,
     })
@@ -971,6 +1018,8 @@ fn presented_window_rect<D: SessionDriver>(
         &session.window_open_animations,
         &session.fullscreen,
         &session.maximize,
+        &session.settings.decorations,
+        &session.settings.font,
         now,
     )
     .map(|visual| visual.animated_rect)
@@ -1020,11 +1069,7 @@ pub(crate) fn configure_field_geometry<D: SessionDriver>(
             toplevel.send_configure();
         }
     } else {
-        if let Some(surface) = window.x11_surface()
-            && let Err(err) = surface.set_maximized(session.maximize.contains(&request.surface))
-        {
-            eventline::warn!("xwayland: failed to synchronize field-maximized state: {err}");
-        }
+        crate::xwayland::set_maximized(&window, session.maximize.contains(&request.surface));
         crate::xwayland::configure_window(&window, request.geometry);
     }
 }
@@ -1107,6 +1152,7 @@ pub(crate) fn begin_window_resize<D: SessionDriver>(
     handle: crate::input::grab::ResizeHandle,
     button: u32,
     cursor: halley_core::field::Vec2,
+    visual_geometry: smithay::utils::Rectangle<i32, smithay::utils::Logical>,
     serial: smithay::utils::Serial,
 ) -> bool {
     let surface = window.wl_surface();
@@ -1131,6 +1177,11 @@ pub(crate) fn begin_window_resize<D: SessionDriver>(
             button,
             start_rect,
             start_cursor: cursor,
+            start_screen: session.pointer.position(),
+            screen_to_source_scale: crate::input::grab::resize_screen_to_source_scale(
+                start_rect,
+                visual_geometry,
+            ),
         });
     session.interactions.resize_anchor =
         window.toplevel().map(|_| crate::input::grab::ResizeAnchor {
@@ -1162,12 +1213,20 @@ pub(crate) fn begin_pointer_resize<D: SessionDriver>(
         x: route.location.x as f32,
         y: route.location.y as f32,
     };
+    let visual_geometry = route.visual_geometry.unwrap_or_else(|| {
+        session
+            .wayland
+            .space
+            .element_geometry(window)
+            .unwrap_or_else(|| Rectangle::from_size((1, 1).into()))
+    });
     begin_window_resize(
         session,
         window,
         handle,
         button,
         cursor,
+        visual_geometry,
         smithay::utils::SERIAL_COUNTER.next_serial(),
     )
 }

@@ -7,6 +7,7 @@ use smithay::input::keyboard::{KeyboardTarget, KeysymHandle, ModifiersState};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{IsAlive, Serial};
 use smithay::wayland::seat::WaylandFocus;
+#[cfg(feature = "xwayland")]
 use smithay::xwayland::X11Surface;
 
 use crate::session::{Session, SessionDriver};
@@ -14,44 +15,52 @@ use crate::session::{Session, SessionDriver};
 #[derive(Clone, Debug, PartialEq)]
 pub enum KeyboardFocusTarget {
     Wayland(WlSurface),
+    #[cfg(feature = "xwayland")]
     X11(Box<X11Surface>),
 }
 
 impl KeyboardFocusTarget {
     pub fn for_window(window: &Window) -> Option<Self> {
+        #[cfg(feature = "xwayland")]
         if let Some(surface) = window.x11_surface() {
-            Some(Self::X11(Box::new(surface.clone())))
-        } else {
-            window
-                .wl_surface()
-                .map(|surface| Self::Wayland(surface.into_owned()))
+            return Some(Self::X11(Box::new(surface.clone())));
         }
+        window
+            .wl_surface()
+            .map(|surface| Self::Wayland(surface.into_owned()))
     }
 
     pub fn x11_window_id(&self) -> Option<u32> {
         match self {
             Self::Wayland(_) => None,
+            #[cfg(feature = "xwayland")]
             Self::X11(surface) => Some(surface.window_id()),
         }
     }
 
     pub fn acknowledge_attention(&self) {
-        let Self::X11(surface) = self else {
-            return;
-        };
-        if surface.demands_attention()
-            && let Err(err) = surface.set_demands_attention(false)
+        #[cfg(not(feature = "xwayland"))]
+        let _ = self;
+        #[cfg(feature = "xwayland")]
         {
-            eventline::warn!(
-                "xwayland: failed to acknowledge attention xid={}: {err}",
-                surface.window_id()
-            );
+            let Self::X11(surface) = self else {
+                return;
+            };
+            if surface.demands_attention()
+                && let Err(err) = surface.set_demands_attention(false)
+            {
+                eventline::warn!(
+                    "xwayland: failed to acknowledge attention xid={}: {err}",
+                    surface.window_id()
+                );
+            }
         }
     }
 
     fn target<D: SessionDriver>(&self) -> &dyn KeyboardTarget<Session<D>> {
         match self {
             Self::Wayland(surface) => surface,
+            #[cfg(feature = "xwayland")]
             Self::X11(surface) => surface.as_ref(),
         }
     }
@@ -82,6 +91,7 @@ impl IsAlive for KeyboardFocusTarget {
     fn alive(&self) -> bool {
         match self {
             Self::Wayland(surface) => surface.alive(),
+            #[cfg(feature = "xwayland")]
             Self::X11(surface) => surface.alive(),
         }
     }
@@ -91,6 +101,7 @@ impl WaylandFocus for KeyboardFocusTarget {
     fn wl_surface(&self) -> Option<Cow<'_, WlSurface>> {
         match self {
             Self::Wayland(surface) => Some(Cow::Borrowed(surface)),
+            #[cfg(feature = "xwayland")]
             Self::X11(surface) => surface.wl_surface().map(Cow::Owned),
         }
     }

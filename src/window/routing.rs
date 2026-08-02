@@ -172,16 +172,7 @@ fn parent_window(wayland: &WaylandState, window: &Window) -> Option<Window> {
         })?;
         return window_for_surface(wayland, &parent);
     }
-    let parent_xid = window.x11_surface()?.is_transient_for()?;
-    wayland
-        .space
-        .elements()
-        .find(|candidate| {
-            candidate
-                .x11_surface()
-                .is_some_and(|surface| surface.window_id() == parent_xid)
-        })
-        .cloned()
+    crate::xwayland::parent_window(&wayland.space, window)
 }
 
 fn window_for_surface(wayland: &WaylandState, surface: &WlSurface) -> Option<Window> {

@@ -22,7 +22,7 @@ pub use ipc::handle_request;
 pub use session_ops::{
     close_focused_on_output, collapse, focus_or_reveal_node, pan_after_close_restore,
     reconcile_landmarks, reconcile_landmarks_at_scale, restore, restore_for_close,
-    reveal_for_focus_cycle, tick_decay, toggle_focused_on_output,
+    reveal_cluster_core, reveal_for_focus_cycle, tick_decay, toggle_focused_on_output,
 };
 pub(crate) use session_ops::{
     displace_landmarks_for_new_window, move_cluster_core_rigid, move_grabbed_body_rigid,
@@ -33,6 +33,12 @@ use session_ops::{minimal_reveal_delta, physics_frame_delta};
 
 const OUTSIDE_THRESHOLD: f32 = 0.90;
 pub const NODE_DIAMETER_PX: f32 = 51.0;
+
+#[derive(Clone, Copy)]
+struct PlacementChrome<'a> {
+    decorations: &'a halley_config::Decorations,
+    font: &'a halley_config::Font,
+}
 pub const HOVER_PREVIEW_DWELL_MS: u64 = 1_500;
 const LANDMARK_SLIDE_MS: u64 = 520;
 const RELEASE_LOCK_MS: u64 = 350;
@@ -762,7 +768,14 @@ impl NodesState {
         }
     }
 
-    fn nearest_free_position(&self, id: NodeId, desired: Vec2, scale: f32) -> Vec2 {
+    fn nearest_free_position(
+        &self,
+        id: NodeId,
+        desired: Vec2,
+        scale: f32,
+        occupied_cores: &[Vec2],
+        chrome: PlacementChrome<'_>,
+    ) -> Vec2 {
         let output = self
             .record(id)
             .map(|record| record.output.as_str())
@@ -770,7 +783,7 @@ impl NodesState {
         let scale = scale.max(0.05);
         let node_spacing = (NODE_DIAMETER_PX + self.landmarks.gap_px) / scale;
         let window_clearance = (NODE_DIAMETER_PX * 0.5 + self.landmarks.gap_px) / scale;
-        let occupied_nodes = self
+        let mut occupied_nodes = self
             .records
             .values()
             .filter(|record| {
@@ -778,13 +791,21 @@ impl NodesState {
             })
             .filter_map(|record| self.field.node(record.id).map(|node| node.pos))
             .collect::<Vec<_>>();
+        occupied_nodes.extend_from_slice(occupied_cores);
         let occupied_windows = self
             .records
             .values()
             .filter(|record| {
                 record.id != id && !record.collapsed && record.attached && record.output == output
             })
-            .map(|record| record.geometry)
+            .map(|record| {
+                crate::titlebar::outer_rect_for_client(
+                    &record.window,
+                    record.geometry,
+                    chrome.decorations,
+                    chrome.font,
+                )
+            })
             .collect::<Vec<_>>();
         nearest_free_landmark(
             desired,
@@ -795,15 +816,17 @@ impl NodesState {
         )
     }
 
-    pub(crate) fn nearest_free_active_rect(
+    fn nearest_free_active_rect(
         &self,
         id: NodeId,
         desired: Rectangle<i32, Logical>,
         output: &str,
         scale: f32,
+        occupied_cores: &[Vec2],
+        chrome: PlacementChrome<'_>,
     ) -> Rectangle<i32, Logical> {
         let clearance = (NODE_DIAMETER_PX * 0.5 + self.landmarks.gap_px) / scale.max(0.05);
-        let nodes = self
+        let mut nodes = self
             .records
             .values()
             .filter(|record| {
@@ -811,7 +834,18 @@ impl NodesState {
             })
             .filter_map(|record| self.field.node(record.id).map(|node| node.pos))
             .collect::<Vec<_>>();
-        nearest_free_window_rect(desired, &nodes, clearance)
+        nodes.extend_from_slice(occupied_cores);
+        let Some(record) = self.record(id) else {
+            return desired;
+        };
+        let outer = crate::titlebar::outer_rect_for_client(
+            &record.window,
+            desired,
+            chrome.decorations,
+            chrome.font,
+        );
+        let placed = nearest_free_window_rect(outer, &nodes, clearance);
+        Rectangle::new(desired.loc + (placed.loc - outer.loc), desired.size)
     }
 }
 
@@ -970,9 +1004,8 @@ fn metadata(window: &Window) -> (String, Option<String>) {
                 .unwrap_or_else(|| ("Untitled".to_string(), None))
         });
     }
-    if let Some(x11) = window.x11_surface() {
-        let title = x11.title();
-        let app_id = (!x11.class().is_empty()).then(|| x11.class());
+    if let Some((title, class)) = crate::xwayland::metadata(window) {
+        let app_id = (!class.is_empty()).then_some(class);
         return (
             if title.is_empty() {
                 app_id.clone().unwrap_or_else(|| "Untitled".to_string())

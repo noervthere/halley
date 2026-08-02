@@ -280,6 +280,8 @@ fn runtime_state<D: SessionDriver>(session: &Session<D>, window: &Window) -> Opt
         &session.window_open_animations,
         &session.fullscreen,
         &session.maximize,
+        &session.settings.decorations,
+        &session.settings.font,
         now,
     );
     let presentation = crate::presentation::window::WindowPresentation::for_window(
@@ -290,6 +292,8 @@ fn runtime_state<D: SessionDriver>(session: &Session<D>, window: &Window) -> Opt
         &session.window_open_animations,
         &session.fullscreen,
         &session.maximize,
+        &session.settings.decorations,
+        &session.settings.font,
         window,
         &output,
         now,

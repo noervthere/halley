@@ -104,8 +104,16 @@ fn known_benign_smithay_warning(target: &str, message: &str) -> bool {
     // Smithay deliberately continues after this legacy drmSetMaster call:
     // current kernels authorize the modesetting fd without it. A genuine
     // permission/output failure still surfaces from DrmDevice/output setup.
-    target == "smithay::backend::drm::device::fd"
-        && message == "Unable to become drm master, assuming unprivileged mode"
+    (target == "smithay::backend::drm::device::fd"
+        && message == "Unable to become drm master, assuming unprivileged mode")
+        // CreateNotify is followed by an asynchronous GetGeometry request in
+        // Smithay's XWM. Some toolkit helper windows disappear before the
+        // reply arrives, producing BadDrawable even though the compositor has
+        // no stale state to recover. Keep every other XWM failure visible.
+        || (target == "smithay::xwayland::xwm"
+            && message.starts_with("Failed to handle X11 event")
+            && message.contains("error_kind: Drawable")
+            && message.contains("request_name: Some(\"GetGeometry\")"))
 }
 
 /// Keep Smithay's structured context. Its XWM failure event puts the useful
@@ -207,6 +215,20 @@ mod tests {
             "smithay::backend::drm",
             "Unable to become drm master, assuming unprivileged mode"
         ));
+    }
+
+    #[test]
+    fn only_destroyed_drawable_geometry_races_are_downgraded() {
+        let race = concat!(
+            "Failed to handle X11 event id=0 err=X11Error(X11Error { ",
+            "error_kind: Drawable, error_code: 9, request_name: Some(\"GetGeometry\") })"
+        );
+        assert!(known_benign_smithay_warning("smithay::xwayland::xwm", race));
+        assert!(!known_benign_smithay_warning(
+            "smithay::xwayland::xwm",
+            "Failed to handle X11 event id=0 err=BadWindow"
+        ));
+        assert!(!known_benign_smithay_warning("some::other::target", race));
     }
 
     #[test]

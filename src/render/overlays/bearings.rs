@@ -2,7 +2,7 @@ use std::cmp::Ordering;
 use std::error::Error;
 
 use halley_core::bearings::{Bearing, bearing_to_point};
-use halley_core::field::{NodeId, Vec2};
+use halley_core::field::Vec2;
 use halley_core::viewport::Viewport;
 use smithay::backend::renderer::element::Id;
 use smithay::backend::renderer::element::solid::SolidColorRenderElement;
@@ -13,6 +13,7 @@ use smithay::output::Output;
 use smithay::utils::{Logical, Physical, Rectangle};
 
 use crate::render::scene::SceneElement;
+use crate::shell::bearings::BearingTarget;
 
 const CHIP_PAD_X: i32 = 10;
 const CHIP_PAD_Y: i32 = 7;
@@ -102,24 +103,30 @@ impl Size {
 
 #[derive(Clone, Debug)]
 struct Candidate {
-    id: NodeId,
+    target: BearingTarget,
     lane: Lane,
     projected: f32,
     distance: f32,
     label: String,
-    app_id: Option<String>,
+    icon: Option<IconKind>,
     pinned: bool,
     size: Size,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum IconKind {
+    App(String),
+    Cluster,
+}
+
 #[derive(Clone, Debug)]
 struct Group {
-    id: NodeId,
+    target: BearingTarget,
     lane: Lane,
     projected: f32,
     distance: f32,
     label: String,
-    app_id: Option<String>,
+    icon: Option<IconKind>,
     pinned: bool,
     alpha: f32,
     size: Size,
@@ -127,12 +134,12 @@ struct Group {
 
 #[derive(Clone, Debug)]
 struct Layout {
-    id: NodeId,
+    target: BearingTarget,
     chip: Rectangle<i32, Physical>,
     icon: Option<Rectangle<i32, Physical>>,
     label: String,
     distance: Option<(String, Rectangle<i32, Physical>)>,
-    app_id: Option<String>,
+    icon_kind: Option<IconKind>,
     pinned: bool,
     alpha: f32,
 }
@@ -144,6 +151,7 @@ struct LayoutContext<'a> {
     config: halley_config::Bearings,
     mix: f32,
     nodes: &'a crate::nodes::NodesState,
+    clusters: &'a crate::clusters::ClusterSystem,
     camera: &'a halley_core::camera::Camera,
 }
 
@@ -154,10 +162,12 @@ pub fn elements(
     output_geometry: Rectangle<i32, Logical>,
     bearings: &crate::shell::bearings::BearingsState,
     nodes: &crate::nodes::NodesState,
+    clusters: &crate::clusters::ClusterSystem,
     cameras: &crate::presentation::camera::OutputCameras,
     blur_config: halley_config::Blur,
     backdrop_blur_renderer: &mut crate::render::effects::backdrop_blur::BackdropBlurRenderer,
     node_renderer: &mut crate::render::node::NodeRenderer,
+    cluster_renderer: &mut crate::clusters::render::ClusterRenderer,
     ui_text: &mut crate::render::text::UiTextRenderer,
     overlay_config: &halley_config::Overlays,
     decorations: &halley_config::Decorations,
@@ -181,6 +191,7 @@ pub fn elements(
             config: bearings.config,
             mix,
             nodes,
+            clusters,
             camera,
         },
         ui_text,
@@ -190,7 +201,7 @@ pub fn elements(
         layouts
             .iter()
             .map(|layout| crate::shell::bearings::BearingHitbox {
-                id: layout.id,
+                target: layout.target,
                 rect: layout.chip.to_logical(1),
             })
             .collect(),
@@ -242,13 +253,26 @@ pub fn elements(
             foreground.push(SceneElement::UiText(text.element));
         }
 
-        if let Some(icon) = layout.icon
-            && let Some(app_id) = layout.app_id.as_deref()
-        {
-            node_renderer.request_app_icon(renderer, app_id);
-            if let Some(icon) = node_renderer.app_icon_element(renderer, app_id, icon, layout.alpha)
-            {
-                foreground.push(SceneElement::NodeTexture(icon));
+        if let (Some(icon), Some(kind)) = (layout.icon, layout.icon_kind.as_ref()) {
+            match kind {
+                IconKind::App(app_id) => {
+                    node_renderer.request_app_icon(renderer, app_id);
+                    if let Some(icon) =
+                        node_renderer.app_icon_element(renderer, app_id, icon, layout.alpha)
+                    {
+                        foreground.push(SceneElement::NodeTexture(icon));
+                    }
+                }
+                IconKind::Cluster => {
+                    let [r, g, b] = overlay_visuals.text.bytes();
+                    foreground.push(SceneElement::ClusterIcon(cluster_renderer.icon(
+                        renderer,
+                        icon,
+                        false,
+                        [[r, g, b, 255]; 2],
+                        layout.alpha,
+                    )?));
+                }
             }
         }
 
@@ -333,6 +357,7 @@ fn collect_layouts(
         config,
         mix,
         nodes,
+        clusters,
         camera,
     } = context;
     let center = crate::presentation::camera::global_center(
@@ -350,10 +375,9 @@ fn collect_layouts(
     let screen_h = output_geometry.size.h;
     let mut candidates = Vec::new();
 
-    for record in nodes
-        .records()
-        .filter(|record| record.attached && record.output == output_name)
-    {
+    for record in nodes.records().filter(|record| {
+        record.attached && record.output == output_name && !clusters.is_member(record.id)
+    }) {
         let Some(node) = nodes.field.node(record.id) else {
             continue;
         };
@@ -389,12 +413,70 @@ fn collect_layouts(
             distance_text.as_deref(),
         )?;
         candidates.push(Candidate {
-            id: record.id,
+            target: BearingTarget::Node(record.id),
             lane,
             projected: projected_anchor(node.pos, &viewport, lane, screen_w, screen_h),
             distance,
             label,
-            app_id: record.app_id.clone(),
+            icon: record.app_id.clone().map(IconKind::App),
+            pinned,
+            size,
+        });
+    }
+
+    let scale = crate::presentation::camera::scale(camera).max(0.05);
+    let core_footprint = Vec2 {
+        x: crate::clusters::CORE_DIAMETER_PX / scale,
+        y: crate::clusters::CORE_DIAMETER_PX / scale,
+    };
+    for (_, cluster, metadata) in clusters.clusters_for_output(output_name) {
+        let Some(core) = clusters.core_node(cluster) else {
+            continue;
+        };
+        let position = nodes.landmark_position(
+            core,
+            metadata.core_position,
+            crate::frame_clock::monotonic_now(),
+        );
+        if intersects_view(position, core_footprint, &viewport) {
+            continue;
+        }
+        let Some(bearing) = bearing_to_point(&viewport, position) else {
+            continue;
+        };
+        let lane = Lane::from(bearing);
+        let distance = offscreen_distance(position, core_footprint, &viewport);
+        let pinned = clusters
+            .registry()
+            .cluster(cluster)
+            .is_some_and(|cluster| cluster.pinned);
+        let alpha = if pinned && config.show_pinned {
+            mix
+        } else {
+            mix * distance_alpha(config.fade_distance, distance)
+        };
+        if alpha <= 0.002 {
+            continue;
+        }
+        let label = truncate_label(&metadata.name, || format!("Cluster {}", cluster.as_u64()));
+        let distance_text = config
+            .show_distance
+            .then(|| format!("{:.0}px", distance.round()));
+        let show_icon = config.show_icons;
+        let size = measure_size(
+            renderer,
+            ui_text,
+            &label,
+            show_icon,
+            distance_text.as_deref(),
+        )?;
+        candidates.push(Candidate {
+            target: BearingTarget::ClusterCore { cluster, core },
+            lane,
+            projected: projected_anchor(position, &viewport, lane, screen_w, screen_h),
+            distance,
+            label,
+            icon: show_icon.then_some(IconKind::Cluster),
             pinned,
             size,
         });
@@ -418,7 +500,14 @@ fn candidate_order(left: &Candidate, right: &Candidate) -> Ordering {
     left.projected
         .partial_cmp(&right.projected)
         .unwrap_or(Ordering::Equal)
-        .then(left.id.as_u64().cmp(&right.id.as_u64()))
+        .then(stable_target_key(left.target).cmp(&stable_target_key(right.target)))
+}
+
+fn stable_target_key(target: BearingTarget) -> (u8, u64) {
+    match target {
+        BearingTarget::Node(id) => (0, id.as_u64()),
+        BearingTarget::ClusterCore { cluster, .. } => (1, cluster.as_u64()),
+    }
 }
 
 fn group_candidates(
@@ -464,7 +553,7 @@ fn finalize_group(
             left.distance
                 .partial_cmp(&right.distance)
                 .unwrap_or(Ordering::Equal)
-                .then(left.id.as_u64().cmp(&right.id.as_u64()))
+                .then(stable_target_key(left.target).cmp(&stable_target_key(right.target)))
         })
         .expect("non-empty bearing group");
     let count = members.len();
@@ -477,7 +566,7 @@ fn finalize_group(
     let distance_text = config
         .show_distance
         .then(|| format!("{:.0}px", nearest.distance.round()));
-    let show_icon = count == 1 && config.show_icons && nearest.app_id.is_some();
+    let show_icon = count == 1 && config.show_icons && nearest.icon.is_some();
     let size = measure_size(
         renderer,
         ui_text,
@@ -486,12 +575,12 @@ fn finalize_group(
         distance_text.as_deref(),
     )?;
     Ok(Group {
-        id: nearest.id,
+        target: nearest.target,
         lane: nearest.lane,
         projected: members.iter().map(|member| member.projected).sum::<f32>() / count as f32,
         distance: nearest.distance,
         label,
-        app_id: (count == 1).then(|| nearest.app_id.clone()).flatten(),
+        icon: (count == 1).then(|| nearest.icon.clone()).flatten(),
         pinned,
         alpha: if pinned && config.show_pinned {
             mix
@@ -507,7 +596,7 @@ fn layout_groups(lane: Lane, mut groups: Vec<Group>, screen_w: i32, screen_h: i3
         left.projected
             .partial_cmp(&right.projected)
             .unwrap_or(Ordering::Equal)
-            .then(left.id.as_u64().cmp(&right.id.as_u64()))
+            .then(stable_target_key(left.target).cmp(&stable_target_key(right.target)))
     });
     let mut centers = groups
         .iter()
@@ -576,12 +665,12 @@ fn build_layout(group: Group, center: f32, screen_w: i32, screen_h: i32) -> Layo
         (text, rect)
     });
     Layout {
-        id: group.id,
+        target: group.target,
         chip,
         icon,
         label: group.label,
         distance,
-        app_id: group.app_id,
+        icon_kind: group.icon,
         pinned: group.pinned,
         alpha: group.alpha.clamp(0.0, 1.0),
     }
@@ -732,6 +821,15 @@ fn bearing_label(record: &crate::nodes::NodeRecord) -> String {
     } else {
         return format!("Node {}", record.id.as_u64());
     };
+    truncate_label(base, || format!("Node {}", record.id.as_u64()))
+}
+
+fn truncate_label(base: &str, fallback: impl FnOnce() -> String) -> String {
+    let base = if base.trim().is_empty() {
+        return fallback();
+    } else {
+        base.trim()
+    };
     let mut chars = base.chars();
     let prefix = chars.by_ref().take(MAX_LABEL_CHARS).collect::<String>();
     if chars.next().is_some() {
@@ -758,5 +856,16 @@ mod tests {
         let mut chars = source.chars();
         let prefix = chars.by_ref().take(MAX_LABEL_CHARS).collect::<String>();
         assert_eq!(format!("{prefix}…"), "abcdefghijklmnopqrstuvwx…");
+    }
+
+    #[test]
+    fn clusters_have_their_own_stable_target_and_configured_label() {
+        let cluster = halley_core::cluster::ClusterId::new(4);
+        let core = halley_core::field::NodeId::new(40);
+        let target = BearingTarget::ClusterCore { cluster, core };
+
+        assert_eq!(stable_target_key(target), (1, 4));
+        assert_eq!(truncate_label("Research", || "fallback".into()), "Research");
+        assert_eq!(IconKind::Cluster, IconKind::Cluster);
     }
 }

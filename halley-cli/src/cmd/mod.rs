@@ -25,6 +25,7 @@ pub enum Action {
     ClusterHelp,
     Bearings(BearingsRequest),
     BearingsHelp,
+    ConfigEdit(Option<PathBuf>),
     ConfigVerify(Option<PathBuf>),
     ConfigHelp,
     Quit,
@@ -116,7 +117,7 @@ fn parse_config(args: &[String]) -> Result<Action, String> {
     if command == "-h" || command == "--help" {
         return Ok(Action::ConfigHelp);
     }
-    if command != "verify" {
+    if command != "edit" && command != "verify" {
         return Err(format!("unknown config command {command:?}"));
     }
     let mut path = None;
@@ -128,25 +129,31 @@ fn parse_config(args: &[String]) -> Result<Action, String> {
                 index += 1;
                 let value = args
                     .get(index)
-                    .ok_or_else(|| "config verify path option requires a path".to_string())?;
-                set_verify_path(&mut path, value)?;
+                    .ok_or_else(|| format!("config {command} path option requires a path"))?;
+                set_config_path(&mut path, value, command)?;
             }
             value if value.starts_with("--config=") => {
-                set_verify_path(&mut path, &value["--config=".len()..])?;
+                set_config_path(&mut path, &value["--config=".len()..], command)?;
             }
-            value => return Err(format!("unexpected config verify argument {value:?}")),
+            value => return Err(format!("unexpected config {command} argument {value:?}")),
         }
         index += 1;
     }
-    Ok(Action::ConfigVerify(path))
+    Ok(match command {
+        "edit" => Action::ConfigEdit(path),
+        "verify" => Action::ConfigVerify(path),
+        _ => unreachable!("config command checked above"),
+    })
 }
 
-fn set_verify_path(path: &mut Option<PathBuf>, value: &str) -> Result<(), String> {
+fn set_config_path(path: &mut Option<PathBuf>, value: &str, command: &str) -> Result<(), String> {
     if value.is_empty() {
-        return Err("config verify path cannot be empty".to_string());
+        return Err(format!("config {command} path cannot be empty"));
     }
     if path.replace(PathBuf::from(value)).is_some() {
-        return Err("config verify path was specified more than once".to_string());
+        return Err(format!(
+            "config {command} path was specified more than once"
+        ));
     }
     Ok(())
 }
@@ -208,8 +215,17 @@ mod tests {
             parse(&args(&["config", "verify", "--config=/tmp/two.rune"])),
             Ok(Action::ConfigVerify(Some("/tmp/two.rune".into())))
         );
+        assert_eq!(
+            parse(&args(&["config", "edit"])),
+            Ok(Action::ConfigEdit(None))
+        );
+        assert_eq!(
+            parse(&args(&["config", "edit", "-c", "/tmp/two.rune"])),
+            Ok(Action::ConfigEdit(Some("/tmp/two.rune".into())))
+        );
         assert!(parse(&args(&["dpms", "sleep"])).is_err());
         assert!(parse(&args(&["config", "verify", "-c"])).is_err());
+        assert!(parse(&args(&["config", "edit", "--config="])).is_err());
     }
 
     #[test]

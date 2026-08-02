@@ -34,6 +34,7 @@ impl Autostart {
         }
     }
 
+    #[cfg_attr(not(feature = "winit"), allow(dead_code))]
     pub fn disabled() -> Self {
         Self {
             enabled: false,

@@ -62,15 +62,6 @@ struct ExternalPending {
     presentation: ExternalPresentationKind,
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct FullscreenPresentation {
-    pub progress: f64,
-    pub transition_completion: f64,
-    pub windowed_geometry: Option<Rectangle<i32, Logical>>,
-    pub windowed_output_rect: Option<Rectangle<i32, Physical>>,
-    pub fullscreen_size: Size<i32, Logical>,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ExternalTransactionRequest {
     NoChange,
@@ -82,6 +73,15 @@ pub(crate) enum ExternalConfigureResult {
     NotPending,
     Waiting,
     Settled { fullscreen: bool, animated: bool },
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct FullscreenPresentation {
+    pub progress: f64,
+    pub transition_completion: f64,
+    pub windowed_geometry: Option<Rectangle<i32, Logical>>,
+    pub windowed_output_rect: Option<Rectangle<i32, Physical>>,
+    pub fullscreen_size: Size<i32, Logical>,
 }
 
 impl FullscreenPresentation {
@@ -1513,7 +1513,7 @@ mod tests {
     }
 
     #[test]
-    fn external_animation_waits_for_matching_geometry_and_settles_once() {
+    fn external_mod_f_waits_for_x11_geometry_then_starts_motion() {
         let animations = Animations::default();
         let mut entry = test_entry(false);
         let target = Rectangle::new((0, 0).into(), (1920, 1080).into());
@@ -1529,10 +1529,11 @@ mod tests {
             ExternalTransactionRequest::Configure(target)
         );
         assert_eq!(
-            acknowledge_external_transaction(&mut entry, intermediate, animations, Duration::ZERO,),
+            acknowledge_external_transaction(&mut entry, intermediate, animations, Duration::ZERO),
             ExternalConfigureResult::Waiting
         );
         assert!(entry.transition.is_none());
+
         assert_eq!(
             acknowledge_external_transaction(
                 &mut entry,
@@ -1542,10 +1543,12 @@ mod tests {
             ),
             ExternalConfigureResult::Settled {
                 fullscreen: true,
-                animated: true
+                animated: true,
             }
         );
+        assert!(entry.active);
         assert!(entry.transition.is_some());
+        assert!(entry.external_pending.is_none());
     }
 
     #[test]
@@ -1562,27 +1565,24 @@ mod tests {
     }
 
     #[test]
-    fn seeded_restore_geometry_wins_over_the_buffered_fullscreen_size() {
-        let seeded_geometry = Rectangle::new((960, 480).into(), (640, 480).into());
-        let buffered_geometry = Rectangle::new((0, 0).into(), (2560, 1440).into());
-        let seeded = WindowedPlacement {
-            location: seeded_geometry.loc,
-            geometry: seeded_geometry,
-            output: Some("DP-1".to_string()),
-        };
-        let buffered = WindowedPlacement {
-            location: buffered_geometry.loc,
-            geometry: buffered_geometry,
-            output: Some("DP-1".to_string()),
-        };
+    fn chrome_follows_logical_fullscreen_state_instead_of_visual_progress() {
+        let mut entry = test_entry(false);
+        assert!(!fullscreen_entry_suppresses_chrome(&entry));
 
-        let fallback =
-            prefer_seeded_restore(None, Some(buffered.clone())).expect("buffered fallback");
-        let restore = prefer_seeded_restore(Some(seeded), Some(buffered)).expect("seeded restore");
+        entry.desired = true;
+        assert!(fullscreen_entry_suppresses_chrome(&entry));
 
-        assert_eq!(fallback.geometry, buffered_geometry);
-        assert_eq!(restore.geometry, seeded_geometry);
-        assert_eq!(restore.location, seeded_geometry.loc);
+        entry.origin = FullscreenOrigin::Compositor;
+        assert!(fullscreen_entry_suppresses_chrome(&entry));
+
+        entry.origin = FullscreenOrigin::Maximize;
+        assert!(!fullscreen_entry_suppresses_chrome(&entry));
+
+        entry.origin = FullscreenOrigin::Client;
+        entry.desired = false;
+        entry.active = true;
+        entry.presented = true;
+        assert!(!fullscreen_entry_suppresses_chrome(&entry));
     }
 
     #[test]
@@ -1595,7 +1595,7 @@ mod tests {
 
         entry.desired = false;
         entry.external_pending = Some(ExternalPending {
-            geometry: Rectangle::new((320, 180).into(), (1280, 720).into()),
+            geometry: Rectangle::new((0, 0).into(), (1920, 1080).into()),
             presentation: ExternalPresentationKind::Animated,
         });
         assert!(!can_update_external_restore(&entry));
@@ -1607,38 +1607,30 @@ mod tests {
         let fullscreen = Rectangle::new((0, 0).into(), (1920, 1080).into());
         let restore = Rectangle::new((320, 180).into(), (1280, 720).into());
 
-        assert_eq!(
-            begin_external_transaction(
-                &mut entry,
-                true,
-                fullscreen,
-                ExternalPresentationKind::Opening,
-            ),
-            ExternalTransactionRequest::Configure(fullscreen)
+        begin_external_transaction(
+            &mut entry,
+            true,
+            fullscreen,
+            ExternalPresentationKind::Opening,
         );
-        assert_eq!(
-            begin_external_transaction(
-                &mut entry,
-                false,
-                restore,
-                ExternalPresentationKind::Opening,
-            ),
-            ExternalTransactionRequest::Configure(restore)
+        begin_external_transaction(
+            &mut entry,
+            false,
+            restore,
+            ExternalPresentationKind::Opening,
         );
-        assert_eq!(
-            begin_external_transaction(
-                &mut entry,
-                true,
-                fullscreen,
-                ExternalPresentationKind::Opening,
-            ),
-            ExternalTransactionRequest::Configure(fullscreen)
+        begin_external_transaction(
+            &mut entry,
+            true,
+            fullscreen,
+            ExternalPresentationKind::Opening,
         );
+
         assert_eq!(
             entry.external_pending,
             Some(ExternalPending {
                 geometry: fullscreen,
-                presentation: ExternalPresentationKind::Opening
+                presentation: ExternalPresentationKind::Opening,
             })
         );
         assert!(entry.desired);
@@ -1657,7 +1649,7 @@ mod tests {
             acknowledge_external_transaction(&mut entry, target, animations, Duration::ZERO),
             ExternalConfigureResult::Settled {
                 fullscreen: true,
-                animated: false
+                animated: false,
             }
         );
         assert!(entry.active);
@@ -1679,5 +1671,29 @@ mod tests {
         assert!(entry.desired);
         assert!(entry.external_pending.is_none());
         assert!(entry.transition.is_none());
+    }
+
+    #[test]
+    fn seeded_restore_geometry_wins_over_buffered_fullscreen_geometry() {
+        let seeded_geometry = Rectangle::new((960, 480).into(), (640, 480).into());
+        let buffered_geometry = Rectangle::new((0, 0).into(), (2560, 1440).into());
+        let seeded = WindowedPlacement {
+            location: seeded_geometry.loc,
+            geometry: seeded_geometry,
+            output: Some("DP-1".to_string()),
+        };
+        let buffered = WindowedPlacement {
+            location: buffered_geometry.loc,
+            geometry: buffered_geometry,
+            output: Some("DP-1".to_string()),
+        };
+
+        let fallback =
+            prefer_seeded_restore(None, Some(buffered.clone())).expect("buffered fallback");
+        let restore = prefer_seeded_restore(Some(seeded), Some(buffered)).expect("seeded restore");
+
+        assert_eq!(fallback.geometry, buffered_geometry);
+        assert_eq!(restore.geometry, seeded_geometry);
+        assert_eq!(restore.location, seeded_geometry.loc);
     }
 }

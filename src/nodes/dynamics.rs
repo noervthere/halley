@@ -17,10 +17,50 @@ pub(super) struct Body {
     pub id: NodeId,
     pub kind: BodyKind,
     pub pos: Vec2,
-    pub half: Vec2,
+    pub extents: CollisionExtents,
     pub gap: f32,
     pub pinned: bool,
     pub output: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct CollisionExtents {
+    pub left: f32,
+    pub right: f32,
+    pub top: f32,
+    pub bottom: f32,
+}
+
+impl CollisionExtents {
+    pub fn symmetric(half: Vec2) -> Self {
+        Self {
+            left: half.x,
+            right: half.x,
+            top: half.y,
+            bottom: half.y,
+        }
+    }
+
+    fn minimum_half_extent(self) -> f32 {
+        ((self.left + self.right) * 0.5)
+            .min((self.top + self.bottom) * 0.5)
+            .max(1.0)
+    }
+}
+
+fn required_separation(a: &Body, b: &Body, dx: f32, dy: f32) -> (f32, f32) {
+    let gap = a.gap.max(b.gap);
+    let x = if dx >= 0.0 {
+        a.extents.right + b.extents.left
+    } else {
+        a.extents.left + b.extents.right
+    } + gap;
+    let y = if dy >= 0.0 {
+        a.extents.bottom + b.extents.top
+    } else {
+        a.extents.top + b.extents.bottom
+    } + gap;
+    (x, y)
 }
 
 fn pair_participates(a: &Body, b: &Body) -> bool {
@@ -31,11 +71,11 @@ fn overlap(a: &Body, a_pos: Vec2, b: &Body, b_pos: Vec2) -> Option<(f32, f32, f3
     if !pair_participates(a, b) {
         return None;
     }
-    let gap = a.gap.max(b.gap);
     let dx = b_pos.x - a_pos.x;
     let dy = b_pos.y - a_pos.y;
-    let ox = a.half.x + b.half.x + gap - dx.abs();
-    let oy = a.half.y + b.half.y + gap - dy.abs();
+    let (required_x, required_y) = required_separation(a, b, dx, dy);
+    let ox = required_x - dx.abs();
+    let oy = required_y - dy.abs();
     (ox > 0.0 && oy > 0.0).then_some((dx, dy, ox, oy))
 }
 
@@ -199,7 +239,7 @@ fn sweep_steps(bodies: &[Body], authority: NodeId, desired: Vec2) -> (usize, Vec
     let max_step = bodies
         .iter()
         .filter(|candidate| candidate.kind == BodyKind::Node && candidate.output == body.output)
-        .map(|candidate| candidate.half.x.min(candidate.half.y).max(1.0))
+        .map(|candidate| candidate.extents.minimum_half_extent())
         .reduce(f32::min)
         .unwrap_or(64.0);
     let steps = ((delta.x.abs().max(delta.y.abs()) / max_step).ceil() as usize).clamp(1, 512);
@@ -343,11 +383,11 @@ pub(super) fn solve_physics(
                 let Some(b_pos) = positions.get(&b.id).copied() else {
                     continue;
                 };
-                let gap = a.gap.max(b.gap);
                 let dx = b_pos.x - a_pos.x;
                 let dy = b_pos.y - a_pos.y;
-                let gap_x = dx.abs() - (a.half.x + b.half.x + gap);
-                let gap_y = dy.abs() - (a.half.y + b.half.y + gap);
+                let (required_x, required_y) = required_separation(a, b, dx, dy);
+                let gap_x = dx.abs() - required_x;
+                let gap_y = dy.abs() - required_y;
                 if gap_x > CONTACT_SKIN || gap_y > CONTACT_SKIN {
                     continue;
                 }
@@ -455,7 +495,7 @@ mod tests {
             id: NodeId::new(id),
             kind,
             pos: Vec2 { x, y: 0.0 },
-            half: Vec2 { x: 10.0, y: 10.0 },
+            extents: CollisionExtents::symmetric(Vec2 { x: 10.0, y: 10.0 }),
             gap: 0.0,
             pinned: false,
             output: "DP-1".into(),
@@ -481,6 +521,47 @@ mod tests {
         let positions = solve_static(&[a, b], None);
         assert_eq!(positions[&NodeId::new(1)].x, 0.0);
         assert_eq!(positions[&NodeId::new(2)].x, 0.0);
+    }
+
+    #[test]
+    fn asymmetric_titlebar_extent_sets_the_visible_vertical_gap() {
+        let mut window = body(1, BodyKind::Window, 0.0);
+        window.extents = CollisionExtents {
+            left: 10.0,
+            right: 10.0,
+            top: 30.0,
+            bottom: 10.0,
+        };
+        window.gap = 5.0;
+        let node = body(2, BodyKind::Node, 0.0);
+
+        assert!(
+            overlap(
+                &window,
+                Vec2 { x: 0.0, y: 0.0 },
+                &node,
+                Vec2 { x: 0.0, y: -44.0 }
+            )
+            .is_some()
+        );
+        assert!(
+            overlap(
+                &window,
+                Vec2 { x: 0.0, y: 0.0 },
+                &node,
+                Vec2 { x: 0.0, y: -45.0 }
+            )
+            .is_none()
+        );
+        assert!(
+            overlap(
+                &window,
+                Vec2 { x: 0.0, y: 0.0 },
+                &node,
+                Vec2 { x: 0.0, y: 25.0 }
+            )
+            .is_none()
+        );
     }
 
     #[test]

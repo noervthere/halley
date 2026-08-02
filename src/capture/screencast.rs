@@ -322,17 +322,20 @@ fn cursor_position<D: SessionDriver>(
                 },
                 session.pointer.position(),
             )?;
-            let crate::input::pointer::PointerTarget::Window(window) = route.target else {
-                return None;
+            let window = match route.target {
+                crate::input::pointer::PointerTarget::Window(window)
+                | crate::input::pointer::PointerTarget::Decoration { window, .. } => window,
+                _ => return None,
             };
             let surface = window.wl_surface()?;
             if surface.id().protocol_id() != *surface_id {
                 return None;
             }
             let location = session.wayland.space.element_location(&window)?;
+            let client_offset = crate::capture::window_capture_client_offset(session, &window);
             Some((
-                (route.location.x - f64::from(location.x)).round() as i32,
-                (route.location.y - f64::from(location.y)).round() as i32,
+                (route.location.x - f64::from(location.x)).round() as i32 + client_offset.x,
+                (route.location.y - f64::from(location.y)).round() as i32 + client_offset.y,
             ))
         }
     }

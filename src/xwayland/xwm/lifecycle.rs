@@ -482,7 +482,13 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
         {
             let _ = crate::session::set_surface_field_maximized(self, &wl_surface, false);
         }
-        if let Err(err) = surface.set_maximized(false) {
+        // `set_surface_field_maximized` synchronizes EWMH state as part of the
+        // geometry transaction. Avoid echoing the same state write: some X11
+        // clients answer it with another normal-geometry configure, which can
+        // replace the first frames of the reverse maximize presentation.
+        if surface.is_maximized()
+            && let Err(err) = surface.set_maximized(false)
+        {
             eventline::warn!("xwayland: failed to clear maximized state: {err}");
         }
         self.request_redraw();

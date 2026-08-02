@@ -12,3 +12,4 @@ halley-config = { path = "../halley-config" }
 halley-ipc = { path = "../halley-ipc" }
 serde = "1"
 serde_json = "1"
+shlex = "1.3"

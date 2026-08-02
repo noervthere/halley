@@ -16,11 +16,31 @@ const RASTER_SIZE: u32 = 64;
 const CLOSE: &[u8] = include_bytes!("../../assets/titlebars/close.svg");
 const MINIMIZE: &[u8] = include_bytes!("../../assets/titlebars/minimize.svg");
 const MAXIMIZE: &[u8] = include_bytes!("../../assets/titlebars/maximize.svg");
+const UNMAXIMIZE: &[u8] = include_bytes!("../../assets/titlebars/unmaximize.svg");
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum Icon {
+    Close,
+    Minimize,
+    Maximize,
+    Unmaximize,
+}
+
+impl Icon {
+    fn for_control(control: Control, maximized: bool) -> Self {
+        match control {
+            Control::Close => Self::Close,
+            Control::Minimize => Self::Minimize,
+            Control::Maximize if maximized => Self::Unmaximize,
+            Control::Maximize => Self::Maximize,
+        }
+    }
+}
 
 #[derive(Default)]
 pub struct TitlebarRenderer {
     context: Option<ContextId<GlesTexture>>,
-    icons: HashMap<Control, WindowTexture>,
+    icons: HashMap<Icon, WindowTexture>,
     failed: bool,
 }
 
@@ -30,6 +50,7 @@ impl TitlebarRenderer {
         renderer: &mut GlesRenderer,
         decorations: &mut WindowDecorationRenderer,
         control: Control,
+        maximized: bool,
         destination: Rectangle<i32, Physical>,
         color: halley_config::BorderColor,
         alpha: f32,
@@ -44,7 +65,7 @@ impl TitlebarRenderer {
             }
             return None;
         }
-        let icon = self.icons.get(&control)?;
+        let icon = self.icons.get(&Icon::for_control(control, maximized))?;
         let texture = icon.texture.clone();
         let base = icon.render_element(Id::new(), destination, alpha);
         decorations.texture_element_with_radii(
@@ -59,16 +80,17 @@ impl TitlebarRenderer {
 
     fn ensure(&mut self, renderer: &mut GlesRenderer) -> Result<(), Box<dyn Error>> {
         let context = renderer.context_id();
-        if self.context.as_ref() == Some(&context) && self.icons.len() == 3 {
+        if self.context.as_ref() == Some(&context) && self.icons.len() == 4 {
             return Ok(());
         }
         self.context = Some(context.clone());
         self.icons.clear();
         self.failed = false;
-        for (control, source) in [
-            (Control::Close, CLOSE),
-            (Control::Minimize, MINIMIZE),
-            (Control::Maximize, MAXIMIZE),
+        for (icon, source) in [
+            (Icon::Close, CLOSE),
+            (Icon::Minimize, MINIMIZE),
+            (Icon::Maximize, MAXIMIZE),
+            (Icon::Unmaximize, UNMAXIMIZE),
         ] {
             let pixels = raster_mask(source).ok_or("bundled SVG did not produce an alpha mask")?;
             let texture = renderer.import_memory(
@@ -78,7 +100,7 @@ impl TitlebarRenderer {
                 false,
             )?;
             self.icons.insert(
-                control,
+                icon,
                 WindowTexture {
                     texture,
                     context: context.clone(),
@@ -121,7 +143,7 @@ mod tests {
 
     #[test]
     fn bundled_icons_are_nonempty_alpha_masks() {
-        for source in [CLOSE, MINIMIZE, MAXIMIZE] {
+        for source in [CLOSE, MINIMIZE, MAXIMIZE, UNMAXIMIZE] {
             let pixels = raster_mask(source).expect("valid bundled SVG");
             assert_eq!(
                 pixels.len(),
@@ -134,5 +156,12 @@ mod tests {
                     && pixel[2] == pixel[3])
             );
         }
+    }
+
+    #[test]
+    fn maximized_control_uses_unmaximize_icon() {
+        assert_eq!(Icon::for_control(Control::Maximize, false), Icon::Maximize);
+        assert_eq!(Icon::for_control(Control::Maximize, true), Icon::Unmaximize);
+        assert_eq!(Icon::for_control(Control::Close, true), Icon::Close);
     }
 }

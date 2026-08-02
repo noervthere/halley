@@ -148,6 +148,22 @@ impl OverlayManager {
         );
     }
 
+    pub fn show_screenshot_saved(
+        &mut self,
+        output: String,
+        directory: &Path,
+        duration_ms: u64,
+        now: Duration,
+    ) {
+        self.show_notification(
+            output,
+            format!("Screenshot saved to {}", directory.display()),
+            NotificationKind::Success,
+            duration_ms,
+            now,
+        );
+    }
+
     pub fn show_error(
         &mut self,
         output: String,
@@ -302,6 +318,27 @@ mod tests {
 
         overlays.show_config_error("DP-1".into(), 9_000, Duration::from_millis(20));
         assert!(overlays.clear_config_error(Duration::from_millis(30)));
+    }
+
+    #[test]
+    fn screenshot_success_names_the_destination_directory() {
+        let mut overlays = OverlayManager::default();
+        overlays.show_screenshot_saved(
+            "DP-1".into(),
+            Path::new("/home/test/Pictures/Screenshots"),
+            4_000,
+            Duration::ZERO,
+        );
+
+        let notification = overlays
+            .snapshot("DP-1", Duration::from_millis(180))
+            .notification
+            .unwrap();
+        assert_eq!(
+            notification.message,
+            "Screenshot saved to /home/test/Pictures/Screenshots"
+        );
+        assert_eq!(notification.kind, NotificationKind::Success);
     }
 
     #[test]

@@ -148,6 +148,7 @@ mod tests {
             "bloom-direction \"clockwise\"",
             "titlebars:",
             "button-position \"left\"",
+            "title-position \"center\"",
             "show-icons false",
             "show-title true",
             "height 32",
