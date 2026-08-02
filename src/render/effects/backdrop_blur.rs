@@ -25,7 +25,10 @@ pub struct BlurPatch {
     pub rect: Rectangle<i32, Physical>,
     pub radius: f32,
     pub alpha: f32,
-    pub clip: Option<(Rectangle<i32, Physical>, f32)>,
+    pub clip: Option<(
+        Rectangle<i32, Physical>,
+        crate::render::window_decoration::CornerRadii,
+    )>,
 }
 
 struct Programs {
@@ -180,7 +183,7 @@ impl BackdropBlurRenderer {
             UniformName::new("corner_radius", UniformType::_1f),
             UniformName::new("clip_origin", UniformType::_2f),
             UniformName::new("clip_size", UniformType::_2f),
-            UniformName::new("clip_radius", UniformType::_1f),
+            UniformName::new("clip_radii", UniformType::_2f),
             UniformName::new("use_clip", UniformType::_1f),
             UniformName::new("saturation", UniformType::_1f),
             UniformName::new("noise", UniformType::_1f),
@@ -489,17 +492,17 @@ fn composite_patch(
         return Ok(());
     }
     let texture_size = texture.size();
-    let (clip_origin, clip_size, clip_radius, use_clip) = patch
+    let (clip_origin, clip_size, clip_radii, use_clip) = patch
         .clip
-        .map(|(clip, radius)| {
+        .map(|(clip, radii)| {
             (
                 (clip.loc.x as f32, clip.loc.y as f32),
                 (clip.size.w as f32, clip.size.h as f32),
-                radius.max(0.0),
+                (radii.top.max(0.0), radii.bottom.max(0.0)),
                 1.0,
             )
         })
-        .unwrap_or(((0.0, 0.0), (1.0, 1.0), 0.0, 0.0));
+        .unwrap_or(((0.0, 0.0), (1.0, 1.0), (0.0, 0.0), 0.0));
     frame.render_texture_from_to(
         texture,
         Rectangle::<f64, Buffer>::new(
@@ -534,7 +537,7 @@ fn composite_patch(
             Uniform::new("corner_radius", patch.radius.max(0.0)),
             Uniform::new("clip_origin", clip_origin),
             Uniform::new("clip_size", clip_size),
-            Uniform::new("clip_radius", clip_radius),
+            Uniform::new("clip_radii", clip_radii),
             Uniform::new("use_clip", use_clip),
             Uniform::new("saturation", saturation.clamp(0.0, 4.0)),
             Uniform::new("noise", noise.clamp(0.0, 0.25)),
@@ -559,13 +562,14 @@ fn blur_commit(patches: &[BlurPatch], config: halley_config::Blur) -> CommitCoun
         patch.rect.size.h.hash(&mut hash);
         patch.radius.to_bits().hash(&mut hash);
         patch.alpha.to_bits().hash(&mut hash);
-        if let Some((clip, radius)) = patch.clip {
+        if let Some((clip, radii)) = patch.clip {
             true.hash(&mut hash);
             clip.loc.x.hash(&mut hash);
             clip.loc.y.hash(&mut hash);
             clip.size.w.hash(&mut hash);
             clip.size.h.hash(&mut hash);
-            radius.to_bits().hash(&mut hash);
+            radii.top.to_bits().hash(&mut hash);
+            radii.bottom.to_bits().hash(&mut hash);
         } else {
             false.hash(&mut hash);
         }

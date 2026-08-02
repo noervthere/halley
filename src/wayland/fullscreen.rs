@@ -855,6 +855,18 @@ impl FullscreenManager {
             .is_some_and(|entry| entry.active || entry.desired)
     }
 
+    /// Whether compositor-owned window chrome should be omitted.
+    ///
+    /// Chrome follows logical fullscreen state rather than presentation
+    /// progress: entering fullscreen removes it before the first animated
+    /// frame, and leaving fullscreen restores it while the window animates
+    /// back. Maximize presentations remain decorated.
+    pub(crate) fn suppresses_chrome(&self, surface: &WlSurface) -> bool {
+        self.windows
+            .get(surface)
+            .is_some_and(fullscreen_entry_suppresses_chrome)
+    }
+
     pub(crate) fn occupants_on_output(
         &self,
         output: &str,
@@ -1059,6 +1071,10 @@ fn entry_owns_presentation(entry: &FullscreenWindow) -> bool {
 
 fn fullscreen_origin_allows_global_blur(origin: FullscreenOrigin) -> bool {
     origin != FullscreenOrigin::Client
+}
+
+fn fullscreen_entry_suppresses_chrome(entry: &FullscreenWindow) -> bool {
+    entry.desired && entry.origin != FullscreenOrigin::Maximize
 }
 
 /// Whether a commit may retarget the fullscreen rect to the client's own size.

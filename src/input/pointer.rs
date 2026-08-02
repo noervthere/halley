@@ -19,6 +19,10 @@ use crate::presentation::window::WindowPresentation;
 pub enum PointerTarget {
     Layer(LayerSurface),
     Window(Window),
+    Decoration {
+        window: Window,
+        hit: crate::titlebar::Hit,
+    },
     Background,
 }
 
@@ -50,6 +54,8 @@ pub struct PointerRoutingContext<'a> {
     pub primary: &'a Output,
     pub fullscreen: &'a crate::wayland::fullscreen::FullscreenManager,
     pub maximize: &'a crate::presentation::maximize::FieldMaximizeManager,
+    pub decorations: &'a halley_config::Decorations,
+    pub font: &'a halley_config::Font,
     pub focused: Option<&'a WlSurface>,
     pub now: std::time::Duration,
 }
@@ -426,6 +432,47 @@ fn window_under(
                 exclusive_anchor,
             ) {
                 continue;
+            }
+        }
+        let visual_geometry = presentation.visual_geometry();
+        let surface = window.wl_surface();
+        let fullscreen = surface
+            .as_ref()
+            .is_some_and(|surface| context.fullscreen.suppresses_chrome(surface.as_ref()))
+            || crate::xwayland::is_fullscreen(window);
+        if !fullscreen
+            && crate::titlebar::uses_server_titlebar(window, &context.decorations.titlebars)
+        {
+            let source_height = presentation.source_geometry().size.h.max(1);
+            let visual_scale = visual_geometry.size.h as f32 / source_height as f32;
+            let titlebar_height = crate::render::window_decoration::scaled_metric(
+                crate::titlebar::effective_height(
+                    &context.decorations.titlebars,
+                    context.font.size,
+                ),
+                visual_scale,
+            );
+            let border_width = crate::render::window_decoration::scaled_metric(
+                context.decorations.border_width_px,
+                visual_scale,
+            );
+            let layout = crate::titlebar::DecorationLayout::new(
+                visual_geometry,
+                border_width,
+                titlebar_height,
+                &context.decorations.titlebars,
+            );
+            if let Some(hit) = layout.hit(screen_location) {
+                return Some(PointerRoute {
+                    output: output.clone(),
+                    location: presentation.source_from_screen(screen_location),
+                    focus: None,
+                    target: PointerTarget::Decoration {
+                        window: window.clone(),
+                        hit,
+                    },
+                    visual_geometry: Some(visual_geometry),
+                });
             }
         }
         if !presentation.contains_screen(screen_location) {

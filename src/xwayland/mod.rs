@@ -10,7 +10,7 @@ use std::process::Stdio;
 
 use calloop::timer::{TimeoutAction, Timer};
 use calloop::{LoopHandle, RegistrationToken};
-use smithay::desktop::Window;
+use smithay::desktop::{Space, Window};
 use smithay::reexports::wayland_protocols::xwayland::keyboard_grab::zv1::server::{
     zwp_xwayland_keyboard_grab_manager_v1::ZwpXwaylandKeyboardGrabManagerV1,
     zwp_xwayland_keyboard_grab_v1::ZwpXwaylandKeyboardGrabV1,
@@ -357,6 +357,71 @@ pub fn is_override_redirect(window: &smithay::desktop::Window) -> bool {
     window
         .x11_surface()
         .is_some_and(|surface| surface.is_override_redirect())
+}
+
+pub fn is_x11(window: &smithay::desktop::Window) -> bool {
+    window.x11_surface().is_some()
+}
+
+pub fn is_fullscreen(window: &smithay::desktop::Window) -> bool {
+    window
+        .x11_surface()
+        .is_some_and(|surface| surface.is_fullscreen())
+}
+
+pub fn uses_server_decorations(window: &smithay::desktop::Window) -> bool {
+    window
+        .x11_surface()
+        .is_some_and(|surface| !surface.is_decorated())
+}
+
+pub fn can_maximize(window: &smithay::desktop::Window) -> bool {
+    window
+        .x11_surface()
+        .map(|surface| {
+            !surface
+                .min_size()
+                .zip(surface.max_size())
+                .is_some_and(|(minimum, maximum)| minimum == maximum)
+        })
+        .unwrap_or(true)
+}
+
+pub fn window_for_xid(space: &Space<Window>, xid: u32) -> Option<Window> {
+    space
+        .elements()
+        .find(|window| {
+            window
+                .x11_surface()
+                .is_some_and(|surface| surface.window_id() == xid)
+        })
+        .cloned()
+}
+
+pub fn parent_window(space: &Space<Window>, window: &Window) -> Option<Window> {
+    let parent = window.x11_surface()?.is_transient_for()?;
+    window_for_xid(space, parent)
+}
+
+pub fn metadata(window: &Window) -> Option<(String, String)> {
+    let surface = window.x11_surface()?;
+    Some((surface.title(), surface.class()))
+}
+
+pub fn set_hidden(window: &Window, hidden: bool) {
+    if let Some(surface) = window.x11_surface()
+        && let Err(err) = surface.set_hidden(hidden)
+    {
+        eventline::warn!("xwayland: failed to set hidden={hidden}: {err}");
+    }
+}
+
+pub fn set_maximized(window: &Window, maximized: bool) {
+    if let Some(surface) = window.x11_surface()
+        && let Err(err) = surface.set_maximized(maximized)
+    {
+        eventline::warn!("xwayland: failed to set maximized={maximized}: {err}");
+    }
 }
 
 pub fn compositor_client_state(

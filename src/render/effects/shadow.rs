@@ -34,7 +34,7 @@ pub struct ShadowElement {
     destination: Rectangle<i32, Physical>,
     caster_size: (f32, f32),
     caster_center: (f32, f32),
-    corner_radius: f32,
+    corner_radii: crate::render::window_decoration::CornerRadii,
     spread: f32,
     blur_radius: f32,
     color: (f32, f32, f32, f32),
@@ -50,6 +50,25 @@ impl ShadowRenderer {
         identity: impl Into<String>,
         caster: Rectangle<i32, Physical>,
         corner_radius: f32,
+        alpha: f32,
+        config: halley_config::ShadowLayer,
+    ) -> Result<Option<ShadowElement>, Box<dyn Error>> {
+        self.element_with_radii(
+            renderer,
+            identity,
+            caster,
+            crate::render::window_decoration::CornerRadii::all(corner_radius),
+            alpha,
+            config,
+        )
+    }
+
+    pub fn element_with_radii(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        identity: impl Into<String>,
+        caster: Rectangle<i32, Physical>,
+        corner_radii: crate::render::window_decoration::CornerRadii,
         alpha: f32,
         config: halley_config::ShadowLayer,
     ) -> Result<Option<ShadowElement>, Box<dyn Error>> {
@@ -71,14 +90,17 @@ impl ShadowRenderer {
         let id = self.ids.entry(identity).or_insert_with(Id::new).clone();
         Ok(Some(ShadowElement {
             id,
-            commit: shadow_commit(caster, corner_radius, alpha, config),
+            commit: shadow_commit(caster, corner_radii, alpha, config),
             destination,
             caster_size: (caster.size.w as f32, caster.size.h as f32),
             caster_center: (
                 pad as f32 + caster.size.w as f32 * 0.5,
                 pad as f32 + caster.size.h as f32 * 0.5,
             ),
-            corner_radius: corner_radius.max(0.0),
+            corner_radii: crate::render::window_decoration::CornerRadii {
+                top: corner_radii.top.max(0.0),
+                bottom: corner_radii.bottom.max(0.0),
+            },
             spread: config.spread.max(0.0),
             blur_radius: config.blur_radius.max(0.0),
             color: (
@@ -118,7 +140,7 @@ impl ShadowRenderer {
                     UniformName::new("rect_size", UniformType::_2f),
                     UniformName::new("caster_size", UniformType::_2f),
                     UniformName::new("caster_center", UniformType::_2f),
-                    UniformName::new("corner_radius", UniformType::_1f),
+                    UniformName::new("corner_radii", UniformType::_2f),
                     UniformName::new("spread", UniformType::_1f),
                     UniformName::new("shadow_radius", UniformType::_1f),
                     UniformName::new("shadow_color", UniformType::_4f),
@@ -210,7 +232,10 @@ impl RenderElement<GlesRenderer> for ShadowElement {
                 ),
                 Uniform::new("caster_size", self.caster_size),
                 Uniform::new("caster_center", self.caster_center),
-                Uniform::new("corner_radius", self.corner_radius),
+                Uniform::new(
+                    "corner_radii",
+                    (self.corner_radii.top, self.corner_radii.bottom),
+                ),
                 Uniform::new("spread", self.spread),
                 Uniform::new("shadow_radius", self.blur_radius),
                 Uniform::new("shadow_color", self.color),
@@ -246,7 +271,7 @@ fn shadow_geometry(
 
 fn shadow_commit(
     caster: Rectangle<i32, Physical>,
-    corner_radius: f32,
+    corner_radii: crate::render::window_decoration::CornerRadii,
     alpha: f32,
     config: halley_config::ShadowLayer,
 ) -> CommitCounter {
@@ -255,7 +280,8 @@ fn shadow_commit(
     caster.loc.y.hash(&mut hash);
     caster.size.w.hash(&mut hash);
     caster.size.h.hash(&mut hash);
-    corner_radius.to_bits().hash(&mut hash);
+    corner_radii.top.to_bits().hash(&mut hash);
+    corner_radii.bottom.to_bits().hash(&mut hash);
     alpha.to_bits().hash(&mut hash);
     config.enabled.hash(&mut hash);
     config.blur_radius.to_bits().hash(&mut hash);

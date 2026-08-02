@@ -185,6 +185,10 @@ where
         crate::input::pointer::PointerTarget::Layer(layer) => {
             super::focus::focus_layer(session, Some(layer.clone()), serial);
         }
+        crate::input::pointer::PointerTarget::Decoration { window, .. } => {
+            super::focus::focus_window_from_pointer(session, window, serial);
+            return;
+        }
         crate::input::pointer::PointerTarget::Background => {
             super::focus::focus_layer(session, None, serial);
         }
@@ -201,7 +205,8 @@ where
             CoordinateSpace::Window(crate::wayland::compositor::root_surface(&surface))
         }
         crate::input::pointer::PointerTarget::Layer(_)
-        | crate::input::pointer::PointerTarget::Background => CoordinateSpace::Screen,
+        | crate::input::pointer::PointerTarget::Background
+        | crate::input::pointer::PointerTarget::Decoration { .. } => CoordinateSpace::Screen,
     };
     session.touch.begin(
         event.slot(),
@@ -332,6 +337,8 @@ fn route<D: SessionDriver>(
             primary: session.driver.primary_output(),
             fullscreen: &session.fullscreen,
             maximize: &session.maximize,
+            decorations: &session.settings.decorations,
+            font: &session.settings.font,
             focused: session.wayland.focused_window.as_ref(),
             now: crate::frame_clock::monotonic_now(),
         },

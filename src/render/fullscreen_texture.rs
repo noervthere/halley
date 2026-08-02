@@ -37,7 +37,7 @@ uniform sampler2D halley_next_tex;
 uniform float halley_progress;
 uniform float alpha;
 uniform vec2 halley_rect_size;
-uniform float halley_corner_radius;
+uniform vec2 halley_corner_radii;
 
 #if defined(DEBUG_FLAGS)
 uniform float tint;
@@ -46,7 +46,8 @@ uniform float tint;
 // Signed distance to a rounded rectangle, negative inside. See the matching
 // note in `window_decoration.rs`: the interior term is what stops a radius
 // animating toward zero from fading the whole surface to half opacity.
-float rounded_alpha(vec2 coords, vec2 size, float radius) {
+float rounded_alpha(vec2 coords, vec2 size, vec2 radii) {
+    float radius = coords.y < size.y * 0.5 ? radii.x : radii.y;
     radius = clamp(radius, 0.0, min(size.x, size.y) * 0.5);
     vec2 half_size = size * 0.5;
     vec2 q = abs(coords - half_size) - (half_size - vec2(radius));
@@ -62,7 +63,7 @@ void main() {
 #endif
     vec4 next = texture2D(halley_next_tex, v_coords);
     vec2 size = max(halley_rect_size, vec2(1.0));
-    float mask = rounded_alpha(v_coords * size, size, halley_corner_radius);
+    float mask = rounded_alpha(v_coords * size, size, halley_corner_radii);
     vec4 color = mix(previous, next, halley_progress) * (alpha * mask);
 
 #if defined(DEBUG_FLAGS)
@@ -102,7 +103,7 @@ pub struct FullscreenBlendElement {
     program: GlesTexProgram,
     progress: f32,
     size: (f32, f32),
-    radius: f32,
+    radii: super::window_decoration::CornerRadii,
 }
 
 impl FullscreenTextureTransitions {
@@ -145,7 +146,7 @@ impl FullscreenTextureTransitions {
         destination: Rectangle<i32, Physical>,
         progress: f64,
         alpha: f32,
-        radius: f32,
+        radii: super::window_decoration::CornerRadii,
     ) -> Result<Option<FullscreenBlendElement>, Box<dyn Error>> {
         let surface = window
             .wl_surface()
@@ -180,7 +181,7 @@ impl FullscreenTextureTransitions {
                         UniformName::new("halley_next_tex", UniformType::_1i),
                         UniformName::new("halley_progress", UniformType::_1f),
                         UniformName::new("halley_rect_size", UniformType::_2f),
-                        UniformName::new("halley_corner_radius", UniformType::_1f),
+                        UniformName::new("halley_corner_radii", UniformType::_2f),
                     ],
                 )?;
                 self.program = Some((context.clone(), program.clone()));
@@ -196,9 +197,16 @@ impl FullscreenTextureTransitions {
             program,
             progress: progress.clamp(0.0, 1.0) as f32,
             size: (destination.size.w as f32, destination.size.h as f32),
-            radius: radius
-                .max(0.0)
-                .min(destination.size.w.min(destination.size.h).max(0) as f32 * 0.5),
+            radii: super::window_decoration::CornerRadii {
+                top: radii
+                    .top
+                    .max(0.0)
+                    .min(destination.size.w.min(destination.size.h).max(0) as f32 * 0.5),
+                bottom: radii
+                    .bottom
+                    .max(0.0)
+                    .min(destination.size.w.min(destination.size.h).max(0) as f32 * 0.5),
+            },
         }))
     }
 }
@@ -291,7 +299,7 @@ impl RenderElement<GlesRenderer> for FullscreenBlendElement {
                 Uniform::new("halley_next_tex", 1_i32),
                 Uniform::new("halley_progress", self.progress),
                 Uniform::new("halley_rect_size", self.size),
-                Uniform::new("halley_corner_radius", self.radius),
+                Uniform::new("halley_corner_radii", (self.radii.top, self.radii.bottom)),
             ],
         );
 

@@ -14,6 +14,7 @@ mod presentation;
 mod render;
 mod session;
 mod shell;
+mod titlebar;
 mod wayland;
 mod window;
 mod xwayland;

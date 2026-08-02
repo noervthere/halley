@@ -9,6 +9,7 @@ pub struct RuntimeSettings {
     pub apogee: halley_config::Apogee,
     pub input: halley_config::Input,
     pub decorations: halley_config::Decorations,
+    pub font: halley_config::Font,
     pub effects: halley_config::Effects,
     pub background: halley_config::Background,
     pub field: halley_config::Field,
@@ -23,6 +24,7 @@ impl RuntimeSettings {
             apogee: config.apogee,
             input: applied_input,
             decorations: config.decorations,
+            font: config.font.clone(),
             effects: config.effects,
             background: config.background.clone(),
             field: config.field,
@@ -33,6 +35,7 @@ impl RuntimeSettings {
 
     pub fn visuals_changed(&self, config: &halley_config::RuntimeConfig) -> bool {
         self.decorations != config.decorations
+            || self.font != config.font
             || self.effects != config.effects
             || self.background != config.background
             || self.zoom != config.field.zoom
@@ -45,6 +48,7 @@ impl RuntimeSettings {
     pub fn reload_non_input(&mut self, config: &halley_config::RuntimeConfig) {
         self.apogee = config.apogee;
         self.decorations = config.decorations;
+        self.font = config.font.clone();
         self.effects = config.effects;
         self.background = config.background.clone();
         self.field = config.field;

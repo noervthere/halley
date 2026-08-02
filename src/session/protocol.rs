@@ -761,14 +761,17 @@ impl<D: SessionDriver> WlrLayerShellHandler for Session<D> {
 impl<D: SessionDriver> XdgDecorationHandler for Session<D> {
     fn new_decoration(&mut self, toplevel: ToplevelSurface) {
         wayland::decoration::new_decoration(toplevel);
+        self.request_redraw();
     }
 
     fn request_mode(&mut self, toplevel: ToplevelSurface, mode: DecorationMode) {
         wayland::decoration::request_mode(toplevel, mode);
+        self.request_redraw();
     }
 
     fn unset_mode(&mut self, toplevel: ToplevelSurface) {
         wayland::decoration::unset_mode(toplevel);
+        self.request_redraw();
     }
 }
 

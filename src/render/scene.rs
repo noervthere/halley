@@ -568,6 +568,7 @@ pub fn build(
         target_presentation_time: request.frame.target_presentation_time,
         focused: request.desktop.focused,
         decorations: request.visuals.decorations,
+        font: request.visuals.font,
         blur: request.visuals.blur,
         shadow_config: request.visuals.shadows.window,
         window_open_animations: request.desktop.window_open_animations,
@@ -576,6 +577,8 @@ pub fn build(
         window_rules: request.desktop.window_rules,
         cluster_presentation_override: None,
         instance_identity: None,
+        titlebar_hovered: request.desktop.titlebar_hovered,
+        titlebar_pressed: request.desktop.titlebar_pressed,
     };
     let mut live_windows = Vec::new();
     let mut exclusive_windows = Vec::new();
@@ -591,6 +594,9 @@ pub fn build(
             request.resources.backdrop_blur_renderer,
             request.resources.shadow_renderer,
             request.resources.window_decoration_renderer,
+            request.resources.titlebar_renderer,
+            request.resources.node_renderer,
+            request.resources.ui_text,
         )?;
         if window_scene.cluster_exclusive {
             exclusive_windows.push((stack_index, window_scene));
@@ -620,6 +626,9 @@ pub fn build(
                 request.resources.backdrop_blur_renderer,
                 request.resources.shadow_renderer,
                 request.resources.window_decoration_renderer,
+                request.resources.titlebar_renderer,
+                request.resources.node_renderer,
+                request.resources.ui_text,
             )?;
             if !extra_scene.elements.is_empty() {
                 live_windows.push((stack_index, extra_scene));

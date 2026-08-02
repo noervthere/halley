@@ -397,6 +397,12 @@ fn pointer_route_state<D: SessionDriver>(session: &Session<D>) -> String {
             |surface| format!("xid:{}", surface.window_id()),
         ),
         crate::input::pointer::PointerTarget::Layer(_) => "layer".to_string(),
+        crate::input::pointer::PointerTarget::Decoration { window, hit } => {
+            window.x11_surface().map_or_else(
+                || format!("wayland-decoration:{hit:?}"),
+                |surface| format!("xid:{}-decoration:{hit:?}", surface.window_id()),
+            )
+        }
         crate::input::pointer::PointerTarget::Background => "background".to_string(),
     };
     let local = route

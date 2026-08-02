@@ -9,6 +9,7 @@ pub mod rescale;
 pub mod resources;
 pub mod scene;
 pub mod text;
+pub mod titlebar;
 pub mod window_decoration;
 pub mod window_texture;
 
@@ -207,6 +208,8 @@ pub struct DesktopContext<'a> {
     pub clusters: &'a crate::clusters::ClusterSystem,
     pub window_rules: &'a crate::window::rules::WindowRulesState,
     pub node_grab_active: bool,
+    pub titlebar_hovered: Option<&'a crate::titlebar::ButtonTarget>,
+    pub titlebar_pressed: Option<&'a crate::titlebar::ButtonTarget>,
 }
 
 /// Cursor presentation inputs. Pointer constraint policy is deliberately not
@@ -232,6 +235,7 @@ pub struct OverlayContext<'a> {
 /// Immutable visual configuration for one frame.
 pub struct VisualContext<'a> {
     pub decorations: &'a Decorations,
+    pub font: &'a halley_config::Font,
     pub blur: halley_config::Blur,
     pub shadows: halley_config::Shadows,
     pub background: &'a halley_config::Background,
@@ -257,18 +261,49 @@ pub trait Renderable {
     ) -> Result<RenderOutcome, Box<dyn std::error::Error>>;
 }
 
-fn border_color(color: halley_config::BorderColor) -> Color32F {
+pub fn decoration_color(color: halley_config::BorderColor) -> Color32F {
     Color32F::new(color.r, color.g, color.b, 1.0)
 }
 
 /// Whichever color a window's border should be drawn in, given whether its
 /// surface is the focused one.
 pub fn window_border_color(decorations: &Decorations, is_focused: bool) -> Color32F {
-    border_color(if is_focused {
+    decoration_color(if is_focused {
         decorations.border_color_focused
     } else {
         decorations.border_color_unfocused
     })
+}
+
+/// Left, right, and bottom strips used when a titlebar owns the top edge.
+pub fn body_border_strips(
+    bbox: Rectangle<i32, Physical>,
+    width: i32,
+    color: Color32F,
+) -> [SolidColorRenderElement; 3] {
+    let make = |rect: Rectangle<i32, Physical>| {
+        SolidColorRenderElement::new(
+            Id::new(),
+            rect,
+            CommitCounter::default(),
+            color,
+            Kind::Unspecified,
+        )
+    };
+    [
+        make(Rectangle::new(
+            (bbox.loc.x - width, bbox.loc.y).into(),
+            (width, bbox.size.h + width).into(),
+        )),
+        make(Rectangle::new(
+            (bbox.loc.x + bbox.size.w, bbox.loc.y).into(),
+            (width, bbox.size.h + width).into(),
+        )),
+        make(Rectangle::new(
+            (bbox.loc.x - width, bbox.loc.y + bbox.size.h).into(),
+            (bbox.size.w + width * 2, width).into(),
+        )),
+    ]
 }
 
 /// Four thin solid-color strips forming a frame just outside `bbox` - not

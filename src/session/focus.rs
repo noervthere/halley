@@ -230,6 +230,23 @@ pub(super) fn update_hover<D: SessionDriver>(
                 );
             }
         }
+        crate::input::pointer::PointerTarget::Decoration { window, .. } => {
+            let window = stacking_front_window(session, window).unwrap_or_else(|| window.clone());
+            let surface = window.wl_surface().map(std::borrow::Cow::into_owned);
+            let node = surface
+                .as_ref()
+                .and_then(|surface| session.nodes.id_for_surface(surface));
+            if surface.is_some()
+                && (session.wayland.focused_window != surface || session.nodes.focused() != node)
+            {
+                focus_window_with_raise(
+                    session,
+                    &window,
+                    serial,
+                    should_raise(FocusOrigin::Hover, session.settings.input.raise_on_click),
+                );
+            }
+        }
         crate::input::pointer::PointerTarget::Layer(layer)
             if layer.cached_state().keyboard_interactivity == KeyboardInteractivity::OnDemand =>
         {

@@ -52,6 +52,8 @@ pub(super) fn route_client<D: SessionDriver>(
             primary: session.driver.primary_output(),
             fullscreen: &session.fullscreen,
             maximize: &session.maximize,
+            decorations: &session.settings.decorations,
+            font: &session.settings.font,
             focused: session.wayland.focused_window.as_ref(),
             now: crate::frame_clock::monotonic_now(),
         },

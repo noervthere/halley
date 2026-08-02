@@ -734,17 +734,22 @@ fn toggle_field_maximize<D: SessionDriver>(
         return false;
     };
     let usable = smithay::desktop::layer_map_for_output(&target_output).non_exclusive_zone();
-    let inset = (session.settings.field.gap.ceil() as i32)
-        .saturating_add(session.settings.decorations.border_width_px);
-    let target = Rectangle::new(
+    let gap = session.settings.field.gap.ceil() as i32;
+    let outer_target = Rectangle::new(
         output_geometry.loc
             + usable.loc
-            + smithay::utils::Point::<i32, smithay::utils::Logical>::from((inset, inset)),
+            + smithay::utils::Point::<i32, smithay::utils::Logical>::from((gap, gap)),
         (
-            usable.size.w.saturating_sub(inset.saturating_mul(2)).max(1),
-            usable.size.h.saturating_sub(inset.saturating_mul(2)).max(1),
+            usable.size.w.saturating_sub(gap.saturating_mul(2)).max(1),
+            usable.size.h.saturating_sub(gap.saturating_mul(2)).max(1),
         )
             .into(),
+    );
+    let target = crate::titlebar::client_rect_for_outer(
+        &record.window,
+        outer_target,
+        &session.settings.decorations,
+        &session.settings.font,
     );
     let now = crate::frame_clock::monotonic_now();
     let entering = !session.maximize.contains(&record.surface);
@@ -1142,6 +1147,25 @@ pub(crate) fn begin_client_pointer_move<D: SessionDriver>(
     serial: smithay::utils::Serial,
     button: u32,
 ) -> bool {
+    begin_pending_pointer_move(session, window, serial, button, true)
+}
+
+pub(crate) fn begin_titlebar_pointer_move<D: SessionDriver>(
+    session: &mut Session<D>,
+    window: &smithay::desktop::Window,
+    serial: smithay::utils::Serial,
+    button: u32,
+) -> bool {
+    begin_pending_pointer_move(session, window, serial, button, false)
+}
+
+fn begin_pending_pointer_move<D: SessionDriver>(
+    session: &mut Session<D>,
+    window: &smithay::desktop::Window,
+    serial: smithay::utils::Serial,
+    button: u32,
+    client_owned: bool,
+) -> bool {
     if !matches!(session.interactions.grab, crate::input::grab::Grab::None)
         || !crate::window::accepts_compositor_grab(window)
         || window.wl_surface().is_some_and(|surface| {
@@ -1155,10 +1179,12 @@ pub(crate) fn begin_client_pointer_move<D: SessionDriver>(
     let Some(route) = pointer::route_client(session) else {
         return false;
     };
-    if !matches!(
-        route.target,
-        crate::input::pointer::PointerTarget::Window(ref routed) if routed == window
-    ) {
+    let routed_window = match &route.target {
+        crate::input::pointer::PointerTarget::Window(routed)
+        | crate::input::pointer::PointerTarget::Decoration { window: routed, .. } => routed,
+        _ => return false,
+    };
+    if routed_window != window {
         return false;
     }
     let visual_geometry = route.visual_geometry.unwrap_or_else(|| {
@@ -1180,6 +1206,7 @@ pub(crate) fn begin_client_pointer_move<D: SessionDriver>(
             output: route.output.name(),
             visual_geometry,
             maximized,
+            client_owned,
         });
     true
 }
@@ -1205,7 +1232,7 @@ pub(crate) fn activate_client_pointer_move<D: SessionDriver>(
         &window,
         pending.serial,
         pending.button,
-        true,
+        pending.client_owned,
         Some(pending),
     )
 }

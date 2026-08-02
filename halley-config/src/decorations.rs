@@ -153,10 +153,7 @@ pub fn parse_decorations(config: &RuneConfig) -> Decorations {
     );
     let titlebar_defaults = defaults.titlebars;
     let button_position = match config
-        .get_or(
-            "decorations.titlebars.button-position",
-            "left".to_string(),
-        )
+        .get_or("decorations.titlebars.button-position", "left".to_string())
         .trim()
         .to_ascii_lowercase()
         .as_str()
@@ -180,16 +177,10 @@ pub fn parse_decorations(config: &RuneConfig) -> Decorations {
             titlebar_defaults.show_title,
         ),
         radius_px: config
-            .get_or(
-                "decorations.titlebars.radius",
-                titlebar_defaults.radius_px,
-            )
+            .get_or("decorations.titlebars.radius", titlebar_defaults.radius_px)
             .clamp(0, 96),
         height_px: config
-            .get_or(
-                "decorations.titlebars.height",
-                titlebar_defaults.height_px,
-            )
+            .get_or("decorations.titlebars.height", titlebar_defaults.height_px)
             .clamp(1, 96),
         color_focused: parse_color(
             config,
@@ -388,10 +379,7 @@ end
         assert_eq!(titlebars.color_focused.r, 0x11 as f32 / 255.0);
         assert_eq!(titlebars.color_unfocused.g, 0x55 as f32 / 255.0);
         assert_eq!(titlebars.foreground_color_focused.b, 0x99 as f32 / 255.0);
-        assert_eq!(
-            titlebars.foreground_color_unfocused.r,
-            0xaa as f32 / 255.0
-        );
+        assert_eq!(titlebars.foreground_color_unfocused.r, 0xaa as f32 / 255.0);
         assert_eq!(titlebars.button_hover_color.g, 0xee as f32 / 255.0);
         assert_eq!(titlebars.button_pressed_color.b, 0xdd as f32 / 255.0);
     }

@@ -9,6 +9,7 @@ use super::node::NodeRenderer;
 use super::overlays::cluster_creation::ClusterCreationOverlay;
 use super::overlays::preview::OverlayPreviewCache;
 use super::text::UiTextRenderer;
+use super::titlebar::TitlebarRenderer;
 use super::window_decoration::WindowDecorationRenderer;
 use crate::clusters::render::ClusterRenderer;
 
@@ -29,6 +30,7 @@ pub struct RenderState {
     pub(crate) backdrop_blur_renderer: BackdropBlurRenderer,
     pub(crate) shadow_renderer: ShadowRenderer,
     pub(crate) ui_text: UiTextRenderer,
+    pub(crate) titlebar_renderer: TitlebarRenderer,
 }
 
 /// Per-frame mutable view over [`RenderState`].
@@ -47,6 +49,7 @@ pub struct RenderResources<'a> {
     pub backdrop_blur_renderer: &'a mut BackdropBlurRenderer,
     pub shadow_renderer: &'a mut ShadowRenderer,
     pub ui_text: &'a mut UiTextRenderer,
+    pub titlebar_renderer: &'a mut TitlebarRenderer,
 }
 
 impl<'a> From<&'a mut RenderState> for RenderResources<'a> {
@@ -63,6 +66,7 @@ impl<'a> From<&'a mut RenderState> for RenderResources<'a> {
             backdrop_blur_renderer: &mut state.backdrop_blur_renderer,
             shadow_renderer: &mut state.shadow_renderer,
             ui_text: &mut state.ui_text,
+            titlebar_renderer: &mut state.titlebar_renderer,
         }
     }
 }
@@ -81,6 +85,7 @@ impl RenderState {
             backdrop_blur_renderer: BackdropBlurRenderer::default(),
             shadow_renderer: ShadowRenderer::default(),
             ui_text: UiTextRenderer::new(font),
+            titlebar_renderer: TitlebarRenderer::default(),
         }
     }
 }

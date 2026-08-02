@@ -27,6 +27,40 @@ const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
 const NODE_DRAG_THRESHOLD_PX: f64 = 8.0;
 
+fn activate_titlebar_control<D: SessionDriver>(
+    session: &mut Session<D>,
+    target: &crate::titlebar::ButtonTarget,
+    serial: smithay::utils::Serial,
+) {
+    if !crate::titlebar::control_enabled(&target.window, target.control) {
+        return;
+    }
+    match target.control {
+        crate::titlebar::Control::Close => {
+            if let Some(toplevel) = target.window.toplevel() {
+                toplevel.send_close();
+            } else {
+                crate::xwayland::close_window(&target.window);
+            }
+        }
+        crate::titlebar::Control::Minimize => {
+            if let Some(id) = target
+                .window
+                .wl_surface()
+                .and_then(|surface| session.nodes.id_for_surface(surface.as_ref()))
+            {
+                let _ = crate::nodes::collapse(session, id, serial);
+            }
+        }
+        crate::titlebar::Control::Maximize => {
+            if let Some(surface) = target.window.wl_surface() {
+                let maximized = session.maximize.contains(surface.as_ref());
+                let _ = super::set_surface_field_maximized(session, surface.as_ref(), !maximized);
+            }
+        }
+    }
+}
+
 fn sampled_drag_velocity(
     previous: halley_core::field::Vec2,
     current: halley_core::field::Vec2,
@@ -1108,7 +1142,7 @@ where
     {
         let pending = pending.clone();
         match pending_window_move_motion(
-            pointer_handle.has_grab(pending.serial),
+            !pending.client_owned || pointer_handle.has_grab(pending.serial),
             pending.press_screen,
             position_after,
         ) {
@@ -1510,6 +1544,20 @@ where
         if let Some(route) = route.as_ref() {
             super::focus::update_hover(session, route, SERIAL_COUNTER.next_serial());
         }
+        let titlebar_hovered = route.as_ref().and_then(|route| match &route.target {
+            crate::input::pointer::PointerTarget::Decoration {
+                window,
+                hit: crate::titlebar::Hit::Control(control),
+            } => Some(crate::titlebar::ButtonTarget {
+                window: window.clone(),
+                control: *control,
+            }),
+            _ => None,
+        });
+        if session.interactions.titlebar_hovered != titlebar_hovered {
+            session.interactions.titlebar_hovered = titlebar_hovered;
+            session.request_redraw();
+        }
         let node_grab_active = session.interactions.grab.landmark_active();
         let now = crate::frame_clock::monotonic_now();
         let hovered_bloom = (!node_grab_active)
@@ -1588,7 +1636,7 @@ where
         if matches!(
             &session.interactions.grab,
             crate::input::grab::Grab::PendingWindowMove(pending)
-                if releases_pending_window_move(
+                if pending.client_owned && releases_pending_window_move(
                     pending.button,
                     button,
                     state == ButtonState::Released,
@@ -1833,6 +1881,108 @@ where
             }
             super::pointer::finish_frame(session, &pointer_handle);
             return;
+        }
+        if button == BTN_LEFT {
+            match state {
+                ButtonState::Pressed => {
+                    if let Some(crate::input::pointer::PointerRoute {
+                        target: crate::input::pointer::PointerTarget::Decoration { window, hit },
+                        ..
+                    }) = route.as_ref()
+                    {
+                        super::focus::focus_window_from_pointer(session, window, serial);
+                        match hit {
+                            crate::titlebar::Hit::Control(control) => {
+                                session.interactions.titlebar_pressed =
+                                    Some(crate::titlebar::ButtonTarget {
+                                        window: window.clone(),
+                                        control: *control,
+                                    });
+                            }
+                            crate::titlebar::Hit::Drag => {
+                                let _ = super::begin_titlebar_pointer_move(
+                                    session, window, serial, button,
+                                );
+                            }
+                        }
+                        session.request_redraw();
+                        super::pointer::finish_frame(session, &pointer_handle);
+                        return;
+                    }
+                }
+                ButtonState::Released => {
+                    if let Some(pressed) = session.interactions.titlebar_pressed.take() {
+                        let activates = route.as_ref().is_some_and(|route| {
+                            matches!(
+                                &route.target,
+                                crate::input::pointer::PointerTarget::Decoration {
+                                    window,
+                                    hit: crate::titlebar::Hit::Control(control),
+                                } if window == &pressed.window && control == &pressed.control
+                            )
+                        });
+                        if activates {
+                            activate_titlebar_control(session, &pressed, serial);
+                        }
+                        session.request_redraw();
+                        super::pointer::finish_frame(session, &pointer_handle);
+                        return;
+                    }
+                    let pending_titlebar = match &session.interactions.grab {
+                        crate::input::grab::Grab::PendingWindowMove(pending)
+                            if !pending.client_owned && pending.button == button =>
+                        {
+                            Some(pending.clone())
+                        }
+                        _ => None,
+                    };
+                    if let Some(pending) = pending_titlebar {
+                        session.interactions.grab = crate::input::grab::Grab::None;
+                        session.cursor.set_override(None);
+                        let clicked_same_drag_region = route.as_ref().is_some_and(|route| {
+                            matches!(
+                                &route.target,
+                                crate::input::pointer::PointerTarget::Decoration {
+                                    window,
+                                    hit: crate::titlebar::Hit::Drag,
+                                } if window == &pending.window
+                            )
+                        });
+                        if clicked_same_drag_region
+                            && let Some(surface) = pending.window.wl_surface()
+                        {
+                            let now = crate::frame_clock::monotonic_now();
+                            let double_click = session
+                                .interactions
+                                .titlebar_last_click
+                                .as_ref()
+                                .is_some_and(|last| {
+                                    &last.surface == surface.as_ref()
+                                        && now.saturating_sub(last.at)
+                                            <= std::time::Duration::from_millis(500)
+                                });
+                            if double_click {
+                                session.interactions.titlebar_last_click = None;
+                                let maximized = session.maximize.contains(surface.as_ref());
+                                let _ = super::set_surface_field_maximized(
+                                    session,
+                                    surface.as_ref(),
+                                    !maximized,
+                                );
+                            } else {
+                                session.interactions.titlebar_last_click =
+                                    Some(crate::titlebar::LastClick {
+                                        surface: surface.into_owned(),
+                                        at: now,
+                                    });
+                            }
+                        }
+                        session.request_redraw();
+                        super::pointer::finish_frame(session, &pointer_handle);
+                        return;
+                    }
+                }
+            }
         }
         if button == BTN_LEFT
             && state == ButtonState::Pressed
@@ -2097,6 +2247,9 @@ where
                         }
                         Some(crate::input::pointer::PointerTarget::Layer(layer)) => {
                             super::focus::focus_layer(session, Some(layer.clone()), serial);
+                        }
+                        Some(crate::input::pointer::PointerTarget::Decoration { .. }) => {
+                            intercepted = true;
                         }
                         Some(crate::input::pointer::PointerTarget::Background) => {
                             super::focus::focus_layer(session, None, serial);

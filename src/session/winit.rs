@@ -417,6 +417,8 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                             clusters: &app.clusters,
                             window_rules: &app.window_rules,
                             node_grab_active: app.interactions.grab.landmark_active(),
+                            titlebar_hovered: app.interactions.titlebar_hovered.as_ref(),
+                            titlebar_pressed: app.interactions.titlebar_pressed.as_ref(),
                         },
                         cursor: CursorContext {
                             cursor: &app.cursor,
@@ -435,6 +437,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                         },
                         visuals: VisualContext {
                             decorations: &app.settings.decorations,
+                            font: &app.settings.font,
                             blur: app.settings.effects.blur,
                             shadows: app.settings.effects.shadows,
                             background: &app.settings.background,

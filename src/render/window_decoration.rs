@@ -33,7 +33,7 @@ varying vec2 v_coords;
 uniform float alpha;
 uniform vec2 clip_size;
 uniform vec2 draw_offset;
-uniform float corner_radius;
+uniform vec2 corner_radii;
 uniform vec3 uv_to_draw_col_0;
 uniform vec3 uv_to_draw_col_1;
 uniform vec3 uv_to_draw_col_2;
@@ -47,7 +47,8 @@ uniform vec4 content_color;
 // swallows the whole surface and fades it toward 50% opacity. That is only
 // invisible while the radius stays large - a radius animating to zero, as the
 // fullscreen transition does, dims the entire window just before it lands.
-float rounded_alpha(vec2 coords, vec2 size, float radius) {
+float rounded_alpha(vec2 coords, vec2 size, vec2 radii) {
+    float radius = coords.y < size.y * 0.5 ? radii.x : radii.y;
     radius = clamp(radius, 0.0, min(size.x, size.y) * 0.5);
     vec2 half_size = size * 0.5;
     vec2 q = abs(coords - half_size) - (half_size - vec2(radius));
@@ -62,7 +63,7 @@ void main() {
     vec2 size = max(clip_size, vec2(1.0));
     float mask = 0.0;
     if (coords.x >= 0.0 && coords.y >= 0.0 && coords.x <= size.x && coords.y <= size.y) {
-        mask = rounded_alpha(coords, size, corner_radius);
+        mask = rounded_alpha(coords, size, corner_radii);
     }
 
     vec4 sampled = texture2D(tex, v_coords);
@@ -86,10 +87,11 @@ uniform vec4 border_color;
 uniform vec2 rect_size;
 uniform vec2 inner_rect_size;
 uniform vec2 inner_rect_offset;
-uniform float corner_radius;
-uniform float inner_corner_radius;
+uniform vec2 corner_radii;
+uniform vec2 inner_corner_radii;
 
-float rounded_rect_sdf(vec2 p, vec2 size, float radius) {
+float rounded_rect_sdf(vec2 p, vec2 size, vec2 radii) {
+    float radius = p.y < 0.0 ? radii.x : radii.y;
     radius = min(max(radius, 0.0), min(size.x, size.y) * 0.5);
     vec2 half_size = size * 0.5;
     vec2 q = abs(p) - (half_size - vec2(radius));
@@ -103,12 +105,12 @@ float sdf_alpha(float distance_to_edge) {
 void main() {
     vec2 size = max(rect_size, vec2(1.0));
     vec2 p = v_coords * size - size * 0.5;
-    float outer = sdf_alpha(rounded_rect_sdf(p, size, corner_radius));
+    float outer = sdf_alpha(rounded_rect_sdf(p, size, corner_radii));
 
     vec2 inner_size = max(inner_rect_size, vec2(1.0));
     vec2 inner_center = inner_rect_offset + inner_size * 0.5 - size * 0.5;
     float inner = sdf_alpha(
-        rounded_rect_sdf(p - inner_center, inner_size, inner_corner_radius)
+        rounded_rect_sdf(p - inner_center, inner_size, inner_corner_radii)
     );
     float border = max(outer - inner, 0.0);
     gl_FragColor = border_color * (border * alpha);
@@ -122,6 +124,35 @@ pub struct Metrics {
     pub outer_radius: f32,
     pub inner_offset: f32,
     pub inner_radius: f32,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct CornerRadii {
+    pub top: f32,
+    pub bottom: f32,
+}
+
+impl CornerRadii {
+    pub fn all(radius: f32) -> Self {
+        Self {
+            top: radius,
+            bottom: radius,
+        }
+    }
+
+    pub fn top(radius: f32) -> Self {
+        Self {
+            top: radius,
+            bottom: 0.0,
+        }
+    }
+
+    pub fn bottom(radius: f32) -> Self {
+        Self {
+            top: 0.0,
+            bottom: radius,
+        }
+    }
 }
 
 pub fn metrics(content_radius: f32, border_width: f32) -> Metrics {
@@ -177,13 +208,30 @@ impl WindowDecorationRenderer {
         clip: Rectangle<i32, Physical>,
         radius: f32,
     ) -> Option<RoundedSurfaceElement> {
+        self.surface_element_with_radii(
+            renderer,
+            inner,
+            destination,
+            clip,
+            CornerRadii::all(radius),
+        )
+    }
+
+    pub fn surface_element_with_radii(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        inner: WaylandSurfaceRenderElement<GlesRenderer>,
+        destination: Rectangle<i32, Physical>,
+        clip: Rectangle<i32, Physical>,
+        radii: CornerRadii,
+    ) -> Option<RoundedSurfaceElement> {
         self.available(renderer);
         let resources = self.resources.as_ref()?;
         Some(RoundedSurfaceElement {
             inner,
             destination,
             clip,
-            radius: clamp_radius(radius, clip.size.w, clip.size.h),
+            radii: clamp_radii(radii, clip.size.w, clip.size.h),
             program: resources.surface.clone(),
             white: resources.white.clone(),
         })
@@ -245,8 +293,69 @@ impl WindowDecorationRenderer {
                 (content.size.h as f32 - JOIN_OVERLAP_PX * 2.0).max(1.0),
             ),
             inner_offset: (metrics.inner_offset, metrics.inner_offset),
-            outer_radius: metrics.outer_radius,
-            inner_radius: metrics.inner_radius,
+            outer_radii: CornerRadii::all(metrics.outer_radius),
+            inner_radii: CornerRadii::all(metrics.inner_radius),
+        })
+    }
+
+    pub fn body_border_element(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        content: Rectangle<i32, Physical>,
+        width: i32,
+        bottom_radius: f32,
+        color: smithay::backend::renderer::Color32F,
+        alpha: f32,
+    ) -> Option<RoundedBorderElement> {
+        if width <= 0 || alpha <= 0.0 {
+            return None;
+        }
+        self.available(renderer);
+        let resources = self.resources.as_ref()?;
+        let width_i = width.max(0);
+        let width_f = width_i as f32;
+        let metrics = metrics(bottom_radius, width_f);
+        let destination = Rectangle::new(
+            (content.loc.x - width_i, content.loc.y).into(),
+            (
+                (content.size.w + width_i * 2).max(1),
+                (content.size.h + width_i).max(1),
+            )
+                .into(),
+        );
+        let source = Rectangle::<f64, Logical>::from_size(
+            resources
+                .white
+                .size()
+                .to_logical(1, Transform::Normal)
+                .to_f64(),
+        );
+        let base = TextureRenderElement::from_static_texture(
+            Id::new(),
+            resources.context.clone(),
+            destination.loc.to_f64(),
+            resources.white.clone(),
+            1,
+            Transform::Normal,
+            Some(alpha.clamp(0.0, 1.0)),
+            Some(source),
+            Some(destination.size.to_logical(1)),
+            None,
+            Kind::Unspecified,
+        );
+        Some(RoundedBorderElement {
+            base,
+            white: resources.white.clone(),
+            program: resources.border.clone(),
+            color: (color.r(), color.g(), color.b(), color.a()),
+            size: (destination.size.w as f32, destination.size.h as f32),
+            inner_size: (
+                (content.size.w as f32 - JOIN_OVERLAP_PX * 2.0).max(1.0),
+                (content.size.h as f32 + JOIN_OVERLAP_PX).max(1.0),
+            ),
+            inner_offset: (metrics.inner_offset, -JOIN_OVERLAP_PX),
+            outer_radii: CornerRadii::bottom(metrics.outer_radius),
+            inner_radii: CornerRadii::bottom(metrics.inner_radius),
         })
     }
 
@@ -258,15 +367,34 @@ impl WindowDecorationRenderer {
         clip: Rectangle<i32, Physical>,
         radius: f32,
     ) -> Option<RoundedTextureElement> {
+        self.texture_element_with_radii(
+            renderer,
+            base,
+            texture,
+            clip,
+            CornerRadii::all(radius),
+            (1.0, 1.0, 1.0, 1.0),
+        )
+    }
+
+    pub fn texture_element_with_radii(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        base: TextureRenderElement<GlesTexture>,
+        texture: GlesTexture,
+        clip: Rectangle<i32, Physical>,
+        radii: CornerRadii,
+        content_color: (f32, f32, f32, f32),
+    ) -> Option<RoundedTextureElement> {
         self.available(renderer);
         let resources = self.resources.as_ref()?;
         Some(RoundedTextureElement {
             base,
             texture,
             clip,
-            radius: clamp_radius(radius, clip.size.w, clip.size.h),
+            radii: clamp_radii(radii, clip.size.w, clip.size.h),
             program: resources.surface.clone(),
-            content_color: (1.0, 1.0, 1.0, 1.0),
+            content_color,
         })
     }
 
@@ -275,6 +403,23 @@ impl WindowDecorationRenderer {
         renderer: &mut GlesRenderer,
         destination: Rectangle<i32, Physical>,
         radius: f32,
+        color: smithay::backend::renderer::Color32F,
+        alpha: f32,
+    ) -> Option<RoundedTextureElement> {
+        self.tint_element_with_radii(
+            renderer,
+            destination,
+            CornerRadii::all(radius),
+            color,
+            alpha,
+        )
+    }
+
+    pub fn tint_element_with_radii(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        destination: Rectangle<i32, Physical>,
+        radii: CornerRadii,
         color: smithay::backend::renderer::Color32F,
         alpha: f32,
     ) -> Option<RoundedTextureElement> {
@@ -307,7 +452,7 @@ impl WindowDecorationRenderer {
             base,
             texture: resources.white.clone(),
             clip: destination,
-            radius: clamp_radius(radius, destination.size.w, destination.size.h),
+            radii: clamp_radii(radii, destination.size.w, destination.size.h),
             program: resources.surface.clone(),
             content_color: (color.r(), color.g(), color.b(), color.a()),
         })
@@ -338,7 +483,7 @@ impl WindowDecorationRenderer {
                 &[
                     UniformName::new("clip_size", UniformType::_2f),
                     UniformName::new("draw_offset", UniformType::_2f),
-                    UniformName::new("corner_radius", UniformType::_1f),
+                    UniformName::new("corner_radii", UniformType::_2f),
                     UniformName::new("uv_to_draw_col_0", UniformType::_3f),
                     UniformName::new("uv_to_draw_col_1", UniformType::_3f),
                     UniformName::new("uv_to_draw_col_2", UniformType::_3f),
@@ -352,8 +497,8 @@ impl WindowDecorationRenderer {
                     UniformName::new("rect_size", UniformType::_2f),
                     UniformName::new("inner_rect_size", UniformType::_2f),
                     UniformName::new("inner_rect_offset", UniformType::_2f),
-                    UniformName::new("corner_radius", UniformType::_1f),
-                    UniformName::new("inner_corner_radius", UniformType::_1f),
+                    UniformName::new("corner_radii", UniformType::_2f),
+                    UniformName::new("inner_corner_radii", UniformType::_2f),
                 ],
             )?;
             Ok::<_, Box<dyn Error>>(Resources {
@@ -383,7 +528,7 @@ pub struct RoundedSurfaceElement {
     inner: WaylandSurfaceRenderElement<GlesRenderer>,
     destination: Rectangle<i32, Physical>,
     clip: Rectangle<i32, Physical>,
-    radius: f32,
+    radii: CornerRadii,
     program: GlesTexProgram,
     white: GlesTexture,
 }
@@ -448,7 +593,7 @@ impl RenderElement<GlesRenderer> for RoundedSurfaceElement {
                 self.alpha(),
                 &self.program,
                 self.clip,
-                self.radius,
+                self.radii,
                 (1.0, 1.0, 1.0, 1.0),
             ),
             WaylandSurfaceTexture::SolidColor(color) => {
@@ -463,7 +608,7 @@ impl RenderElement<GlesRenderer> for RoundedSurfaceElement {
                     self.alpha(),
                     &self.program,
                     self.clip,
-                    self.radius,
+                    self.radii,
                     (color.r(), color.g(), color.b(), color.a()),
                 )
             }
@@ -480,7 +625,7 @@ pub struct RoundedTextureElement {
     base: TextureRenderElement<GlesTexture>,
     texture: GlesTexture,
     clip: Rectangle<i32, Physical>,
-    radius: f32,
+    radii: CornerRadii,
     program: GlesTexProgram,
     content_color: (f32, f32, f32, f32),
 }
@@ -539,7 +684,7 @@ impl RenderElement<GlesRenderer> for RoundedTextureElement {
             self.alpha(),
             &self.program,
             self.clip,
-            self.radius,
+            self.radii,
             self.content_color,
         )
     }
@@ -558,8 +703,8 @@ pub struct RoundedBorderElement {
     size: (f32, f32),
     inner_size: (f32, f32),
     inner_offset: (f32, f32),
-    outer_radius: f32,
-    inner_radius: f32,
+    outer_radii: CornerRadii,
+    inner_radii: CornerRadii,
 }
 
 impl Element for RoundedBorderElement {
@@ -620,8 +765,14 @@ impl RenderElement<GlesRenderer> for RoundedBorderElement {
                 Uniform::new("rect_size", self.size),
                 Uniform::new("inner_rect_size", self.inner_size),
                 Uniform::new("inner_rect_offset", self.inner_offset),
-                Uniform::new("corner_radius", self.outer_radius),
-                Uniform::new("inner_corner_radius", self.inner_radius),
+                Uniform::new(
+                    "corner_radii",
+                    (self.outer_radii.top, self.outer_radii.bottom),
+                ),
+                Uniform::new(
+                    "inner_corner_radii",
+                    (self.inner_radii.top, self.inner_radii.bottom),
+                ),
             ],
         )
     }
@@ -642,7 +793,7 @@ fn draw_masked_texture(
     alpha: f32,
     program: &GlesTexProgram,
     clip: Rectangle<i32, Physical>,
-    radius: f32,
+    radii: CornerRadii,
     content_color: (f32, f32, f32, f32),
 ) -> Result<(), GlesError> {
     let uv_to_draw = texture_matrix(src, dst, texture.size(), transform, texture.is_y_inverted())
@@ -657,7 +808,7 @@ fn draw_masked_texture(
                 (dst.loc.y - clip.loc.y) as f32,
             ),
         ),
-        Uniform::new("corner_radius", radius),
+        Uniform::new("corner_radii", (radii.top, radii.bottom)),
         Uniform::new(
             "uv_to_draw_col_0",
             (uv_to_draw.x.x, uv_to_draw.x.y, uv_to_draw.x.z),
@@ -741,6 +892,13 @@ pub fn scaled_metric(base: i32, scale: f32) -> i32 {
 
 fn clamp_radius(radius: f32, width: i32, height: i32) -> f32 {
     radius.max(0.0).min(width.min(height).max(0) as f32 * 0.5)
+}
+
+fn clamp_radii(radii: CornerRadii, width: i32, height: i32) -> CornerRadii {
+    CornerRadii {
+        top: clamp_radius(radii.top, width, height),
+        bottom: clamp_radius(radii.bottom, width, height),
+    }
 }
 
 #[cfg(test)]

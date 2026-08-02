@@ -34,6 +34,7 @@ pub struct PendingWindowMove {
     pub output: String,
     pub visual_geometry: Rectangle<i32, Logical>,
     pub maximized: bool,
+    pub client_owned: bool,
 }
 
 /// What's currently being dragged with the left mouse button held, if

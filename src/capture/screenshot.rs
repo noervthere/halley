@@ -103,6 +103,8 @@ pub fn save_region<D: SessionDriver>(
                             clusters,
                             window_rules,
                             node_grab_active,
+                            titlebar_hovered: session.interactions.titlebar_hovered.as_ref(),
+                            titlebar_pressed: session.interactions.titlebar_pressed.as_ref(),
                         },
                         cursor: CursorContext {
                             cursor,
@@ -121,6 +123,7 @@ pub fn save_region<D: SessionDriver>(
                         },
                         visuals: VisualContext {
                             decorations,
+                            font: &session.settings.font,
                             blur,
                             shadows,
                             background: &session.settings.background,
@@ -354,6 +357,8 @@ where
                     clusters,
                     window_rules,
                     node_grab_active,
+                    titlebar_hovered: session.interactions.titlebar_hovered.as_ref(),
+                    titlebar_pressed: session.interactions.titlebar_pressed.as_ref(),
                 },
                 cursor: CursorContext {
                     cursor,
@@ -372,6 +377,7 @@ where
                 },
                 visuals: VisualContext {
                     decorations,
+                    font: &session.settings.font,
                     blur,
                     shadows,
                     background: &session.settings.background,

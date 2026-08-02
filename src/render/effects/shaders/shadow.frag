@@ -7,12 +7,13 @@ uniform float alpha;
 uniform vec2 rect_size;
 uniform vec2 caster_size;
 uniform vec2 caster_center;
-uniform float corner_radius;
+uniform vec2 corner_radii;
 uniform float spread;
 uniform float shadow_radius;
 uniform vec4 shadow_color;
 
-float rounded_rect_sdf(vec2 p, vec2 size, float radius) {
+float rounded_rect_sdf(vec2 p, vec2 size, vec2 radii) {
+    float radius = p.y < 0.0 ? radii.x : radii.y;
     vec2 half_size = size * 0.5;
     vec2 q = abs(p) - (half_size - vec2(radius));
     return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - radius;
@@ -30,9 +31,9 @@ float erf_approx(float x) {
 void main() {
     vec2 size = max(rect_size, vec2(1.0));
     vec2 caster = max(caster_size, vec2(1.0));
-    float radius = min(max(corner_radius, 0.0), min(caster.x, caster.y) * 0.5);
     vec2 p = v_coords * size - caster_center;
-    float dist = rounded_rect_sdf(p, caster, radius);
+    vec2 radii = clamp(corner_radii, vec2(0.0), vec2(min(caster.x, caster.y) * 0.5));
+    float dist = rounded_rect_sdf(p, caster, radii);
 
     float blur = max(shadow_radius, 1.0);
     float outset = max(spread, 0.0);

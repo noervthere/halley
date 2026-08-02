@@ -429,10 +429,17 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
         if property == WmWindowProperty::Hints {
             sync_urgency(&surface);
         }
-        if matches!(property, WmWindowProperty::Class | WmWindowProperty::Title)
-            && let Some(window) = window_for_surface(&self.wayland, &self.nodes, &surface)
+        if matches!(
+            property,
+            WmWindowProperty::Class
+                | WmWindowProperty::Title
+                | WmWindowProperty::MotifHints
+                | WmWindowProperty::NormalHints
+        ) && let Some(window) = window_for_surface(&self.wayland, &self.nodes, &surface)
         {
-            self.window_rules.track_window(&window);
+            if matches!(property, WmWindowProperty::Class | WmWindowProperty::Title) {
+                self.window_rules.track_window(&window);
+            }
             self.request_redraw();
         }
         if property == WmWindowProperty::NormalHints {

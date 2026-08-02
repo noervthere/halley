@@ -15,6 +15,9 @@ pub struct InteractionState {
     pub(crate) suppressed_keys: SuppressedKeys,
     pub(crate) wheel_accumulator: WheelAccumulator,
     pub(crate) pointer_constraints: super::pointer::PointerConstraintLifecycle,
+    pub(crate) titlebar_hovered: Option<crate::titlebar::ButtonTarget>,
+    pub(crate) titlebar_pressed: Option<crate::titlebar::ButtonTarget>,
+    pub(crate) titlebar_last_click: Option<crate::titlebar::LastClick>,
 }
 
 impl Default for InteractionState {
@@ -26,6 +29,9 @@ impl Default for InteractionState {
             suppressed_keys: SuppressedKeys::default(),
             wheel_accumulator: WheelAccumulator::default(),
             pointer_constraints: super::pointer::PointerConstraintLifecycle::default(),
+            titlebar_hovered: None,
+            titlebar_pressed: None,
+            titlebar_last_click: None,
         }
     }
 }
