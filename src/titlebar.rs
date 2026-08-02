@@ -249,6 +249,40 @@ pub fn client_rect_for_outer(
     }
 }
 
+pub fn outer_size_for_client(
+    window: &Window,
+    client: smithay::utils::Size<i32, smithay::utils::Logical>,
+    decorations: &halley_config::Decorations,
+    font: &halley_config::Font,
+) -> smithay::utils::Size<i32, smithay::utils::Logical> {
+    let border = decorations.border_width_px.max(0);
+    let vertical = if uses_server_titlebar(window, &decorations.titlebars) {
+        effective_height(&decorations.titlebars, font.size).saturating_add(border)
+    } else {
+        border.saturating_mul(2)
+    };
+    (
+        client.w.saturating_add(border.saturating_mul(2)).max(1),
+        client.h.saturating_add(vertical).max(1),
+    )
+        .into()
+}
+
+pub fn client_location_for_outer(
+    window: &Window,
+    outer: smithay::utils::Point<i32, smithay::utils::Logical>,
+    decorations: &halley_config::Decorations,
+    font: &halley_config::Font,
+) -> smithay::utils::Point<i32, smithay::utils::Logical> {
+    let border = decorations.border_width_px.max(0);
+    let top = if uses_server_titlebar(window, &decorations.titlebars) {
+        effective_height(&decorations.titlebars, font.size)
+    } else {
+        border
+    };
+    (outer.x.saturating_add(border), outer.y.saturating_add(top)).into()
+}
+
 #[cfg(test)]
 mod tests {
     use smithay::utils::{Logical, Point, Rectangle};

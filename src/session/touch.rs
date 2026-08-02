@@ -7,6 +7,7 @@ use smithay::input::touch::{DownEvent, MotionEvent, UpEvent};
 use smithay::output::Output;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point, SERIAL_COUNTER};
+use smithay::wayland::seat::WaylandFocus;
 
 use super::{Session, SessionDriver};
 
@@ -22,9 +23,16 @@ struct TouchTarget {
     coordinates: CoordinateSpace,
 }
 
+#[derive(Clone, Debug)]
+struct DecorationTouch {
+    target: crate::titlebar::ButtonTarget,
+    screen: Point<f64, Logical>,
+}
+
 #[derive(Default)]
 pub(super) struct TouchState {
     targets: HashMap<smithay::backend::input::TouchSlot, TouchTarget>,
+    decorations: HashMap<smithay::backend::input::TouchSlot, DecorationTouch>,
 }
 
 impl TouchState {
@@ -36,16 +44,39 @@ impl TouchState {
         self.targets.remove(&slot).is_some()
     }
 
+    fn begin_decoration(
+        &mut self,
+        slot: smithay::backend::input::TouchSlot,
+        target: crate::titlebar::ButtonTarget,
+        screen: Point<f64, Logical>,
+    ) {
+        self.decorations
+            .insert(slot, DecorationTouch { target, screen });
+    }
+
+    fn finish_decoration(
+        &mut self,
+        slot: smithay::backend::input::TouchSlot,
+    ) -> Option<DecorationTouch> {
+        self.decorations.remove(&slot)
+    }
+
     fn has_surface(&self, surface: &WlSurface) -> bool {
         let root = crate::wayland::compositor::root_surface(surface);
         self.targets
             .values()
             .any(|target| crate::wayland::compositor::root_surface(&target.surface) == root)
+            || self.decorations.values().any(|touch| {
+                touch.target.window.wl_surface().is_some_and(|candidate| {
+                    crate::wayland::compositor::root_surface(candidate.as_ref()) == root
+                })
+            })
     }
 
     fn clear(&mut self) -> bool {
-        let active = !self.targets.is_empty();
+        let active = !self.targets.is_empty() || !self.decorations.is_empty();
         self.targets.clear();
+        self.decorations.clear();
         active
     }
 }
@@ -185,8 +216,21 @@ where
         crate::input::pointer::PointerTarget::Layer(layer) => {
             super::focus::focus_layer(session, Some(layer.clone()), serial);
         }
-        crate::input::pointer::PointerTarget::Decoration { window, .. } => {
+        crate::input::pointer::PointerTarget::Decoration { window, hit } => {
             super::focus::focus_window_from_pointer(session, window, serial);
+            if let crate::titlebar::Hit::Control(control) = hit
+                && crate::titlebar::control_enabled(window, *control)
+            {
+                let target = crate::titlebar::ButtonTarget {
+                    window: window.clone(),
+                    control: *control,
+                };
+                session
+                    .touch
+                    .begin_decoration(event.slot(), target.clone(), screen);
+                session.interactions.titlebar_pressed = Some(target);
+                session.request_redraw();
+            }
             return;
         }
         crate::input::pointer::PointerTarget::Background => {
@@ -232,18 +276,40 @@ where
     D: SessionDriver,
     B: InputBackend,
 {
-    let Some(handle) = session.seat.get_touch() else {
-        return;
-    };
-    let Some(target) = session.touch.targets.get(&event.slot()).cloned() else {
-        return;
-    };
     let Some(screen) = screen_position(
         &session.settings.input,
         &session.wayland,
         session.driver.primary_output(),
         event,
     ) else {
+        return;
+    };
+    if let Some(target) = session
+        .touch
+        .decorations
+        .get(&event.slot())
+        .map(|touch| touch.target.clone())
+    {
+        if let Some(touch) = session.touch.decorations.get_mut(&event.slot()) {
+            touch.screen = screen;
+        }
+        let hovered = route(session, screen).is_some_and(|route| {
+            matches!(
+                route.target,
+                crate::input::pointer::PointerTarget::Decoration {
+                    window,
+                    hit: crate::titlebar::Hit::Control(control),
+                } if window == target.window && control == target.control
+            )
+        });
+        session.interactions.titlebar_pressed = hovered.then_some(target);
+        session.request_redraw();
+        return;
+    }
+    let Some(handle) = session.seat.get_touch() else {
+        return;
+    };
+    let Some(target) = session.touch.targets.get(&event.slot()).cloned() else {
         return;
     };
     let location = match target.coordinates {
@@ -283,6 +349,27 @@ where
     D: SessionDriver,
     B: InputBackend,
 {
+    if let Some(decoration) = session.touch.finish_decoration(event.slot()) {
+        session.interactions.titlebar_pressed = None;
+        let activates = route(session, decoration.screen).is_some_and(|route| {
+            matches!(
+                route.target,
+                crate::input::pointer::PointerTarget::Decoration {
+                    window,
+                    hit: crate::titlebar::Hit::Control(control),
+                } if window == decoration.target.window && control == decoration.target.control
+            )
+        });
+        if activates {
+            super::activate_titlebar_control(
+                session,
+                &decoration.target,
+                SERIAL_COUNTER.next_serial(),
+            );
+        }
+        session.request_redraw();
+        return;
+    }
     let Some(handle) = session.seat.get_touch() else {
         return;
     };
@@ -312,6 +399,8 @@ pub(crate) fn cancel_all<D: SessionDriver>(session: &mut Session<D>) {
     if !session.touch.clear() {
         return;
     }
+    session.interactions.titlebar_pressed = None;
+    session.request_redraw();
     if let Some(handle) = session.seat.get_touch() {
         handle.cancel(session);
     }

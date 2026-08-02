@@ -430,6 +430,40 @@ pub(crate) fn note_pointer_activity<D: SessionDriver>(session: &mut Session<D>) 
     session.cursor_policy.pointer_activity();
 }
 
+pub(crate) fn activate_titlebar_control<D: SessionDriver>(
+    session: &mut Session<D>,
+    target: &crate::titlebar::ButtonTarget,
+    serial: smithay::utils::Serial,
+) {
+    if !crate::titlebar::control_enabled(&target.window, target.control) {
+        return;
+    }
+    match target.control {
+        crate::titlebar::Control::Close => {
+            if let Some(toplevel) = target.window.toplevel() {
+                toplevel.send_close();
+            } else {
+                crate::xwayland::close_window(&target.window);
+            }
+        }
+        crate::titlebar::Control::Minimize => {
+            if let Some(id) = target
+                .window
+                .wl_surface()
+                .and_then(|surface| session.nodes.id_for_surface(surface.as_ref()))
+            {
+                let _ = crate::nodes::collapse(session, id, serial);
+            }
+        }
+        crate::titlebar::Control::Maximize => {
+            if let Some(surface) = target.window.wl_surface() {
+                let maximized = session.maximize.contains(surface.as_ref());
+                let _ = set_surface_field_maximized(session, surface.as_ref(), !maximized);
+            }
+        }
+    }
+}
+
 pub(crate) fn warp_pointer_to_window_center<D: SessionDriver>(
     session: &mut Session<D>,
     window: &smithay::desktop::Window,

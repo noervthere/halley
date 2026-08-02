@@ -25,6 +25,8 @@ pub fn commit(
     rule: crate::window::rules::ResolvedWindowRule,
     cursor_position: smithay::utils::Point<f64, smithay::utils::Logical>,
     gap: f32,
+    decorations: &halley_config::Decorations,
+    font: &halley_config::Font,
 ) -> xdg_shell::ToplevelCommit {
     if is_sync_subsurface(surface) {
         return xdg_shell::ToplevelCommit::None;
@@ -62,6 +64,8 @@ pub fn commit(
         rule,
         cursor_position,
         gap,
+        decorations,
+        font,
     )
 }
 

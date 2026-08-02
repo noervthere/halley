@@ -225,6 +225,8 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
             rule,
             smithay::utils::Point::from(self.pointer.position()),
             self.settings.field.gap,
+            &self.settings.decorations,
+            &self.settings.font,
         );
         match toplevel_commit.clone() {
             wayland::xdg_shell::ToplevelCommit::Mapped(mapped) => {

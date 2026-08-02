@@ -96,6 +96,8 @@ pub fn handle_commit(
     rule: crate::window::rules::ResolvedWindowRule,
     cursor_position: smithay::utils::Point<f64, smithay::utils::Logical>,
     gap: f32,
+    decorations: &halley_config::Decorations,
+    font: &halley_config::Font,
 ) -> ToplevelCommit {
     let has_buffer =
         with_renderer_surface_state(surface, |state| state.buffer().is_some()).unwrap_or(false);
@@ -156,13 +158,16 @@ pub fn handle_commit(
 
     if mapping_transition(false, has_buffer) == MappingTransition::Map {
         let window = wayland.unmapped.remove(surface).expect("checked above");
+        let client_size = window.geometry().size;
+        let outer_size =
+            crate::titlebar::outer_size_for_client(&window, client_size, decorations, font);
         let placement = crate::window::routing::initial_window_placement(
             crate::window::routing::InitialWindowPlacementRequest {
                 wayland,
                 cameras,
                 primary_output,
                 window: Some(&window),
-                window_size: window.geometry().size,
+                window_size: outer_size,
                 placement: rule.spawn_placement,
                 cursor_position,
                 gap,
@@ -171,7 +176,14 @@ pub fn handle_commit(
         let location = wayland
             .unmapped_locations
             .remove(surface)
-            .unwrap_or(placement.location);
+            .unwrap_or_else(|| {
+                crate::titlebar::client_location_for_outer(
+                    &window,
+                    placement.location,
+                    decorations,
+                    font,
+                )
+            });
         super::set_window_output(&window, &placement.output);
         wayland.space.map_element(window.clone(), location, false);
         // New windows steal focus - matches most WMs' default behavior.

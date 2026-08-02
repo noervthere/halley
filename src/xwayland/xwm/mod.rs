@@ -304,20 +304,31 @@ fn admit_window<D: SessionDriver>(session: &mut Session<D>, xid: u32) {
             i32::try_from(height).unwrap_or(i32::MAX).max(72),
         ));
     }
+    let initial_outer_size = crate::titlebar::outer_size_for_client(
+        &window,
+        opening_size,
+        &session.settings.decorations,
+        &session.settings.font,
+    );
     let initial_placement = crate::window::routing::initial_window_placement(
         crate::window::routing::InitialWindowPlacementRequest {
             wayland: &session.wayland,
             cameras: &session.cameras,
             primary_output: session.driver.primary_output(),
             window: Some(&window),
-            window_size: opening_size,
+            window_size: initial_outer_size,
             placement: rule.spawn_placement,
             cursor_position: smithay::utils::Point::from(session.pointer.position()),
             gap: session.settings.field.gap,
         },
     );
     let mut output = initial_placement.output;
-    let mut location = initial_placement.location;
+    let mut location = crate::titlebar::client_location_for_outer(
+        &window,
+        initial_placement.location,
+        &session.settings.decorations,
+        &session.settings.font,
+    );
 
     if let Some(restore) = saved_maximize.as_ref() {
         opening_size = restore.geometry.size;
@@ -329,20 +340,31 @@ fn admit_window<D: SessionDriver>(session: &mut Session<D>, xid: u32) {
             output = saved_output;
             location = restore.geometry.loc;
         } else {
+            let outer_size = crate::titlebar::outer_size_for_client(
+                &window,
+                opening_size,
+                &session.settings.decorations,
+                &session.settings.font,
+            );
             let placement = crate::window::routing::initial_window_placement(
                 crate::window::routing::InitialWindowPlacementRequest {
                     wayland: &session.wayland,
                     cameras: &session.cameras,
                     primary_output: session.driver.primary_output(),
                     window: Some(&window),
-                    window_size: opening_size,
+                    window_size: outer_size,
                     placement: halley_config::WindowSpawnPlacement::Default,
                     cursor_position: smithay::utils::Point::from(session.pointer.position()),
                     gap: session.settings.field.gap,
                 },
             );
             output = placement.output;
-            location = placement.location;
+            location = crate::titlebar::client_location_for_outer(
+                &window,
+                placement.location,
+                &session.settings.decorations,
+                &session.settings.font,
+            );
         }
     } else if is_steam_main_window(&surface) {
         let output_size = session
@@ -362,20 +384,31 @@ fn admit_window<D: SessionDriver>(session: &mut Session<D>, xid: u32) {
                 recovered.w.clamp(1, output_size.w.max(1)),
                 recovered.h.clamp(1, output_size.h.max(1)),
             ));
+            let outer_size = crate::titlebar::outer_size_for_client(
+                &window,
+                opening_size,
+                &session.settings.decorations,
+                &session.settings.font,
+            );
             let placement = crate::window::routing::initial_window_placement(
                 crate::window::routing::InitialWindowPlacementRequest {
                     wayland: &session.wayland,
                     cameras: &session.cameras,
                     primary_output: session.driver.primary_output(),
                     window: Some(&window),
-                    window_size: opening_size,
+                    window_size: outer_size,
                     placement: rule.spawn_placement,
                     cursor_position: smithay::utils::Point::from(session.pointer.position()),
                     gap: session.settings.field.gap,
                 },
             );
             output = placement.output;
-            location = placement.location;
+            location = crate::titlebar::client_location_for_outer(
+                &window,
+                placement.location,
+                &session.settings.decorations,
+                &session.settings.font,
+            );
             if let Err(err) = surface.set_fullscreen(false) {
                 eventline::warn!("xwayland: failed to clear stale Steam fullscreen state: {err}");
             }

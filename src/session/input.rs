@@ -27,40 +27,6 @@ const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
 const NODE_DRAG_THRESHOLD_PX: f64 = 8.0;
 
-fn activate_titlebar_control<D: SessionDriver>(
-    session: &mut Session<D>,
-    target: &crate::titlebar::ButtonTarget,
-    serial: smithay::utils::Serial,
-) {
-    if !crate::titlebar::control_enabled(&target.window, target.control) {
-        return;
-    }
-    match target.control {
-        crate::titlebar::Control::Close => {
-            if let Some(toplevel) = target.window.toplevel() {
-                toplevel.send_close();
-            } else {
-                crate::xwayland::close_window(&target.window);
-            }
-        }
-        crate::titlebar::Control::Minimize => {
-            if let Some(id) = target
-                .window
-                .wl_surface()
-                .and_then(|surface| session.nodes.id_for_surface(surface.as_ref()))
-            {
-                let _ = crate::nodes::collapse(session, id, serial);
-            }
-        }
-        crate::titlebar::Control::Maximize => {
-            if let Some(surface) = target.window.wl_surface() {
-                let maximized = session.maximize.contains(surface.as_ref());
-                let _ = super::set_surface_field_maximized(session, surface.as_ref(), !maximized);
-            }
-        }
-    }
-}
-
 fn sampled_drag_velocity(
     previous: halley_core::field::Vec2,
     current: halley_core::field::Vec2,
@@ -1922,7 +1888,7 @@ where
                             )
                         });
                         if activates {
-                            activate_titlebar_control(session, &pressed, serial);
+                            super::activate_titlebar_control(session, &pressed, serial);
                         }
                         session.request_redraw();
                         super::pointer::finish_frame(session, &pointer_handle);
