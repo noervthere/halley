@@ -7,12 +7,13 @@ use smithay::backend::renderer::gles::{
     GlesError, GlesFrame, GlesRenderer, GlesTexProgram, GlesTexture, Uniform, UniformName,
     UniformType, ffi,
 };
+use smithay::backend::renderer::utils::with_renderer_surface_state;
 use smithay::backend::renderer::utils::{CommitCounter, DamageSet, OpaqueRegions};
 use smithay::backend::renderer::{ContextId, Renderer};
 use smithay::desktop::Window;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::user_data::UserDataMap;
-use smithay::utils::{Buffer, Physical, Rectangle, Scale, Transform};
+use smithay::utils::{Buffer, Logical, Physical, Rectangle, Scale, Size, Transform};
 use smithay::wayland::seat::WaylandFocus;
 
 use super::window_texture::WindowTexture;
@@ -145,6 +146,7 @@ impl FullscreenTextureTransitions {
         window: &Window,
         destination: Rectangle<i32, Physical>,
         progress: f64,
+        hold_previous_until_restored_buffer_matches: bool,
         alpha: f32,
         radii: super::window_decoration::CornerRadii,
     ) -> Result<Option<FullscreenBlendElement>, Box<dyn Error>> {
@@ -160,13 +162,35 @@ impl FullscreenTextureTransitions {
             return Ok(None);
         }
 
-        let reusable = entry.current.take();
-        let current = match super::window_texture::capture(renderer, window, reusable) {
-            Ok(current) => current,
-            Err(err) => {
-                self.windows.remove(surface.as_ref());
-                return Err(err);
-            }
+        // X11 applies restored fullscreen-exit geometry before the matching
+        // wl_surface buffer necessarily arrives. Capturing the still-fullscreen
+        // buffer at the smaller target crops it, making the reverse animation
+        // look like a discontinuous shrink. Keep presenting the intact captured
+        // texture until XWayland commits the restored client size; geometry
+        // continues to animate independently through `destination` meanwhile.
+        let buffer_matches = transition_buffer_ready(
+            hold_previous_until_restored_buffer_matches,
+            with_renderer_surface_state(surface.as_ref(), |state| state.surface_size()).flatten(),
+            window.geometry().size,
+        );
+        let (current, texture_progress) = if buffer_matches {
+            let reusable = entry.current.take();
+            let current = match super::window_texture::capture(renderer, window, reusable) {
+                Ok(current) => current,
+                Err(err) => {
+                    self.windows.remove(surface.as_ref());
+                    return Err(err);
+                }
+            };
+            (current, progress)
+        } else {
+            (
+                WindowTexture {
+                    texture: entry.previous.texture.clone(),
+                    context: entry.previous.context.clone(),
+                },
+                0.0,
+            )
         };
         let previous = entry.previous.texture.clone();
         let id = entry.id.clone();
@@ -195,7 +219,7 @@ impl FullscreenTextureTransitions {
             previous_texture: previous,
             next: current.texture,
             program,
-            progress: progress.clamp(0.0, 1.0) as f32,
+            progress: texture_progress.clamp(0.0, 1.0) as f32,
             size: (destination.size.w as f32, destination.size.h as f32),
             radii: super::window_decoration::CornerRadii {
                 top: radii
@@ -209,6 +233,14 @@ impl FullscreenTextureTransitions {
             },
         }))
     }
+}
+
+fn transition_buffer_ready(
+    hold_previous: bool,
+    buffer_size: Option<Size<i32, Logical>>,
+    configured_size: Size<i32, Logical>,
+) -> bool {
+    !hold_previous || buffer_size == Some(configured_size)
 }
 
 impl Element for FullscreenBlendElement {
@@ -313,5 +345,32 @@ impl RenderElement<GlesRenderer> for FullscreenBlendElement {
 
     fn underlying_storage(&self, _renderer: &mut GlesRenderer) -> Option<UnderlyingStorage<'_>> {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::transition_buffer_ready;
+
+    #[test]
+    fn x11_fullscreen_exit_holds_previous_texture_until_restored_buffer_arrives() {
+        let restored = (1200, 800).into();
+
+        assert!(!transition_buffer_ready(
+            true,
+            Some((1920, 1080).into()),
+            restored
+        ));
+        assert!(!transition_buffer_ready(true, None, restored));
+        assert!(transition_buffer_ready(
+            true,
+            Some((1200, 800).into()),
+            restored
+        ));
+        assert!(transition_buffer_ready(
+            false,
+            Some((1920, 1080).into()),
+            restored
+        ));
     }
 }

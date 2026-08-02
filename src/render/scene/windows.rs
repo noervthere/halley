@@ -71,6 +71,14 @@ fn compositor_chrome_visible(logical_fullscreen: bool, x11_fullscreen: bool) -> 
     !logical_fullscreen && !x11_fullscreen
 }
 
+fn should_hold_x11_fullscreen_exit(
+    is_x11: bool,
+    has_fullscreen_presentation: bool,
+    is_fullscreen_or_pending: bool,
+) -> bool {
+    is_x11 && has_fullscreen_presentation && !is_fullscreen_or_pending
+}
+
 pub(super) fn live_window_elements(
     renderer: &mut GlesRenderer,
     window: &smithay::desktop::Window,
@@ -280,11 +288,19 @@ pub(super) fn live_window_elements(
         })
         .filter(|completion| *completion < CROSSFADE_COMPLETE);
     let texture_blend = if let Some(completion) = texture_transition_completion {
+        let hold_x11_fullscreen_exit = should_hold_x11_fullscreen_exit(
+            crate::xwayland::is_x11(window),
+            visual.fullscreen.is_some(),
+            context
+                .fullscreen
+                .is_fullscreen_or_pending(window_surface.as_ref()),
+        );
         match fullscreen_textures.blend_element(
             renderer,
             window,
             visual.animated_rect,
             completion,
+            hold_x11_fullscreen_exit,
             alpha,
             if rounded_available && server_titlebar {
                 crate::render::window_decoration::CornerRadii::bottom(content_radius)
@@ -768,7 +784,7 @@ fn fitted_title(
 
 #[cfg(test)]
 mod tests {
-    use super::compositor_chrome_visible;
+    use super::{compositor_chrome_visible, should_hold_x11_fullscreen_exit};
 
     #[test]
     fn either_fullscreen_signal_suppresses_compositor_chrome() {
@@ -776,5 +792,13 @@ mod tests {
         assert!(!compositor_chrome_visible(true, false));
         assert!(!compositor_chrome_visible(false, true));
         assert!(!compositor_chrome_visible(true, true));
+    }
+
+    #[test]
+    fn only_x11_fullscreen_exit_waits_for_the_restored_buffer() {
+        assert!(should_hold_x11_fullscreen_exit(true, true, false));
+        assert!(!should_hold_x11_fullscreen_exit(true, true, true));
+        assert!(!should_hold_x11_fullscreen_exit(true, false, false));
+        assert!(!should_hold_x11_fullscreen_exit(false, true, false));
     }
 }
