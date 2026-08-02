@@ -259,6 +259,25 @@ decorations:
     colour-focused "#38d1eb"
     colour-unfocused "#474d59"
   end
+
+  # Compositor-owned titlebars are added only to windows using server-side
+  # decorations. They replace the border's top edge, not the other 3 sides.
+  titlebars:
+    enabled true
+    button-position "left"
+    show-buttons true
+    show-icons false
+    show-title true
+    radius 8
+    height 32
+
+    colour-focused "#38d1eb"
+    colour-unfocused "#474d59"
+    foreground-colour-focused "#101418"
+    foreground-colour-unfocused "#f4f5f7"
+    button-hover-colour "#ffffff"
+    button-pressed-colour "#101418"
+  end
 end
 
 # Destination for PNG files created by the native screenshot menu and the

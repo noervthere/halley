@@ -46,7 +46,10 @@ pub use clusters::{
     ClusterBloomDirection, ClusterLayout, ClusterStacking, ClusterTiling, Clusters, parse_clusters,
 };
 pub use cursor::{Cursor, parse_cursor};
-pub use decorations::{BorderColor, Decorations, load_decorations, parse_decorations};
+pub use decorations::{
+    BorderColor, Decorations, TitlebarButtonPosition, Titlebars, load_decorations,
+    parse_decorations,
+};
 pub use diagnostic::ConfigDiagnostic;
 pub use effects::{
     Blur, BlurMethod, ClientBlurMode, Effects, EffectsParseError, ShadowColor, ShadowLayer,

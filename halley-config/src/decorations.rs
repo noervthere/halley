@@ -9,6 +9,78 @@ pub struct BorderColor {
     pub b: f32,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum TitlebarButtonPosition {
+    #[default]
+    Left,
+    Right,
+}
+
+/// Compositor-owned titlebar styling.
+///
+/// `height_px` is the requested height. Rendering raises it when necessary to
+/// fit enabled controls, application icons, or the configured global font.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Titlebars {
+    pub enabled: bool,
+    pub button_position: TitlebarButtonPosition,
+    pub show_buttons: bool,
+    pub show_icons: bool,
+    pub show_title: bool,
+    pub radius_px: i32,
+    pub height_px: i32,
+    pub color_focused: BorderColor,
+    pub color_unfocused: BorderColor,
+    pub foreground_color_focused: BorderColor,
+    pub foreground_color_unfocused: BorderColor,
+    pub button_hover_color: BorderColor,
+    pub button_pressed_color: BorderColor,
+}
+
+impl Default for Titlebars {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            button_position: TitlebarButtonPosition::Left,
+            show_buttons: true,
+            show_icons: false,
+            show_title: true,
+            radius_px: 8,
+            height_px: 32,
+            color_focused: BorderColor {
+                r: 0x38 as f32 / 255.0,
+                g: 0xd1 as f32 / 255.0,
+                b: 0xeb as f32 / 255.0,
+            },
+            color_unfocused: BorderColor {
+                r: 0x47 as f32 / 255.0,
+                g: 0x4d as f32 / 255.0,
+                b: 0x59 as f32 / 255.0,
+            },
+            foreground_color_focused: BorderColor {
+                r: 0x10 as f32 / 255.0,
+                g: 0x14 as f32 / 255.0,
+                b: 0x18 as f32 / 255.0,
+            },
+            foreground_color_unfocused: BorderColor {
+                r: 0xf4 as f32 / 255.0,
+                g: 0xf5 as f32 / 255.0,
+                b: 0xf7 as f32 / 255.0,
+            },
+            button_hover_color: BorderColor {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+            },
+            button_pressed_color: BorderColor {
+                r: 0x10 as f32 / 255.0,
+                g: 0x14 as f32 / 255.0,
+                b: 0x18 as f32 / 255.0,
+            },
+        }
+    }
+}
+
 /// Primary compositor border styling.
 ///
 /// The radius describes the client-content corner. The renderer grows the
@@ -19,6 +91,7 @@ pub struct Decorations {
     pub border_radius_px: i32,
     pub border_color_focused: BorderColor,
     pub border_color_unfocused: BorderColor,
+    pub titlebars: Titlebars,
 }
 
 impl Default for Decorations {
@@ -37,6 +110,7 @@ impl Default for Decorations {
                 g: 0.30,
                 b: 0.35,
             },
+            titlebars: Titlebars::default(),
         }
     }
 }
@@ -77,12 +151,102 @@ pub fn parse_decorations(config: &RuneConfig) -> Decorations {
         ],
         defaults.border_color_unfocused,
     );
+    let titlebar_defaults = defaults.titlebars;
+    let button_position = match config
+        .get_or(
+            "decorations.titlebars.button-position",
+            "left".to_string(),
+        )
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "right" => TitlebarButtonPosition::Right,
+        _ => TitlebarButtonPosition::Left,
+    };
+    let titlebars = Titlebars {
+        enabled: config.get_or("decorations.titlebars.enabled", titlebar_defaults.enabled),
+        button_position,
+        show_buttons: config.get_or(
+            "decorations.titlebars.show-buttons",
+            titlebar_defaults.show_buttons,
+        ),
+        show_icons: config.get_or(
+            "decorations.titlebars.show-icons",
+            titlebar_defaults.show_icons,
+        ),
+        show_title: config.get_or(
+            "decorations.titlebars.show-title",
+            titlebar_defaults.show_title,
+        ),
+        radius_px: config
+            .get_or(
+                "decorations.titlebars.radius",
+                titlebar_defaults.radius_px,
+            )
+            .clamp(0, 96),
+        height_px: config
+            .get_or(
+                "decorations.titlebars.height",
+                titlebar_defaults.height_px,
+            )
+            .clamp(1, 96),
+        color_focused: parse_color(
+            config,
+            &[
+                "decorations.titlebars.colour-focused",
+                "decorations.titlebars.color-focused",
+            ],
+            titlebar_defaults.color_focused,
+        ),
+        color_unfocused: parse_color(
+            config,
+            &[
+                "decorations.titlebars.colour-unfocused",
+                "decorations.titlebars.color-unfocused",
+            ],
+            titlebar_defaults.color_unfocused,
+        ),
+        foreground_color_focused: parse_color(
+            config,
+            &[
+                "decorations.titlebars.foreground-colour-focused",
+                "decorations.titlebars.foreground-color-focused",
+            ],
+            titlebar_defaults.foreground_color_focused,
+        ),
+        foreground_color_unfocused: parse_color(
+            config,
+            &[
+                "decorations.titlebars.foreground-colour-unfocused",
+                "decorations.titlebars.foreground-color-unfocused",
+            ],
+            titlebar_defaults.foreground_color_unfocused,
+        ),
+        button_hover_color: parse_color(
+            config,
+            &[
+                "decorations.titlebars.button-hover-colour",
+                "decorations.titlebars.button-hover-color",
+            ],
+            titlebar_defaults.button_hover_color,
+        ),
+        button_pressed_color: parse_color(
+            config,
+            &[
+                "decorations.titlebars.button-pressed-colour",
+                "decorations.titlebars.button-pressed-color",
+            ],
+            titlebar_defaults.button_pressed_color,
+        ),
+    };
 
     Decorations {
         border_width_px,
         border_radius_px,
         border_color_focused,
         border_color_unfocused,
+        titlebars,
     }
 }
 
@@ -189,6 +353,50 @@ end
     }
 
     #[test]
+    fn parses_titlebars_and_color_aliases() {
+        let config = RuneConfig::from_str(
+            r##"
+decorations:
+  titlebars:
+    enabled false
+    button-position "right"
+    show-buttons false
+    show-icons true
+    show-title false
+    radius 12
+    height 40
+    color-focused "#123"
+    colour-unfocused "#456"
+    foreground-color-focused "#789"
+    foreground-colour-unfocused "#abc"
+    button-hover-color "#def"
+    button-pressed-colour "#fed"
+  end
+end
+"##,
+        )
+        .expect("valid rune-cfg source");
+
+        let titlebars = parse_decorations(&config).titlebars;
+        assert!(!titlebars.enabled);
+        assert_eq!(titlebars.button_position, TitlebarButtonPosition::Right);
+        assert!(!titlebars.show_buttons);
+        assert!(titlebars.show_icons);
+        assert!(!titlebars.show_title);
+        assert_eq!(titlebars.radius_px, 12);
+        assert_eq!(titlebars.height_px, 40);
+        assert_eq!(titlebars.color_focused.r, 0x11 as f32 / 255.0);
+        assert_eq!(titlebars.color_unfocused.g, 0x55 as f32 / 255.0);
+        assert_eq!(titlebars.foreground_color_focused.b, 0x99 as f32 / 255.0);
+        assert_eq!(
+            titlebars.foreground_color_unfocused.r,
+            0xaa as f32 / 255.0
+        );
+        assert_eq!(titlebars.button_hover_color.g, 0xee as f32 / 255.0);
+        assert_eq!(titlebars.button_pressed_color.b, 0xdd as f32 / 255.0);
+    }
+
+    #[test]
     fn missing_section_falls_back_to_defaults() {
         let config = RuneConfig::from_str("keybinds:\n  mod \"super\"\nend\n")
             .expect("valid rune-cfg source");
@@ -228,5 +436,18 @@ end
         let decorations = parse_decorations(&config);
         assert_eq!(decorations.border_width_px, 64);
         assert_eq!(decorations.border_radius_px, 256);
+    }
+
+    #[test]
+    fn titlebar_metrics_are_clamped_and_invalid_positions_fall_back_left() {
+        let config = RuneConfig::from_str(
+            "decorations:\n  titlebars:\n    height 0\n    radius 999\n    button-position \"middle\"\n  end\nend\n",
+        )
+        .expect("valid rune-cfg source");
+
+        let titlebars = parse_decorations(&config).titlebars;
+        assert_eq!(titlebars.height_px, 1);
+        assert_eq!(titlebars.radius_px, 96);
+        assert_eq!(titlebars.button_position, TitlebarButtonPosition::Left);
     }
 }
