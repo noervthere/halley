@@ -146,6 +146,11 @@ mod tests {
             "damping-ratio 1.0",
             "stiffness 800.0",
             "bloom-direction \"clockwise\"",
+            "titlebars:",
+            "button-position \"left\"",
+            "show-icons false",
+            "show-title true",
+            "height 32",
         ] {
             assert!(
                 DEFAULT_CONFIG.contains(expected),

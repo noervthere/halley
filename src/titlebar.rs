@@ -143,7 +143,7 @@ fn control_geometry<K>(titlebar: Rectangle<i32, K>, config: &Titlebars) -> Vec<C
         return Vec::new();
     }
     let controls = match config.button_position {
-        TitlebarButtonPosition::Left => [Control::Close, Control::Minimize, Control::Maximize],
+        TitlebarButtonPosition::Left => [Control::Close, Control::Maximize, Control::Minimize],
         TitlebarButtonPosition::Right => [Control::Minimize, Control::Maximize, Control::Close],
     };
     controls
@@ -304,6 +304,8 @@ mod tests {
             Rectangle::new((97, 68).into(), (806, 635).into())
         );
         assert_eq!(layout.controls[0].control, Control::Close);
+        assert_eq!(layout.controls[1].control, Control::Maximize);
+        assert_eq!(layout.controls[2].control, Control::Minimize);
         assert_eq!(layout.controls[0].rect.loc, Point::from((97, 68)));
         assert_eq!(layout.content.loc, Point::from((100, 100)));
     }

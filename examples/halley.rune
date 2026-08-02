@@ -264,6 +264,7 @@ decorations:
   # decorations. They replace the border's top edge, not the other 3 sides.
   titlebars:
     enabled true
+    # Left uses close/maximize/minimize; right uses minimize/maximize/close.
     button-position "left"
     show-buttons true
     show-icons false

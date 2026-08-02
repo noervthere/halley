@@ -43,7 +43,7 @@ the client body's bottom corners. The requested titlebar `height` is clamped to
 1-96 pixels and is raised internally when enabled buttons, the application
 icon, or the global font need more room.
 
-Buttons are ordered close/minimize/maximize on the left and
+Buttons are ordered close/maximize/minimize on the left and
 minimize/maximize/close on the right. Hover and pressed colors tint both the
 button glyph and a translucent backplate. The maximize glyph does not change
 when the window is field-maximized.
