@@ -139,7 +139,6 @@ pub(super) fn set_external_fullscreen<D: SessionDriver>(
         origin,
         opening,
         crate::session::has_active_pointer_confinement(session),
-        fullscreen,
     );
     if policy == ExternalPresentationPolicy::Opening {
         preserve_opening_center(session, surface, &window);
