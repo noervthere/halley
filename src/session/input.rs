@@ -1860,6 +1860,15 @@ where
                         ..
                     }) = route.as_ref()
                     {
+                        if matches!(
+                            hit,
+                            crate::titlebar::Hit::Control(crate::titlebar::Control::Close)
+                        ) && crate::titlebar::control_enabled(
+                            window,
+                            crate::titlebar::Control::Close,
+                        ) {
+                            super::closing::capture_close_control(session, window);
+                        }
                         super::focus::focus_window_from_pointer(session, window, serial);
                         match hit {
                             crate::titlebar::Hit::Control(control) => {
@@ -1893,6 +1902,8 @@ where
                         });
                         if activates {
                             super::activate_titlebar_control(session, &pressed, serial);
+                        } else if pressed.control == crate::titlebar::Control::Close {
+                            super::closing::discard_close_control(session, &pressed.window);
                         }
                         session.request_redraw();
                         super::pointer::finish_frame(session, &pointer_handle);

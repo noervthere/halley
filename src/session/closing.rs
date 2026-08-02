@@ -29,6 +29,24 @@ pub(crate) fn capture_surface<D: SessionDriver>(
 }
 
 pub(crate) fn capture_window<D: SessionDriver>(session: &mut Session<D>, window: &Window) -> bool {
+    capture_window_inner(session, window, false)
+}
+
+/// Captures a close-button target before pointer focus activates its X11
+/// client. The snapshot remains provisional until the button is released and
+/// is discarded if the pointer or touch leaves the control.
+pub(crate) fn capture_close_control<D: SessionDriver>(
+    session: &mut Session<D>,
+    window: &Window,
+) -> bool {
+    capture_window_inner(session, window, true)
+}
+
+fn capture_window_inner<D: SessionDriver>(
+    session: &mut Session<D>,
+    window: &Window,
+    provisional: bool,
+) -> bool {
     if crate::xwayland::is_override_redirect(window) {
         return false;
     }
@@ -126,12 +144,29 @@ pub(crate) fn capture_window<D: SessionDriver>(session: &mut Session<D>, window:
         .driver
         .with_renderer(|renderer| animations.capture(renderer, window, metadata));
     match capture {
-        Ok(captured) => captured,
+        Ok(captured) => {
+            if captured && provisional {
+                animations.mark_provisional(surface);
+            }
+            captured
+        }
         Err(err) => {
             eventline::warn!("window close: failed to capture window texture: {err}");
             false
         }
     }
+}
+
+pub(crate) fn discard_close_control<D: SessionDriver>(
+    session: &mut Session<D>,
+    window: &Window,
+) -> bool {
+    window.wl_surface().is_some_and(|surface| {
+        session
+            .render
+            .window_close_animations
+            .discard_provisional(surface.as_ref())
+    })
 }
 
 pub(crate) fn start<D: SessionDriver>(session: &mut Session<D>, surface: &WlSurface) -> bool {

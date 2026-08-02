@@ -217,6 +217,13 @@ where
             super::focus::focus_layer(session, Some(layer.clone()), serial);
         }
         crate::input::pointer::PointerTarget::Decoration { window, hit } => {
+            if matches!(
+                hit,
+                crate::titlebar::Hit::Control(crate::titlebar::Control::Close)
+            ) && crate::titlebar::control_enabled(window, crate::titlebar::Control::Close)
+            {
+                super::closing::capture_close_control(session, window);
+            }
             super::focus::focus_window_from_pointer(session, window, serial);
             if let crate::titlebar::Hit::Control(control) = hit
                 && crate::titlebar::control_enabled(window, *control)
@@ -368,6 +375,8 @@ where
                 &decoration.target,
                 SERIAL_COUNTER.next_serial(),
             );
+        } else if decoration.target.control == crate::titlebar::Control::Close {
+            super::closing::discard_close_control(session, &decoration.target.window);
         }
         session.request_redraw();
         return;
@@ -398,8 +407,18 @@ fn frame<D: SessionDriver>(session: &mut Session<D>) {
 }
 
 pub(crate) fn cancel_all<D: SessionDriver>(session: &mut Session<D>) {
+    let provisional_closes = session
+        .touch
+        .decorations
+        .values()
+        .filter(|touch| touch.target.control == crate::titlebar::Control::Close)
+        .map(|touch| touch.target.window.clone())
+        .collect::<Vec<_>>();
     if !session.touch.clear() {
         return;
+    }
+    for window in &provisional_closes {
+        super::closing::discard_close_control(session, window);
     }
     session.interactions.titlebar_pressed = None;
     session.request_redraw();

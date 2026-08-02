@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::time::Duration;
 
@@ -71,6 +71,7 @@ pub struct ClosingWindowRender {
 pub struct WindowCloseAnimations {
     config: Animations,
     pending: HashMap<WlSurface, CapturedWindow>,
+    provisional: HashSet<WlSurface>,
     active: HashMap<WlSurface, ActiveClose>,
     next_order: u64,
 }
@@ -80,6 +81,7 @@ impl WindowCloseAnimations {
         Self {
             config,
             pending: HashMap::new(),
+            provisional: HashSet::new(),
             active: HashMap::new(),
             next_order: 0,
         }
@@ -95,12 +97,14 @@ impl WindowCloseAnimations {
             return Ok(false);
         };
         if !close_enabled(self.config) {
+            self.provisional.remove(&surface);
             self.pending.remove(&surface);
             return Ok(false);
         }
 
         let texture = super::window_texture::capture(renderer, window, None)?;
         self.next_order = self.next_order.wrapping_add(1);
+        self.provisional.remove(&surface);
         self.pending.insert(
             surface,
             CapturedWindow {
@@ -114,6 +118,7 @@ impl WindowCloseAnimations {
     }
 
     pub fn start(&mut self, surface: &WlSurface, now: Duration) -> bool {
+        self.provisional.remove(surface);
         let Some(captured) = self.pending.remove(surface) else {
             return false;
         };
@@ -144,7 +149,21 @@ impl WindowCloseAnimations {
         self.pending.contains_key(surface)
     }
 
+    pub fn mark_provisional(&mut self, surface: WlSurface) {
+        if self.pending.contains_key(&surface) {
+            self.provisional.insert(surface);
+        }
+    }
+
+    pub fn discard_provisional(&mut self, surface: &WlSurface) -> bool {
+        if !self.provisional.remove(surface) {
+            return false;
+        }
+        self.pending.remove(surface).is_some()
+    }
+
     pub fn cancel(&mut self, surface: &WlSurface) {
+        self.provisional.remove(surface);
         self.pending.remove(surface);
         self.active.remove(surface);
     }
@@ -152,6 +171,7 @@ impl WindowCloseAnimations {
     pub fn reload(&mut self, config: Animations) {
         self.config = config;
         if !close_enabled(config) {
+            self.provisional.clear();
             self.pending.clear();
         }
     }
