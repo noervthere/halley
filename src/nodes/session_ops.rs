@@ -464,17 +464,30 @@ pub fn close_focused_on_output<D: crate::session::SessionDriver>(
     else {
         return;
     };
+    let _ = close(session, id);
+}
+
+/// Requests closure for a managed node through the compositor's single close
+/// path. Logical cluster cores expand to their member windows; regular and
+/// cluster-member nodes close only their own canonical managed window.
+pub fn close<D: crate::session::SessionDriver>(
+    session: &mut crate::session::Session<D>,
+    id: NodeId,
+) -> bool {
     let targets = session.clusters.close_targets_for_node(id);
-    for target in targets {
-        let Some(window) = session
-            .nodes
-            .record(target)
-            .map(|record| record.window.clone())
-        else {
-            continue;
-        };
-        crate::session::request_window_close(session, &window);
+    let windows = targets
+        .into_iter()
+        .filter_map(|target| {
+            session
+                .nodes
+                .record(target)
+                .map(|record| record.window.clone())
+        })
+        .collect::<Vec<_>>();
+    for window in &windows {
+        crate::session::request_window_close(session, window);
     }
+    !windows.is_empty()
 }
 
 fn preferred_close_candidate(

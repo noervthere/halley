@@ -86,11 +86,11 @@ pub fn handle_request<D: crate::session::SessionDriver>(
                 Ok(id) => id,
                 Err(error) => return halley_ipc::Response::Error(error),
             };
-            let Some(window) = session.nodes.record(id).map(|record| record.window.clone()) else {
-                return halley_ipc::Response::Error(format!("node {id} disappeared"));
-            };
-            crate::session::request_window_close(session, &window);
-            halley_ipc::Response::Ack
+            if super::close(session, id) {
+                halley_ipc::Response::Ack
+            } else {
+                halley_ipc::Response::Error(format!("node {id} disappeared"))
+            }
         }
         halley_ipc::NodeRequest::Collapse { selector, output } => {
             change_node_state(session, selector.as_ref(), output.as_deref(), Some(true))

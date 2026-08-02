@@ -20,7 +20,7 @@ mod session_ops;
 
 pub use ipc::handle_request;
 pub use session_ops::{
-    close_focused_on_output, collapse, focus_or_reveal_node, pan_after_close_restore,
+    close, close_focused_on_output, collapse, focus_or_reveal_node, pan_after_close_restore,
     reconcile_landmarks, reconcile_landmarks_at_scale, restore, restore_for_close,
     reveal_cluster_core, reveal_for_focus_cycle, tick_decay, toggle_focused_on_output,
 };

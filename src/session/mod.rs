@@ -448,15 +448,15 @@ pub(crate) fn note_pointer_activity<D: SessionDriver>(session: &mut Session<D>) 
 
 /// Requests that a client close a managed window.
 ///
-/// X11 clients may replace their contents before withdrawing the window.  In
-/// that case the later Xwayland buffer-removal hook can only preserve the
-/// replacement frame, so retain the currently visible frame before sending
-/// WM_DELETE_WINDOW. Native XDG clients keep using their pre-unmap capture.
+/// Clients may replace their contents before withdrawing the window. In that
+/// case the later buffer-removal hook can only preserve the replacement frame,
+/// so retain the currently visible frame before sending the close request.
+/// The pre-unmap hook remains as a fallback for client-initiated closes.
 pub(crate) fn request_window_close<D: SessionDriver>(
     session: &mut Session<D>,
     window: &smithay::desktop::Window,
 ) {
-    let frozen = crate::xwayland::is_x11(window) && closing::capture_window(session, window);
+    let frozen = closing::capture_window(session, window);
     if let Some(toplevel) = window.toplevel() {
         toplevel.send_close();
     } else {
@@ -477,7 +477,14 @@ pub(crate) fn activate_titlebar_control<D: SessionDriver>(
     }
     match target.control {
         crate::titlebar::Control::Close => {
-            request_window_close(session, &target.window);
+            let closed = target
+                .window
+                .wl_surface()
+                .and_then(|surface| session.nodes.id_for_surface(surface.as_ref()))
+                .is_some_and(|id| crate::nodes::close(session, id));
+            if !closed {
+                request_window_close(session, &target.window);
+            }
         }
         crate::titlebar::Control::Minimize => {
             if let Some(id) = target
