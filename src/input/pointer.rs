@@ -485,23 +485,116 @@ fn window_under(
             continue;
         };
         let render_location = element_location - window.geometry().loc;
-        if !window.is_in_input_region(&(location - render_location.to_f64())) {
+        trace_x11_transform(context, window, &presentation, element_location);
+        let Some(focus) = window_focus(window, location, render_location) else {
             continue;
-        }
-        let focus = window
-            .surface_under(location - render_location.to_f64(), WindowSurfaceType::ALL)
-            .map(|(surface, surface_location)| {
-                (surface, (surface_location + render_location).to_f64())
-            });
+        };
         return Some(PointerRoute {
             output: output.clone(),
             location,
-            focus,
+            focus: Some(focus),
             target: PointerTarget::Window(window.clone()),
             visual_geometry: Some(presentation.visual_geometry()),
         });
     }
     None
+}
+
+/// Temporary diagnostic for XWayland pointer offsets.
+///
+/// Logs the full screen -> source -> surface-local chain for an X11 window,
+/// deduplicated on the geometry state so it emits once per change rather than
+/// once per motion event. Three comparisons matter: `element` size against
+/// `buffer` size (a render/hit-test scale divergence), `element` location
+/// against `x11` location (compositor/X position drift), and `visual` against
+/// `source` (the ratio `source_from_screen` inverts).
+// TODO: remove once the XWayland hit-test offset is confirmed fixed.
+fn trace_x11_transform(
+    context: &PointerRoutingContext<'_>,
+    window: &Window,
+    presentation: &WindowPresentation,
+    element_location: Point<i32, Logical>,
+) {
+    let Some((xid, x11_geometry)) = crate::xwayland::server_geometry(window) else {
+        return;
+    };
+    let signature = X11TransformSignature {
+        element: context.space.element_geometry(window),
+        element_location,
+        window_geometry: window.geometry(),
+        x11_geometry,
+        buffer: window.wl_surface().and_then(|root| {
+            smithay::backend::renderer::utils::with_renderer_surface_state(&root, |state| {
+                state.surface_size()
+            })
+            .flatten()
+        }),
+        visual: presentation.visual_geometry(),
+        source: presentation.source_geometry(),
+        hit: presentation.hit_geometry(),
+    };
+    let mut seen = X11_TRANSFORM_TRACE
+        .lock()
+        .expect("x11 transform trace mutex is never held across a panic");
+    if seen.get(&xid) == Some(&signature) {
+        return;
+    }
+    seen.insert(xid, signature);
+    drop(seen);
+    eventline::debug!(
+        "xwayland: pointer transform xid={xid} element={:?}@{:?} window_geo={:?} x11={:?} buffer={:?} visual={:?} source={:?} hit={:?}",
+        signature.element,
+        signature.element_location,
+        signature.window_geometry,
+        signature.x11_geometry,
+        signature.buffer,
+        signature.visual,
+        signature.source,
+        signature.hit,
+    );
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct X11TransformSignature {
+    element: Option<Rectangle<i32, Logical>>,
+    element_location: Point<i32, Logical>,
+    window_geometry: Rectangle<i32, Logical>,
+    x11_geometry: Rectangle<i32, Logical>,
+    buffer: Option<smithay::utils::Size<i32, Logical>>,
+    visual: Rectangle<i32, Logical>,
+    source: Rectangle<i32, Logical>,
+    hit: Rectangle<i32, Logical>,
+}
+
+static X11_TRANSFORM_TRACE: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<u32, X11TransformSignature>>,
+> = std::sync::LazyLock::new(Default::default);
+
+/// Resolves the client surface under a window-local point.
+///
+/// X11 toplevels deliberately skip both the input region and the surface-tree
+/// walk. XWayland derives a `wl_surface` input region from the X window's input
+/// shape, and an X11 client's idea of that shape is expressed against the X
+/// server's geometry rather than the compositor's placement. Consulting it lets
+/// a stale region silently drop the window out of routing. Hyprland made the
+/// same call: its hit tester asserts it is never asked to walk an X11 surface
+/// tree and returns `pos - window_location` unconditionally.
+fn window_focus(
+    window: &Window,
+    location: Point<f64, Logical>,
+    render_location: Point<i32, Logical>,
+) -> Option<SurfaceFocus> {
+    let local = location - render_location.to_f64();
+    if crate::xwayland::is_x11(window) {
+        let surface = window.wl_surface()?.into_owned();
+        return Some((surface, render_location.to_f64()));
+    }
+    if !window.is_in_input_region(&local) {
+        return None;
+    }
+    window
+        .surface_under(local, WindowSurfaceType::ALL)
+        .map(|(surface, surface_location)| (surface, (surface_location + render_location).to_f64()))
 }
 
 fn exclusive_pointer_member_is_allowed(

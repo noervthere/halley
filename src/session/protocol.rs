@@ -20,8 +20,7 @@ use smithay::utils::{Logical, Point, SERIAL_COUNTER, Serial};
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::tablet_manager::TabletSeatHandler;
 use smithay::wayland::compositor::{
-    BufferAssignment, CompositorClientState, CompositorHandler, CompositorState, SurfaceAttributes,
-    add_pre_commit_hook, with_states,
+    CompositorClientState, CompositorHandler, CompositorState, add_pre_commit_hook, with_states,
 };
 use smithay::wayland::dmabuf::{DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier};
 use smithay::wayland::drm_syncobj::{
@@ -137,26 +136,6 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
 
     fn new_surface(&mut self, surface: &WlSurface) {
         add_pre_commit_hook::<Self, _>(surface, |session, _dh, surface| {
-            // Capture the last attached buffer before any toplevel unmaps.
-            // Xwayland commits the buffer removal before its XWM unmap event,
-            // so waiting for that event produces an empty/black close texture.
-            // Installing this on every wl_surface gives X11 the same early
-            // snapshot timing that native XDG toplevels use; non-toplevel and
-            // override-redirect surfaces are rejected by capture_surface.
-            let removes_buffer = with_states(surface, |states| {
-                matches!(
-                    states
-                        .cached_state
-                        .get::<SurfaceAttributes>()
-                        .pending()
-                        .buffer,
-                    Some(BufferAssignment::Removed)
-                )
-            });
-            if removes_buffer {
-                super::closing::capture_surface(session, surface);
-            }
-
             if session.drm_syncobj_state.is_none() {
                 return;
             }
@@ -376,6 +355,10 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
         super::sync_cluster_floating_geometry(self, &root);
         crate::nodes::reconcile_landmarks(self, None);
         super::pointer::reconcile_state(self);
+        super::pointer::refresh_desktop_client_focus(
+            self,
+            self.start_time.elapsed().as_millis() as u32,
+        );
         let preview_node = self.nodes.id_for_surface(&root);
         if let Some(id) = preview_node {
             self.render.overlay_previews.mark_dirty(id);

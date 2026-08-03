@@ -33,15 +33,6 @@ pub(super) fn node_elements(
         return Ok(NodeScene::default());
     };
     let focused = decorations.border_color_focused;
-    let make_solid = |rect, color| {
-        SolidColorRenderElement::new(
-            Id::new(),
-            rect,
-            CommitCounter::default(),
-            color,
-            Kind::Unspecified,
-        )
-    };
     let mut overlay = Vec::new();
 
     if nodes.debug.show_focus_ring || nodes.ring_is_previewed(&output.name(), now) {
@@ -51,22 +42,14 @@ pub(super) fn node_elements(
             output_geometry.size.w as f32 / 2.0 + focus_ring.offset_x * scale,
             output_geometry.size.h as f32 / 2.0 + focus_ring.offset_y * scale,
         );
-        let rx = focus_ring.radius_x * scale;
-        let ry = focus_ring.radius_y * scale;
-        const SEGMENTS: usize = 160;
-        for index in 0..SEGMENTS {
-            let angle = index as f32 / SEGMENTS as f32 * std::f32::consts::TAU;
-            let x = center.0 + angle.cos() * rx;
-            let y = center.1 + angle.sin() * ry;
-            let rect = Rectangle::<i32, Physical>::new(
-                (x.round() as i32 - 1, y.round() as i32 - 1).into(),
-                (3, 3).into(),
-            );
-            overlay.push(SceneElement::Border(make_solid(
-                rect,
-                smithay::backend::renderer::Color32F::new(focused.r, focused.g, focused.b, 0.82),
-            )));
-        }
+        overlay.push(SceneElement::FocusRing(node_renderer.focus_ring_element(
+            renderer,
+            &output.name(),
+            center,
+            (focus_ring.radius_x * scale, focus_ring.radius_y * scale),
+            (focused.r, focused.g, focused.b),
+            0.82,
+        )?));
     }
 
     let mut records = nodes
@@ -105,7 +88,7 @@ pub(super) fn node_elements(
         );
         let hovered = nodes.hovered == Some(record.id);
         let highlighted = hovered || nodes.focused() == Some(record.id);
-        let ring = node_ring_color(nodes.config, decorations, highlighted);
+        let ring = node_ring_color(decorations, highlighted);
         let fill = node_fill_color(nodes.config, ring);
         markers.push(SceneElement::Node(node_renderer.element(
             renderer,
@@ -339,24 +322,13 @@ pub(super) fn fit_ui_text(
 }
 
 pub(crate) fn node_ring_color(
-    config: halley_config::Nodes,
     decorations: &halley_config::Decorations,
     hovered: bool,
 ) -> (f32, f32, f32) {
-    let policy = if hovered {
-        config.border_color_hover
+    let color = if hovered {
+        decorations.border_color_focused
     } else {
-        config.border_color_inactive
-    };
-    let color = match policy {
-        halley_config::NodeBorderColor::UseWindowActive
-        | halley_config::NodeBorderColor::UseWindowSecondaryActive => {
-            decorations.border_color_focused
-        }
-        halley_config::NodeBorderColor::UseWindowInactive
-        | halley_config::NodeBorderColor::UseWindowSecondaryInactive => {
-            decorations.border_color_unfocused
-        }
+        decorations.border_color_unfocused
     };
     (color.r, color.g, color.b)
 }

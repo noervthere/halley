@@ -125,6 +125,41 @@ impl<D: SessionDriver> State<D> {
         }
     }
 
+    /// Publishes the current output layout as EWMH root desktop geometry.
+    ///
+    /// Cheap to call on every output change: the control connection dedups on
+    /// the published values.
+    pub fn sync_desktop_geometry(&self, space: &Space<Window>) {
+        let Some(control) = self.control.as_ref() else {
+            return;
+        };
+        let Some(geometry) = desktop_geometry(space) else {
+            return;
+        };
+        if let Err(err) = control.publish_desktop_geometry(geometry.desktop, geometry.work_area) {
+            eventline::warn!("xwayland: failed to publish desktop geometry: {err}");
+        }
+    }
+
+    /// Publishes the managed X11 windows in the compositor's stacking order.
+    ///
+    /// Override-redirect windows are excluded: they are client-managed and
+    /// never appear in `_NET_CLIENT_LIST`.
+    pub fn sync_client_list(&self, space: &Space<Window>) {
+        let Some(control) = self.control.as_ref() else {
+            return;
+        };
+        let windows = space
+            .elements()
+            .filter_map(|window| window.x11_surface())
+            .filter(|surface| !surface.is_override_redirect())
+            .map(|surface| surface.window_id())
+            .collect::<Vec<_>>();
+        if let Err(err) = control.publish_client_list(&windows) {
+            eventline::warn!("xwayland: failed to publish client list: {err}");
+        }
+    }
+
     pub fn sync_active_window(&self, window: Option<u32>) {
         let Some(control) = self.control.as_ref() else {
             return;
@@ -294,6 +329,12 @@ where
                                 );
                             }
                             session.xwayland.control = Some(control);
+                            // `publish_ewmh` seeded the root geometry from
+                            // whatever size XWayland's root happened to have at
+                            // connect, which need not be the settled layout.
+                            session
+                                .xwayland
+                                .sync_desktop_geometry(&session.wayland.space);
                             eventline::info!("xwayland: ICCCM/EWMH control connection ready");
                         }
                         Err(err) => {
@@ -350,6 +391,17 @@ pub fn configure_window(
     xwm::configure_window(window, geometry);
 }
 
+pub fn sync_position<D: SessionDriver>(
+    session: &Session<D>,
+    window: &smithay::desktop::Window,
+) -> bool {
+    xwm::sync_position(session, window)
+}
+
+pub fn sync_positions<D: SessionDriver>(session: &Session<D>) -> bool {
+    xwm::sync_positions(session)
+}
+
 pub fn constrain_window_size(
     window: &smithay::desktop::Window,
     requested: Size<i32, Logical>,
@@ -379,6 +431,65 @@ pub fn handle_commit<D: SessionDriver>(
     xwm::handle_commit(session, surface);
 }
 
+struct DesktopGeometry {
+    desktop: (u32, u32),
+    work_area: Option<(i32, i32, u32, u32)>,
+}
+
+/// Derives the EWMH root geometry from Halley's own output layout.
+///
+/// Computed here rather than read back from the X root window because XWayland
+/// resizes the root asynchronously from the `wl_output`/`xdg_output` updates,
+/// so an immediate read after an output change still returns the old size.
+///
+/// `_NET_DESKTOP_GEOMETRY` is the union bounding box. The work area is the
+/// layer-shell non-exclusive zone, and only exists for a single-output layout —
+/// see `X11Control::publish_desktop_geometry` for why multi-output is `None`.
+fn desktop_geometry(space: &Space<Window>) -> Option<DesktopGeometry> {
+    let mut outputs = space.outputs();
+    let first = outputs.next()?;
+    let first_geometry = space.output_geometry(first)?;
+    let single = outputs.next().is_none();
+    let bounds = space
+        .outputs()
+        .filter_map(|output| space.output_geometry(output))
+        .fold(first_geometry, |bounds, geometry| bounds.merge(geometry));
+    let work_area = single.then(|| {
+        work_area_extent(
+            first_geometry,
+            smithay::desktop::layer_map_for_output(first).non_exclusive_zone(),
+        )
+    });
+    Some(DesktopGeometry {
+        desktop: desktop_extent(bounds),
+        work_area,
+    })
+}
+
+/// EWMH describes the desktop as a size anchored at the origin, so an output
+/// laid out at a positive offset extends the reported extent rather than
+/// shifting it.
+fn desktop_extent(bounds: Rectangle<i32, Logical>) -> (u32, u32) {
+    (
+        bounds.loc.x.saturating_add(bounds.size.w).max(0) as u32,
+        bounds.loc.y.saturating_add(bounds.size.h).max(0) as u32,
+    )
+}
+
+/// The non-exclusive zone is output-local; `_NET_WORKAREA` is in root
+/// coordinates, so it has to be rebased onto the output's position.
+fn work_area_extent(
+    output: Rectangle<i32, Logical>,
+    zone: Rectangle<i32, Logical>,
+) -> (i32, i32, u32, u32) {
+    (
+        output.loc.x.saturating_add(zone.loc.x),
+        output.loc.y.saturating_add(zone.loc.y),
+        zone.size.w.max(0) as u32,
+        zone.size.h.max(0) as u32,
+    )
+}
+
 pub fn is_override_redirect(window: &smithay::desktop::Window) -> bool {
     window
         .x11_surface()
@@ -387,6 +498,15 @@ pub fn is_override_redirect(window: &smithay::desktop::Window) -> bool {
 
 pub fn is_x11(window: &smithay::desktop::Window) -> bool {
     window.x11_surface().is_some()
+}
+
+/// The X server's own idea of a window's rect, as opposed to the compositor's
+/// `Space` geometry. The two diverging is what [`sync_position`] exists to fix.
+pub fn server_geometry(
+    window: &smithay::desktop::Window,
+) -> Option<(u32, Rectangle<i32, Logical>)> {
+    let surface = window.x11_surface()?;
+    Some((surface.window_id(), surface.geometry()))
 }
 
 pub fn is_fullscreen(window: &smithay::desktop::Window) -> bool {
@@ -493,3 +613,30 @@ impl<D: SessionDriver> XWaylandKeyboardGrabHandler for Session<D> {
 
 delegate_xwayland_shell!(@<D: SessionDriver> Session<D>);
 delegate_xwayland_keyboard_grab!(@<D: SessionDriver> Session<D>);
+
+#[cfg(test)]
+mod tests {
+    use super::{desktop_extent, work_area_extent};
+    use smithay::utils::Rectangle;
+
+    #[test]
+    fn desktop_extent_spans_to_the_far_edge_of_the_layout() {
+        // A side-by-side pair: the reported desktop must cover both, not just
+        // the bounding box's own size.
+        let bounds = Rectangle::<i32, smithay::utils::Logical>::from_size((2560, 1440).into())
+            .merge(Rectangle::new((2560, 0).into(), (1920, 1200).into()));
+
+        assert_eq!(desktop_extent(bounds), (4480, 1440));
+    }
+
+    #[test]
+    fn work_area_is_rebased_onto_its_output() {
+        let output =
+            Rectangle::<i32, smithay::utils::Logical>::new((2560, 0).into(), (1920, 1200).into());
+        // A 40px top bar reserved by layer shell.
+        let zone =
+            Rectangle::<i32, smithay::utils::Logical>::new((0, 40).into(), (1920, 1160).into());
+
+        assert_eq!(work_area_extent(output, zone), (2560, 40, 1920, 1160));
+    }
+}

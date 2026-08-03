@@ -254,6 +254,8 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
         ),
         cameras,
         capture: crate::capture::CaptureState::default(),
+        pending_captures: std::collections::HashMap::new(),
+        screenshot_encoder: None,
         screencast: crate::capture::screencast::ScreencastState::default(),
         interactions: super::InteractionState::default(),
         touch: super::touch::TouchState::default(),
@@ -292,6 +294,14 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
         })
     {
         eventline::error!("ipc: failed to start listener: {err}");
+    }
+
+    match crate::capture::encoder::ScreenshotEncoder::spawn(
+        &event_loop.handle(),
+        |app: &mut App, done| crate::capture::finish_encode(app, done),
+    ) {
+        Ok(encoder) => app.screenshot_encoder = Some(encoder),
+        Err(err) => eventline::error!("screenshot: failed to start encoder: {err}"),
     }
     if let Some(path) = config_path
         && let Err(err) = crate::config::watch(&event_loop.handle(), path, apply_runtime_config)
@@ -517,6 +527,12 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                     elapsed,
                 );
                 app.wayland.space.refresh();
+                if crate::xwayland::sync_positions(app) {
+                    super::pointer::refresh_desktop_client_focus(
+                        app,
+                        app.start_time.elapsed().as_millis() as u32,
+                    );
+                }
                 wayland::layer_shell::cleanup(&mut app.wayland);
                 app.window_open_animations.cleanup(target_presentation_time);
                 app.render

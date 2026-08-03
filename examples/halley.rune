@@ -504,8 +504,6 @@ node:
   icon-size 0.72
   opacity 1.0
   background-colour "auto"
-  border-colour-hover "use-window-active"
-  border-colour-inactive "use-window-inactive"
 
   # "never", "if-offscreen", or "always". Panning and restoration begin
   # together; there is no center-first, restore-second interaction.

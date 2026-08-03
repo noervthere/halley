@@ -813,6 +813,17 @@ impl FullscreenManager {
         })
     }
 
+    /// Whether a real fullscreen request owns, or is in the process of
+    /// taking/releasing, this output. Unlike `covers_top`, this includes the
+    /// configure and transition handoffs so input-side desktop maintenance
+    /// cannot leak into a fullscreen path between frames.
+    pub(crate) fn has_fullscreen_activity_on_output(&self, output: &Output) -> bool {
+        self.windows.values().any(|entry| {
+            entry.origin != FullscreenOrigin::Maximize
+                && entry_occupies_output(entry, &output.name())
+        })
+    }
+
     pub fn has_stable_fullscreen_on_output(&self, output: &Output, now: Duration) -> bool {
         self.stable_fullscreen_surface_on_output(output, now)
             .is_some()
@@ -847,6 +858,16 @@ impl FullscreenManager {
         self.windows
             .get(surface)
             .is_none_or(|entry| fullscreen_origin_allows_global_blur(entry.origin))
+    }
+
+    /// Whether an external (X11) configure handoff is still outstanding.
+    ///
+    /// The transaction owns the window's geometry until the client acks, so
+    /// compositor-side position resync must not race it.
+    pub(crate) fn awaits_external_configure(&self, surface: &WlSurface) -> bool {
+        self.windows
+            .get(surface)
+            .is_some_and(|entry| entry.external_pending.is_some())
     }
 
     pub fn is_fullscreen_or_pending(&self, surface: &WlSurface) -> bool {

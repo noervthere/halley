@@ -38,29 +38,52 @@ fn sync_urgency(surface: &X11Surface) {
     }
 }
 
-pub(super) fn forget_window<D: SessionDriver>(session: &mut Session<D>, surface: &X11Surface) {
+/// Drops every compositor-side record of a managed X11 window.
+///
+/// Returns whether the window was actually being managed. Callers use that to
+/// decide whether an ICCCM withdrawal is warranted: a reparenting window
+/// manager also receives the `UnmapNotify` its own `ReparentWindow` caused, and
+/// deleting `WM_STATE` off the back of one of those strands a live, mapped
+/// window in the Withdrawn state.
+pub(super) fn forget_window<D: SessionDriver>(
+    session: &mut Session<D>,
+    surface: &X11Surface,
+) -> bool {
     session
         .xwayland
         .forget_client_geometry_guard(surface.window_id());
-    session
+    let was_pending = session
         .xwayland
         .pending_windows
-        .remove(&surface.window_id());
+        .remove(&surface.window_id())
+        .is_some();
     session
         .xwayland
         .opening_placements
         .remove(&surface.window_id());
     let Some(window) = window_for_surface(&session.wayland, &session.nodes, surface) else {
-        return;
+        return was_pending;
     };
     if let Some(geometry) = session.wayland.space.element_geometry(&window) {
         remember_normal_size(session, surface, geometry.size);
     }
-    crate::session::closing::capture_window(session, &window);
+    let close_active = crate::session::closing::capture_and_activate_before_unmap(session, &window);
+    crate::session::trace::x11_event(
+        session,
+        surface,
+        "close-handoff",
+        format_args!("active_before_unmap={close_active}"),
+    );
     if let Some(wl_surface) = window.wl_surface().map(|surface| surface.into_owned()) {
         session.window_rules.forget(&wl_surface);
         let preparation = crate::session::prepare_window_unmap(session, &wl_surface);
         session.wayland.space.unmap_elem(&window);
+        crate::session::trace::x11_event(
+            session,
+            surface,
+            "close-live-removed",
+            format_args!("active_before_unmap={close_active}"),
+        );
         crate::session::finish_window_unmap(session, preparation);
         if let Some(id) = session.nodes.id_for_surface(&wl_surface) {
             crate::session::forget_destroyed_cluster_member(session, id);
@@ -71,6 +94,7 @@ pub(super) fn forget_window<D: SessionDriver>(session: &mut Session<D>, surface:
     } else {
         session.wayland.space.unmap_elem(&window);
     }
+    true
 }
 
 impl<D: SessionDriver> XwmHandler for Session<D> {
@@ -125,6 +149,13 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
                 "xwayland: ignored duplicate map request xid={}",
                 surface.window_id()
             );
+            // The window stays managed, so `WM_STATE` must read Normal even if
+            // an earlier withdrawal cleared it. Re-asserting is idempotent and
+            // costs one property write on a path that is already rare.
+            if self.xwayland.managed_states.state(surface.window_id()) != WindowState::Normal {
+                self.xwayland
+                    .transition_surface(&surface, WindowState::Normal);
+            }
             return;
         }
         let initial_size = surface.geometry().size;
@@ -204,7 +235,7 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
         self.xwayland
             .override_redirect_placements
             .remove(&surface.window_id());
-        forget_window(self, &surface);
+        let managed = forget_window(self, &surface);
         if !surface.is_override_redirect()
             && let Err(err) = surface.set_mapped(false)
         {
@@ -212,10 +243,20 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
         }
         // `set_mapped(false)` uses IconicState internally; delete WM_STATE
         // afterwards because this path is an ICCCM withdrawal, not minimize.
-        self.xwayland
-            .transition_surface(&surface, WindowState::Withdrawn);
+        // Only when this really was a managed window, though: an unmap for a
+        // window we were not tracking must not strip `WM_STATE`, which toolkits
+        // (Chromium/CEF, so Steam) read to decide the window is managed and
+        // viewable at all.
+        if managed {
+            self.xwayland
+                .transition_surface(&surface, WindowState::Withdrawn);
+        }
         refresh_override_redirect_owners(self);
         crate::session::sync_keyboard_focus(self, SERIAL_COUNTER.next_serial());
+        crate::session::pointer::refresh_desktop_client_focus(
+            self,
+            self.start_time.elapsed().as_millis() as u32,
+        );
         self.request_redraw();
     }
 
@@ -238,6 +279,10 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
         crate::session::trace::forget_x11(self, &surface);
         refresh_override_redirect_owners(self);
         crate::session::sync_keyboard_focus(self, SERIAL_COUNTER.next_serial());
+        crate::session::pointer::refresh_desktop_client_focus(
+            self,
+            self.start_time.elapsed().as_millis() as u32,
+        );
         self.request_redraw();
     }
 
@@ -331,6 +376,10 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
                 above,
                 action,
             );
+            crate::session::pointer::refresh_desktop_client_focus(
+                self,
+                self.start_time.elapsed().as_millis() as u32,
+            );
             self.request_redraw();
             return;
         }
@@ -413,6 +462,10 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
             }
         }
         crate::session::reconcile_pointer_constraints(self);
+        crate::session::pointer::refresh_desktop_client_focus(
+            self,
+            self.start_time.elapsed().as_millis() as u32,
+        );
         self.request_redraw();
     }
 

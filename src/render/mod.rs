@@ -3,6 +3,7 @@ pub mod background;
 pub mod close;
 pub mod effects;
 pub mod fullscreen_texture;
+pub mod ids;
 pub mod node;
 pub mod overlays;
 pub mod rescale;

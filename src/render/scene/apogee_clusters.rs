@@ -66,7 +66,7 @@ pub(super) fn apogee_core_tile_elements(
         tile.target.size.to_physical(1),
     );
     let body = lerp_rect(source, target, progress);
-    let ring = node_ring_color(nodes.config, decorations, highlighted);
+    let ring = node_ring_color(decorations, highlighted);
     let fill = node_fill_color(nodes.config, ring);
     let icon_colors = [
         rgba(decorations.border_color_unfocused),

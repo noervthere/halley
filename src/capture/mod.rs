@@ -1,3 +1,4 @@
+pub mod encoder;
 pub mod menu;
 pub mod picker;
 pub mod screencast;
@@ -13,9 +14,10 @@ use smithay::wayland::seat::WaylandFocus;
 
 use menu::{ScreenshotMenu, ScreenshotMode};
 use picker::RegionPicker;
+pub(crate) use screenshot::screenshot_directory;
 pub(crate) use screenshot::{capture_monitor_region_pixels, render_monitor_region_dmabuf};
 pub(crate) use screenshot::{capture_source_pixels, capture_surface_tree, render_source_dmabuf};
-pub use screenshot::{save_region, save_window};
+pub use screenshot::{save_area, save_region, save_window};
 use source_chooser::{SourceChooser, SourceMode, SourcePhase};
 
 use crate::session::{Session, SessionDriver};
@@ -290,10 +292,10 @@ impl CaptureState {
         if self.pending.is_some() {
             return Err(pending);
         }
-        let bounds = space
+        let outputs = space
             .outputs()
             .filter_map(|output| space.output_geometry(output))
-            .reduce(Rectangle::merge);
+            .collect::<Vec<_>>();
         let active = preferred_output
             .and_then(|name| {
                 space
@@ -307,10 +309,10 @@ impl CaptureState {
                     .next()
                     .and_then(|output| space.output_geometry(output))
             });
-        let (Some(bounds), Some(active)) = (bounds, active) else {
+        let Some(active) = active else {
             return Err(pending);
         };
-        self.picker.begin(bounds, active);
+        self.picker.begin(outputs, active);
         self.selection = Some(Selection::Area);
         self.pending = Some(pending);
         Ok(())
@@ -354,12 +356,12 @@ impl CaptureState {
     }
 
     pub fn update_layout(&mut self, space: &Space<Window>) {
-        if let Some(bounds) = space
+        let outputs = space
             .outputs()
             .filter_map(|output| space.output_geometry(output))
-            .reduce(Rectangle::merge)
-        {
-            self.picker.update_bounds(bounds);
+            .collect::<Vec<_>>();
+        if !outputs.is_empty() {
+            self.picker.update_outputs(outputs);
         }
         if self.source_chooser.is_active()
             && let Some(output) = space
@@ -459,10 +461,14 @@ impl CaptureState {
         };
         match mode {
             ScreenshotMode::Region => {
-                let Some(bounds) = desktop_bounds(space) else {
+                let outputs = space
+                    .outputs()
+                    .filter_map(|output| space.output_geometry(output))
+                    .collect::<Vec<_>>();
+                if outputs.is_empty() {
                     return false;
-                };
-                self.picker.begin(bounds, menu.output_geometry());
+                }
+                self.picker.begin(outputs, menu.output_geometry());
                 self.selection = Some(Selection::Area);
             }
             ScreenshotMode::Screen => {
@@ -651,7 +657,8 @@ pub fn request_screenshot<D: SessionDriver>(
                 );
                 return;
             };
-            reply_with_capture(reply, save_region(session, region));
+            let captured = save_region(session, region);
+            queue_capture(session, captured, PendingCaptureReply::Ipc(reply));
         }
         halley_ipc::ScreenshotTarget::Window => {
             let pending = PendingCapture::Screenshot {
@@ -764,34 +771,102 @@ pub fn accept_selected<D: SessionDriver>(session: &mut Session<D>) -> bool {
         finish_modal_capture(session);
         return true;
     }
-    let result = match accepted.target {
-        AcceptedTarget::Area(region) | AcceptedTarget::Screen(region) => {
-            save_region(session, region)
-        }
+    let captured = match accepted.target {
+        AcceptedTarget::Area(region) => save_area(session, region),
+        AcceptedTarget::Screen(region) => save_region(session, region),
         AcceptedTarget::Window(surface) => save_window(session, &surface),
         AcceptedTarget::Source(_) => unreachable!("handled above"),
     };
-    match accepted.pending {
-        PendingCapture::Local { menu } => match result {
+    queue_capture(
+        session,
+        captured,
+        PendingCaptureReply::from(accepted.pending),
+    );
+    finish_modal_capture(session);
+    true
+}
+
+/// Hands a finished capture to the encoder worker and remembers who to answer.
+///
+/// The GPU readback has to happen on the compositor thread; PNG encoding does
+/// not, and doing it inline froze every output for its duration.
+fn queue_capture<D: SessionDriver>(
+    session: &mut Session<D>,
+    captured: Result<screenshot::CapturedImage, Box<dyn std::error::Error>>,
+    reply: PendingCaptureReply,
+) {
+    let submitted =
+        captured.and_then(|image| {
+            let directory = screenshot_directory(&session.settings.screenshot.directory);
+            let encoder = session.screenshot_encoder.as_mut().ok_or_else(
+                || -> Box<dyn std::error::Error> { "screenshot encoder is not running".into() },
+            )?;
+            encoder
+                .submit(directory, image.width, image.height, image.pixels)
+                .map_err(|err| -> Box<dyn std::error::Error> { err.into() })
+        });
+    match submitted {
+        Ok(id) => {
+            session.pending_captures.insert(id, reply);
+        }
+        Err(err) => finish_capture_reply(session, reply, Err(err.to_string())),
+    }
+}
+
+/// What to do once a queued screenshot finishes encoding.
+pub enum PendingCaptureReply {
+    Local { output_name: String },
+    Ipc(crate::ipc::ReplySender),
+}
+
+impl From<PendingCapture> for PendingCaptureReply {
+    fn from(pending: PendingCapture) -> Self {
+        match pending {
+            PendingCapture::Local { menu } => Self::Local {
+                output_name: menu.output_name().to_string(),
+            },
+            PendingCapture::Screenshot { reply, .. } => Self::Ipc(reply),
+            PendingCapture::Source { .. } => {
+                unreachable!("source selection returned a screenshot target")
+            }
+        }
+    }
+}
+
+/// Delivers a finished encode back to whoever asked for the screenshot.
+pub fn finish_encode<D: SessionDriver>(
+    session: &mut Session<D>,
+    done: crate::capture::encoder::EncodeDone,
+) {
+    let Some(reply) = session.pending_captures.remove(&done.id) else {
+        eventline::warn!("screenshot: completion for unknown job {}", done.id);
+        return;
+    };
+    finish_capture_reply(session, reply, done.result);
+}
+
+fn finish_capture_reply<D: SessionDriver>(
+    session: &mut Session<D>,
+    reply: PendingCaptureReply,
+    result: Result<PathBuf, String>,
+) {
+    match reply {
+        PendingCaptureReply::Local { output_name } => match result {
             Ok(path) => {
                 eventline::info!("screenshot saved to {}", path.display());
-                let directory = path.parent().unwrap_or(path.as_path());
+                let directory = path.parent().unwrap_or(path.as_path()).to_path_buf();
                 session.shell.overlays.show_screenshot_saved(
-                    menu.output_name().to_string(),
-                    directory,
+                    output_name,
+                    &directory,
                     session.settings.overlays.notifications.success_duration_ms,
                     crate::frame_clock::monotonic_now(),
                 );
+                session.request_redraw();
             }
             Err(err) => eventline::error!("screenshot failed: {err}"),
         },
-        PendingCapture::Screenshot { reply, .. } => reply_with_capture(reply, result),
-        PendingCapture::Source { .. } => {
-            unreachable!("source selection returned a screenshot target")
-        }
+        PendingCaptureReply::Ipc(reply) => reply_with_capture(reply, result),
     }
-    finish_modal_capture(session);
-    true
 }
 
 pub fn cancel_selected<D: SessionDriver>(session: &mut Session<D>) -> bool {
@@ -817,17 +892,12 @@ pub fn cancel_selected<D: SessionDriver>(session: &mut Session<D>) -> bool {
     true
 }
 
-fn reply_with_capture(
-    reply: crate::ipc::ReplySender,
-    result: Result<PathBuf, Box<dyn std::error::Error>>,
-) {
+fn reply_with_capture(reply: crate::ipc::ReplySender, result: Result<PathBuf, String>) {
     let response = match result {
         Ok(path) => halley_ipc::ScreenshotResponse::Saved {
             path: path.to_string_lossy().into_owned(),
         },
-        Err(err) => halley_ipc::ScreenshotResponse::Failed {
-            message: err.to_string(),
-        },
+        Err(message) => halley_ipc::ScreenshotResponse::Failed { message },
     };
     let _ = reply.send(halley_ipc::Response::Screenshot(response), Vec::new());
 }

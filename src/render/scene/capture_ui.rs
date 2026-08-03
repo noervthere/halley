@@ -14,22 +14,31 @@ pub(super) fn capture_overlay_elements(
     match overlay {
         crate::capture::CaptureOverlay::None => Ok(Vec::new()),
         crate::capture::CaptureOverlay::Region(region) => {
-            Ok(
-                capture_picker_elements(output_geometry, region, true, visuals)
-                    .into_iter()
-                    .rev()
-                    .map(SceneElement::Border)
-                    .collect(),
-            )
+            let mut elements = capture_picker_elements(
+                renderer,
+                node_renderer,
+                &output.name(),
+                output_geometry,
+                region,
+                true,
+                visuals,
+            )?;
+            // Built back-to-front; the scene consumes front-to-back.
+            elements.reverse();
+            Ok(elements)
         }
         crate::capture::CaptureOverlay::Highlight(region) => {
-            Ok(
-                capture_picker_elements(output_geometry, region, false, visuals)
-                    .into_iter()
-                    .rev()
-                    .map(SceneElement::Border)
-                    .collect(),
-            )
+            let mut elements = capture_picker_elements(
+                renderer,
+                node_renderer,
+                &output.name(),
+                output_geometry,
+                region,
+                false,
+                visuals,
+            )?;
+            elements.reverse();
+            Ok(elements)
         }
         crate::capture::CaptureOverlay::Menu {
             output_name,
@@ -92,154 +101,167 @@ fn source_chooser_backdrop(output: Rectangle<i32, Logical>) -> SceneElement {
     ))
 }
 
-pub(super) fn capture_picker_elements(
+pub(super) const PICKER_HANDLE_SIZE: i32 = 12;
+pub(super) const PICKER_BORDER_PX: f32 = 2.0;
+const PICKER_DASH_PERIOD: f32 = 16.0;
+const PICKER_DASH_LENGTH: f32 = 10.0;
+
+/// Where every part of the area selector goes on one output.
+///
+/// The dimmed surround is necessarily per-output, but the outline and the
+/// corner grips are derived from the **unclipped** selection so a region
+/// spanning two monitors reads as one region with one set of four handles,
+/// rather than as a separate box per output.
+pub(super) struct PickerLayout {
+    pub dim: Vec<Rectangle<i32, Physical>>,
+    pub outline: Rectangle<i32, Physical>,
+    pub handles: [Rectangle<i32, Physical>; 4],
+}
+
+pub(super) fn picker_layout(
     output: Rectangle<i32, Logical>,
     selection: Rectangle<i32, Logical>,
-    region_style: bool,
-    visuals: crate::render::overlays::shell::OverlayVisuals,
-) -> Vec<SolidColorRenderElement> {
+) -> Option<PickerLayout> {
     let output_local = Rectangle::<i32, Physical>::from_size(output.size.to_physical(1));
-    let selected = output.intersection(selection).map(|intersection| {
+    let clipped = output.intersection(selection).map(|intersection| {
         Rectangle::<i32, Physical>::new(
             (intersection.loc - output.loc).to_physical(1),
             intersection.size.to_physical(1),
         )
-    });
-    let dim = crate::render::overlays::shell::backdrop_dim(0.62);
-    let accent = smithay::backend::renderer::Color32F::new(
-        visuals.border.r,
-        visuals.border.g,
-        visuals.border.b,
-        visuals.border.a,
-    );
-    let make = |geometry, color| {
-        SolidColorRenderElement::new(
-            Id::new(),
-            geometry,
-            CommitCounter::default(),
-            color,
-            Kind::Unspecified,
-        )
-    };
+    })?;
 
-    let Some(selected) = selected else {
-        return vec![make(output_local, dim)];
-    };
-    let mut elements = Vec::with_capacity(12);
-    let right = selected.loc.x + selected.size.w;
-    let bottom = selected.loc.y + selected.size.h;
-    for rect in [
+    let right = clipped.loc.x + clipped.size.w;
+    let bottom = clipped.loc.y + clipped.size.h;
+    let dim = [
         Rectangle::new(
             (0, 0).into(),
-            (output_local.size.w, selected.loc.y.max(0)).into(),
+            (output_local.size.w, clipped.loc.y.max(0)).into(),
         ),
         Rectangle::new(
             (0, bottom).into(),
             (output_local.size.w, (output_local.size.h - bottom).max(0)).into(),
         ),
         Rectangle::new(
-            (0, selected.loc.y).into(),
-            (selected.loc.x.max(0), selected.size.h).into(),
+            (0, clipped.loc.y).into(),
+            (clipped.loc.x.max(0), clipped.size.h).into(),
         ),
         Rectangle::new(
-            (right, selected.loc.y).into(),
-            ((output_local.size.w - right).max(0), selected.size.h).into(),
-        ),
-    ] {
-        if rect.size.w > 0 && rect.size.h > 0 {
-            elements.push(make(rect, dim));
-        }
-    }
-    if region_style {
-        elements.extend(
-            dashed_border_rects(selected)
-                .into_iter()
-                .map(|rect| make(rect, accent)),
-        );
-        let handle_size = 12;
-        for point in [
-            selected.loc,
-            (right, selected.loc.y).into(),
-            (selected.loc.x, bottom).into(),
-            (right, bottom).into(),
-        ] {
-            elements.push(make(
-                Rectangle::new(
-                    (point.x - handle_size / 2, point.y - handle_size / 2).into(),
-                    (handle_size, handle_size).into(),
-                ),
-                accent,
-            ));
-        }
-    } else {
-        elements.extend(
-            inner_border_rects(selected, 2)
-                .into_iter()
-                .map(|rect| make(rect, accent)),
-        );
-    }
-    elements
-}
-
-pub(super) fn inner_border_rects(
-    rect: Rectangle<i32, Physical>,
-    width: i32,
-) -> [Rectangle<i32, Physical>; 4] {
-    let width = width.max(0).min(rect.size.w).min(rect.size.h);
-    let right = rect.loc.x + rect.size.w;
-    let bottom = rect.loc.y + rect.size.h;
-    [
-        Rectangle::new(rect.loc, (rect.size.w, width).into()),
-        Rectangle::new(
-            (rect.loc.x, bottom - width).into(),
-            (rect.size.w, width).into(),
-        ),
-        Rectangle::new(rect.loc, (width, rect.size.h).into()),
-        Rectangle::new(
-            (right - width, rect.loc.y).into(),
-            (width, rect.size.h).into(),
+            (right, clipped.loc.y).into(),
+            ((output_local.size.w - right).max(0), clipped.size.h).into(),
         ),
     ]
+    .into_iter()
+    .filter(|rect| rect.size.w > 0 && rect.size.h > 0)
+    .collect();
+
+    // Unclipped: may extend past this output on either side, in which case the
+    // damage tracker simply skips the parts with no visible area.
+    let outline = Rectangle::<i32, Physical>::new(
+        (selection.loc - output.loc).to_physical(1),
+        selection.size.to_physical(1),
+    );
+    let outline_right = outline.loc.x + outline.size.w;
+    let outline_bottom = outline.loc.y + outline.size.h;
+    let handles = [
+        outline.loc,
+        (outline_right, outline.loc.y).into(),
+        (outline.loc.x, outline_bottom).into(),
+        (outline_right, outline_bottom).into(),
+    ]
+    .map(|point| {
+        Rectangle::new(
+            (
+                point.x - PICKER_HANDLE_SIZE / 2,
+                point.y - PICKER_HANDLE_SIZE / 2,
+            )
+                .into(),
+            (PICKER_HANDLE_SIZE, PICKER_HANDLE_SIZE).into(),
+        )
+    });
+
+    Some(PickerLayout {
+        dim,
+        outline,
+        handles,
+    })
 }
 
-pub(super) fn dashed_border_rects(rect: Rectangle<i32, Physical>) -> Vec<Rectangle<i32, Physical>> {
-    const THICKNESS: i32 = 2;
-    const DASH_LENGTH: i32 = 10;
-    const GAP_LENGTH: i32 = 6;
+fn capture_picker_elements(
+    renderer: &mut GlesRenderer,
+    node_renderer: &mut crate::render::node::NodeRenderer,
+    output_name: &str,
+    output: Rectangle<i32, Logical>,
+    selection: Rectangle<i32, Logical>,
+    region_style: bool,
+    visuals: crate::render::overlays::shell::OverlayVisuals,
+) -> Result<Vec<SceneElement>, Box<dyn Error>> {
+    use crate::render::node::NodeSlot;
 
-    let right = rect.loc.x + rect.size.w;
-    let bottom = rect.loc.y + rect.size.h;
-    let mut strips = Vec::new();
+    let dim_color = crate::render::overlays::shell::backdrop_dim(0.62);
+    let accent = (
+        visuals.border.r,
+        visuals.border.g,
+        visuals.border.b,
+        visuals.border.a,
+    );
 
-    let mut x = rect.loc.x;
-    while x < right {
-        let length = (right - x).min(DASH_LENGTH);
-        strips.push(Rectangle::new(
-            (x, rect.loc.y).into(),
-            (length, THICKNESS).into(),
-        ));
-        strips.push(Rectangle::new(
-            (x, bottom - THICKNESS).into(),
-            (length, THICKNESS).into(),
-        ));
-        x += DASH_LENGTH + GAP_LENGTH;
+    let Some(layout) = picker_layout(output, selection) else {
+        // The selection misses this output entirely: dim all of it.
+        let id = node_renderer.slot_id(output_name, NodeSlot::PickerBackdrop);
+        return Ok(vec![SceneElement::Border(SolidColorRenderElement::new(
+            id,
+            Rectangle::<i32, Physical>::from_size(output.size.to_physical(1)),
+            CommitCounter::default(),
+            dim_color,
+            Kind::Unspecified,
+        ))]);
+    };
+
+    let mut elements = Vec::with_capacity(9);
+    for (index, rect) in layout.dim.iter().enumerate() {
+        let id = node_renderer.slot_id(output_name, NodeSlot::PickerDim(index as u8));
+        elements.push(SceneElement::Border(SolidColorRenderElement::new(
+            id,
+            *rect,
+            CommitCounter::default(),
+            dim_color,
+            Kind::Unspecified,
+        )));
     }
 
-    let mut y = rect.loc.y;
-    while y < bottom {
-        let length = (bottom - y).min(DASH_LENGTH);
-        strips.push(Rectangle::new(
-            (rect.loc.x, y).into(),
-            (THICKNESS, length).into(),
-        ));
-        strips.push(Rectangle::new(
-            (right - THICKNESS, y).into(),
-            (THICKNESS, length).into(),
-        ));
-        y += DASH_LENGTH + GAP_LENGTH;
-    }
+    // A dashed outline for an adjustable region, a solid one for a hover
+    // highlight. Both are a single shader element rather than one quad per
+    // dash, which used to be several hundred elements on a wide selection.
+    let dash = if region_style {
+        (PICKER_DASH_PERIOD, PICKER_DASH_LENGTH)
+    } else {
+        (1.0, 1.0)
+    };
+    elements.push(SceneElement::DashedOutline(
+        node_renderer.dashed_outline_element(
+            renderer,
+            output_name,
+            NodeSlot::PickerOutline,
+            layout.outline,
+            accent,
+            PICKER_BORDER_PX,
+            dash,
+        )?,
+    ));
 
-    strips
+    if region_style {
+        for (index, rect) in layout.handles.iter().enumerate() {
+            let id = node_renderer.slot_id(output_name, NodeSlot::PickerHandle(index as u8));
+            elements.push(SceneElement::Border(SolidColorRenderElement::new(
+                id,
+                *rect,
+                CommitCounter::default(),
+                smithay::backend::renderer::Color32F::new(accent.0, accent.1, accent.2, accent.3),
+                Kind::Unspecified,
+            )));
+        }
+    }
+    Ok(elements)
 }
 
 #[cfg(test)]

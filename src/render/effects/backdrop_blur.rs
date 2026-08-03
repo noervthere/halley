@@ -60,7 +60,7 @@ struct OutputResources {
 pub enum BlurIdentity {
     Window { surface: Id, instance: String },
     Layer(Id),
-    Overlay(String),
+    Overlay(&'static str),
 }
 
 #[derive(Default)]
@@ -594,7 +594,7 @@ mod tests {
                 surface,
                 instance: "canonical".to_string(),
             },
-            BlurIdentity::Overlay("canonical".to_string()),
+            BlurIdentity::Overlay("canonical"),
         ];
 
         assert_eq!(identities.into_iter().collect::<HashSet<_>>().len(), 3);
@@ -603,8 +603,8 @@ mod tests {
     #[test]
     fn a_stack_position_keeps_the_same_identity_across_frames() {
         assert_eq!(
-            BlurIdentity::Overlay("shell-overlay".to_string()),
-            BlurIdentity::Overlay("shell-overlay".to_string())
+            BlurIdentity::Overlay("shell-overlay"),
+            BlurIdentity::Overlay("shell-overlay")
         );
     }
 }

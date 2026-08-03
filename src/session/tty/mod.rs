@@ -394,6 +394,8 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
         ),
         cameras: crate::presentation::camera::OutputCameras::default(),
         capture: crate::capture::CaptureState::default(),
+        pending_captures: std::collections::HashMap::new(),
+        screenshot_encoder: None,
         screencast: crate::capture::screencast::ScreencastState::default(),
         interactions: super::InteractionState::default(),
         touch: super::touch::TouchState::default(),
@@ -444,6 +446,14 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
         })
     {
         eventline::error!("ipc: failed to start listener: {err}");
+    }
+
+    match crate::capture::encoder::ScreenshotEncoder::spawn(
+        &event_loop.handle(),
+        |app: &mut TtyApp, done| crate::capture::finish_encode(app, done),
+    ) {
+        Ok(encoder) => app.screenshot_encoder = Some(encoder),
+        Err(err) => eventline::error!("screenshot: failed to start encoder: {err}"),
     }
     super::environment::notify_ready();
     if let Some(path) = config_path
@@ -721,6 +731,14 @@ fn send_output_frame_callbacks(app: &mut TtyApp, output: &Output) {
         elapsed,
     );
     app.wayland.space.refresh();
+    if crate::xwayland::sync_positions(app) {
+        // The client's root coordinates just moved under a possibly stationary
+        // pointer, so its hover state is stale until it is re-routed.
+        super::pointer::refresh_desktop_client_focus(
+            app,
+            app.start_time.elapsed().as_millis() as u32,
+        );
+    }
     wayland::layer_shell::cleanup(&mut app.wayland);
 }
 
@@ -812,7 +830,13 @@ fn apply_tty_output_config(app: &mut TtyApp, outputs_config: &[halley_config::Ou
 
     if layout_changed {
         app.wayland.space.refresh();
+        // A pure output move rebases every window's global coordinates; the X
+        // server only learns about it through this resync.
+        crate::xwayland::sync_positions(app);
         app.capture.update_layout(&app.wayland.space);
+    }
+    if layout_changed || output_changed {
+        app.xwayland.sync_desktop_geometry(&app.wayland.space);
     }
     if output_changed {
         crate::wayland::session_lock::configure_surfaces(app);

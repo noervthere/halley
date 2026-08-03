@@ -95,15 +95,6 @@ pub enum NodeBackgroundColor {
     Fixed(f32, f32, f32),
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum NodeBorderColor {
-    #[default]
-    UseWindowActive,
-    UseWindowInactive,
-    UseWindowSecondaryActive,
-    UseWindowSecondaryInactive,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Nodes {
     pub shape: NodeShape,
@@ -114,8 +105,6 @@ pub struct Nodes {
     pub opacity: f32,
     pub restore_centering: RestoreCentering,
     pub background_color: NodeBackgroundColor,
-    pub border_color_hover: NodeBorderColor,
-    pub border_color_inactive: NodeBorderColor,
 }
 
 impl Default for Nodes {
@@ -129,8 +118,6 @@ impl Default for Nodes {
             opacity: 1.0,
             restore_centering: RestoreCentering::Never,
             background_color: NodeBackgroundColor::Auto,
-            border_color_hover: NodeBorderColor::UseWindowActive,
-            border_color_inactive: NodeBorderColor::UseWindowInactive,
         }
     }
 }
@@ -220,16 +207,6 @@ pub fn parse_nodes(config: &RuneConfig) -> Nodes {
             })
             .unwrap_or(defaults.restore_centering),
         background_color: parse_background_color(config, defaults.background_color),
-        border_color_hover: parse_border_color(
-            config,
-            "node.border-colour-hover",
-            defaults.border_color_hover,
-        ),
-        border_color_inactive: parse_border_color(
-            config,
-            "node.border-colour-inactive",
-            defaults.border_color_inactive,
-        ),
     }
 }
 
@@ -312,25 +289,6 @@ fn parse_background_color(
             .map(|[r, g, b]| NodeBackgroundColor::Fixed(r, g, b))
             .unwrap_or(default),
     }
-}
-
-fn parse_border_color(
-    config: &RuneConfig,
-    path: &str,
-    default: NodeBorderColor,
-) -> NodeBorderColor {
-    config
-        .get_optional::<String>(path)
-        .ok()
-        .flatten()
-        .and_then(|value| match value.as_str() {
-            "use-window-active" => Some(NodeBorderColor::UseWindowActive),
-            "use-window-inactive" => Some(NodeBorderColor::UseWindowInactive),
-            "use-window-secondary-active" => Some(NodeBorderColor::UseWindowSecondaryActive),
-            "use-window-secondary-inactive" => Some(NodeBorderColor::UseWindowSecondaryInactive),
-            _ => None,
-        })
-        .unwrap_or(default)
 }
 
 fn parse_hex_rgb(value: &str) -> Option<[f32; 3]> {

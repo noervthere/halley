@@ -43,7 +43,7 @@ use windows::{
 pub(crate) use nodes::{contrast_text_rgb, node_fill_color, node_ring_color};
 
 #[cfg(test)]
-use capture_ui::{capture_picker_elements, dashed_border_rects, inner_border_rects};
+use capture_ui::picker_layout;
 #[cfg(test)]
 use overview::{
     apogee_caption_rect, apogee_transition_visuals, aspect_fit_rect, outset_physical, outset_rect,
@@ -71,6 +71,8 @@ render_elements! {
     Node=super::node::NodeRenderElement,
     NodeLabel=super::node::LabelRenderElement,
     NodeTexture=super::node::NodeTextureElement,
+    FocusRing=super::node::FocusRingElement,
+    DashedOutline=super::node::DashedOutlineElement,
     UiText=super::text::UiTextElement,
     BackdropBlur=super::effects::backdrop_blur::BackdropBlurElement,
     Shadow=super::effects::shadow::ShadowElement,
@@ -94,6 +96,8 @@ pub fn build(
         .resources
         .backdrop_blur_renderer
         .begin_scene(&output.name());
+    request.resources.node_renderer.begin_scene(&output.name());
+    request.resources.ui_text.begin_scene();
     if request.desktop.session_lock.active() {
         let scale = Scale::from(output.current_scale().fractional_scale());
         let mut elements = request
@@ -459,6 +463,7 @@ pub fn build(
                     && let Some(border) =
                         request.resources.window_decoration_renderer.border_element(
                             renderer,
+                            closing.border_id.clone(),
                             closing.destination,
                             border.width,
                             closing.content_radius,
@@ -899,49 +904,81 @@ mod tests {
     }
 
     #[test]
-    fn resize_handles_are_reserved_for_region_selection() {
+    fn picker_outline_and_grips_describe_the_whole_selection() {
         let output = Rectangle::<i32, Logical>::new((0, 0).into(), (1920, 1080).into());
         let selection = Rectangle::<i32, Logical>::new((320, 180).into(), (1280, 720).into());
 
-        let visuals = super::super::overlays::shell::resolve_visuals(
-            &halley_config::Overlays::default(),
-            &halley_config::Decorations::default(),
+        let layout = picker_layout(output, selection).expect("selection is on this output");
+        assert_eq!(
+            layout.outline,
+            Rectangle::new((320, 180).into(), (1280, 720).into())
         );
-        let region = capture_picker_elements(output, selection, true, visuals);
-        let highlight = capture_picker_elements(output, selection, false, visuals);
+        assert_eq!(layout.handles.len(), 4);
+        assert_eq!(
+            layout.handles[0],
+            Rectangle::new((314, 174).into(), (12, 12).into())
+        );
+        assert_eq!(
+            layout.handles[3],
+            Rectangle::new((1594, 894).into(), (12, 12).into())
+        );
+    }
 
-        let handles = |elements: &[SolidColorRenderElement]| {
-            elements
+    /// The reported bug: a selection spanning two outputs used to be clipped
+    /// per output, so each monitor drew its own box with its own four grips.
+    /// The outline and grips must instead stay in one global selection, with
+    /// only the dimmed surround computed per output.
+    #[test]
+    fn a_selection_spanning_outputs_keeps_one_outline_and_one_grip_set() {
+        let main = Rectangle::<i32, Logical>::new((0, 0).into(), (2560, 1440).into());
+        let secondary = Rectangle::<i32, Logical>::new((2560, 0).into(), (1920, 1200).into());
+        let selection = Rectangle::<i32, Logical>::new((2000, 100).into(), (1500, 800).into());
+
+        let on_main = picker_layout(main, selection).expect("overlaps main");
+        let on_secondary = picker_layout(secondary, selection).expect("overlaps secondary");
+
+        // Same region, expressed in each output's local coordinates.
+        assert_eq!(
+            on_main.outline,
+            Rectangle::new((2000, 100).into(), (1500, 800).into())
+        );
+        assert_eq!(
+            on_secondary.outline,
+            Rectangle::new((-560, 100).into(), (1500, 800).into())
+        );
+        assert_eq!(
+            on_main.outline.loc.x - 2560,
+            on_secondary.outline.loc.x,
+            "the two outlines must be the same rectangle in global space"
+        );
+
+        // The four grips sit at the selection's true corners, so each output
+        // renders only the ones that actually land on it.
+        let visible = |layout: &super::capture_ui::PickerLayout,
+                       bounds: Rectangle<i32, Logical>| {
+            let local = Rectangle::<i32, Physical>::from_size(bounds.size.to_physical(1));
+            layout
+                .handles
                 .iter()
-                .filter(|element| element.geometry(Scale::from(1.0)).size == (12, 12).into())
+                .filter(|handle| local.overlaps(**handle))
                 .count()
         };
-        assert_eq!(handles(&region), 4);
-        assert_eq!(handles(&highlight), 0);
+        assert_eq!(visible(&on_main, main), 2);
+        assert_eq!(visible(&on_secondary, secondary), 2);
     }
 
     #[test]
-    fn region_border_uses_ten_pixel_dashes_with_six_pixel_gaps() {
-        let selection = Rectangle::<i32, Physical>::new((320, 180).into(), (100, 80).into());
-        let strips = dashed_border_rects(selection);
+    fn the_dimmed_surround_is_clipped_to_each_output() {
+        let secondary = Rectangle::<i32, Logical>::new((2560, 0).into(), (1920, 1200).into());
+        let selection = Rectangle::<i32, Logical>::new((2000, 100).into(), (1500, 800).into());
 
-        assert!(strips.contains(&Rectangle::new((320, 180).into(), (10, 2).into())));
-        assert!(strips.contains(&Rectangle::new((336, 180).into(), (10, 2).into())));
-        assert!(!strips.iter().any(|strip| {
-            strip.loc.y == 180 && strip.loc.x < 336 && strip.loc.x + strip.size.w > 330
-        }));
-    }
+        let layout = picker_layout(secondary, selection).expect("overlaps secondary");
+        let local = Rectangle::<i32, Physical>::from_size(secondary.size.to_physical(1));
 
-    #[test]
-    fn full_screen_highlight_border_stays_inside_the_output() {
-        let output = Rectangle::<i32, Physical>::new((0, 0).into(), (1920, 1080).into());
-        let border = inner_border_rects(output, 2);
-
-        assert!(border.into_iter().all(|strip| output.contains_rect(strip)));
-        assert_eq!(border[0], Rectangle::new((0, 0).into(), (1920, 2).into()));
-        assert_eq!(
-            border[1],
-            Rectangle::new((0, 1078).into(), (1920, 2).into())
+        assert!(
+            layout.dim.iter().all(|rect| local.contains_rect(*rect)),
+            "dim rects must stay on their own output: {:?}",
+            layout.dim
         );
     }
 

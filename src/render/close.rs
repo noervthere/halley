@@ -60,6 +60,9 @@ struct ActiveClose {
 
 pub struct ClosingWindowRender {
     pub texture: TextureRenderElement<GlesTexture>,
+    /// The snapshot's own identity, namespaced for the border so both parts
+    /// stay stable for the life of the animation.
+    pub border_id: Id,
     pub source_texture: GlesTexture,
     pub destination: Rectangle<i32, Physical>,
     pub border: Option<CloseBorder>,
@@ -89,8 +92,8 @@ impl WindowCloseAnimations {
 
     pub fn capture(
         &mut self,
-        renderer: &mut GlesRenderer,
         window: &Window,
+        texture: super::window_texture::WindowTexture,
         metadata: CloseSnapshotMetadata,
     ) -> Result<bool, Box<dyn Error>> {
         let Some(surface) = window.wl_surface().map(|surface| surface.into_owned()) else {
@@ -102,19 +105,24 @@ impl WindowCloseAnimations {
             return Ok(false);
         }
 
-        let texture = super::window_texture::capture(renderer, window, None)?;
-        self.next_order = self.next_order.wrapping_add(1);
+        let captured = self.captured_window(texture, metadata);
         self.provisional.remove(&surface);
-        self.pending.insert(
-            surface,
-            CapturedWindow {
-                id: Id::new(),
-                texture,
-                metadata,
-                order: self.next_order,
-            },
-        );
+        self.pending.insert(surface, captured);
         Ok(true)
+    }
+
+    fn captured_window(
+        &mut self,
+        texture: super::window_texture::WindowTexture,
+        metadata: CloseSnapshotMetadata,
+    ) -> CapturedWindow {
+        self.next_order = self.next_order.wrapping_add(1);
+        CapturedWindow {
+            id: Id::new(),
+            texture,
+            metadata,
+            order: self.next_order,
+        }
     }
 
     pub fn start(&mut self, surface: &WlSurface, now: Duration) -> bool {
@@ -147,6 +155,10 @@ impl WindowCloseAnimations {
 
     pub fn has_pending(&self, surface: &WlSurface) -> bool {
         self.pending.contains_key(surface)
+    }
+
+    pub fn is_active(&self, surface: &WlSurface) -> bool {
+        self.active.contains_key(surface)
     }
 
     pub fn mark_provisional(&mut self, surface: WlSurface) {
@@ -257,6 +269,9 @@ fn closing_render(
         texture: captured
             .texture
             .render_element(captured.id.clone(), destination, alpha),
+        border_id: captured
+            .id
+            .namespaced(crate::render::window_decoration::slot::BORDER),
         source_texture: captured.texture.texture.clone(),
         destination,
         border,

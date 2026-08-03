@@ -45,7 +45,7 @@ pub(crate) fn elements(
         return Ok(Vec::new());
     }
 
-    let ring = crate::render::scene::node_ring_color(nodes.config, decorations, false);
+    let ring = crate::render::scene::node_ring_color(decorations, false);
     let fill = crate::render::scene::node_fill_color(nodes.config, ring);
     let text = crate::render::scene::contrast_text_rgb(fill);
     let allow_real_icons = clusters.config().show_icons

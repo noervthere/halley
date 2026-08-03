@@ -162,6 +162,7 @@ pub fn capture_decorated(
                 &decorations.titlebars,
                 font.size,
             )),
+            1.0,
             maximized,
             border_width,
             decorations.titlebars.radius_px.max(0) as f32,
@@ -203,6 +204,7 @@ pub fn capture_decorated(
             && let Some(border) = if server_titlebar {
                 window_decoration_renderer.body_border_element(
                     renderer,
+                    Id::new(),
                     content,
                     border_width,
                     content_radius,
@@ -212,6 +214,7 @@ pub fn capture_decorated(
             } else {
                 window_decoration_renderer.border_element(
                     renderer,
+                    Id::new(),
                     content,
                     border_width,
                     content_radius,

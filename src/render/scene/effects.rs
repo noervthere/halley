@@ -1,9 +1,9 @@
 use super::*;
 
 #[derive(Clone, Copy)]
-pub(super) struct OverlayEffectStyle<'a> {
+pub(super) struct OverlayEffectStyle {
     pub output_size: smithay::utils::Size<i32, Logical>,
-    pub identity: &'a str,
+    pub identity: &'static str,
     pub blur: halley_config::Blur,
     pub shadow: halley_config::ShadowLayer,
 }
@@ -11,7 +11,7 @@ pub(super) struct OverlayEffectStyle<'a> {
 pub(super) fn append_compositor_overlay_blur(
     renderer: &mut GlesRenderer,
     output: &Output,
-    style: OverlayEffectStyle<'_>,
+    style: OverlayEffectStyle,
     backdrop_blur_renderer: &mut crate::render::effects::backdrop_blur::BackdropBlurRenderer,
     shadow_renderer: &mut crate::render::effects::shadow::ShadowRenderer,
     elements: &mut Vec<SceneElement>,
@@ -34,9 +34,7 @@ pub(super) fn append_compositor_overlay_blur(
         if let Some(blur) = backdrop_blur_renderer.blur_element(
             renderer,
             &output.name(),
-            crate::render::effects::backdrop_blur::BlurIdentity::Overlay(
-                style.identity.to_string(),
-            ),
+            crate::render::effects::backdrop_blur::BlurIdentity::Overlay(style.identity),
             style.output_size,
             patches,
             style.blur,

@@ -158,6 +158,8 @@ mod tests {
                 "bootstrap template is missing {expected:?}"
             );
         }
+        assert!(!DEFAULT_CONFIG.contains("border-colour-hover"));
+        assert!(!DEFAULT_CONFIG.contains("border-colour-inactive"));
     }
 
     #[test]

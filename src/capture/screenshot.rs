@@ -33,14 +33,29 @@ struct OutputImage {
 pub fn save_region<D: SessionDriver>(
     session: &mut Session<D>,
     region: Rectangle<i32, Logical>,
-) -> Result<PathBuf, Box<dyn Error>> {
+) -> Result<CapturedImage, Box<dyn Error>> {
+    save_region_inner(session, region, false)
+}
+
+pub fn save_area<D: SessionDriver>(
+    session: &mut Session<D>,
+    region: Rectangle<i32, Logical>,
+) -> Result<CapturedImage, Box<dyn Error>> {
+    save_region_inner(session, region, true)
+}
+
+fn save_region_inner<D: SessionDriver>(
+    session: &mut Session<D>,
+    mut region: Rectangle<i32, Logical>,
+    trim_outer_gaps: bool,
+) -> Result<CapturedImage, Box<dyn Error>> {
     if session.session_lock.active() {
         return Err(io::Error::other("session is locked").into());
     }
     if region.size.w <= 0 || region.size.h <= 0 {
         return Err(io::Error::other("selected screenshot region is empty").into());
     }
-    let outputs = session
+    let all_outputs = session
         .wayland
         .space
         .outputs()
@@ -51,6 +66,20 @@ pub fn save_region<D: SessionDriver>(
             ))
         })
         .collect::<Vec<_>>();
+    if trim_outer_gaps {
+        region =
+            visible_region_bounds(region, all_outputs.iter().map(|(_, geometry)| *geometry))
+                .ok_or_else(|| io::Error::other("selected screenshot region contains no output"))?;
+    }
+    // Only outputs the region actually covers need a scene built and read
+    // back. A region on one monitor used to render and download every screen.
+    let outputs = all_outputs
+        .into_iter()
+        .filter(|(_, geometry)| geometry.intersection(region).is_some())
+        .collect::<Vec<_>>();
+    if outputs.is_empty() {
+        return Err(io::Error::other("selected screenshot region contains no output").into());
+    }
     let primary = session.driver.primary_output().clone();
     let target_time = crate::frame_clock::monotonic_now();
     let node_grab_active = matches!(
@@ -142,18 +171,27 @@ pub fn save_region<D: SessionDriver>(
     })?;
 
     let pixels = composite_region(region, &images)?;
-    save_pixels(
-        &session.settings.screenshot.directory,
-        region.size.w as u32,
-        region.size.h as u32,
-        &pixels,
-    )
+    Ok(CapturedImage {
+        width: region.size.w as u32,
+        height: region.size.h as u32,
+        pixels,
+    })
+}
+
+fn visible_region_bounds(
+    region: Rectangle<i32, Logical>,
+    outputs: impl IntoIterator<Item = Rectangle<i32, Logical>>,
+) -> Option<Rectangle<i32, Logical>> {
+    outputs
+        .into_iter()
+        .filter_map(|output| region.intersection(output))
+        .reduce(Rectangle::merge)
 }
 
 pub fn save_window<D: SessionDriver>(
     session: &mut Session<D>,
     surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
-) -> Result<PathBuf, Box<dyn Error>> {
+) -> Result<CapturedImage, Box<dyn Error>> {
     if session.session_lock.active() {
         return Err(io::Error::other("session is locked").into());
     }
@@ -169,12 +207,11 @@ pub fn save_window<D: SessionDriver>(
         .cloned()
         .ok_or_else(|| io::Error::other("selected window is not mapped"))?;
     let CapturedWindowPixels { pixels, size } = capture_decorated_window_pixels(session, &window)?;
-    save_pixels(
-        &session.settings.screenshot.directory,
-        size.w as u32,
-        size.h as u32,
-        &pixels,
-    )
+    Ok(CapturedImage {
+        width: size.w as u32,
+        height: size.h as u32,
+        pixels,
+    })
 }
 
 pub(crate) fn capture_source_pixels<D: SessionDriver>(
@@ -561,15 +598,27 @@ where
     Ok(frame.finish()?)
 }
 
-fn save_pixels(
-    configured_directory: &str,
+/// A finished capture, still in memory. Encoding happens on the worker in
+/// [`crate::capture::encoder`] so the compositor loop never blocks on zlib.
+pub(crate) struct CapturedImage {
+    pub width: u32,
+    pub height: u32,
+    pub pixels: Vec<u8>,
+}
+
+pub(crate) fn screenshot_directory(configured_directory: &str) -> PathBuf {
+    expand_directory(configured_directory)
+}
+
+/// Worker-side half of saving: allocate a filename and write the PNG.
+pub(crate) fn write_capture(
+    directory: &Path,
     width: u32,
     height: u32,
     pixels: &[u8],
 ) -> Result<PathBuf, Box<dyn Error>> {
-    let directory = expand_directory(configured_directory);
-    fs::create_dir_all(&directory)?;
-    let (path, file) = create_unique_file(&directory)?;
+    fs::create_dir_all(directory)?;
+    let (path, file) = create_unique_file(directory)?;
     if let Err(err) = write_png(file, width, height, pixels) {
         let _ = fs::remove_file(&path);
         return Err(err.into());
@@ -769,6 +818,50 @@ mod tests {
         let pixels =
             composite_region(Rectangle::new((1, 0).into(), (2, 1).into()), &outputs).unwrap();
         assert_eq!(pixels, vec![1, 0, 0, 255, 2, 0, 0, 255]);
+    }
+
+    #[test]
+    fn area_crop_discards_the_void_below_a_shorter_output() {
+        let outputs = [
+            Rectangle::new((0, 0).into(), (2560, 1440).into()),
+            Rectangle::new((2560, 0).into(), (1920, 1200).into()),
+        ];
+        let selected = Rectangle::new((2560, 0).into(), (1920, 1440).into());
+
+        assert_eq!(
+            visible_region_bounds(selected, outputs),
+            Some(Rectangle::new((2560, 0).into(), (1920, 1200).into()))
+        );
+    }
+
+    #[test]
+    fn area_crop_keeps_a_full_main_output_touching_the_secondary_boundary() {
+        let outputs = [
+            Rectangle::new((0, 0).into(), (2560, 1440).into()),
+            Rectangle::new((2560, 0).into(), (1920, 1200).into()),
+        ];
+        let selected = outputs[0];
+
+        assert_eq!(visible_region_bounds(selected, outputs), Some(selected));
+    }
+
+    #[test]
+    fn area_crop_preserves_internal_voids_for_a_cross_output_selection() {
+        let outputs = [
+            Rectangle::new((0, 0).into(), (2560, 1440).into()),
+            Rectangle::new((2560, 0).into(), (1920, 1200).into()),
+        ];
+        let selected = Rectangle::new((2000, 0).into(), (1000, 1440).into());
+
+        assert_eq!(visible_region_bounds(selected, outputs), Some(selected));
+    }
+
+    #[test]
+    fn area_crop_rejects_a_selection_entirely_in_a_layout_void() {
+        let outputs = [Rectangle::new((0, 0).into(), (2560, 1440).into())];
+        let selected = Rectangle::new((3000, 0).into(), (200, 200).into());
+
+        assert_eq!(visible_region_bounds(selected, outputs), None);
     }
 
     #[test]

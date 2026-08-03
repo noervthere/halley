@@ -1,4 +1,4 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::error::Error;
 
 use x11rb::NONE;
@@ -92,6 +92,16 @@ pub struct X11Control {
     atoms: Atoms,
     root: Window,
     active_window: Cell<Option<Option<Window>>>,
+    desktop_geometry: Cell<Option<PublishedDesktopGeometry>>,
+    client_list: RefCell<Option<Vec<Window>>>,
+}
+
+/// The last values written to the root window, kept so repeated publishes on an
+/// unchanged layout are free.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct PublishedDesktopGeometry {
+    desktop: (u32, u32),
+    work_area: Option<(i32, i32, u32, u32)>,
 }
 
 impl X11Control {
@@ -115,7 +125,38 @@ impl X11Control {
             atoms,
             root,
             active_window: Cell::new(None),
+            desktop_geometry: Cell::new(None),
+            client_list: RefCell::new(None),
         })
+    }
+
+    /// Publishes the managed-window list on the root window.
+    ///
+    /// `_NET_SUPPORTED` advertises both of these atoms, so leaving them unset
+    /// is a protocol lie: a client is entitled to read them and conclude no
+    /// windows are managed. `windows` is bottom-to-top stacking order.
+    /// `_NET_CLIENT_LIST` is nominally initial-mapping order, which Halley does
+    /// not retain; consumers treat that ordering as advisory, and a populated
+    /// list is strictly better than an absent one.
+    pub fn publish_client_list(&self, windows: &[Window]) -> Result<(), Box<dyn Error>> {
+        if self.client_list.borrow().as_deref() == Some(windows) {
+            return Ok(());
+        }
+        for atom in [
+            self.atoms._NET_CLIENT_LIST,
+            self.atoms._NET_CLIENT_LIST_STACKING,
+        ] {
+            self.connection.change_property32(
+                PropMode::REPLACE,
+                self.root,
+                atom,
+                AtomEnum::WINDOW,
+                windows,
+            )?;
+        }
+        self.connection.flush()?;
+        *self.client_list.borrow_mut() = Some(windows.to_vec());
+        Ok(())
     }
 
     pub fn set_wm_state(&self, window: Window, state: IcccmState) -> Result<(), Box<dyn Error>> {
@@ -141,6 +182,53 @@ impl X11Control {
         {
             return Err(err.into());
         }
+        Ok(())
+    }
+
+    /// Republishes the root desktop geometry after an output layout change.
+    ///
+    /// `publish_ewmh` writes these once at connect, so without this they keep
+    /// describing the layout Halley booted with. X11 clients that self-place
+    /// from `_NET_WORKAREA` (GTK dialogs, Java, Steam) would size and position
+    /// against a screen that no longer exists.
+    ///
+    /// `work_area` is `None` for a multi-output layout: a single rectangle
+    /// cannot describe it, and EWMH offers no per-monitor form. Deleting the
+    /// property says "unknown", which clients handle, where a stale or invented
+    /// rectangle silently sends them off-screen. Hyprland bails the same way.
+    pub fn publish_desktop_geometry(
+        &self,
+        desktop: (u32, u32),
+        work_area: Option<(i32, i32, u32, u32)>,
+    ) -> Result<(), Box<dyn Error>> {
+        let published = PublishedDesktopGeometry { desktop, work_area };
+        if self.desktop_geometry.get() == Some(published) {
+            return Ok(());
+        }
+        self.connection.change_property32(
+            PropMode::REPLACE,
+            self.root,
+            self.atoms._NET_DESKTOP_GEOMETRY,
+            AtomEnum::CARDINAL,
+            &[desktop.0, desktop.1],
+        )?;
+        match work_area {
+            Some((x, y, width, height)) => {
+                self.connection.change_property32(
+                    PropMode::REPLACE,
+                    self.root,
+                    self.atoms._NET_WORKAREA,
+                    AtomEnum::CARDINAL,
+                    &[x as u32, y as u32, width, height],
+                )?;
+            }
+            None => {
+                self.connection
+                    .delete_property(self.root, self.atoms._NET_WORKAREA)?;
+            }
+        }
+        self.connection.flush()?;
+        self.desktop_geometry.set(Some(published));
         Ok(())
     }
 

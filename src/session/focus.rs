@@ -10,13 +10,14 @@ enum FocusOrigin {
     Explicit,
     Pointer,
     Hover,
+    CloseSuccession,
 }
 
 fn should_raise(origin: FocusOrigin, raise_on_click: bool) -> bool {
     match origin {
         FocusOrigin::Explicit => true,
         FocusOrigin::Pointer => raise_on_click,
-        FocusOrigin::Hover => false,
+        FocusOrigin::Hover | FocusOrigin::CloseSuccession => false,
     }
 }
 
@@ -56,6 +57,24 @@ pub(crate) fn focus_window_from_pointer<D: SessionDriver>(
         window,
         serial,
         should_raise(FocusOrigin::Pointer, session.settings.input.raise_on_click),
+    );
+}
+
+/// Focuses the successor to a window that just closed without disturbing the
+/// surviving windows' stack order, including windows on other outputs.
+pub(crate) fn focus_window_after_close<D: SessionDriver>(
+    session: &mut Session<D>,
+    window: &Window,
+    serial: Serial,
+) {
+    focus_window_with_raise(
+        session,
+        window,
+        serial,
+        should_raise(
+            FocusOrigin::CloseSuccession,
+            session.settings.input.raise_on_click,
+        ),
     );
 }
 
@@ -294,13 +313,15 @@ mod tests {
     use super::{FocusOrigin, should_raise, should_redirect_to_stacking_front};
 
     #[test]
-    fn only_pointer_clicks_consult_raise_on_click() {
+    fn focus_origins_choose_the_expected_raise_policy() {
         assert!(should_raise(FocusOrigin::Explicit, false));
         assert!(should_raise(FocusOrigin::Explicit, true));
         assert!(!should_raise(FocusOrigin::Pointer, false));
         assert!(should_raise(FocusOrigin::Pointer, true));
         assert!(!should_raise(FocusOrigin::Hover, false));
         assert!(!should_raise(FocusOrigin::Hover, true));
+        assert!(!should_raise(FocusOrigin::CloseSuccession, false));
+        assert!(!should_raise(FocusOrigin::CloseSuccession, true));
     }
 
     #[test]

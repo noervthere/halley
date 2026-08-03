@@ -120,35 +120,58 @@ impl<K> DecorationLayout<K> {
         }
     }
 
-    pub fn max_title_width(&self, has_icon: bool) -> i32 {
-        let icon_width = if has_icon {
-            APP_ICON_SIZE + APP_ICON_GAP
-        } else {
-            0
-        };
-        self.identity_area.size.w.saturating_sub(icon_width).max(0)
+    pub fn max_title_width_scaled(&self, has_icon: bool, scale: f32) -> i32 {
+        self.max_title_width_with_metrics(
+            has_icon,
+            scaled_identity_metric(APP_ICON_SIZE, scale),
+            scaled_identity_metric(APP_ICON_GAP, scale),
+        )
     }
 
-    pub fn identity_layout(
+    pub fn identity_layout_scaled(
         &self,
         position: TitlebarContentPosition,
         title_size: Option<(i32, i32)>,
         has_icon: bool,
+        scale: f32,
     ) -> IdentityLayout<K> {
-        let has_icon = has_icon && self.identity_area.size.w >= APP_ICON_SIZE;
+        self.identity_layout_with_metrics(
+            position,
+            title_size,
+            has_icon,
+            scaled_identity_metric(APP_ICON_SIZE, scale),
+            scaled_identity_metric(APP_ICON_GAP, scale),
+        )
+    }
+
+    fn max_title_width_with_metrics(&self, has_icon: bool, icon_size: i32, gap: i32) -> i32 {
+        let icon_width = if has_icon { icon_size + gap } else { 0 };
+        self.identity_area.size.w.saturating_sub(icon_width).max(0)
+    }
+
+    fn identity_layout_with_metrics(
+        &self,
+        position: TitlebarContentPosition,
+        title_size: Option<(i32, i32)>,
+        has_icon: bool,
+        icon_size: i32,
+        icon_gap: i32,
+    ) -> IdentityLayout<K> {
+        let has_icon = has_icon && self.identity_area.size.w >= icon_size;
         let title_size = title_size
             .filter(|(width, height)| *width > 0 && *height > 0)
             .and_then(|(width, height)| {
-                let width = width.min(self.max_title_width(has_icon));
+                let width =
+                    width.min(self.max_title_width_with_metrics(has_icon, icon_size, icon_gap));
                 (width > 0).then_some((width, height))
             });
         let gap = if has_icon && title_size.is_some() {
-            APP_ICON_GAP
+            icon_gap
         } else {
             0
         };
         let title_width = title_size.map_or(0, |size| size.0);
-        let group_width = (if has_icon { APP_ICON_SIZE } else { 0 }) + gap + title_width;
+        let group_width = (if has_icon { icon_size } else { 0 }) + gap + title_width;
         let group_x = match position {
             TitlebarContentPosition::Left => self.identity_area.loc.x,
             TitlebarContentPosition::Center => {
@@ -166,13 +189,13 @@ impl<K> DecorationLayout<K> {
             Rectangle::new(
                 (
                     group_x,
-                    self.titlebar.loc.y + (self.titlebar.size.h - APP_ICON_SIZE) / 2,
+                    self.titlebar.loc.y + (self.titlebar.size.h - icon_size) / 2,
                 )
                     .into(),
-                (APP_ICON_SIZE, APP_ICON_SIZE).into(),
+                (icon_size, icon_size).into(),
             )
         });
-        let title_x = group_x + if has_icon { APP_ICON_SIZE + gap } else { 0 };
+        let title_x = group_x + if has_icon { icon_size + gap } else { 0 };
         let title = title_size.map(|(width, height)| {
             Rectangle::new(
                 (
@@ -200,6 +223,10 @@ impl<K> DecorationLayout<K> {
             .map(|control| Hit::Control(control.control))
             .or(Some(Hit::Drag))
     }
+}
+
+fn scaled_identity_metric(base: i32, scale: f32) -> i32 {
+    crate::render::window_decoration::scaled_metric(base, scale)
 }
 
 fn control_geometry<K>(titlebar: Rectangle<i32, K>, config: &Titlebars) -> Vec<ControlGeometry<K>> {
@@ -509,6 +536,29 @@ mod tests {
     }
 
     #[test]
+    fn titlebar_identity_metrics_shrink_with_zoom() {
+        let config = Titlebars {
+            button_position: TitlebarButtonPosition::Right,
+            ..Titlebars::default()
+        };
+        let layout = DecorationLayout::<Logical>::new(
+            Rectangle::new((0, 16).into(), (200, 100).into()),
+            0,
+            16,
+            &config,
+        );
+
+        let identity =
+            layout.identity_layout_scaled(TitlebarContentPosition::Left, Some((60, 9)), true, 0.5);
+        let icon = identity.app_icon.expect("scaled icon fits");
+        let title = identity.title.expect("scaled title fits");
+
+        assert_eq!(icon.size, (8, 8).into());
+        assert_eq!(title.loc.x - (icon.loc.x + icon.size.w), 4);
+        assert_eq!(identity.group.size.w, 8 + 4 + 60);
+    }
+
+    #[test]
     fn controls_win_hit_testing_over_drag_region() {
         let config = Titlebars::default();
         let layout = DecorationLayout::<Logical>::new(
@@ -543,7 +593,7 @@ mod tests {
             TitlebarContentPosition::Center,
             TitlebarContentPosition::Right,
         ] {
-            let identity = layout.identity_layout(position, Some((120, 18)), true);
+            let identity = layout.identity_layout_scaled(position, Some((120, 18)), true, 1.0);
             let icon = identity.app_icon.expect("icon fits");
             let title = identity.title.expect("title fits");
             assert_eq!(title.loc.x - (icon.loc.x + icon.size.w), APP_ICON_GAP);
@@ -564,10 +614,24 @@ mod tests {
             32,
             &config,
         );
-        let left = layout.identity_layout(TitlebarContentPosition::Left, Some((100, 18)), false);
-        let center =
-            layout.identity_layout(TitlebarContentPosition::Center, Some((100, 18)), false);
-        let right = layout.identity_layout(TitlebarContentPosition::Right, Some((100, 18)), false);
+        let left = layout.identity_layout_scaled(
+            TitlebarContentPosition::Left,
+            Some((100, 18)),
+            false,
+            1.0,
+        );
+        let center = layout.identity_layout_scaled(
+            TitlebarContentPosition::Center,
+            Some((100, 18)),
+            false,
+            1.0,
+        );
+        let right = layout.identity_layout_scaled(
+            TitlebarContentPosition::Right,
+            Some((100, 18)),
+            false,
+            1.0,
+        );
 
         assert_eq!(left.group.loc.x, layout.identity_area.loc.x);
         assert_eq!(
@@ -589,8 +653,12 @@ mod tests {
             32,
             &config,
         );
-        let identity =
-            layout.identity_layout(TitlebarContentPosition::Center, Some((200, 18)), true);
+        let identity = layout.identity_layout_scaled(
+            TitlebarContentPosition::Center,
+            Some((200, 18)),
+            true,
+            1.0,
+        );
 
         assert_eq!(layout.identity_area.size.w, 0);
         assert_eq!(identity.group.size.w, 0);

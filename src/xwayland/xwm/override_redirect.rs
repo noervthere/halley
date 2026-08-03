@@ -364,6 +364,10 @@ pub(super) fn map_override_redirect<D: SessionDriver>(
     }
     let output = override_redirect_output_name(&window);
     describe_override_redirect_map(&surface, geometry, output.as_deref(), &resolution);
+    crate::session::pointer::refresh_desktop_client_focus(
+        session,
+        session.start_time.elapsed().as_millis() as u32,
+    );
     session.request_redraw();
 }
 

@@ -134,8 +134,6 @@ node:
   icon-size 0.72
   opacity 1.0
   background-colour "auto"
-  border-colour-hover "use-window-active"
-  border-colour-inactive "use-window-inactive"
 end
 ```
 
@@ -145,6 +143,9 @@ were removed. Labels use dedicated rectangle shaders and the shared Cosmic
 Text renderer, including configured font family/weight suffixes, measured
 centering, contrast-aware text, edge flipping, and the old hover
 slide/grow/fade. See [Fonts](fonts.md) for global typography behavior.
+
+Node borders always use the unfocused window decoration colour, switching to
+the focused colour while highlighted.
 
 Display policies accept `off`, `hover`, or `always`. Real application icons
 are resolved from desktop entries and icon themes in a background worker.

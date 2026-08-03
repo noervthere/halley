@@ -157,6 +157,8 @@ impl<D: SessionDriver> Session<D> {
         }
 
         self.wayland.space.refresh();
+        crate::xwayland::sync_positions(self);
+        self.xwayland.sync_desktop_geometry(&self.wayland.space);
         self.capture.update_layout(&self.wayland.space);
         crate::wayland::session_lock::configure_surfaces(self);
         super::sync_keyboard_focus(self, smithay::utils::SERIAL_COUNTER.next_serial());

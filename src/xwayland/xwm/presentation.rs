@@ -522,6 +522,101 @@ pub(crate) fn reconfigure_fullscreen(windows: Vec<(Window, Rectangle<i32, Logica
     }
 }
 
+pub(super) struct PositionResync {
+    /// Override-redirect geometry is client-owned; Smithay rejects the configure.
+    pub(super) override_redirect: bool,
+    /// Map admission, the client-geometry quiet period, and fullscreen
+    /// transactions each own the window's geometry and send their own
+    /// configures. Resyncing underneath them would race the handoff.
+    pub(super) owns_own_geometry: bool,
+    pub(super) x_location: Point<i32, Logical>,
+    pub(super) space_location: Point<i32, Logical>,
+}
+
+/// Compare-before-configure: a settled desktop must send nothing, or the
+/// per-dispatch sweep would spam every X11 client once a frame.
+pub(super) fn position_resync_needed(resync: PositionResync) -> bool {
+    !resync.override_redirect
+        && !resync.owns_own_geometry
+        && resync.x_location != resync.space_location
+}
+
+/// Republishes a managed X11 window's position to the X server when the
+/// compositor has moved it without configuring the client.
+///
+/// The compositor's `Space` and `X11Surface::geometry()` are separate stores.
+/// Drags, node physics restores, and output relayouts move the first without
+/// the second, and the drift is self-reinforcing: `configure_request` echoes
+/// `surface.geometry().loc` back for non-transients, and `configure_notify`
+/// then pulls that stale location into the `Space`. Everything an X11 client
+/// computes in root coordinates — XWayland's synthesized pointer position, the
+/// X server's own hit testing, popup placement — is wrong by the drift vector.
+///
+/// Only the position is sent; the size stays whatever the client last agreed
+/// to. A position-only configure cannot make a client resize or map a second
+/// time, which is what the SDL2 cursor-lock constraint depends on. Hyprland
+/// resyncs the same way, and its `sendWindowSize` dedup treats a pure position
+/// change as configure-worthy only for X11 windows.
+///
+/// Returns whether a configure was sent.
+pub(crate) fn sync_position<D: SessionDriver>(session: &Session<D>, window: &Window) -> bool {
+    let Some(surface) = window.x11_surface() else {
+        return false;
+    };
+    let xid = surface.window_id();
+    let Some(location) = session.wayland.space.element_location(window) else {
+        return false;
+    };
+    let current = surface.geometry();
+    let owns_own_geometry = session.xwayland.pending_windows.contains_key(&xid)
+        || session
+            .xwayland
+            .client_geometry_guarded(xid, crate::frame_clock::monotonic_now())
+        || window.wl_surface().is_some_and(|wl_surface| {
+            session.fullscreen.is_fullscreen_or_pending(&wl_surface)
+                || session.fullscreen.awaits_external_configure(&wl_surface)
+        });
+    if !position_resync_needed(PositionResync {
+        override_redirect: surface.is_override_redirect(),
+        owns_own_geometry,
+        x_location: current.loc,
+        space_location: location,
+    }) {
+        return false;
+    }
+    if let Err(err) = surface.configure(Rectangle::new(location, current.size)) {
+        eventline::warn!("xwayland: failed to resync window position xid={xid}: {err}");
+        return false;
+    }
+    eventline::debug!(
+        "xwayland: resynced position xid={xid} from {:?} to {location:?}",
+        current.loc,
+    );
+    true
+}
+
+/// Sweeps every managed X11 window for compositor/X position drift.
+///
+/// Runs once per dispatch next to `Space::refresh`. The compare-before-configure
+/// check in [`sync_position`] is what keeps this cheap: a settled desktop sends
+/// nothing.
+pub(crate) fn sync_positions<D: SessionDriver>(session: &Session<D>) -> bool {
+    let windows = session
+        .wayland
+        .space
+        .elements()
+        .filter(|window| window.x11_surface().is_some())
+        .cloned()
+        .collect::<Vec<_>>();
+    // Deliberately not `any`: every drifted window must be resynced, and `any`
+    // would stop at the first one.
+    let mut synced = false;
+    for window in &windows {
+        synced |= sync_position(session, window);
+    }
+    synced
+}
+
 pub(crate) fn configure_window(window: &Window, geometry: Rectangle<i32, Logical>) {
     let Some(surface) = window.x11_surface() else {
         return;

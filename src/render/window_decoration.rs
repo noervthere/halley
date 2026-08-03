@@ -18,6 +18,31 @@ use smithay::utils::{Buffer, Logical, Physical, Point, Rectangle, Scale, Transfo
 
 const JOIN_OVERLAP_PX: f32 = 0.75;
 
+/// Namespaces that let several decoration parts share one window's identity.
+///
+/// A window's surface already has a stable `Id`, so its chrome does not need a
+/// registry — only a distinct namespace per part. Keeping these identities
+/// stable is what stops each frame from telling the damage tracker that every
+/// border and tint was destroyed and recreated.
+pub mod slot {
+    pub const BORDER: usize = 1;
+    pub const BODY_BORDER: usize = 2;
+    pub const JOIN_TINT: usize = 3;
+    pub const JOIN_TINT_FALLBACK: usize = 4;
+    pub const TITLEBAR_BACKGROUND: usize = 5;
+    pub const TITLEBAR_BACKGROUND_FALLBACK: usize = 6;
+    /// Button backplates are offset by their control index.
+    pub const TITLEBAR_BUTTON: usize = 16;
+}
+
+/// Stable identity for one decoration part of `surface`.
+pub fn surface_slot(
+    surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+    slot: usize,
+) -> Id {
+    Id::from_wayland_resource(surface).namespaced(slot)
+}
+
 const SURFACE_SHADER: &str = r#"
 //_DEFINES
 #if defined(EXTERNAL)
@@ -220,9 +245,11 @@ impl WindowDecorationRenderer {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn border_element(
         &mut self,
         renderer: &mut GlesRenderer,
+        id: Id,
         content: Rectangle<i32, Physical>,
         width: i32,
         radius: f32,
@@ -253,7 +280,7 @@ impl WindowDecorationRenderer {
                 .to_f64(),
         );
         let base = TextureRenderElement::from_static_texture(
-            Id::new(),
+            id,
             resources.context.clone(),
             destination.loc.to_f64(),
             resources.white.clone(),
@@ -281,9 +308,11 @@ impl WindowDecorationRenderer {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn body_border_element(
         &mut self,
         renderer: &mut GlesRenderer,
+        id: Id,
         content: Rectangle<i32, Physical>,
         width: i32,
         bottom_radius: f32,
@@ -314,7 +343,7 @@ impl WindowDecorationRenderer {
                 .to_f64(),
         );
         let base = TextureRenderElement::from_static_texture(
-            Id::new(),
+            id,
             resources.context.clone(),
             destination.loc.to_f64(),
             resources.white.clone(),
@@ -384,6 +413,7 @@ impl WindowDecorationRenderer {
     pub fn tint_element_with_radii(
         &mut self,
         renderer: &mut GlesRenderer,
+        id: Id,
         destination: Rectangle<i32, Physical>,
         radii: CornerRadii,
         color: smithay::backend::renderer::Color32F,
@@ -402,7 +432,7 @@ impl WindowDecorationRenderer {
                 .to_f64(),
         );
         let base = TextureRenderElement::from_static_texture(
-            Id::new(),
+            id,
             resources.context.clone(),
             destination.loc.to_f64(),
             resources.white.clone(),

@@ -86,7 +86,7 @@ pub(super) fn cluster_elements(
             (local.x - side / 2, local.y - side / 2).into(),
             (side, side).into(),
         );
-        let ring = node_ring_color(nodes.config, decorations, highlighted);
+        let ring = node_ring_color(decorations, highlighted);
         let core_border = if visual_flags.join_border_ready {
             let focused = decorations.border_color_focused;
             (focused.r, focused.g, focused.b)

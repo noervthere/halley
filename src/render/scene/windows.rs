@@ -211,6 +211,10 @@ pub(super) fn live_window_elements(
         };
         if let Some(tint) = window_decoration_renderer.tint_element_with_radii(
             renderer,
+            crate::render::window_decoration::surface_slot(
+                window_surface.as_ref(),
+                crate::render::window_decoration::slot::JOIN_TINT,
+            ),
             visual.animated_rect,
             radii,
             tint_color,
@@ -219,7 +223,10 @@ pub(super) fn live_window_elements(
             elements.push(SceneElement::RoundedTexture(tint));
         } else {
             elements.push(SceneElement::Border(SolidColorRenderElement::new(
-                Id::new(),
+                crate::render::window_decoration::surface_slot(
+                    window_surface.as_ref(),
+                    crate::render::window_decoration::slot::JOIN_TINT_FALLBACK,
+                ),
                 visual.animated_rect,
                 CommitCounter::default(),
                 tint_color * tint_alpha,
@@ -260,6 +267,7 @@ pub(super) fn live_window_elements(
             visual.animated_rect,
             titlebar_height,
             titlebar_metrics.glyph_size,
+            decoration_scale,
             context.maximize.contains(window_surface.as_ref()),
             crate::render::window_decoration::scaled_metric(
                 context.decorations.border_width_px,
@@ -478,6 +486,10 @@ pub(super) fn live_window_elements(
             && let Some(border) = if server_titlebar {
                 window_decoration_renderer.body_border_element(
                     renderer,
+                    crate::render::window_decoration::surface_slot(
+                        window_surface.as_ref(),
+                        crate::render::window_decoration::slot::BODY_BORDER,
+                    ),
                     visual.animated_rect,
                     border_width,
                     content_radius,
@@ -487,6 +499,10 @@ pub(super) fn live_window_elements(
             } else {
                 window_decoration_renderer.border_element(
                     renderer,
+                    crate::render::window_decoration::surface_slot(
+                        window_surface.as_ref(),
+                        crate::render::window_decoration::slot::BORDER,
+                    ),
                     visual.animated_rect,
                     border_width,
                     content_radius,
@@ -577,6 +593,17 @@ pub(super) fn live_window_elements(
     })
 }
 
+/// Stable identity for a titlebar part, falling back to a fresh `Id` for
+/// windows without a surface (only reachable from one-shot snapshot renders,
+/// which never go through a damage tracker).
+fn titlebar_slot(window: &smithay::desktop::Window, slot: usize) -> Id {
+    use smithay::wayland::seat::WaylandFocus;
+    window
+        .wl_surface()
+        .map(|surface| crate::render::window_decoration::surface_slot(surface.as_ref(), slot))
+        .unwrap_or_else(Id::new)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn append_titlebar_elements(
     renderer: &mut GlesRenderer,
@@ -584,6 +611,7 @@ pub(crate) fn append_titlebar_elements(
     content: Rectangle<i32, Physical>,
     height: i32,
     glyph_side: i32,
+    identity_scale: f32,
     maximized: bool,
     border_width: i32,
     radius: f32,
@@ -611,7 +639,7 @@ pub(crate) fn append_titlebar_elements(
         config.foreground_color_unfocused
     };
 
-    for control in &layout.controls {
+    for (index, control) in layout.controls.iter().enumerate() {
         let enabled = crate::titlebar::control_enabled(window, control.control);
         let is_hovered = hovered
             .is_some_and(|target| target.window == *window && target.control == control.control)
@@ -630,6 +658,10 @@ pub(crate) fn append_titlebar_elements(
             let backplate_alpha = if is_pressed { 0.30 } else { 0.18 };
             window_decoration_renderer.tint_element_with_radii(
                 renderer,
+                titlebar_slot(
+                    window,
+                    crate::render::window_decoration::slot::TITLEBAR_BUTTON + index,
+                ),
                 control.rect,
                 crate::render::window_decoration::CornerRadii::all(
                     (control.rect.size.h as f32 * 0.20).max(1.0),
@@ -677,17 +709,19 @@ pub(crate) fn append_titlebar_elements(
                 ui_text,
                 title,
                 rgb,
-                layout.max_title_width(app_id.is_some()),
+                layout.max_title_width_scaled(app_id.is_some(), identity_scale),
+                identity_scale,
             )?,
             None => None,
         }
     } else {
         None
     };
-    let identity_layout = layout.identity_layout(
+    let identity_layout = layout.identity_layout_scaled(
         config.title_position,
         title.as_ref().map(|title| (title.size.w, title.size.h)),
         app_id.is_some(),
+        identity_scale,
     );
     if let Some(icon_rect) = identity_layout.app_icon
         && let Some(app_id) = app_id
@@ -698,13 +732,17 @@ pub(crate) fn append_titlebar_elements(
 
     if let (Some(title), Some(title_rect)) = (title, identity_layout.title)
         && let Some(prepared) =
-            ui_text.element(renderer, title_rect.loc, &title.text, rgb, alpha)?
+            ui_text.element_scaled(renderer, title_rect, &title.text, rgb, alpha)?
     {
         elements.push(SceneElement::UiText(prepared.element));
     }
 
     if let Some(background_element) = window_decoration_renderer.tint_element_with_radii(
         renderer,
+        titlebar_slot(
+            window,
+            crate::render::window_decoration::slot::TITLEBAR_BACKGROUND,
+        ),
         layout.titlebar,
         crate::render::window_decoration::CornerRadii::top(radius),
         crate::render::decoration_color(background),
@@ -713,7 +751,10 @@ pub(crate) fn append_titlebar_elements(
         elements.push(SceneElement::RoundedTexture(background_element));
     } else {
         elements.push(SceneElement::Border(SolidColorRenderElement::new(
-            Id::new(),
+            titlebar_slot(
+                window,
+                crate::render::window_decoration::slot::TITLEBAR_BACKGROUND_FALLBACK,
+            ),
             layout.titlebar,
             CommitCounter::default(),
             crate::render::decoration_color(background) * alpha,
@@ -733,7 +774,7 @@ fn color_bytes(color: halley_config::BorderColor) -> [u8; 3] {
 
 struct FittedTitle {
     text: String,
-    size: smithay::utils::Size<i32, smithay::utils::Buffer>,
+    size: smithay::utils::Size<i32, smithay::utils::Physical>,
 }
 
 fn fitted_title(
@@ -742,16 +783,17 @@ fn fitted_title(
     title: &str,
     rgb: [u8; 3],
     max_width: i32,
+    scale: f32,
 ) -> Result<Option<FittedTitle>, Box<dyn Error>> {
     if max_width <= 0 || title.is_empty() {
         return Ok(None);
     }
-    if let Some(size) = ui_text.measure(renderer, title, rgb)?
-        && size.w <= max_width
+    if let Some(native_size) = ui_text.measure(renderer, title, rgb)?
+        && scaled_title_size(native_size, scale).w <= max_width
     {
         return Ok(Some(FittedTitle {
             text: title.to_string(),
-            size,
+            size: scaled_title_size(native_size, scale),
         }));
     }
     let characters = title.chars().collect::<Vec<_>>();
@@ -764,9 +806,10 @@ fn fitted_title(
             .iter()
             .chain(std::iter::once(&'…'))
             .collect::<String>();
-        let Some(size) = ui_text.measure(renderer, &candidate, rgb)? else {
+        let Some(native_size) = ui_text.measure(renderer, &candidate, rgb)? else {
             return Ok(None);
         };
+        let size = scaled_title_size(native_size, scale);
         if size.w <= max_width {
             best = Some(FittedTitle {
                 text: candidate,
@@ -782,9 +825,31 @@ fn fitted_title(
     Ok(best)
 }
 
+fn scaled_title_size(
+    native: smithay::utils::Size<i32, smithay::utils::Buffer>,
+    scale: f32,
+) -> smithay::utils::Size<i32, smithay::utils::Physical> {
+    (
+        crate::render::window_decoration::scaled_metric(native.w, scale),
+        crate::render::window_decoration::scaled_metric(native.h, scale),
+    )
+        .into()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{compositor_chrome_visible, should_hold_x11_fullscreen_exit};
+    use smithay::utils::{Buffer, Size};
+
+    use super::{compositor_chrome_visible, scaled_title_size, should_hold_x11_fullscreen_exit};
+
+    #[test]
+    fn title_text_size_shrinks_with_zoom() {
+        let native = Size::<i32, Buffer>::from((120, 18));
+
+        assert_eq!(scaled_title_size(native, 1.0), (120, 18).into());
+        assert_eq!(scaled_title_size(native, 0.5), (60, 9).into());
+        assert_eq!(scaled_title_size(native, 0.35), (42, 6).into());
+    }
 
     #[test]
     fn either_fullscreen_signal_suppresses_compositor_chrome() {

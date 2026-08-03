@@ -35,6 +35,10 @@ impl<D: SessionDriver> State<D> {
 
     pub fn sync_active_window(&self, _window: Option<u32>) {}
 
+    pub fn sync_desktop_geometry(&self, _space: &Space<Window>) {}
+
+    pub fn sync_client_list(&self, _space: &Space<Window>) {}
+
     pub fn configure_key_repeat(&self, _delay: i32, _rate: i32) {}
 
     pub fn set_window_iconic(&mut self, _window: &Window) {}
@@ -68,6 +72,14 @@ pub fn close_window(_window: &Window) {}
 
 pub fn configure_window(_window: &Window, _geometry: Rectangle<i32, Logical>) {}
 
+pub fn sync_position<D: SessionDriver>(_session: &Session<D>, _window: &Window) -> bool {
+    false
+}
+
+pub fn sync_positions<D: SessionDriver>(_session: &Session<D>) -> bool {
+    false
+}
+
 pub fn constrain_window_size(
     _window: &Window,
     requested: Size<i32, Logical>,
@@ -92,6 +104,10 @@ pub fn handle_commit<D: SessionDriver>(
 
 pub fn is_override_redirect(_window: &Window) -> bool {
     false
+}
+
+pub fn server_geometry(_window: &Window) -> Option<(u32, Rectangle<i32, Logical>)> {
+    None
 }
 
 pub fn is_x11(_window: &Window) -> bool {

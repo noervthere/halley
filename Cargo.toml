@@ -60,3 +60,10 @@ winit = ["smithay/backend_winit"]
 
 [dev-dependencies]
 sha2 = "0.10"
+
+# Halley itself stays unoptimized so incremental rebuilds are fast, but the
+# dependency graph (smithay, cosmic-text, resvg, image, png) is compiled with
+# full optimization. Those crates do the per-frame and per-screenshot work, and
+# at opt-level 0 they dominate the profile of a dogfooded dev session.
+[profile.dev.package."*"]
+opt-level = 3

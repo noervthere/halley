@@ -34,7 +34,9 @@ use override_redirect::*;
 use policy::*;
 pub(super) use presentation::restore_maximized_window;
 use presentation::*;
-pub(super) use presentation::{configure_window, reconfigure_fullscreen, set_window_fullscreen};
+pub(super) use presentation::{
+    configure_window, reconfigure_fullscreen, set_window_fullscreen, sync_position, sync_positions,
+};
 pub(super) use state::{ManagedStateRegistry, WindowState};
 
 #[derive(Clone, Debug)]
@@ -600,6 +602,7 @@ pub(super) fn constrain_window_size(
 
 #[cfg(test)]
 mod tests {
+    use super::presentation::{PositionResync, position_resync_needed};
     use super::{
         FullscreenRequestOrigin, OverrideRedirectIdentity, OverrideRedirectMapAdmission,
         OverrideRedirectStackAction, compositor_fullscreen_should_raise,
@@ -608,6 +611,37 @@ mod tests {
         recovery_window_size, size_fills_output,
     };
     use smithay::utils::{Logical, Point, Rectangle, Size};
+
+    fn resync(x: (i32, i32), space: (i32, i32)) -> PositionResync {
+        PositionResync {
+            override_redirect: false,
+            owns_own_geometry: false,
+            x_location: Point::from(x),
+            space_location: Point::from(space),
+        }
+    }
+
+    #[test]
+    fn a_settled_position_sends_no_configure() {
+        assert!(!position_resync_needed(resync((100, 200), (100, 200))));
+        assert!(position_resync_needed(resync((100, 200), (2660, 200))));
+    }
+
+    #[test]
+    fn geometry_owners_are_never_resynced_underneath() {
+        for resync in [
+            PositionResync {
+                override_redirect: true,
+                ..resync((0, 0), (2660, 200))
+            },
+            PositionResync {
+                owns_own_geometry: true,
+                ..resync((0, 0), (2660, 200))
+            },
+        ] {
+            assert!(!position_resync_needed(resync));
+        }
+    }
 
     #[test]
     fn only_compositor_fullscreen_entry_promotes_the_x11_window() {

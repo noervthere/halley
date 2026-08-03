@@ -5,6 +5,7 @@ pub(super) use constraints::PointerConstraintLifecycle;
 use smithay::input::pointer::{MotionEvent, PointerHandle};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point, SERIAL_COUNTER};
+use smithay::wayland::seat::WaylandFocus;
 
 use super::{Session, SessionDriver};
 
@@ -20,13 +21,15 @@ pub(super) struct ConstraintDiagnostic {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AbsoluteMotionPolicy {
-    PositionChanged,
-    SurfaceChanged,
+    Position,
+    Surface,
+    RoutedState,
 }
 
 fn should_emit_absolute_motion(
     policy: AbsoluteMotionPolicy,
     surface_changed: bool,
+    routed_state_changed: bool,
     locked: bool,
 ) -> bool {
     // An active locked pointer must receive relative motion only. Sending
@@ -34,9 +37,48 @@ fn should_emit_absolute_motion(
     // cursor anchor and breaks relative-look clients.
     !locked
         && match policy {
-            AbsoluteMotionPolicy::PositionChanged => true,
-            AbsoluteMotionPolicy::SurfaceChanged => surface_changed,
+            AbsoluteMotionPolicy::Position => true,
+            AbsoluteMotionPolicy::Surface => surface_changed,
+            AbsoluteMotionPolicy::RoutedState => routed_state_changed,
         }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ClientPointerRoute {
+    focus: Option<crate::input::pointer::SurfaceFocus>,
+    location: Point<f64, Logical>,
+}
+
+impl ClientPointerRoute {
+    fn from_route(route: &crate::input::pointer::PointerRoute) -> Self {
+        Self {
+            focus: route.focus.clone(),
+            location: route.location,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct DesktopRefreshBlockers {
+    pointer_grabbed: bool,
+    constraint_active: bool,
+    compositor_grab_active: bool,
+    capture_active: bool,
+    shell_active: bool,
+    focus_cycle_open: bool,
+    session_locked: bool,
+    fullscreen_active: bool,
+}
+
+fn desktop_refresh_allowed(blockers: DesktopRefreshBlockers) -> bool {
+    !blockers.pointer_grabbed
+        && !blockers.constraint_active
+        && !blockers.compositor_grab_active
+        && !blockers.capture_active
+        && !blockers.shell_active
+        && !blockers.focus_cycle_open
+        && !blockers.session_locked
+        && !blockers.fullscreen_active
 }
 
 pub(super) fn route_client<D: SessionDriver>(
@@ -149,9 +191,13 @@ fn route_and_update_client_focus<D: SessionDriver>(
         .expect("pointer capability added at seat setup");
     let routed_surface = route.focus.as_ref().map(|(surface, _)| surface);
     let surface_changed = pointer.current_focus().as_ref() != routed_surface;
+    let routed_state = ClientPointerRoute::from_route(&route);
+    let routed_state_changed =
+        session.interactions.client_pointer_route.as_ref() != Some(&routed_state);
     if should_emit_absolute_motion(
         policy,
         surface_changed,
+        routed_state_changed,
         constraints::has_active_lock(session, &pointer),
     ) {
         if surface_changed {
@@ -167,6 +213,7 @@ fn route_and_update_client_focus<D: SessionDriver>(
                 time,
             },
         );
+        session.interactions.client_pointer_route = Some(routed_state);
     }
     Some(route)
 }
@@ -186,14 +233,14 @@ pub(super) fn route_for_motion<D: SessionDriver>(
     session: &mut Session<D>,
     time: u32,
 ) -> Option<crate::input::pointer::PointerRoute> {
-    route_and_update_client_focus(session, time, AbsoluteMotionPolicy::PositionChanged)
+    route_and_update_client_focus(session, time, AbsoluteMotionPolicy::Position)
 }
 
 pub(super) fn route_for_discrete_input<D: SessionDriver>(
     session: &mut Session<D>,
     time: u32,
 ) -> Option<crate::input::pointer::PointerRoute> {
-    route_and_update_client_focus(session, time, AbsoluteMotionPolicy::SurfaceChanged)
+    route_and_update_client_focus(session, time, AbsoluteMotionPolicy::Surface)
 }
 
 pub(super) fn finish_frame<D: SessionDriver>(
@@ -226,6 +273,85 @@ pub(super) fn refresh_client_focus<D: SessionDriver>(session: &mut Session<D>, t
         .get_pointer()
         .expect("pointer capability added at seat setup");
     route_for_discrete_input(session, time);
+    finish_frame(session, &pointer);
+}
+
+/// Refreshes stationary-pointer routing for ordinary desktop surfaces.
+///
+/// Surface commits and X11 popup geometry changes can move client contents
+/// without a physical input event. This path deliberately excludes every
+/// immersive or grabbed route: games keep their existing relative-motion,
+/// pointer-lock, confinement, and fullscreen behavior.
+pub(crate) fn refresh_desktop_client_focus<D: SessionDriver>(session: &mut Session<D>, time: u32) {
+    let pointer = session
+        .seat
+        .get_pointer()
+        .expect("pointer capability added at seat setup");
+    let Some(route) = route_client(session) else {
+        return;
+    };
+    // Only the fullscreen client itself must be shielded: injecting a
+    // stationary-pointer motion into a game replaces XWayland's emulated cursor
+    // anchor and breaks relative look. A window that merely shares the output
+    // with a fullscreen game still needs re-routing — an unrelated window going
+    // stale whenever a game is running is exactly the reported symptom.
+    let fullscreen_active = match &route.target {
+        crate::input::pointer::PointerTarget::Window(window)
+        | crate::input::pointer::PointerTarget::Decoration { window, .. } => {
+            window.wl_surface().is_some_and(|surface| {
+                session.fullscreen.is_fullscreen_or_pending(&surface)
+                    || session.fullscreen.awaits_external_configure(&surface)
+            }) || crate::xwayland::is_fullscreen(window)
+        }
+        crate::input::pointer::PointerTarget::Layer(_)
+        | crate::input::pointer::PointerTarget::Background => session
+            .fullscreen
+            .has_fullscreen_activity_on_output(&route.output),
+    };
+    let blockers = DesktopRefreshBlockers {
+        pointer_grabbed: pointer.is_grabbed(),
+        constraint_active: has_active_constraint(session),
+        compositor_grab_active: !matches!(
+            session.interactions.grab,
+            crate::input::grab::Grab::None
+        ),
+        capture_active: session.capture.is_active(),
+        shell_active: session.shell.apogee.is_active(),
+        focus_cycle_open: session.shell.focus_cycle.is_open(),
+        session_locked: session.session_lock.active(),
+        fullscreen_active,
+    };
+    if !desktop_refresh_allowed(blockers) {
+        return;
+    }
+
+    let routed_state = ClientPointerRoute::from_route(&route);
+    let routed_surface = route.focus.as_ref().map(|(surface, _)| surface);
+    let surface_changed = pointer.current_focus().as_ref() != routed_surface;
+    let routed_state_changed =
+        session.interactions.client_pointer_route.as_ref() != Some(&routed_state);
+    if !should_emit_absolute_motion(
+        AbsoluteMotionPolicy::RoutedState,
+        surface_changed,
+        routed_state_changed,
+        false,
+    ) {
+        return;
+    }
+    if surface_changed {
+        reset_client_cursor_image(session);
+        constraints::deactivate_before_pointer_focus_change(session, routed_surface);
+    }
+    pointer.motion(
+        session,
+        route.focus,
+        &MotionEvent {
+            location: route.location,
+            serial: SERIAL_COUNTER.next_serial(),
+            time,
+        },
+    );
+    session.interactions.client_pointer_route = Some(routed_state);
     finish_frame(session, &pointer);
 }
 
@@ -361,9 +487,10 @@ pub(super) fn apply_position_hint<D: SessionDriver>(
 #[cfg(test)]
 mod tests {
     use super::{
-        AbsoluteMotionPolicy, constraint_requires_stable_presentation, constraints,
-        cursor_presentation_visible, interactive_overlay_cursor_override,
-        interactive_overlay_forces_cursor, should_emit_absolute_motion,
+        AbsoluteMotionPolicy, DesktopRefreshBlockers, constraint_requires_stable_presentation,
+        constraints, cursor_presentation_visible, desktop_refresh_allowed,
+        interactive_overlay_cursor_override, interactive_overlay_forces_cursor,
+        should_emit_absolute_motion,
     };
 
     #[test]
@@ -386,12 +513,14 @@ mod tests {
     #[test]
     fn locked_pointer_suppresses_every_absolute_motion_policy() {
         assert!(!should_emit_absolute_motion(
-            AbsoluteMotionPolicy::PositionChanged,
+            AbsoluteMotionPolicy::Position,
+            true,
             true,
             true
         ));
         assert!(!should_emit_absolute_motion(
-            AbsoluteMotionPolicy::SurfaceChanged,
+            AbsoluteMotionPolicy::Surface,
+            true,
             true,
             true
         ));
@@ -400,12 +529,14 @@ mod tests {
     #[test]
     fn discrete_input_only_refreshes_a_changed_unlocked_surface() {
         assert!(!should_emit_absolute_motion(
-            AbsoluteMotionPolicy::SurfaceChanged,
+            AbsoluteMotionPolicy::Surface,
             false,
+            true,
             false
         ));
         assert!(should_emit_absolute_motion(
-            AbsoluteMotionPolicy::SurfaceChanged,
+            AbsoluteMotionPolicy::Surface,
+            true,
             true,
             false
         ));
@@ -414,10 +545,58 @@ mod tests {
     #[test]
     fn physical_motion_updates_an_unlocked_pointer_position() {
         assert!(should_emit_absolute_motion(
-            AbsoluteMotionPolicy::PositionChanged,
+            AbsoluteMotionPolicy::Position,
+            false,
             false,
             false
         ));
+    }
+
+    #[test]
+    fn desktop_refresh_only_emits_when_the_routed_state_changes() {
+        assert!(!should_emit_absolute_motion(
+            AbsoluteMotionPolicy::RoutedState,
+            false,
+            false,
+            false,
+        ));
+        assert!(should_emit_absolute_motion(
+            AbsoluteMotionPolicy::RoutedState,
+            false,
+            true,
+            false,
+        ));
+        assert!(!should_emit_absolute_motion(
+            AbsoluteMotionPolicy::RoutedState,
+            false,
+            true,
+            true,
+        ));
+    }
+
+    #[test]
+    fn desktop_refresh_excludes_constraints_grabs_and_fullscreen() {
+        assert!(desktop_refresh_allowed(DesktopRefreshBlockers::default()));
+        for blockers in [
+            DesktopRefreshBlockers {
+                pointer_grabbed: true,
+                ..Default::default()
+            },
+            DesktopRefreshBlockers {
+                constraint_active: true,
+                ..Default::default()
+            },
+            DesktopRefreshBlockers {
+                compositor_grab_active: true,
+                ..Default::default()
+            },
+            DesktopRefreshBlockers {
+                fullscreen_active: true,
+                ..Default::default()
+            },
+        ] {
+            assert!(!desktop_refresh_allowed(blockers));
+        }
     }
 
     #[test]

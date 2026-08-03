@@ -4,7 +4,6 @@ use std::error::Error;
 use halley_core::bearings::{Bearing, bearing_to_point};
 use halley_core::field::Vec2;
 use halley_core::viewport::Viewport;
-use smithay::backend::renderer::element::Id;
 use smithay::backend::renderer::element::solid::SolidColorRenderElement;
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::renderer::utils::CommitCounter;
@@ -29,7 +28,7 @@ const MIN_DISTANCE_ALPHA: f32 = 0.34;
 const DISTANCE_HIDE_MULTIPLIER: f32 = 1.5;
 const TEXT_RGB: [u8; 3] = [238, 242, 249];
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Lane {
     NW,
     N,
@@ -42,17 +41,6 @@ enum Lane {
 }
 
 impl Lane {
-    const ALL: [Self; 8] = [
-        Self::NW,
-        Self::N,
-        Self::NE,
-        Self::W,
-        Self::E,
-        Self::SW,
-        Self::S,
-        Self::SE,
-    ];
-
     fn horizontal(self) -> bool {
         matches!(self, Self::N | Self::S)
     }
@@ -80,6 +68,7 @@ struct Size {
     distance_w: i32,
     distance_h: i32,
     show_icon: bool,
+    crowding_w: i32,
 }
 
 impl Size {
@@ -94,7 +83,7 @@ impl Size {
 
     fn extent(self, lane: Lane) -> i32 {
         if lane.horizontal() {
-            self.chip_w
+            self.crowding_w
         } else {
             self.total_h()
         }
@@ -277,8 +266,12 @@ pub fn elements(
         }
 
         if layout.pinned {
+            let pin_id = node_renderer.slot_id(
+                &output_name,
+                crate::render::node::NodeSlot::BearingPin(pin_key(layout.target)),
+            );
             foreground.push(SceneElement::Border(SolidColorRenderElement::new(
-                Id::new(),
+                pin_id,
                 Rectangle::new(
                     (
                         layout.chip.loc.x + layout.chip.size.w - 12,
@@ -336,7 +329,7 @@ pub fn elements(
     if let Some(blur) = backdrop_blur_renderer.blur_element(
         renderer,
         &output_name,
-        crate::render::effects::backdrop_blur::BlurIdentity::Overlay("bearings".to_string()),
+        crate::render::effects::backdrop_blur::BlurIdentity::Overlay("bearings"),
         output_geometry.size,
         blur_patches,
         blur_config,
@@ -410,6 +403,7 @@ fn collect_layouts(
             ui_text,
             &label,
             show_icon,
+            config.show_icons,
             distance_text.as_deref(),
         )?;
         candidates.push(Candidate {
@@ -425,6 +419,7 @@ fn collect_layouts(
     }
 
     let scale = crate::presentation::camera::scale(camera).max(0.05);
+    let now = crate::frame_clock::monotonic_now();
     let core_footprint = Vec2 {
         x: crate::clusters::CORE_DIAMETER_PX / scale,
         y: crate::clusters::CORE_DIAMETER_PX / scale,
@@ -433,11 +428,7 @@ fn collect_layouts(
         let Some(core) = clusters.core_node(cluster) else {
             continue;
         };
-        let position = nodes.landmark_position(
-            core,
-            metadata.core_position,
-            crate::frame_clock::monotonic_now(),
-        );
+        let position = nodes.landmark_position(core, metadata.core_position, now);
         if intersects_view(position, core_footprint, &viewport) {
             continue;
         }
@@ -468,6 +459,7 @@ fn collect_layouts(
             ui_text,
             &label,
             show_icon,
+            show_icon,
             distance_text.as_deref(),
         )?;
         candidates.push(Candidate {
@@ -482,14 +474,22 @@ fn collect_layouts(
         });
     }
 
+    // One sort by (lane, order), then walk the contiguous run per lane. The
+    // previous shape made eight filtering passes over every candidate and
+    // cloned each one it kept, so every chip's label String was reallocated
+    // eight times a frame per output.
+    candidates.sort_by(|left, right| {
+        left.lane
+            .cmp(&right.lane)
+            .then(candidate_order(left, right))
+    });
     let mut layouts = Vec::new();
-    for lane in Lane::ALL {
-        let mut lane_candidates = candidates
-            .iter()
-            .filter(|candidate| candidate.lane == lane)
-            .cloned()
-            .collect::<Vec<_>>();
-        lane_candidates.sort_by(candidate_order);
+    let mut remaining = candidates;
+    while !remaining.is_empty() {
+        let lane = remaining[0].lane;
+        let count = remaining.partition_point(|candidate| candidate.lane == lane);
+        let tail = remaining.split_off(count);
+        let lane_candidates = std::mem::replace(&mut remaining, tail);
         let groups = group_candidates(renderer, ui_text, config, mix, lane_candidates)?;
         layouts.extend(layout_groups(lane, groups, screen_w, screen_h));
     }
@@ -501,6 +501,13 @@ fn candidate_order(left: &Candidate, right: &Candidate) -> Ordering {
         .partial_cmp(&right.projected)
         .unwrap_or(Ordering::Equal)
         .then(stable_target_key(left.target).cmp(&stable_target_key(right.target)))
+}
+
+/// Packs a bearing target into one integer so the pinned marker keeps a
+/// stable render-element identity across frames.
+fn pin_key(target: BearingTarget) -> u64 {
+    let (kind, id) = stable_target_key(target);
+    (u64::from(kind) << 56) | (id & 0x00ff_ffff_ffff_ffff)
 }
 
 fn stable_target_key(target: BearingTarget) -> (u8, u64) {
@@ -521,8 +528,7 @@ fn group_candidates(
     let mut current: Vec<Candidate> = Vec::new();
     for candidate in candidates {
         if let Some(previous) = current.last()
-            && candidate.projected - previous.projected
-                > separation(candidate.lane, previous.size, candidate.size)
+            && starts_new_group(previous, &candidate)
         {
             groups.push(finalize_group(
                 renderer,
@@ -538,6 +544,11 @@ fn group_candidates(
         groups.push(finalize_group(renderer, ui_text, config, mix, current)?);
     }
     Ok(groups)
+}
+
+fn starts_new_group(previous: &Candidate, candidate: &Candidate) -> bool {
+    candidate.projected - previous.projected
+        > separation(candidate.lane, previous.size, candidate.size)
 }
 
 fn finalize_group(
@@ -571,6 +582,7 @@ fn finalize_group(
         renderer,
         ui_text,
         &label,
+        show_icon,
         show_icon,
         distance_text.as_deref(),
     )?;
@@ -681,6 +693,7 @@ fn measure_size(
     ui_text: &mut crate::render::text::UiTextRenderer,
     label: &str,
     show_icon: bool,
+    reserve_icon_for_crowding: bool,
     distance: Option<&str>,
 ) -> Result<Size, Box<dyn Error>> {
     let label_size = ui_text
@@ -715,6 +728,15 @@ fn measure_size(
             0
         },
         show_icon,
+        // Old Halley always measured node bearings with their configured icon
+        // slot, even when the icon later fell back to a generated glyph. Keep
+        // that footprint for aggregation while leaving the visible Next chip
+        // unchanged when no app icon is available.
+        crowding_w: if reserve_icon_for_crowding && !show_icon {
+            chip_w + ICON_SIZE + ICON_TEXT_GAP
+        } else {
+            chip_w
+        },
     })
 }
 
@@ -842,6 +864,45 @@ fn truncate_label(base: &str, fallback: impl FnOnce() -> String) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn candidate(projected: f32, size: Size) -> Candidate {
+        Candidate {
+            target: BearingTarget::Node(halley_core::field::NodeId::new(projected as u64 + 1)),
+            lane: Lane::N,
+            projected,
+            distance: 100.0,
+            label: "node".into(),
+            icon: None,
+            pinned: false,
+            size,
+        }
+    }
+
+    #[test]
+    fn icon_fallback_footprint_preserves_old_halley_node_aggregation() {
+        let without_legacy_slot = Size {
+            chip_w: 44,
+            chip_h: 24,
+            distance_w: 0,
+            distance_h: 0,
+            show_icon: false,
+            crowding_w: 44,
+        };
+        let with_legacy_slot = Size {
+            crowding_w: 44 + ICON_SIZE + ICON_TEXT_GAP,
+            ..without_legacy_slot
+        };
+
+        let gap = 70.0;
+        assert!(starts_new_group(
+            &candidate(0.0, without_legacy_slot),
+            &candidate(gap, without_legacy_slot),
+        ));
+        assert!(!starts_new_group(
+            &candidate(0.0, with_legacy_slot),
+            &candidate(gap, with_legacy_slot),
+        ));
+    }
 
     #[test]
     fn distance_fade_matches_old_halley_thresholds() {

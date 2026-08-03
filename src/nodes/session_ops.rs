@@ -549,6 +549,13 @@ pub fn collapse<D: crate::session::SessionDriver>(
     id: NodeId,
     serial: smithay::utils::Serial,
 ) -> bool {
+    // Cluster workspaces own member visibility as a unit.  Collapsing one
+    // member would tear it out of the workspace without updating cluster
+    // membership, so minimize requests (server-titlebar, xdg-shell, or X11)
+    // are intentional no-ops while the window belongs to a cluster.
+    if !collapse_allowed(session.clusters.is_member(id)) {
+        return false;
+    }
     let Some(record) = session.nodes.record(id).cloned() else {
         return false;
     };
@@ -656,6 +663,10 @@ pub fn collapse<D: crate::session::SessionDriver>(
     crate::session::reconcile_pointer_constraints(session);
     session.request_redraw();
     true
+}
+
+fn collapse_allowed(cluster_member: bool) -> bool {
+    !cluster_member
 }
 
 pub fn restore<D: crate::session::SessionDriver>(
@@ -1108,7 +1119,7 @@ pub fn tick_decay<D: crate::session::SessionDriver>(
 
 #[cfg(test)]
 mod close_tests {
-    use super::preferred_close_candidate;
+    use super::{collapse_allowed, preferred_close_candidate};
     use halley_core::field::NodeId;
 
     #[test]
@@ -1134,5 +1145,11 @@ mod close_tests {
             preferred_close_candidate(None, Some(core), Some(NodeId::new(5))),
             Some(core)
         );
+    }
+
+    #[test]
+    fn cluster_members_reject_individual_minimize_requests() {
+        assert!(!collapse_allowed(true));
+        assert!(collapse_allowed(false));
     }
 }

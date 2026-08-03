@@ -627,7 +627,16 @@ fn navigate_cluster<D: SessionDriver>(
         return;
     };
     let work_area = smithay::desktop::layer_map_for_output(&output).non_exclusive_zone();
-    let focused = session.nodes.focused();
+    // Active cluster members are hidden from the Field scene, so logical
+    // `NodesState` focus deliberately rejects them.  The focused client
+    // surface remains authoritative inside a workspace, including for X11
+    // windows whose keyboard target is an XWayland surface.
+    let client_focused = session
+        .wayland
+        .focused_window
+        .as_ref()
+        .and_then(|surface| session.nodes.id_for_surface(surface));
+    let focused = preferred_cluster_navigation_focus(client_focused, session.nodes.focused());
     let target = if swap {
         session.clusters.swap_directional_tile(
             output_name,
@@ -671,6 +680,13 @@ fn navigate_cluster<D: SessionDriver>(
         super::focus_window(session, &window, SERIAL_COUNTER.next_serial());
         session.request_redraw();
     }
+}
+
+fn preferred_cluster_navigation_focus(
+    client_focused: Option<halley_core::field::NodeId>,
+    logical_focused: Option<halley_core::field::NodeId>,
+) -> Option<halley_core::field::NodeId> {
+    client_focused.or(logical_focused)
 }
 
 fn stacking_cycle_direction(
@@ -2668,8 +2684,8 @@ mod tests {
     use super::{
         bloom_drag_handoff, drag_threshold_reached, forward_pointer_button,
         pending_window_move_motion, plain_background_press_dismisses_bloom,
-        releases_pending_window_move, sampled_drag_velocity, shortcut_policy_allows_bindings,
-        stacking_cycle_direction, typing_abandons_bloom,
+        preferred_cluster_navigation_focus, releases_pending_window_move, sampled_drag_velocity,
+        shortcut_policy_allows_bindings, stacking_cycle_direction, typing_abandons_bloom,
     };
     fn sample_constant_motion(report_hz: u32) -> Vec2 {
         let step = Duration::from_secs_f64(1.0 / f64::from(report_hz));
@@ -2837,6 +2853,21 @@ mod tests {
         assert_eq!(
             stacking_cycle_direction(halley_config::Direction::Down),
             None
+        );
+    }
+
+    #[test]
+    fn live_client_focus_wins_for_hidden_cluster_members() {
+        let active_member = halley_core::field::NodeId::new(1);
+        let stale_logical = halley_core::field::NodeId::new(2);
+
+        assert_eq!(
+            preferred_cluster_navigation_focus(Some(active_member), Some(stale_logical)),
+            Some(active_member)
+        );
+        assert_eq!(
+            preferred_cluster_navigation_focus(None, Some(stale_logical)),
+            Some(stale_logical)
         );
     }
 

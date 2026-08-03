@@ -40,7 +40,7 @@ pub mod tty;
 #[cfg(feature = "winit")]
 pub mod winit;
 
-pub(crate) use focus::focus_window;
+pub(crate) use focus::{focus_window, focus_window_after_close};
 pub use interaction::InteractionState;
 pub use settings::RuntimeSettings;
 pub use state::{OutputDriver, RenderDriver, Session, SessionDriver};
@@ -448,10 +448,9 @@ pub(crate) fn note_pointer_activity<D: SessionDriver>(session: &mut Session<D>) 
 
 /// Requests that a client close a managed window.
 ///
-/// Clients may replace their contents before withdrawing the window. In that
-/// case the later buffer-removal hook can only preserve the replacement frame,
-/// so retain the currently visible frame before sending the close request.
-/// The pre-unmap hook remains as a fallback for client-initiated closes.
+/// Retain the currently visible frame before sending the close request. An X11
+/// client-owned close button has no equivalent compositor-side intent event;
+/// that path performs its capture-and-activate handoff at `UnmapNotify`.
 pub(crate) fn request_window_close<D: SessionDriver>(
     session: &mut Session<D>,
     window: &smithay::desktop::Window,
@@ -1150,6 +1149,17 @@ pub(crate) fn sync_keyboard_focus<D: SessionDriver>(
     pointer::prepare_keyboard_focus_change(session, next_constraint_root.as_ref());
     keyboard.set_focus(session, focused, serial);
     session.xwayland.sync_active_window(active_x11_window);
+    // Map, unmap, destroy and raise all funnel through here, so this is the one
+    // place the managed-window list can go stale.
+    session.xwayland.sync_client_list(&session.wayland.space);
+    // Activation is the point a client is most likely to act on its own idea of
+    // where it is: menu placement, XQueryPointer, root-coordinate hit tests.
+    // Hyprland resyncs here too (`activateWindow` -> `sendWindowSize(true)`).
+    if let Some(xid) = active_x11_window
+        && let Some(window) = crate::xwayland::window_for_xid(&session.wayland.space, xid)
+    {
+        crate::xwayland::sync_position(session, &window);
+    }
     pointer::reconcile_state(session);
 }
 

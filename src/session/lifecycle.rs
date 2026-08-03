@@ -27,6 +27,10 @@ fn close_successor_action(collapsed: bool, restore_nodes: bool) -> CloseSuccesso
     }
 }
 
+fn close_handoff_needs_fallback(active_before_cleanup: bool) -> bool {
+    !active_before_cleanup
+}
+
 pub(crate) struct WindowUnmapPreparation {
     surface: WlSurface,
     focus: Option<FocusSuccession>,
@@ -234,7 +238,9 @@ pub(crate) fn finish_window_unmap<D: SessionDriver>(
     session.render.fullscreen_textures.remove(&surface);
     super::cancel_grab_for_surface(session, &surface);
     crate::input::grab::forget_resize_anchor(&mut session.interactions.resize_anchor, &surface);
-    super::closing::start(session, &surface);
+    if close_handoff_needs_fallback(session.render.window_close_animations.is_active(&surface)) {
+        super::closing::start(session, &surface);
+    }
 
     let Some(focus) = focus else {
         return;
@@ -279,7 +285,7 @@ pub(crate) fn finish_window_unmap<D: SessionDriver>(
         match close_successor_action(collapsed, session.settings.field.close_restore_nodes) {
             CloseSuccessorAction::FocusWindow => {
                 if let Some(window) = session.nodes.record(id).map(|record| record.window.clone()) {
-                    super::focus_window(session, &window, serial);
+                    super::focus_window_after_close(session, &window, serial);
                 }
                 crate::nodes::pan_after_close_restore(session, id, focus.pan);
             }
@@ -309,9 +315,19 @@ mod tests {
     use std::collections::HashMap;
 
     use super::{
-        CloseSuccessorAction, close_successor_action, select_ordered_successor,
-        select_stacking_successor, select_tiling_successor,
+        CloseSuccessorAction, close_handoff_needs_fallback, close_successor_action,
+        select_ordered_successor, select_stacking_successor, select_tiling_successor,
     };
+
+    #[test]
+    fn active_close_handoff_is_not_restarted_after_unmap() {
+        assert!(!close_handoff_needs_fallback(true));
+    }
+
+    #[test]
+    fn missing_close_handoff_keeps_the_existing_unmap_fallback() {
+        assert!(close_handoff_needs_fallback(false));
+    }
 
     fn output_lookup(
         outputs: &HashMap<&'static str, Option<&'static str>>,

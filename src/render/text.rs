@@ -43,6 +43,23 @@ pub struct UiTextRenderer {
     swash_cache: SwashCache,
     font: halley_config::Font,
     text: HashMap<TextKey, TextTexture>,
+    /// Stable element identities, keyed by what the label *is* rather than by
+    /// its call site, so the nineteen `element()` callers need not each invent
+    /// and thread a slot name.
+    ///
+    /// The key is a hash of the [`TextKey`] plus how many times that exact
+    /// label has already been emitted this frame. Two labels that collide
+    /// would merely share an identity and so damage each other's rectangles —
+    /// extra repaint, never a stale one.
+    ids: super::ids::ElementIds<(u64, u32)>,
+    occurrences: HashMap<u64, u32>,
+}
+
+fn text_key_hash(key: &TextKey) -> u64 {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    key.hash(&mut hasher);
+    hasher.finish()
 }
 
 impl Default for UiTextRenderer {
@@ -59,7 +76,15 @@ impl UiTextRenderer {
             swash_cache: SwashCache::new(),
             font: font.clone(),
             text: HashMap::new(),
+            ids: super::ids::ElementIds::default(),
+            occurrences: HashMap::new(),
         }
+    }
+
+    /// Resets per-frame label numbering and ages out unused identities.
+    pub fn begin_scene(&mut self) {
+        self.occurrences.clear();
+        self.ids.advance();
     }
 
     /// Replace global typography atomically and report whether a frame must
@@ -96,6 +121,36 @@ impl UiTextRenderer {
         rgb: [u8; 3],
         alpha: f32,
     ) -> Result<Option<PreparedUiText>, Box<dyn Error>> {
+        self.element_with_size(renderer, origin, text, rgb, alpha, None)
+    }
+
+    pub fn element_scaled(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        destination: Rectangle<i32, Physical>,
+        text: &str,
+        rgb: [u8; 3],
+        alpha: f32,
+    ) -> Result<Option<PreparedUiText>, Box<dyn Error>> {
+        self.element_with_size(
+            renderer,
+            destination.loc,
+            text,
+            rgb,
+            alpha,
+            Some(destination.size),
+        )
+    }
+
+    fn element_with_size(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        origin: Point<i32, Physical>,
+        text: &str,
+        rgb: [u8; 3],
+        alpha: f32,
+        destination_size: Option<smithay::utils::Size<i32, Physical>>,
+    ) -> Result<Option<PreparedUiText>, Box<dyn Error>> {
         if alpha <= 0.001 {
             return Ok(None);
         }
@@ -103,6 +158,14 @@ impl UiTextRenderer {
             return Ok(None);
         };
         let context = self.context.as_ref().expect("context prepared").clone();
+        let hash = text_key_hash(&key);
+        let occurrence = {
+            let seen = self.occurrences.entry(hash).or_insert(0);
+            let index = *seen;
+            *seen += 1;
+            index
+        };
+        let id = self.ids.id((hash, occurrence));
         let entry = self.text.get_mut(&key).expect("text entry prepared");
         entry.last_used = Instant::now();
         let source = Rectangle::<f64, Logical>::new(
@@ -110,7 +173,7 @@ impl UiTextRenderer {
             (entry.size.w as f64, entry.size.h as f64).into(),
         );
         let base = TextureRenderElement::from_static_texture(
-            Id::new(),
+            id,
             context,
             origin.to_f64(),
             entry.texture.clone(),
@@ -118,9 +181,12 @@ impl UiTextRenderer {
             Transform::Normal,
             Some(alpha.clamp(0.0, 1.0)),
             Some(source),
-            // The texture is already rasterized at its final physical size.
-            // A 1:1 destination avoids the blur caused by stretching glyphs.
-            Some(entry.size.to_logical(1, Transform::Normal)),
+            // Most callers keep the texture at its rasterized physical size;
+            // titlebars may instead provide a camera-scaled destination.
+            Some(match destination_size {
+                Some(size) => size.to_logical(1),
+                None => entry.size.to_logical(1, Transform::Normal),
+            }),
             None,
             Kind::Unspecified,
         );
