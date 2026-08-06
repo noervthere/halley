@@ -321,6 +321,7 @@ fn move_node<D: crate::session::SessionDriver>(
         session.wayland.space.relocate_element(&record.window, next);
         if crate::xwayland::is_x11(&record.window) {
             crate::xwayland::configure_window(
+                session,
                 &record.window,
                 Rectangle::new(next, record.geometry.size),
             );

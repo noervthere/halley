@@ -125,7 +125,11 @@ pub(super) fn window_group_override_redirect_owner<D: SessionDriver>(
             if candidate.is_override_redirect() || candidate.hints()?.window_group != Some(group) {
                 return None;
             }
-            let candidate_geometry = session.wayland.space.element_geometry(window)?;
+            // The popup geometry and the candidate's X11 geometry are both in
+            // root-desktop coordinates.  Comparing either one to `Space`
+            // would mix screen and Field coordinates whenever the camera is
+            // panned or zoomed.
+            let candidate_geometry = candidate.geometry();
             Some((
                 override_redirect_owner_rank(
                     OverrideRedirectIdentity {
@@ -302,6 +306,42 @@ pub(super) fn override_redirect_output_name(window: &Window) -> Option<String> {
     crate::wayland::window_output_name(window)
 }
 
+pub(super) fn override_redirect_source_location<D: SessionDriver>(
+    session: &Session<D>,
+    window: &Window,
+    resolution: &OverrideRedirectResolution,
+    root_screen: Point<i32, Logical>,
+) -> Point<i32, Logical> {
+    let now = crate::frame_clock::monotonic_now();
+    let source_root = resolution
+        .owner
+        .as_ref()
+        .and_then(|owner| {
+            super::presentation::source_point_from_root_screen(
+                session,
+                &owner.window,
+                root_screen,
+                now,
+            )
+        })
+        .or_else(|| {
+            let output = resolution.output.as_ref()?;
+            let output_geometry = session.wayland.space.output_geometry(output)?;
+            let camera = session.cameras.get(&output.name())?;
+            let world = crate::input::grab::screen_to_world_on_output(
+                (f64::from(root_screen.x), f64::from(root_screen.y)),
+                camera,
+                output_geometry,
+            );
+            Some(Point::from((
+                world.x.round() as i32,
+                world.y.round() as i32,
+            )))
+        })
+        .unwrap_or(root_screen);
+    source_root + window.geometry().loc
+}
+
 pub(super) fn describe_override_redirect_map(
     surface: &X11Surface,
     geometry: Rectangle<i32, Logical>,
@@ -353,12 +393,14 @@ pub(super) fn map_override_redirect<D: SessionDriver>(
     let resolution = override_redirect_resolution(session, &surface, geometry);
     let window = Window::new_x11_window(surface.clone());
     apply_override_redirect_resolution(&window, &resolution);
+    let source_location =
+        override_redirect_source_location(session, &window, &resolution, geometry.loc);
     // ICCCM override-redirect windows are client-managed. Mapping one must
     // not activate it or transfer WM focus away from its managed owner.
     session
         .wayland
         .space
-        .map_element(window.clone(), geometry.loc, false);
+        .map_element(window.clone(), source_location, false);
     if mirror_configure_stack {
         restack_override_redirect(session, &window, above);
     }
@@ -438,11 +480,23 @@ pub(super) fn refresh_override_redirect_owners<D: SessionDriver>(session: &mut S
         let previous_output = crate::wayland::window_output_name(&window);
         let resolution = override_redirect_resolution(session, &surface, geometry);
         apply_override_redirect_resolution(&window, &resolution);
+        let source_location =
+            override_redirect_source_location(session, &window, &resolution, geometry.loc);
+        let previous_location = session.wayland.space.element_location(&window);
+        if previous_location != Some(source_location) {
+            session
+                .wayland
+                .space
+                .relocate_element(&window, source_location);
+        }
         let owner = crate::wayland::window_presentation_owner(&window);
         let output = crate::wayland::window_output_name(&window);
-        if previous_owner != owner || previous_output != output {
+        if previous_owner != owner
+            || previous_output != output
+            || previous_location != Some(source_location)
+        {
             eventline::debug!(
-                "xwayland: refreshed override-redirect xid={} owner={previous_owner:?}->{owner:?} output={previous_output:?}->{output:?}",
+                "xwayland: refreshed override-redirect xid={} owner={previous_owner:?}->{owner:?} output={previous_output:?}->{output:?} source={previous_location:?}->{source_location:?}",
                 surface.window_id()
             );
             changed = true;

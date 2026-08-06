@@ -187,11 +187,10 @@ fn closing_destination(
         1.0
     };
     let decoration_scale = visual.zoom_scale * opening_scale_y.max(0.0);
-    let border_width = crate::render::window_decoration::scaled_metric(
-        decorations.border_width_px,
-        decoration_scale,
-    );
-    if crate::titlebar::uses_server_titlebar(window, &decorations.titlebars) {
+    let chrome = crate::titlebar::WindowChrome::for_window(window, decorations, font);
+    let border_width =
+        crate::render::window_decoration::scaled_metric(chrome.border_width, decoration_scale);
+    if chrome.has_server_titlebar() {
         let titlebar_height =
             crate::titlebar::rendered_metrics(&decorations.titlebars, font.size, decoration_scale)
                 .height;

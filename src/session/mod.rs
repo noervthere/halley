@@ -355,7 +355,7 @@ pub(crate) fn reconcile_cluster_surfaces<D: SessionDriver>(
                 toplevel.send_configure();
             }
         } else {
-            crate::xwayland::configure_window(&window, geometry);
+            crate::xwayland::configure_window(session, &window, geometry);
         }
     }
 }
@@ -1076,7 +1076,7 @@ pub(crate) fn configure_field_geometry<D: SessionDriver>(
         }
     } else {
         crate::xwayland::set_maximized(&window, session.maximize.contains(&request.surface));
-        crate::xwayland::configure_window(&window, request.geometry);
+        crate::xwayland::configure_window(session, &window, request.geometry);
     }
 }
 
@@ -1150,8 +1150,8 @@ pub(crate) fn sync_keyboard_focus<D: SessionDriver>(
     keyboard.set_focus(session, focused, serial);
     session.xwayland.sync_active_window(active_x11_window);
     // Map, unmap, destroy and raise all funnel through here, so this is the one
-    // place the managed-window list can go stale.
-    session.xwayland.sync_client_list(&session.wayland.space);
+    // place the X server's stack can drift from the compositor's.
+    session.xwayland.sync_stacking_order(&session.wayland.space);
     // Activation is the point a client is most likely to act on its own idea of
     // where it is: menu placement, XQueryPointer, root-coordinate hit tests.
     // Hyprland resyncs here too (`activateWindow` -> `sendWindowSize(true)`).

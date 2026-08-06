@@ -854,15 +854,15 @@ fn preview_visual_outer_rect(
     } else {
         1.0
     };
+    let decoration_scale = visual.zoom_scale * opening_scale_y.max(0.0);
+    let chrome = crate::titlebar::WindowChrome::for_window(window, decorations, font);
     let titlebar_height = crate::render::window_decoration::scaled_metric(
         crate::titlebar::effective_height(&decorations.titlebars, font.size),
-        visual.zoom_scale * opening_scale_y.max(0.0),
+        decoration_scale,
     );
-    let border_width = crate::render::window_decoration::scaled_metric(
-        decorations.border_width_px,
-        visual.zoom_scale,
-    );
-    if crate::titlebar::uses_server_titlebar(window, &decorations.titlebars) {
+    let border_width =
+        crate::render::window_decoration::scaled_metric(chrome.border_width, decoration_scale);
+    if chrome.has_server_titlebar() {
         crate::titlebar::DecorationLayout::new(
             visual.animated_rect,
             border_width,

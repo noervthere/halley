@@ -1,4 +1,6 @@
+use std::collections::hash_map::DefaultHasher;
 use std::error::Error;
+use std::hash::{Hash, Hasher};
 
 use cgmath::{Matrix3, SquareMatrix, Vector2};
 use smithay::backend::allocator::Fourcc;
@@ -41,6 +43,98 @@ pub fn surface_slot(
     slot: usize,
 ) -> Id {
     Id::from_wayland_resource(surface).namespaced(slot)
+}
+
+/// Stable chrome identity for one presentation of a window.
+pub fn surface_slot_for_instance(
+    surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+    slot: usize,
+    instance: Option<&str>,
+) -> Id {
+    let mut hash = DefaultHasher::new();
+    instance.unwrap_or("canonical").hash(&mut hash);
+    surface_slot(surface, slot).namespaced(hash.finish() as usize)
+}
+
+fn commit_seed(tag: u8, base: CommitCounter) -> DefaultHasher {
+    let mut hash = DefaultHasher::new();
+    tag.hash(&mut hash);
+    base.distance(Some(CommitCounter::default()))
+        .unwrap_or(usize::MAX)
+        .hash(&mut hash);
+    hash
+}
+
+fn hash_rect<K>(rect: Rectangle<i32, K>, hash: &mut DefaultHasher) {
+    rect.loc.x.hash(hash);
+    rect.loc.y.hash(hash);
+    rect.size.w.hash(hash);
+    rect.size.h.hash(hash);
+}
+
+fn hash_radii(radii: CornerRadii, hash: &mut DefaultHasher) {
+    radii.top.to_bits().hash(hash);
+    radii.bottom.to_bits().hash(hash);
+}
+
+fn finish_commit(hash: DefaultHasher) -> CommitCounter {
+    CommitCounter::from(hash.finish() as usize)
+}
+
+pub fn solid_color_commit(color: smithay::backend::renderer::Color32F) -> CommitCounter {
+    let mut hash = commit_seed(0, CommitCounter::default());
+    color.r().to_bits().hash(&mut hash);
+    color.g().to_bits().hash(&mut hash);
+    color.b().to_bits().hash(&mut hash);
+    color.a().to_bits().hash(&mut hash);
+    finish_commit(hash)
+}
+
+fn border_commit(
+    color: (f32, f32, f32, f32),
+    size: (f32, f32),
+    inner_size: (f32, f32),
+    inner_offset: (f32, f32),
+    outer_radii: CornerRadii,
+    inner_radii: CornerRadii,
+) -> CommitCounter {
+    let mut hash = commit_seed(3, CommitCounter::default());
+    for value in [
+        color.0,
+        color.1,
+        color.2,
+        color.3,
+        size.0,
+        size.1,
+        inner_size.0,
+        inner_size.1,
+        inner_offset.0,
+        inner_offset.1,
+    ] {
+        value.to_bits().hash(&mut hash);
+    }
+    hash_radii(outer_radii, &mut hash);
+    hash_radii(inner_radii, &mut hash);
+    finish_commit(hash)
+}
+
+fn border_damage(
+    size: smithay::utils::Size<i32, Physical>,
+    width: i32,
+) -> [Rectangle<i32, Physical>; 4] {
+    let width = width.clamp(1, size.w.min(size.h).max(1));
+    [
+        Rectangle::new((0, 0).into(), (size.w, width).into()),
+        Rectangle::new((0, size.h - width).into(), (size.w, width).into()),
+        Rectangle::new(
+            (0, width).into(),
+            (width, (size.h - width * 2).max(0)).into(),
+        ),
+        Rectangle::new(
+            (size.w - width, width).into(),
+            (width, (size.h - width * 2).max(0)).into(),
+        ),
+    ]
 }
 
 const SURFACE_SHADER: &str = r#"
@@ -292,19 +386,34 @@ impl WindowDecorationRenderer {
             None,
             Kind::Unspecified,
         );
+        let color = (color.r(), color.g(), color.b(), color.a());
+        let size = (destination.size.w as f32, destination.size.h as f32);
+        let inner_size = (
+            (content.size.w as f32 - JOIN_OVERLAP_PX * 2.0).max(1.0),
+            (content.size.h as f32 - JOIN_OVERLAP_PX * 2.0).max(1.0),
+        );
+        let inner_offset = (metrics.inner_offset, metrics.inner_offset);
+        let outer_radii = CornerRadii::all(metrics.outer_radius);
+        let inner_radii = CornerRadii::all(metrics.inner_radius);
         Some(RoundedBorderElement {
             base,
             white: resources.white.clone(),
             program: resources.border.clone(),
-            color: (color.r(), color.g(), color.b(), color.a()),
-            size: (destination.size.w as f32, destination.size.h as f32),
-            inner_size: (
-                (content.size.w as f32 - JOIN_OVERLAP_PX * 2.0).max(1.0),
-                (content.size.h as f32 - JOIN_OVERLAP_PX * 2.0).max(1.0),
+            commit: border_commit(
+                color,
+                size,
+                inner_size,
+                inner_offset,
+                outer_radii,
+                inner_radii,
             ),
-            inner_offset: (metrics.inner_offset, metrics.inner_offset),
-            outer_radii: CornerRadii::all(metrics.outer_radius),
-            inner_radii: CornerRadii::all(metrics.inner_radius),
+            color,
+            size,
+            inner_size,
+            inner_offset,
+            outer_radii,
+            inner_radii,
+            damage: border_damage(destination.size, width_i.saturating_add(2)),
         })
     }
 
@@ -355,19 +464,34 @@ impl WindowDecorationRenderer {
             None,
             Kind::Unspecified,
         );
+        let color = (color.r(), color.g(), color.b(), color.a());
+        let size = (destination.size.w as f32, destination.size.h as f32);
+        let inner_size = (
+            (content.size.w as f32 - JOIN_OVERLAP_PX * 2.0).max(1.0),
+            (content.size.h as f32 + JOIN_OVERLAP_PX).max(1.0),
+        );
+        let inner_offset = (metrics.inner_offset, -JOIN_OVERLAP_PX);
+        let outer_radii = CornerRadii::bottom(metrics.outer_radius);
+        let inner_radii = CornerRadii::bottom(metrics.inner_radius);
         Some(RoundedBorderElement {
             base,
             white: resources.white.clone(),
             program: resources.border.clone(),
-            color: (color.r(), color.g(), color.b(), color.a()),
-            size: (destination.size.w as f32, destination.size.h as f32),
-            inner_size: (
-                (content.size.w as f32 - JOIN_OVERLAP_PX * 2.0).max(1.0),
-                (content.size.h as f32 + JOIN_OVERLAP_PX).max(1.0),
+            commit: border_commit(
+                color,
+                size,
+                inner_size,
+                inner_offset,
+                outer_radii,
+                inner_radii,
             ),
-            inner_offset: (metrics.inner_offset, -JOIN_OVERLAP_PX),
-            outer_radii: CornerRadii::bottom(metrics.outer_radius),
-            inner_radii: CornerRadii::bottom(metrics.inner_radius),
+            color,
+            size,
+            inner_size,
+            inner_offset,
+            outer_radii,
+            inner_radii,
+            damage: border_damage(destination.size, width_i.saturating_add(2)),
         })
     }
 
@@ -400,6 +524,17 @@ impl WindowDecorationRenderer {
     ) -> Option<RoundedTextureElement> {
         self.available(renderer);
         let resources = self.resources.as_ref()?;
+        let mut commit = commit_seed(2, base.current_commit());
+        hash_rect(clip, &mut commit);
+        hash_radii(radii, &mut commit);
+        for value in [
+            content_color.0,
+            content_color.1,
+            content_color.2,
+            content_color.3,
+        ] {
+            value.to_bits().hash(&mut commit);
+        }
         Some(RoundedTextureElement {
             base,
             texture,
@@ -407,6 +542,7 @@ impl WindowDecorationRenderer {
             radii: clamp_radii(radii, clip.size.w, clip.size.h),
             program: resources.surface.clone(),
             content_color,
+            commit: finish_commit(commit),
         })
     }
 
@@ -444,13 +580,26 @@ impl WindowDecorationRenderer {
             None,
             Kind::Unspecified,
         );
+        let content_color = (color.r(), color.g(), color.b(), color.a());
+        let mut commit = commit_seed(2, base.current_commit());
+        hash_rect(destination, &mut commit);
+        hash_radii(radii, &mut commit);
+        for value in [
+            content_color.0,
+            content_color.1,
+            content_color.2,
+            content_color.3,
+        ] {
+            value.to_bits().hash(&mut commit);
+        }
         Some(RoundedTextureElement {
             base,
             texture: resources.white.clone(),
             clip: destination,
             radii: clamp_radii(radii, destination.size.w, destination.size.h),
             program: resources.surface.clone(),
-            content_color: (color.r(), color.g(), color.b(), color.a()),
+            content_color,
+            commit: finish_commit(commit),
         })
     }
 
@@ -624,6 +773,7 @@ pub struct RoundedTextureElement {
     radii: CornerRadii,
     program: GlesTexProgram,
     content_color: (f32, f32, f32, f32),
+    commit: CommitCounter,
 }
 
 impl Element for RoundedTextureElement {
@@ -631,7 +781,7 @@ impl Element for RoundedTextureElement {
         self.base.id()
     }
     fn current_commit(&self) -> CommitCounter {
-        self.base.current_commit()
+        self.commit
     }
     fn geometry(&self, scale: Scale<f64>) -> Rectangle<i32, Physical> {
         self.base.geometry(scale)
@@ -641,13 +791,6 @@ impl Element for RoundedTextureElement {
     }
     fn src(&self) -> Rectangle<f64, Buffer> {
         self.base.src()
-    }
-    fn damage_since(
-        &self,
-        scale: Scale<f64>,
-        commit: Option<CommitCounter>,
-    ) -> DamageSet<i32, Physical> {
-        self.base.damage_since(scale, commit)
     }
     fn opaque_regions(&self, _scale: Scale<f64>) -> OpaqueRegions<i32, Physical> {
         OpaqueRegions::default()
@@ -701,6 +844,8 @@ pub struct RoundedBorderElement {
     inner_offset: (f32, f32),
     outer_radii: CornerRadii,
     inner_radii: CornerRadii,
+    commit: CommitCounter,
+    damage: [Rectangle<i32, Physical>; 4],
 }
 
 impl Element for RoundedBorderElement {
@@ -708,7 +853,7 @@ impl Element for RoundedBorderElement {
         self.base.id()
     }
     fn current_commit(&self) -> CommitCounter {
-        self.base.current_commit()
+        self.commit
     }
     fn geometry(&self, scale: Scale<f64>) -> Rectangle<i32, Physical> {
         self.base.geometry(scale)
@@ -721,10 +866,14 @@ impl Element for RoundedBorderElement {
     }
     fn damage_since(
         &self,
-        scale: Scale<f64>,
+        _scale: Scale<f64>,
         commit: Option<CommitCounter>,
     ) -> DamageSet<i32, Physical> {
-        self.base.damage_since(scale, commit)
+        if commit == Some(self.commit) {
+            DamageSet::default()
+        } else {
+            DamageSet::from_slice(&self.damage)
+        }
     }
     fn opaque_regions(&self, _scale: Scale<f64>) -> OpaqueRegions<i32, Physical> {
         OpaqueRegions::default()
@@ -900,6 +1049,47 @@ fn clamp_radii(radii: CornerRadii, width: i32, height: i32) -> CornerRadii {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decoration_commits_follow_shader_content() {
+        let focused = smithay::backend::renderer::Color32F::new(0.8, 0.2, 0.1, 1.0);
+        let unfocused = smithay::backend::renderer::Color32F::new(0.2, 0.2, 0.2, 1.0);
+        assert_eq!(solid_color_commit(focused), solid_color_commit(focused));
+        assert_ne!(solid_color_commit(focused), solid_color_commit(unfocused));
+
+        let common = (
+            (100.0, 80.0),
+            (94.0, 74.0),
+            (3.75, 3.75),
+            CornerRadii::all(11.0),
+            CornerRadii::all(7.25),
+        );
+        assert_ne!(
+            border_commit(
+                (0.8, 0.2, 0.1, 1.0),
+                common.0,
+                common.1,
+                common.2,
+                common.3,
+                common.4,
+            ),
+            border_commit(
+                (0.2, 0.2, 0.2, 1.0),
+                common.0,
+                common.1,
+                common.2,
+                common.3,
+                common.4,
+            ),
+        );
+    }
+
+    #[test]
+    fn border_damage_does_not_include_the_undamaged_center() {
+        let damage = border_damage((100, 80).into(), 5);
+        let center = smithay::utils::Point::<i32, Physical>::from((50, 40));
+        assert!(damage.iter().all(|rect| !rect.contains(center)));
+    }
 
     #[test]
     fn primary_border_radii_are_concentric() {

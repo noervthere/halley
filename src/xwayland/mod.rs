@@ -77,6 +77,7 @@ pub struct State<D: SessionDriver> {
     override_redirect_placements: HashMap<u32, OverrideRedirectPlacement>,
     normal_sizes: HashMap<WindowIdentity, SavedNormalSize>,
     managed_states: xwm::ManagedStateRegistry,
+    published_stacking: Vec<u32>,
 }
 
 impl<D: SessionDriver> State<D> {
@@ -105,6 +106,7 @@ impl<D: SessionDriver> State<D> {
             override_redirect_placements: HashMap::new(),
             normal_sizes: HashMap::new(),
             managed_states: xwm::ManagedStateRegistry::default(),
+            published_stacking: Vec::new(),
         }
     }
 
@@ -141,22 +143,91 @@ impl<D: SessionDriver> State<D> {
         }
     }
 
-    /// Publishes the managed X11 windows in the compositor's stacking order.
+    /// Pushes the compositor's stacking order down to the X server.
     ///
-    /// Override-redirect windows are excluded: they are client-managed and
-    /// never appear in `_NET_CLIENT_LIST`.
-    pub fn sync_client_list(&self, space: &Space<Window>) {
-        let Some(control) = self.control.as_ref() else {
-            return;
-        };
-        let windows = space
+    /// Smithay's XWM owns `_NET_CLIENT_LIST` and `_NET_CLIENT_LIST_STACKING`
+    /// and keeps them in step with the real X stack, so the compositor's job
+    /// is to make that stack agree with what is on screen rather than to
+    /// rewrite the properties underneath it. `X11Wm::raise_window` alone only
+    /// covers raise-to-top; lowering, cluster relayout, and popup restacking
+    /// all reorder `Space` without it.
+    ///
+    /// Override-redirect windows are excluded: they are client-stacked, and
+    /// their order is mirrored the other way, from `configure_notify`.
+    pub fn sync_stacking_order(&mut self, space: &Space<Window>) {
+        let order = space
             .elements()
             .filter_map(|window| window.x11_surface())
             .filter(|surface| !surface.is_override_redirect())
-            .map(|surface| surface.window_id())
+            .cloned()
             .collect::<Vec<_>>();
-        if let Err(err) = control.publish_client_list(&windows) {
-            eventline::warn!("xwayland: failed to publish client list: {err}");
+        // `update_stacking_order_downwards` grabs the X server for the whole
+        // walk, so a settled desktop must not reach it. This mirrors the
+        // compare-before-configure guard in `sync_position`.
+        let published = order
+            .iter()
+            .map(smithay::xwayland::X11Surface::window_id)
+            .collect::<Vec<_>>();
+        if self.published_stacking == published {
+            return;
+        }
+        let Some(xwm) = self.xwm.as_mut() else {
+            return;
+        };
+        if let Err(err) = xwm.update_stacking_order_downwards(order.iter()) {
+            eventline::warn!("xwayland: failed to publish stacking order: {err}");
+            return;
+        }
+        self.published_stacking = published;
+    }
+
+    /// Publishes `_NET_FRAME_EXTENTS` for one managed X11 window.
+    ///
+    /// Cheap to call on every decoration-relevant change: the control
+    /// connection dedups per window on the published values.
+    pub fn sync_frame_extents(
+        &self,
+        window: &Window,
+        decorations: &halley_config::Decorations,
+        font: &halley_config::Font,
+    ) {
+        let Some(control) = self.control.as_ref() else {
+            return;
+        };
+        let Some(surface) = window.x11_surface() else {
+            return;
+        };
+        if surface.is_override_redirect() {
+            return;
+        }
+        let extents = crate::titlebar::frame_extents(window, decorations, font);
+        if let Err(err) = control.set_frame_extents(surface.window_id(), extents) {
+            eventline::warn!(
+                "xwayland: failed to publish frame extents xid={}: {err}",
+                surface.window_id()
+            );
+        }
+    }
+
+    /// Republishes `_NET_FRAME_EXTENTS` for every managed X11 window, for
+    /// when the decoration configuration itself changed rather than a window.
+    pub fn sync_all_frame_extents(
+        &self,
+        space: &Space<Window>,
+        decorations: &halley_config::Decorations,
+        font: &halley_config::Font,
+    ) {
+        if self.control.is_none() {
+            return;
+        }
+        for window in space.elements() {
+            self.sync_frame_extents(window, decorations, font);
+        }
+    }
+
+    fn forget_frame_extents(&self, xid: u32) {
+        if let Some(control) = self.control.as_ref() {
+            control.forget_window(xid);
         }
     }
 
@@ -273,6 +344,7 @@ impl<D: SessionDriver> State<D> {
         self.override_redirect_placements.clear();
         self.normal_sizes.clear();
         self.managed_states.clear();
+        self.published_stacking.clear();
     }
 }
 
@@ -314,19 +386,11 @@ where
                     session.xwayland.display = Some(display_number);
                     match control::X11Control::connect(display_number) {
                         Ok(control) => {
-                            let primary = session.driver.primary_output().name();
-                            if let Err(err) = control.set_randr_primary_output(&primary) {
-                                eventline::warn!(
-                                    "xwayland: failed to publish RandR primary output {primary}: {err}"
-                                );
-                            }
                             if let Err(err) = control.configure_key_repeat(
                                 session.settings.input.repeat_delay,
                                 session.settings.input.repeat_rate,
                             ) {
-                                eventline::warn!(
-                                    "xwayland: failed to configure key repeat: {err}"
-                                );
+                                eventline::warn!("xwayland: failed to configure key repeat: {err}");
                             }
                             session.xwayland.control = Some(control);
                             // `publish_ewmh` seeded the root geometry from
@@ -384,11 +448,12 @@ pub fn close_window(window: &smithay::desktop::Window) {
     }
 }
 
-pub fn configure_window(
+pub fn configure_window<D: SessionDriver>(
+    session: &mut Session<D>,
     window: &smithay::desktop::Window,
     geometry: smithay::utils::Rectangle<i32, smithay::utils::Logical>,
 ) {
-    xwm::configure_window(window, geometry);
+    xwm::configure_window(session, window, geometry);
 }
 
 pub fn sync_position<D: SessionDriver>(
@@ -400,6 +465,18 @@ pub fn sync_position<D: SessionDriver>(
 
 pub fn sync_positions<D: SessionDriver>(session: &Session<D>) -> bool {
     xwm::sync_positions(session)
+}
+
+/// Sweeps the compositor/X stacking split once per dispatch, next to
+/// [`sync_positions`].
+///
+/// `session::sync_keyboard_focus` already covers map, unmap, destroy and
+/// raise. This is the backstop for the rest: a fullscreen transition raises
+/// its window in `Space` with no accompanying focus change. The memo in
+/// [`State::sync_stacking_order`] is what makes a settled desktop free, the
+/// same way the compare-before-configure check does for [`sync_positions`].
+pub fn sync_stacking_order<D: SessionDriver>(session: &mut Session<D>) {
+    session.xwayland.sync_stacking_order(&session.wayland.space);
 }
 
 pub fn constrain_window_size(
@@ -498,15 +575,6 @@ pub fn is_override_redirect(window: &smithay::desktop::Window) -> bool {
 
 pub fn is_x11(window: &smithay::desktop::Window) -> bool {
     window.x11_surface().is_some()
-}
-
-/// The X server's own idea of a window's rect, as opposed to the compositor's
-/// `Space` geometry. The two diverging is what [`sync_position`] exists to fix.
-pub fn server_geometry(
-    window: &smithay::desktop::Window,
-) -> Option<(u32, Rectangle<i32, Logical>)> {
-    let surface = window.x11_surface()?;
-    Some((surface.window_id(), surface.geometry()))
 }
 
 pub fn is_fullscreen(window: &smithay::desktop::Window) -> bool {

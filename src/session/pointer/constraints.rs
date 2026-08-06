@@ -18,21 +18,27 @@ pub(super) enum ConstraintKind {
     Locked,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum MotionDisposition {
     Apply,
-    Hold,
+    /// The proposed position left the confinement; move to this screen
+    /// position instead. Clamping rather than holding is what lets motion
+    /// along a boundary keep its tangential component.
+    Clamp(Point<f64, Logical>),
     RelativeOnly,
 }
 
 pub(super) fn motion_disposition(
     kind: Option<ConstraintKind>,
-    confined_position_allowed: bool,
+    confined_correction: Option<Point<f64, Logical>>,
 ) -> MotionDisposition {
     match kind {
         Some(ConstraintKind::Locked) => MotionDisposition::RelativeOnly,
-        Some(ConstraintKind::Confined) if !confined_position_allowed => MotionDisposition::Hold,
-        Some(ConstraintKind::Confined) | None => MotionDisposition::Apply,
+        Some(ConstraintKind::Confined) => match confined_correction {
+            Some(position) => MotionDisposition::Clamp(position),
+            None => MotionDisposition::Apply,
+        },
+        None => MotionDisposition::Apply,
     }
 }
 
@@ -712,6 +718,7 @@ pub(super) fn active<D: SessionDriver>(
         surface: tracked.surface.clone(),
         origin: tracked.geometry.origin,
         kind: tracked.kind,
+        surface_size: tracked.geometry.surface_size,
         region: tracked.geometry.region.clone(),
         presentation: tracked.geometry.presentation.clone(),
     })
@@ -735,6 +742,7 @@ pub(super) struct ActiveConstraint {
     pub surface: WlSurface,
     pub origin: Point<f64, Logical>,
     pub kind: ConstraintKind,
+    surface_size: Size<i32, Logical>,
     region: Option<RegionAttributes>,
     presentation: WindowPresentation,
 }
@@ -745,20 +753,57 @@ pub(super) fn cursor_visible<D: SessionDriver>(session: &Session<D>) -> bool {
     })
 }
 
-pub(super) fn allows_current_position<D: SessionDriver>(
+/// The screen position the pointer must be moved to in order to satisfy
+/// `constraint`, or `None` when it is already somewhere the confinement
+/// allows.
+///
+/// The surface bounds are half the answer: `confine_pointer` with a `NULL`
+/// region means "confine to this surface", which the region alone cannot
+/// express, and [`WindowPresentation::surface_from_screen`] is a plain
+/// affine transform that happily reports coordinates outside the surface.
+pub(super) fn confined_position<D: SessionDriver>(
     session: &Session<D>,
     constraint: &ActiveConstraint,
-) -> bool {
+) -> Option<Point<f64, Logical>> {
     let screen = Point::from(session.pointer.position());
+    let local = constraint
+        .presentation
+        .surface_from_screen(&constraint.surface, screen)?;
+    let corrected =
+        clamp_into_constraint(local, constraint.surface_size, constraint.region.as_ref())?;
+    if corrected == local {
+        return None;
+    }
     constraint
         .presentation
-        .surface_from_screen(&constraint.surface, screen)
-        .is_some_and(|local| {
-            constraint
-                .region
-                .as_ref()
-                .is_none_or(|region| region.contains(local.to_i32_round()))
-        })
+        .screen_from_surface(&constraint.surface, corrected)
+}
+
+/// Projects `local` back into the confinement, in surface coordinates.
+///
+/// The bounds clamp stays in `f64` rather than going through
+/// [`nearest_valid_point`]: pushing the pointer into an edge must preserve
+/// the tangential component exactly, and a lattice projection would quantise
+/// the slide to whole pixels. The lattice projection is only needed once a
+/// region carves the surface into shapes a per-axis clamp cannot describe.
+fn clamp_into_constraint(
+    local: Point<f64, Logical>,
+    surface_size: Size<i32, Logical>,
+    region: Option<&RegionAttributes>,
+) -> Option<Point<f64, Logical>> {
+    if surface_size.w <= 0 || surface_size.h <= 0 {
+        return None;
+    }
+    // `Rectangle::contains` is exclusive at the far edge, so the last
+    // representable position inside the surface is just below it.
+    let clamped = Point::from((
+        local.x.clamp(0.0, f64::from(surface_size.w).next_down()),
+        local.y.clamp(0.0, f64::from(surface_size.h).next_down()),
+    ));
+    if region.is_none_or(|region| region.contains(clamped.to_i32_floor())) {
+        return Some(clamped);
+    }
+    nearest_valid_point(local, surface_size, region)
 }
 
 pub(super) fn apply_position_hint<D: SessionDriver>(
@@ -941,8 +986,80 @@ mod tests {
     #[test]
     fn locked_motion_is_relative_only() {
         assert_eq!(
-            motion_disposition(Some(ConstraintKind::Locked), true),
+            motion_disposition(Some(ConstraintKind::Locked), None),
             MotionDisposition::RelativeOnly
+        );
+    }
+
+    #[test]
+    fn only_a_confinement_correction_clamps_motion() {
+        let correction = Point::from((12.0, 34.0));
+        assert_eq!(
+            motion_disposition(Some(ConstraintKind::Confined), Some(correction)),
+            MotionDisposition::Clamp(correction)
+        );
+        assert_eq!(
+            motion_disposition(Some(ConstraintKind::Confined), None),
+            MotionDisposition::Apply
+        );
+        assert_eq!(motion_disposition(None, None), MotionDisposition::Apply);
+    }
+
+    #[test]
+    fn a_null_region_confines_to_the_surface() {
+        let surface = Size::from((100, 80));
+
+        // Inside stays untouched, so no correction is reported upstream.
+        assert_eq!(
+            clamp_into_constraint((40.5, 20.25).into(), surface, None),
+            Some(Point::from((40.5, 20.25)))
+        );
+        // Outside on both axes is pulled back onto the surface.
+        assert_eq!(
+            clamp_into_constraint((-30.0, 500.0).into(), surface, None),
+            Some(Point::from((0.0, f64::from(80).next_down())))
+        );
+    }
+
+    #[test]
+    fn clamping_preserves_the_tangential_component_of_an_edge_slide() {
+        let surface = Size::from((100, 80));
+        let slide = clamp_into_constraint((-5.0, 33.75).into(), surface, None)
+            .expect("a positive surface size always yields a projection");
+
+        assert_eq!(slide.x, 0.0);
+        // The component parallel to the edge survives at full precision; a
+        // lattice projection would have quantised it to a whole pixel.
+        assert_eq!(slide.y, 33.75);
+    }
+
+    #[test]
+    fn a_region_hole_falls_back_to_the_lattice_projection() {
+        let region = RegionAttributes {
+            rects: vec![
+                (
+                    RectangleKind::Add,
+                    Rectangle::new((0, 0).into(), (100, 100).into()),
+                ),
+                (
+                    RectangleKind::Subtract,
+                    Rectangle::new((40, 40).into(), (20, 20).into()),
+                ),
+            ],
+        };
+
+        // A bounds clamp cannot describe the hole, so the projection runs.
+        assert_eq!(
+            clamp_into_constraint((50.0, 50.0).into(), (100, 100).into(), Some(&region)),
+            Some(Point::from((50.0, 60.0)))
+        );
+    }
+
+    #[test]
+    fn a_degenerate_surface_has_no_valid_position() {
+        assert_eq!(
+            clamp_into_constraint((5.0, 5.0).into(), (0, 40).into(), None),
+            None
         );
     }
 }

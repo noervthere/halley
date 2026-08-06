@@ -377,7 +377,8 @@ pub(super) fn reconcile_state<D: SessionDriver>(session: &mut Session<D>) {
 
 pub(super) enum ConstrainedMotion {
     Apply,
-    Hold,
+    /// Screen position the confinement projects the proposed position onto.
+    Clamp(Point<f64, Logical>),
     RelativeOnly {
         surface: WlSurface,
         origin: Point<f64, Logical>,
@@ -390,16 +391,16 @@ pub(super) fn constrain_motion<D: SessionDriver>(
 ) -> ConstrainedMotion {
     constraints::reconcile(session, pointer, None);
     let active = constraints::active(session, pointer);
-    let position_allowed = active.as_ref().is_none_or(|constraint| {
-        constraint.kind != constraints::ConstraintKind::Confined
-            || constraints::allows_current_position(session, constraint)
-    });
+    let confined_correction = active
+        .as_ref()
+        .filter(|constraint| constraint.kind == constraints::ConstraintKind::Confined)
+        .and_then(|constraint| constraints::confined_position(session, constraint));
     match constraints::motion_disposition(
         active.as_ref().map(|constraint| constraint.kind),
-        position_allowed,
+        confined_correction,
     ) {
         constraints::MotionDisposition::Apply => ConstrainedMotion::Apply,
-        constraints::MotionDisposition::Hold => ConstrainedMotion::Hold,
+        constraints::MotionDisposition::Clamp(position) => ConstrainedMotion::Clamp(position),
         constraints::MotionDisposition::RelativeOnly => {
             let constraint = active
                 .as_ref()

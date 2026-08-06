@@ -530,7 +530,7 @@ pub(super) struct PositionResync {
     /// configures. Resyncing underneath them would race the handoff.
     pub(super) owns_own_geometry: bool,
     pub(super) x_location: Point<i32, Logical>,
-    pub(super) space_location: Point<i32, Logical>,
+    pub(super) root_screen_location: Point<i32, Logical>,
 }
 
 /// Compare-before-configure: a settled desktop must send nothing, or the
@@ -538,19 +538,105 @@ pub(super) struct PositionResync {
 pub(super) fn position_resync_needed(resync: PositionResync) -> bool {
     !resync.override_redirect
         && !resync.owns_own_geometry
-        && resync.x_location != resync.space_location
+        && resync.x_location != resync.root_screen_location
+}
+
+fn presentation_for_window<D: SessionDriver>(
+    session: &Session<D>,
+    window: &Window,
+    now: std::time::Duration,
+) -> Option<(Output, crate::presentation::window::WindowPresentation)> {
+    let output = crate::wayland::window_output_name(window)
+        .and_then(|name| {
+            session
+                .wayland
+                .space
+                .outputs()
+                .find(|output| output.name() == name)
+        })
+        .or_else(|| crate::wayland::focus::selected_output(&session.wayland))
+        .cloned()?;
+    let presentation = crate::presentation::window::WindowPresentation::for_window(
+        &session.wayland.space,
+        &session.cameras,
+        Some(&session.clusters),
+        Some(&session.nodes),
+        &session.window_open_animations,
+        &session.fullscreen,
+        &session.maximize,
+        &session.settings.decorations,
+        &session.settings.font,
+        window,
+        &output,
+        now,
+    )?;
+    Some((output, presentation))
+}
+
+pub(super) fn source_element_location_from_root_screen<D: SessionDriver>(
+    session: &Session<D>,
+    window: &Window,
+    root_screen: Point<i32, Logical>,
+    now: std::time::Duration,
+) -> Option<Point<i32, Logical>> {
+    let (_, presentation) = presentation_for_window(session, window, now)?;
+    let source_root = presentation.root_source_from_screen(root_screen);
+    Some(source_root + window.geometry().loc)
+}
+
+pub(super) fn source_point_from_root_screen<D: SessionDriver>(
+    session: &Session<D>,
+    owner: &Window,
+    root_screen: Point<i32, Logical>,
+    now: std::time::Duration,
+) -> Option<Point<i32, Logical>> {
+    let (_, presentation) = presentation_for_window(session, owner, now)?;
+    Some(
+        presentation
+            .source_from_screen(root_screen.to_f64())
+            .to_i32_round(),
+    )
+}
+
+fn presentation_geometry_is_moving<D: SessionDriver>(
+    session: &Session<D>,
+    window: &Window,
+    output: &Output,
+    now: std::time::Duration,
+) -> bool {
+    let camera_moving = session.cameras.get(&output.name()).is_some_and(|camera| {
+        camera.center != camera.target_center
+            || camera.view_size != camera.target_view_size
+            || camera.pan_vel.x != 0.0
+            || camera.pan_vel.y != 0.0
+            || camera.zoom_log_vel != 0.0
+    });
+    let opening = window.wl_surface().is_some_and(|surface| {
+        session
+            .window_open_animations
+            .is_animating(surface.as_ref(), now)
+    });
+    let grabbed = window.wl_surface().is_some_and(|surface| {
+        crate::input::grab::belongs_to_surface(&session.interactions.grab, surface.as_ref())
+    });
+    camera_moving
+        || opening
+        || grabbed
+        || session.nodes.has_physics_on_output(&output.name(), now)
+        || session.clusters.is_animating_on_output(&output.name(), now)
+        || session.fullscreen.is_animating_on_output(output, now)
+        || session.maximize.is_animating(now)
 }
 
 /// Republishes a managed X11 window's position to the X server when the
 /// compositor has moved it without configuring the client.
 ///
-/// The compositor's `Space` and `X11Surface::geometry()` are separate stores.
-/// Drags, node physics restores, and output relayouts move the first without
-/// the second, and the drift is self-reinforcing: `configure_request` echoes
-/// `surface.geometry().loc` back for non-transients, and `configure_notify`
-/// then pulls that stale location into the `Space`. Everything an X11 client
-/// computes in root coordinates — XWayland's synthesized pointer position, the
-/// X server's own hit testing, popup placement — is wrong by the drift vector.
+/// The compositor's `Space` and `X11Surface::geometry()` are deliberately
+/// separate stores. `Space` is Halley's Field/source coordinate system, while
+/// X11 geometry is expressed in the fixed root-desktop coordinate system.
+/// Publishing `Space::element_location` directly works only while an output's
+/// camera transform is the identity and otherwise offsets every client-side
+/// root-coordinate operation, including pointer hit testing and popup layout.
 ///
 /// Only the position is sent; the size stays whatever the client last agreed
 /// to. A position-only configure cannot make a client resize or map a second
@@ -564,14 +650,15 @@ pub(crate) fn sync_position<D: SessionDriver>(session: &Session<D>, window: &Win
         return false;
     };
     let xid = surface.window_id();
-    let Some(location) = session.wayland.space.element_location(window) else {
+    let now = crate::frame_clock::monotonic_now();
+    let Some((output, presentation)) = presentation_for_window(session, window, now) else {
         return false;
     };
+    let location = presentation.root_screen_origin();
     let current = surface.geometry();
     let owns_own_geometry = session.xwayland.pending_windows.contains_key(&xid)
-        || session
-            .xwayland
-            .client_geometry_guarded(xid, crate::frame_clock::monotonic_now())
+        || session.xwayland.client_geometry_guarded(xid, now)
+        || presentation_geometry_is_moving(session, window, &output, now)
         || window.wl_surface().is_some_and(|wl_surface| {
             session.fullscreen.is_fullscreen_or_pending(&wl_surface)
                 || session.fullscreen.awaits_external_configure(&wl_surface)
@@ -580,7 +667,7 @@ pub(crate) fn sync_position<D: SessionDriver>(session: &Session<D>, window: &Win
         override_redirect: surface.is_override_redirect(),
         owns_own_geometry,
         x_location: current.loc,
-        space_location: location,
+        root_screen_location: location,
     }) {
         return false;
     }
@@ -589,7 +676,8 @@ pub(crate) fn sync_position<D: SessionDriver>(session: &Session<D>, window: &Win
         return false;
     }
     eventline::debug!(
-        "xwayland: resynced position xid={xid} from {:?} to {location:?}",
+        "xwayland: published root position xid={xid} source={:?} from {:?} to {location:?}",
+        session.wayland.space.element_location(window),
         current.loc,
     );
     true
@@ -617,15 +705,24 @@ pub(crate) fn sync_positions<D: SessionDriver>(session: &Session<D>) -> bool {
     synced
 }
 
-pub(crate) fn configure_window(window: &Window, geometry: Rectangle<i32, Logical>) {
+pub(crate) fn configure_window<D: SessionDriver>(
+    session: &mut Session<D>,
+    window: &Window,
+    geometry: Rectangle<i32, Logical>,
+) {
     let Some(surface) = window.x11_surface() else {
         return;
     };
-    let geometry = Rectangle::new(
-        geometry.loc,
-        super::configure::constrain_surface_size(surface, geometry.size),
-    );
-    if let Err(err) = surface.configure(geometry) {
+    // Placement belongs to Halley's Field.  X11 only needs a configure while
+    // the native client size changes; the settled presentation sweep publishes
+    // the corresponding root-desktop position after any motion has finished.
+    session.wayland.space.relocate_element(window, geometry.loc);
+    let size = super::configure::constrain_surface_size(surface, geometry.size);
+    let current = surface.geometry();
+    if current.size == size {
+        return;
+    }
+    if let Err(err) = surface.configure(Rectangle::new(current.loc, size)) {
         eventline::warn!("xwayland: failed to configure window geometry: {err}");
     }
 }

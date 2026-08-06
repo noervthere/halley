@@ -440,6 +440,21 @@ fn admit_window<D: SessionDriver>(session: &mut Session<D>, xid: u32) {
     }
     opening_size = constrained_size;
     let opening_geometry = Rectangle::new(location, opening_size);
+    let opening_x_geometry = session
+        .wayland
+        .space
+        .output_geometry(&output)
+        .and_then(|output_geometry| {
+            presentation::opening_target_bounds(session, &output, opening_geometry, false).map(
+                |target| {
+                    Rectangle::new(
+                        output_geometry.loc + target.loc.to_logical(1),
+                        opening_geometry.size,
+                    )
+                },
+            )
+        })
+        .unwrap_or(opening_geometry);
     let presentation_configures =
         presentation_configures_initial_geometry(saved_maximize.is_some(), surface.is_fullscreen());
     crate::session::trace::x11_event(
@@ -447,7 +462,7 @@ fn admit_window<D: SessionDriver>(session: &mut Session<D>, xid: u32) {
         &surface,
         "admission-configure",
         format_args!(
-            "initial_size={initial_size:?} opening={opening_geometry:?} output={:?} saved_maximize={} presentation_configures={presentation_configures} rule_cluster={:?}",
+            "initial_size={initial_size:?} source={opening_geometry:?} x_root={opening_x_geometry:?} output={:?} saved_maximize={} presentation_configures={presentation_configures} rule_cluster={:?}",
             output.name(),
             saved_maximize.is_some(),
             rule.cluster_participation,
@@ -456,10 +471,15 @@ fn admit_window<D: SessionDriver>(session: &mut Session<D>, xid: u32) {
     // Fullscreen/maximize owns its initial configure. Sending the centered
     // windowed configure first lets games draw one intermediate centered frame
     // before the fullscreen configure is processed.
-    if !presentation_configures && let Err(err) = surface.configure(opening_geometry) {
+    if !presentation_configures && let Err(err) = surface.configure(opening_x_geometry) {
         eventline::warn!("xwayland: failed to prepare opening geometry: {err}");
     }
     crate::wayland::set_window_output(&window, &output);
+    session.xwayland.sync_frame_extents(
+        &window,
+        &session.settings.decorations,
+        &session.settings.font,
+    );
     if let Some(wl_surface) = window.wl_surface() {
         crate::session::opening::prepare(session, wl_surface.into_owned(), &output);
     }
@@ -612,19 +632,19 @@ mod tests {
     };
     use smithay::utils::{Logical, Point, Rectangle, Size};
 
-    fn resync(x: (i32, i32), space: (i32, i32)) -> PositionResync {
+    fn resync(x: (i32, i32), root_screen: (i32, i32)) -> PositionResync {
         PositionResync {
             override_redirect: false,
             owns_own_geometry: false,
             x_location: Point::from(x),
-            space_location: Point::from(space),
+            root_screen_location: Point::from(root_screen),
         }
     }
 
     #[test]
     fn a_settled_position_sends_no_configure() {
         assert!(!position_resync_needed(resync((100, 200), (100, 200))));
-        assert!(position_resync_needed(resync((100, 200), (2660, 200))));
+        assert!(position_resync_needed(resync((1546, -214), (2655, 181))));
     }
 
     #[test]

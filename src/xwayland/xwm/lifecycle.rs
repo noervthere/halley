@@ -52,6 +52,7 @@ pub(super) fn forget_window<D: SessionDriver>(
     session
         .xwayland
         .forget_client_geometry_guard(surface.window_id());
+    session.xwayland.forget_frame_extents(surface.window_id());
     let was_pending = session
         .xwayland
         .pending_windows
@@ -315,6 +316,18 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
                 surface.geometry(),
             ),
         );
+        if surface.is_transient_for().is_some()
+            && (x.is_some() || y.is_some())
+            && let Some(window) = window_for_surface(&self.wayland, &self.nodes, &surface)
+            && let Some(location) = super::presentation::source_element_location_from_root_screen(
+                self,
+                &window,
+                geometry.loc,
+                crate::frame_clock::monotonic_now(),
+            )
+        {
+            self.wayland.space.relocate_element(&window, location);
+        }
         if let Err(err) = surface.configure(geometry) {
             eventline::warn!("xwayland: configure request failed: {err}");
         }
@@ -356,6 +369,8 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
             let previous_output = crate::wayland::window_output_name(&window);
             let resolution = override_redirect_resolution(self, &surface, geometry);
             apply_override_redirect_resolution(&window, &resolution);
+            let source_location =
+                override_redirect_source_location(self, &window, &resolution, geometry.loc);
             let current_output = crate::wayland::window_output_name(&window);
             if previous_output != current_output {
                 eventline::debug!(
@@ -365,7 +380,9 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
                     current_output
                 );
             }
-            self.wayland.space.relocate_element(&window, geometry.loc);
+            self.wayland
+                .space
+                .relocate_element(&window, source_location);
             let action = restack_override_redirect(self, &window, above);
             let output = override_redirect_output_name(&window);
             describe_override_redirect_configure(
@@ -428,18 +445,11 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
                 if let Some(placement) = placement {
                     let centered = placement.centered(geometry.size);
                     self.wayland.space.relocate_element(&window, centered.loc);
-                    if centered != geometry
-                        && let Err(err) = surface.configure(centered)
-                    {
-                        eventline::warn!(
-                            "xwayland: failed to preserve opening window center: {err}"
-                        );
-                    }
-                } else {
-                    self.wayland
-                        .space
-                        .map_element(window.clone(), geometry.loc, false);
                 }
+                // Managed X geometry is in root-desktop coordinates; `Space`
+                // is in Halley's Field coordinates.  The request path applies
+                // accepted source placement explicitly, so ConfigureNotify
+                // must never feed the reported X root position back into it.
                 self.fullscreen
                     .update_external_windowed_placement(&self.wayland, &window);
                 remember_normal_size(self, &surface, geometry.size);
@@ -492,6 +502,14 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
         {
             if matches!(property, WmWindowProperty::Class | WmWindowProperty::Title) {
                 self.window_rules.track_window(&window);
+            }
+            if property == WmWindowProperty::MotifHints {
+                // Toggling client-side decorations changes the top inset.
+                self.xwayland.sync_frame_extents(
+                    &window,
+                    &self.settings.decorations,
+                    &self.settings.font,
+                );
             }
             self.request_redraw();
         }
@@ -752,22 +770,7 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
         crate::xwayland::selection::clear(&self.wayland.display_handle, &self.seat, selection);
     }
 
-    fn randr_primary_output_change(&mut self, _xwm: XwmId, output_name: Option<String>) {
-        let primary_name = self.driver.primary_output().name();
-        if output_name.as_deref() == Some(primary_name.as_str()) {
-            return;
-        }
-        eventline::debug!(
-            "xwayland: restoring RandR primary output from {:?} to {}",
-            output_name,
-            primary_name
-        );
-        if let Some(control) = self.xwayland.control.as_ref()
-            && let Err(err) = control.set_randr_primary_output(&primary_name)
-        {
-            eventline::warn!("xwayland: failed to restore RandR primary output: {err}");
-        }
-    }
+    fn randr_primary_output_change(&mut self, _xwm: XwmId, _output_name: Option<String>) {}
 
     fn disconnected(&mut self, _xwm: XwmId) {
         eventline::warn!("xwayland: window manager disconnected");

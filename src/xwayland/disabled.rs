@@ -35,9 +35,25 @@ impl<D: SessionDriver> State<D> {
 
     pub fn sync_active_window(&self, _window: Option<u32>) {}
 
+    pub fn sync_frame_extents(
+        &self,
+        _window: &Window,
+        _decorations: &halley_config::Decorations,
+        _font: &halley_config::Font,
+    ) {
+    }
+
+    pub fn sync_all_frame_extents(
+        &self,
+        _space: &Space<Window>,
+        _decorations: &halley_config::Decorations,
+        _font: &halley_config::Font,
+    ) {
+    }
+
     pub fn sync_desktop_geometry(&self, _space: &Space<Window>) {}
 
-    pub fn sync_client_list(&self, _space: &Space<Window>) {}
+    pub fn sync_stacking_order(&mut self, _space: &Space<Window>) {}
 
     pub fn configure_key_repeat(&self, _delay: i32, _rate: i32) {}
 
@@ -70,7 +86,12 @@ pub fn reconfigure_fullscreen(_windows: Vec<(Window, Rectangle<i32, Logical>)>) 
 
 pub fn close_window(_window: &Window) {}
 
-pub fn configure_window(_window: &Window, _geometry: Rectangle<i32, Logical>) {}
+pub fn configure_window<D: SessionDriver>(
+    _session: &mut Session<D>,
+    _window: &Window,
+    _geometry: Rectangle<i32, Logical>,
+) {
+}
 
 pub fn sync_position<D: SessionDriver>(_session: &Session<D>, _window: &Window) -> bool {
     false
@@ -79,6 +100,8 @@ pub fn sync_position<D: SessionDriver>(_session: &Session<D>, _window: &Window) 
 pub fn sync_positions<D: SessionDriver>(_session: &Session<D>) -> bool {
     false
 }
+
+pub fn sync_stacking_order<D: SessionDriver>(_session: &mut Session<D>) {}
 
 pub fn constrain_window_size(
     _window: &Window,

@@ -107,6 +107,23 @@ pub struct FullscreenBlendElement {
     radii: super::window_decoration::CornerRadii,
 }
 
+/// One window's crossfade between its captured and live textures.
+#[derive(Clone, Copy)]
+pub struct BlendRequest<'a> {
+    pub window: &'a Window,
+    pub destination: Rectangle<i32, Physical>,
+    pub progress: f64,
+    /// X11 applies restored fullscreen-exit geometry before the matching
+    /// `wl_surface` buffer necessarily arrives. Capturing the still-fullscreen
+    /// buffer at the smaller target crops it, making the reverse animation look
+    /// like a discontinuous shrink. Set this to keep presenting the intact
+    /// captured texture until XWayland commits the restored client size;
+    /// geometry continues to animate independently through `destination`.
+    pub hold_previous_until_restored_buffer_matches: bool,
+    pub alpha: f32,
+    pub radii: super::window_decoration::CornerRadii,
+}
+
 impl FullscreenTextureTransitions {
     pub fn capture_previous(
         &mut self,
@@ -143,13 +160,16 @@ impl FullscreenTextureTransitions {
     pub fn blend_element(
         &mut self,
         renderer: &mut GlesRenderer,
-        window: &Window,
-        destination: Rectangle<i32, Physical>,
-        progress: f64,
-        hold_previous_until_restored_buffer_matches: bool,
-        alpha: f32,
-        radii: super::window_decoration::CornerRadii,
+        request: BlendRequest<'_>,
     ) -> Result<Option<FullscreenBlendElement>, Box<dyn Error>> {
+        let BlendRequest {
+            window,
+            destination,
+            progress,
+            hold_previous_until_restored_buffer_matches,
+            alpha,
+            radii,
+        } = request;
         let surface = window
             .wl_surface()
             .ok_or("fullscreen blend window has no surface")?;
@@ -162,12 +182,6 @@ impl FullscreenTextureTransitions {
             return Ok(None);
         }
 
-        // X11 applies restored fullscreen-exit geometry before the matching
-        // wl_surface buffer necessarily arrives. Capturing the still-fullscreen
-        // buffer at the smaller target crops it, making the reverse animation
-        // look like a discontinuous shrink. Keep presenting the intact captured
-        // texture until XWayland commits the restored client size; geometry
-        // continues to animate independently through `destination` meanwhile.
         let buffer_matches = transition_buffer_ready(
             hold_previous_until_restored_buffer_matches,
             with_renderer_surface_state(surface.as_ref(), |state| state.surface_size()).flatten(),

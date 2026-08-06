@@ -533,6 +533,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                         app.start_time.elapsed().as_millis() as u32,
                     );
                 }
+                crate::xwayland::sync_stacking_order(app);
                 wayland::layer_shell::cleanup(&mut app.wayland);
                 app.window_open_animations.cleanup(target_presentation_time);
                 app.render

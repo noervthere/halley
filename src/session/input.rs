@@ -976,8 +976,8 @@ where
         return;
     }
 
-    if matches!(constrained_motion, super::pointer::ConstrainedMotion::Hold) {
-        session.pointer.set_position(position_before);
+    if let super::pointer::ConstrainedMotion::Clamp(position) = constrained_motion {
+        session.pointer.set_position((position.x, position.y));
     }
     let position_after = session.pointer.position();
     session.request_redraw();
@@ -1142,6 +1142,7 @@ where
         }
     }
 
+    let mut x11_configure = None;
     match &session.interactions.grab {
         crate::input::grab::Grab::MoveWindow {
             id,
@@ -1506,13 +1507,17 @@ where
                     );
                     Rectangle::new(location, size)
                 });
-                crate::xwayland::configure_window(&state.window, target);
+                x11_configure = Some((state.window.clone(), target));
             }
         }
         crate::input::grab::Grab::None
         | crate::input::grab::Grab::PendingWindowMove(_)
         | crate::input::grab::Grab::PendingNode { .. }
         | crate::input::grab::Grab::PendingClusterCore { .. } => {}
+    }
+
+    if let Some((window, geometry)) = x11_configure {
+        crate::xwayland::configure_window(session, &window, geometry);
     }
 
     if let Some((delta, delta_unaccel, time, time_msec)) = motion {

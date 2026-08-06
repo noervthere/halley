@@ -32,7 +32,7 @@ pub fn commit(
     popup::handle_commit(&mut wayland.popup_manager, surface);
 
     if layer_shell::handle_commit(wayland, &root) {
-        return xdg_shell::ToplevelCommit::None;
+        return xdg_shell::ToplevelCommit::Layer;
     }
 
     let owning_window = wayland

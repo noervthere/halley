@@ -442,9 +442,9 @@ fn window_under(
             .as_ref()
             .is_some_and(|surface| context.fullscreen.suppresses_chrome(surface.as_ref()))
             || crate::xwayland::is_fullscreen(window);
-        if !fullscreen
-            && crate::titlebar::uses_server_titlebar(window, &context.decorations.titlebars)
-        {
+        let chrome =
+            crate::titlebar::WindowChrome::for_window(window, context.decorations, context.font);
+        if !fullscreen && chrome.has_server_titlebar() {
             let source_height = presentation.source_geometry().size.h.max(1);
             let visual_scale = visual_geometry.size.h as f32 / source_height as f32;
             let titlebar_height = crate::titlebar::rendered_metrics(
@@ -453,10 +453,8 @@ fn window_under(
                 visual_scale,
             )
             .height;
-            let border_width = crate::render::window_decoration::scaled_metric(
-                context.decorations.border_width_px,
-                visual_scale,
-            );
+            let border_width =
+                crate::render::window_decoration::scaled_metric(chrome.border_width, visual_scale);
             let layout = crate::titlebar::DecorationLayout::new(
                 visual_geometry,
                 border_width,
@@ -485,7 +483,6 @@ fn window_under(
             continue;
         };
         let render_location = element_location - window.geometry().loc;
-        trace_x11_transform(context, window, &presentation, element_location);
         let Some(focus) = window_focus(window, location, render_location) else {
             continue;
         };
@@ -499,76 +496,6 @@ fn window_under(
     }
     None
 }
-
-/// Temporary diagnostic for XWayland pointer offsets.
-///
-/// Logs the full screen -> source -> surface-local chain for an X11 window,
-/// deduplicated on the geometry state so it emits once per change rather than
-/// once per motion event. Three comparisons matter: `element` size against
-/// `buffer` size (a render/hit-test scale divergence), `element` location
-/// against `x11` location (compositor/X position drift), and `visual` against
-/// `source` (the ratio `source_from_screen` inverts).
-// TODO: remove once the XWayland hit-test offset is confirmed fixed.
-fn trace_x11_transform(
-    context: &PointerRoutingContext<'_>,
-    window: &Window,
-    presentation: &WindowPresentation,
-    element_location: Point<i32, Logical>,
-) {
-    let Some((xid, x11_geometry)) = crate::xwayland::server_geometry(window) else {
-        return;
-    };
-    let signature = X11TransformSignature {
-        element: context.space.element_geometry(window),
-        element_location,
-        window_geometry: window.geometry(),
-        x11_geometry,
-        buffer: window.wl_surface().and_then(|root| {
-            smithay::backend::renderer::utils::with_renderer_surface_state(&root, |state| {
-                state.surface_size()
-            })
-            .flatten()
-        }),
-        visual: presentation.visual_geometry(),
-        source: presentation.source_geometry(),
-        hit: presentation.hit_geometry(),
-    };
-    let mut seen = X11_TRANSFORM_TRACE
-        .lock()
-        .expect("x11 transform trace mutex is never held across a panic");
-    if seen.get(&xid) == Some(&signature) {
-        return;
-    }
-    seen.insert(xid, signature);
-    drop(seen);
-    eventline::debug!(
-        "xwayland: pointer transform xid={xid} element={:?}@{:?} window_geo={:?} x11={:?} buffer={:?} visual={:?} source={:?} hit={:?}",
-        signature.element,
-        signature.element_location,
-        signature.window_geometry,
-        signature.x11_geometry,
-        signature.buffer,
-        signature.visual,
-        signature.source,
-        signature.hit,
-    );
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct X11TransformSignature {
-    element: Option<Rectangle<i32, Logical>>,
-    element_location: Point<i32, Logical>,
-    window_geometry: Rectangle<i32, Logical>,
-    x11_geometry: Rectangle<i32, Logical>,
-    buffer: Option<smithay::utils::Size<i32, Logical>>,
-    visual: Rectangle<i32, Logical>,
-    source: Rectangle<i32, Logical>,
-    hit: Rectangle<i32, Logical>,
-}
-
-static X11_TRANSFORM_TRACE: std::sync::LazyLock<
-    std::sync::Mutex<std::collections::HashMap<u32, X11TransformSignature>>,
-> = std::sync::LazyLock::new(Default::default);
 
 /// Resolves the client surface under a window-local point.
 ///

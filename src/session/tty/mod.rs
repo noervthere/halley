@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 mod frame;
+mod sleep;
 mod vt;
 
 use calloop::generic::Generic;
@@ -44,8 +45,20 @@ struct TtyDriver {
     loop_handle: LoopHandle<'static, TtyApp>,
     loop_signal: LoopSignal,
     output_frames: HashMap<Output, OutputFrameState>,
-    paused: bool,
+    pause_reasons: PauseReasons,
     pending_output_config: Option<Vec<halley_config::OutputConfig>>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct PauseReasons {
+    session: bool,
+    system_sleep: bool,
+}
+
+impl PauseReasons {
+    fn any(self) -> bool {
+        self.session || self.system_sleep
+    }
 }
 
 impl crate::ipc::OutputInfoSource for TtyDriver {
@@ -316,7 +329,10 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
         loop_handle: loop_handle.clone(),
         loop_signal,
         output_frames,
-        paused: initially_paused,
+        pause_reasons: PauseReasons {
+            session: initially_paused,
+            system_sleep: false,
+        },
         pending_output_config: None,
     };
     let mut wayland = TtyApp::create_wayland_state(dh.clone(), &mut driver);
@@ -464,6 +480,9 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
     if let Err(err) = super::install_node_decay_timer(&event_loop.handle()) {
         eventline::warn!("nodes: failed to start decay timer: {err}");
     }
+    if let Err(err) = sleep::install(&event_loop.handle()) {
+        eventline::warn!("system sleep: failed to install monitor: {err}");
+    }
     if let Err(err) = super::install_apogee_preview_timer(&event_loop.handle()) {
         eventline::warn!("apogee: failed to start preview timer: {err}");
     }
@@ -558,9 +577,12 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
             move |event, _, app| match event {
                 SessionEvent::PauseSession => {
                     eventline::info!("session event: pause");
-                    app.driver.paused = true;
+                    let was_paused = app.driver.pause_reasons.any();
+                    app.driver.pause_reasons.session = true;
                     libinput_for_session.suspend();
-                    suspend_redraw_state(app, &loop_handle);
+                    if !was_paused {
+                        suspend_redraw_state(app, &loop_handle);
+                    }
                     app.driver.backend.pause();
                 }
                 SessionEvent::ActivateSession => {
@@ -576,12 +598,14 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                         // clean rather than trusting whatever redraw states
                         // said before the switch.
                         Ok(()) => {
-                            app.driver.paused = false;
+                            app.driver.pause_reasons.session = false;
                             super::pointer::recover_after_session_resume(app);
                             if let Some(outputs) = app.driver.pending_output_config.take() {
                                 apply_tty_output_config(app, &outputs);
                             }
-                            resume_redraw_state(app);
+                            if !app.driver.pause_reasons.any() {
+                                resume_redraw_state(app);
+                            }
                         }
                         Err(err) => eventline::error!("resume failed: {err}"),
                     }
@@ -602,7 +626,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
     event_loop
         .run(None, &mut app, |app| {
             app.reap_autostart();
-            if !app.driver.paused {
+            if !app.driver.pause_reasons.any() {
                 redraw_queued_outputs(app, &loop_handle);
             }
             let _ = app.wayland.display_handle.flush_clients();
@@ -739,6 +763,7 @@ fn send_output_frame_callbacks(app: &mut TtyApp, output: &Output) {
             app.start_time.elapsed().as_millis() as u32,
         );
     }
+    crate::xwayland::sync_stacking_order(app);
     wayland::layer_shell::cleanup(&mut app.wayland);
 }
 
@@ -770,7 +795,7 @@ fn apply_runtime_config(app: &mut TtyApp, reload: crate::config::ConfigReload) {
             app.apply_common_config(&config);
             app.driver.physical_input.reload(&app.settings.input);
 
-            if app.driver.paused {
+            if app.driver.pause_reasons.any() {
                 app.driver.pending_output_config = Some(config.outputs);
             } else {
                 apply_tty_output_config(app, &config.outputs);
@@ -1166,9 +1191,65 @@ fn suspend_redraw_state(app: &mut TtyApp, loop_handle: &LoopHandle<'_, TtyApp>) 
     }
 }
 
+fn handle_system_sleep(app: &mut TtyApp, preparing: bool) {
+    if preparing {
+        if app.driver.pause_reasons.system_sleep {
+            return;
+        }
+        eventline::info!("system sleep: preparing");
+        let was_paused = app.driver.pause_reasons.any();
+        app.driver.pause_reasons.system_sleep = true;
+        if !was_paused {
+            let loop_handle = app.driver.loop_handle.clone();
+            suspend_redraw_state(app, &loop_handle);
+        }
+        return;
+    }
+
+    eventline::info!("system sleep: resumed; invalidating pre-suspend output buffers");
+    let was_system_sleep = app.driver.pause_reasons.system_sleep;
+    app.driver.backend.recover_after_system_sleep();
+    app.driver.pause_reasons.system_sleep = false;
+    super::pointer::recover_after_session_resume(app);
+
+    if app.driver.pause_reasons.any() {
+        return;
+    }
+    if let Some(outputs) = app.driver.pending_output_config.take() {
+        apply_tty_output_config(app, &outputs);
+    }
+    if was_system_sleep {
+        resume_redraw_state(app);
+    } else {
+        // A delayed subscription can miss PrepareForSleep(true). Buffer
+        // invalidation still makes the next queued frame a complete redraw.
+        app.request_redraw();
+    }
+}
+
 fn resume_redraw_state(app: &mut TtyApp) {
     let now = crate::frame_clock::monotonic_now();
     for state in app.driver.output_frames.values_mut() {
         state.resume(now);
+    }
+}
+
+#[cfg(test)]
+mod pause_tests {
+    use super::PauseReasons;
+
+    #[test]
+    fn overlapping_pause_reasons_require_both_resumes() {
+        let mut reasons = PauseReasons {
+            session: true,
+            system_sleep: true,
+        };
+        assert!(reasons.any());
+
+        reasons.system_sleep = false;
+        assert!(reasons.any());
+
+        reasons.session = false;
+        assert!(!reasons.any());
     }
 }

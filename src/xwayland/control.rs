@@ -1,11 +1,11 @@
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::error::Error;
 
 use x11rb::NONE;
 use x11rb::connection::Connection;
 use x11rb::errors::ReplyError;
 use x11rb::protocol::ErrorKind;
-use x11rb::protocol::randr::ConnectionExt as _;
 use x11rb::protocol::xkb::{self, ConnectionExt as _};
 use x11rb::protocol::xproto::{
     AtomEnum, AutoRepeatMode, ChangeKeyboardControlAux, ConnectionExt as _, GetGeometryReply,
@@ -45,6 +45,7 @@ x11rb::atom_manager! {
         _NET_WM_STATE_SKIP_TASKBAR,
         _NET_WM_STATE_SKIP_PAGER,
         _NET_WM_ALLOWED_ACTIONS,
+        _NET_FRAME_EXTENTS,
         _NET_WM_ACTION_MOVE,
         _NET_WM_ACTION_RESIZE,
         _NET_WM_ACTION_MINIMIZE,
@@ -93,7 +94,7 @@ pub struct X11Control {
     root: Window,
     active_window: Cell<Option<Option<Window>>>,
     desktop_geometry: Cell<Option<PublishedDesktopGeometry>>,
-    client_list: RefCell<Option<Vec<Window>>>,
+    frame_extents: RefCell<HashMap<Window, (i32, i32, i32, i32)>>,
 }
 
 /// The last values written to the root window, kept so repeated publishes on an
@@ -126,37 +127,53 @@ impl X11Control {
             root,
             active_window: Cell::new(None),
             desktop_geometry: Cell::new(None),
-            client_list: RefCell::new(None),
+            frame_extents: RefCell::new(HashMap::new()),
         })
     }
 
-    /// Publishes the managed-window list on the root window.
+    /// Publishes the decoration Halley draws around a client window.
     ///
-    /// `_NET_SUPPORTED` advertises both of these atoms, so leaving them unset
-    /// is a protocol lie: a client is entitled to read them and conclude no
-    /// windows are managed. `windows` is bottom-to-top stacking order.
-    /// `_NET_CLIENT_LIST` is nominally initial-mapping order, which Halley does
-    /// not retain; consumers treat that ordering as advisory, and a populated
-    /// list is strictly better than an absent one.
-    pub fn publish_client_list(&self, windows: &[Window]) -> Result<(), Box<dyn Error>> {
-        if self.client_list.borrow().as_deref() == Some(windows) {
+    /// The X window a client sees is the client area only; the border and
+    /// titlebar live in the compositor's scene, so without this the client's
+    /// own root-coordinate arithmetic is off by the frame. `extents` is
+    /// `(left, right, top, bottom)`.
+    pub fn set_frame_extents(
+        &self,
+        window: Window,
+        extents: (i32, i32, i32, i32),
+    ) -> Result<(), Box<dyn Error>> {
+        if self.frame_extents.borrow().get(&window) == Some(&extents) {
             return Ok(());
         }
-        for atom in [
-            self.atoms._NET_CLIENT_LIST,
-            self.atoms._NET_CLIENT_LIST_STACKING,
-        ] {
-            self.connection.change_property32(
+        let result = self
+            .connection
+            .change_property32(
                 PropMode::REPLACE,
-                self.root,
-                atom,
-                AtomEnum::WINDOW,
-                windows,
-            )?;
+                window,
+                self.atoms._NET_FRAME_EXTENTS,
+                AtomEnum::CARDINAL,
+                &[
+                    extents.0 as u32,
+                    extents.1 as u32,
+                    extents.2 as u32,
+                    extents.3 as u32,
+                ],
+            )?
+            .check();
+        if let Err(err) = result {
+            if !is_destroyed_window(&err) {
+                return Err(err.into());
+            }
+            return Ok(());
         }
-        self.connection.flush()?;
-        *self.client_list.borrow_mut() = Some(windows.to_vec());
+        self.frame_extents.borrow_mut().insert(window, extents);
         Ok(())
+    }
+
+    /// Drops the per-window property memo for a window Halley no longer
+    /// manages, so a reused XID cannot inherit its predecessor's extents.
+    pub fn forget_window(&self, window: Window) {
+        self.frame_extents.borrow_mut().remove(&window);
     }
 
     pub fn set_wm_state(&self, window: Window, state: IcccmState) -> Result<(), Box<dyn Error>> {
@@ -288,26 +305,6 @@ impl X11Control {
             return Err(err.into());
         }
         Ok(())
-    }
-
-    pub fn set_randr_primary_output(&self, output_name: &str) -> Result<(), Box<dyn Error>> {
-        let resources = self
-            .connection
-            .randr_get_screen_resources_current(self.root)?
-            .reply()?;
-        for output in resources.outputs {
-            let info = self
-                .connection
-                .randr_get_output_info(output, resources.config_timestamp)?
-                .reply()?;
-            if info.name == output_name.as_bytes() {
-                self.connection
-                    .randr_set_output_primary(self.root, output)?
-                    .check()?;
-                return Ok(());
-            }
-        }
-        Err(format!("RandR output {output_name:?} was not found").into())
     }
 
     pub fn configure_key_repeat(&self, delay: i32, rate: i32) -> Result<(), Box<dyn Error>> {
@@ -442,6 +439,7 @@ fn publish_ewmh(
         atoms._NET_WM_STATE_SKIP_TASKBAR,
         atoms._NET_WM_STATE_SKIP_PAGER,
         atoms._NET_WM_ALLOWED_ACTIONS,
+        atoms._NET_FRAME_EXTENTS,
         atoms._NET_WM_ACTION_MOVE,
         atoms._NET_WM_ACTION_RESIZE,
         atoms._NET_WM_ACTION_MINIMIZE,

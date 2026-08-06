@@ -125,16 +125,16 @@ pub fn capture_decorated(
 
     let client_size = window.geometry().size;
     let native_client = Rectangle::<i32, Logical>::from_size(client_size);
-    let native_outer =
-        crate::titlebar::outer_rect_for_client(window, native_client, decorations, font);
+    let chrome = crate::titlebar::WindowChrome::for_window(window, decorations, font);
+    let native_outer = chrome.outer_rect(native_client);
     let content = Rectangle::<i32, Physical>::new(
         (-native_outer.loc.x, -native_outer.loc.y).into(),
         client_size.to_physical(1),
     );
     let output_size = native_outer.size.to_physical(1);
     let damage = Rectangle::<i32, Physical>::from_size(output_size);
-    let server_titlebar = crate::titlebar::uses_server_titlebar(window, &decorations.titlebars);
-    let border_width = decorations.border_width_px.max(0);
+    let server_titlebar = chrome.has_server_titlebar();
+    let border_width = chrome.border_width;
     let content_radius = decorations.border_radius_px.max(0) as f32;
     let rounded = content_radius > 0.0 && window_decoration_renderer.available(renderer);
     let source = Rectangle::<f64, Logical>::from_size(client_size.to_f64());
@@ -156,6 +156,7 @@ pub fn capture_decorated(
         crate::render::scene::append_titlebar_elements(
             renderer,
             window,
+            Some("snapshot"),
             content,
             crate::titlebar::effective_height(&decorations.titlebars, font.size),
             crate::titlebar::glyph_size(crate::titlebar::effective_height(

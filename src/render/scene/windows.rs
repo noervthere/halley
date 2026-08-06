@@ -150,7 +150,9 @@ pub(super) fn live_window_elements(
     }
 
     let mut elements = Vec::new();
-    let managed = !crate::xwayland::is_override_redirect(window);
+    let chrome =
+        crate::titlebar::WindowChrome::for_window(window, context.decorations, context.font);
+    let managed = chrome.mode != crate::titlebar::DecorationMode::Unmanaged;
     let rule_opacity = if managed {
         context.window_rules.opacity(window_surface.as_ref())
     } else {
@@ -168,9 +170,7 @@ pub(super) fn live_window_elements(
         crate::xwayland::is_fullscreen(window),
     );
     let chrome_alpha = if chrome_visible { alpha } else { 0.0 };
-    let server_titlebar = managed
-        && chrome_visible
-        && crate::titlebar::uses_server_titlebar(window, &context.decorations.titlebars);
+    let server_titlebar = chrome_visible && chrome.has_server_titlebar();
     let opening_scale_y = if visual.presentation_rect.size.h > 0 {
         visual.animated_rect.size.h as f32 / visual.presentation_rect.size.h as f32
     } else {
@@ -183,10 +183,12 @@ pub(super) fn live_window_elements(
         decoration_scale,
     );
     let titlebar_height = titlebar_metrics.height;
+    let border_width =
+        crate::render::window_decoration::scaled_metric(chrome.border_width, decoration_scale);
     let content_radius = if chrome_visible {
         crate::render::window_decoration::scaled_metric(
             context.decorations.border_radius_px,
-            visual.zoom_scale,
+            decoration_scale,
         ) as f32
     } else {
         0.0
@@ -211,9 +213,10 @@ pub(super) fn live_window_elements(
         };
         if let Some(tint) = window_decoration_renderer.tint_element_with_radii(
             renderer,
-            crate::render::window_decoration::surface_slot(
+            crate::render::window_decoration::surface_slot_for_instance(
                 window_surface.as_ref(),
                 crate::render::window_decoration::slot::JOIN_TINT,
+                context.instance_identity,
             ),
             visual.animated_rect,
             radii,
@@ -223,12 +226,13 @@ pub(super) fn live_window_elements(
             elements.push(SceneElement::RoundedTexture(tint));
         } else {
             elements.push(SceneElement::Border(SolidColorRenderElement::new(
-                crate::render::window_decoration::surface_slot(
+                crate::render::window_decoration::surface_slot_for_instance(
                     window_surface.as_ref(),
                     crate::render::window_decoration::slot::JOIN_TINT_FALLBACK,
+                    context.instance_identity,
                 ),
                 visual.animated_rect,
-                CommitCounter::default(),
+                crate::render::window_decoration::solid_color_commit(tint_color * tint_alpha),
                 tint_color * tint_alpha,
                 Kind::Unspecified,
             )));
@@ -264,15 +268,13 @@ pub(super) fn live_window_elements(
         append_titlebar_elements(
             renderer,
             window,
+            context.instance_identity,
             visual.animated_rect,
             titlebar_height,
             titlebar_metrics.glyph_size,
             decoration_scale,
             context.maximize.contains(window_surface.as_ref()),
-            crate::render::window_decoration::scaled_metric(
-                context.decorations.border_width_px,
-                decoration_scale,
-            ),
+            border_width,
             titlebar_metrics.radius as f32,
             Some(window_surface.as_ref()) == context.focused,
             chrome_alpha,
@@ -305,17 +307,19 @@ pub(super) fn live_window_elements(
         );
         match fullscreen_textures.blend_element(
             renderer,
-            window,
-            visual.animated_rect,
-            completion,
-            hold_x11_fullscreen_exit,
-            alpha,
-            if rounded_available && server_titlebar {
-                crate::render::window_decoration::CornerRadii::bottom(content_radius)
-            } else if rounded_available {
-                crate::render::window_decoration::CornerRadii::all(content_radius)
-            } else {
-                crate::render::window_decoration::CornerRadii::default()
+            crate::render::fullscreen_texture::BlendRequest {
+                window,
+                destination: visual.animated_rect,
+                progress: completion,
+                hold_previous_until_restored_buffer_matches: hold_x11_fullscreen_exit,
+                alpha,
+                radii: if rounded_available && server_titlebar {
+                    crate::render::window_decoration::CornerRadii::bottom(content_radius)
+                } else if rounded_available {
+                    crate::render::window_decoration::CornerRadii::all(content_radius)
+                } else {
+                    crate::render::window_decoration::CornerRadii::default()
+                },
             },
         ) {
             Ok(blend) => blend,
@@ -477,18 +481,15 @@ pub(super) fn live_window_elements(
 
     let is_focused = Some(window_surface.as_ref()) == context.focused;
     let border_color = crate::render::window_border_color(context.decorations, is_focused);
-    let border_width = crate::render::window_decoration::scaled_metric(
-        context.decorations.border_width_px,
-        visual.zoom_scale,
-    );
     if managed && border_width > 0 && chrome_alpha > 0.0 {
         if rounded_available
             && let Some(border) = if server_titlebar {
                 window_decoration_renderer.body_border_element(
                     renderer,
-                    crate::render::window_decoration::surface_slot(
+                    crate::render::window_decoration::surface_slot_for_instance(
                         window_surface.as_ref(),
                         crate::render::window_decoration::slot::BODY_BORDER,
+                        context.instance_identity,
                     ),
                     visual.animated_rect,
                     border_width,
@@ -499,9 +500,10 @@ pub(super) fn live_window_elements(
             } else {
                 window_decoration_renderer.border_element(
                     renderer,
-                    crate::render::window_decoration::surface_slot(
+                    crate::render::window_decoration::surface_slot_for_instance(
                         window_surface.as_ref(),
                         crate::render::window_decoration::slot::BORDER,
+                        context.instance_identity,
                     ),
                     visual.animated_rect,
                     border_width,
@@ -596,11 +598,17 @@ pub(super) fn live_window_elements(
 /// Stable identity for a titlebar part, falling back to a fresh `Id` for
 /// windows without a surface (only reachable from one-shot snapshot renders,
 /// which never go through a damage tracker).
-fn titlebar_slot(window: &smithay::desktop::Window, slot: usize) -> Id {
+fn titlebar_slot(window: &smithay::desktop::Window, instance: Option<&str>, slot: usize) -> Id {
     use smithay::wayland::seat::WaylandFocus;
     window
         .wl_surface()
-        .map(|surface| crate::render::window_decoration::surface_slot(surface.as_ref(), slot))
+        .map(|surface| {
+            crate::render::window_decoration::surface_slot_for_instance(
+                surface.as_ref(),
+                slot,
+                instance,
+            )
+        })
         .unwrap_or_else(Id::new)
 }
 
@@ -608,6 +616,7 @@ fn titlebar_slot(window: &smithay::desktop::Window, slot: usize) -> Id {
 pub(crate) fn append_titlebar_elements(
     renderer: &mut GlesRenderer,
     window: &smithay::desktop::Window,
+    instance: Option<&str>,
     content: Rectangle<i32, Physical>,
     height: i32,
     glyph_side: i32,
@@ -660,6 +669,7 @@ pub(crate) fn append_titlebar_elements(
                 renderer,
                 titlebar_slot(
                     window,
+                    instance,
                     crate::render::window_decoration::slot::TITLEBAR_BUTTON + index,
                 ),
                 control.rect,
@@ -683,11 +693,13 @@ pub(crate) fn append_titlebar_elements(
         if let Some(icon) = titlebar_renderer.control_element(
             renderer,
             window_decoration_renderer,
-            control.control,
-            maximized,
-            glyph,
-            state_color,
-            alpha * if enabled { 1.0 } else { 0.4 },
+            crate::render::titlebar::ControlRequest {
+                control: control.control,
+                maximized,
+                destination: glyph,
+                color: state_color,
+                alpha: alpha * if enabled { 1.0 } else { 0.4 },
+            },
         ) {
             elements.push(SceneElement::RoundedTexture(icon));
         }
@@ -741,6 +753,7 @@ pub(crate) fn append_titlebar_elements(
         renderer,
         titlebar_slot(
             window,
+            instance,
             crate::render::window_decoration::slot::TITLEBAR_BACKGROUND,
         ),
         layout.titlebar,
@@ -753,10 +766,13 @@ pub(crate) fn append_titlebar_elements(
         elements.push(SceneElement::Border(SolidColorRenderElement::new(
             titlebar_slot(
                 window,
+                instance,
                 crate::render::window_decoration::slot::TITLEBAR_BACKGROUND_FALLBACK,
             ),
             layout.titlebar,
-            CommitCounter::default(),
+            crate::render::window_decoration::solid_color_commit(
+                crate::render::decoration_color(background) * alpha,
+            ),
             crate::render::decoration_color(background) * alpha,
             Kind::Unspecified,
         )));

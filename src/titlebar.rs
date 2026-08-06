@@ -13,6 +13,107 @@ pub const APP_ICON_GAP: i32 = 8;
 pub const BUTTON_GLYPH_MAX: i32 = 16;
 pub const BUTTON_GLYPH_PADDING: i32 = 6;
 
+/// The client's decoration contract, independent of temporary fullscreen
+/// suppression of compositor chrome.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum DecorationMode {
+    ServerSide,
+    ClientSide,
+    Unmanaged,
+}
+
+/// One coherent snapshot of the frame Halley owns around a window.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WindowChrome {
+    pub mode: DecorationMode,
+    pub border_width: i32,
+    pub titlebar_height: Option<i32>,
+}
+
+impl WindowChrome {
+    pub fn for_window(
+        window: &Window,
+        decorations: &halley_config::Decorations,
+        font: &halley_config::Font,
+    ) -> Self {
+        Self::from_mode(decoration_mode(window), decorations, font)
+    }
+
+    pub fn from_mode(
+        mode: DecorationMode,
+        decorations: &halley_config::Decorations,
+        font: &halley_config::Font,
+    ) -> Self {
+        let managed = mode != DecorationMode::Unmanaged;
+        let border_width = if managed {
+            decorations.border_width_px.max(0)
+        } else {
+            0
+        };
+        let titlebar_height =
+            (managed && mode == DecorationMode::ServerSide && decorations.titlebars.enabled)
+                .then(|| effective_height(&decorations.titlebars, font.size));
+        Self {
+            mode,
+            border_width,
+            titlebar_height,
+        }
+    }
+
+    pub fn has_server_titlebar(self) -> bool {
+        self.titlebar_height.is_some()
+    }
+
+    pub fn frame_extents(self) -> (i32, i32, i32, i32) {
+        (
+            self.border_width,
+            self.border_width,
+            self.titlebar_height.unwrap_or(self.border_width),
+            self.border_width,
+        )
+    }
+
+    pub fn outer_rect<K>(self, client: Rectangle<i32, K>) -> Rectangle<i32, K> {
+        let (left, right, top, bottom) = self.frame_extents();
+        Rectangle::new(
+            (client.loc.x - left, client.loc.y - top).into(),
+            (
+                client
+                    .size
+                    .w
+                    .saturating_add(left.saturating_add(right))
+                    .max(1),
+                client
+                    .size
+                    .h
+                    .saturating_add(top.saturating_add(bottom))
+                    .max(1),
+            )
+                .into(),
+        )
+    }
+
+    pub fn client_rect<K>(self, outer: Rectangle<i32, K>) -> Rectangle<i32, K> {
+        let (left, right, top, bottom) = self.frame_extents();
+        Rectangle::new(
+            (outer.loc.x + left, outer.loc.y + top).into(),
+            (
+                outer
+                    .size
+                    .w
+                    .saturating_sub(left.saturating_add(right))
+                    .max(1),
+                outer
+                    .size
+                    .h
+                    .saturating_sub(top.saturating_add(bottom))
+                    .max(1),
+            )
+                .into(),
+        )
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum Control {
     Close,
@@ -300,16 +401,24 @@ pub fn rendered_metrics(config: &Titlebars, font_size_px: u16, scale: f32) -> Re
     }
 }
 
-pub fn uses_server_titlebar(window: &Window, config: &Titlebars) -> bool {
-    if !config.enabled || crate::xwayland::is_override_redirect(window) {
-        return false;
+pub fn decoration_mode(window: &Window) -> DecorationMode {
+    if crate::xwayland::is_override_redirect(window) {
+        return DecorationMode::Unmanaged;
     }
     if let Some(toplevel) = window.toplevel() {
-        return toplevel.with_committed_state(|state| {
+        return if toplevel.with_committed_state(|state| {
             state.and_then(|state| state.decoration_mode) == Some(Mode::ServerSide)
-        });
+        }) {
+            DecorationMode::ServerSide
+        } else {
+            DecorationMode::ClientSide
+        };
     }
-    crate::xwayland::uses_server_decorations(window)
+    if crate::xwayland::uses_server_decorations(window) {
+        DecorationMode::ServerSide
+    } else {
+        DecorationMode::ClientSide
+    }
 }
 
 pub fn control_enabled(window: &Window, control: Control) -> bool {
@@ -336,31 +445,7 @@ pub fn client_rect_for_outer(
     decorations: &halley_config::Decorations,
     font: &halley_config::Font,
 ) -> Rectangle<i32, smithay::utils::Logical> {
-    let border = decorations.border_width_px.max(0);
-    if uses_server_titlebar(window, &decorations.titlebars) {
-        let height = effective_height(&decorations.titlebars, font.size);
-        Rectangle::new(
-            (outer.loc.x + border, outer.loc.y + height).into(),
-            (
-                outer.size.w.saturating_sub(border.saturating_mul(2)).max(1),
-                outer
-                    .size
-                    .h
-                    .saturating_sub(height.saturating_add(border))
-                    .max(1),
-            )
-                .into(),
-        )
-    } else {
-        Rectangle::new(
-            (outer.loc.x + border, outer.loc.y + border).into(),
-            (
-                outer.size.w.saturating_sub(border.saturating_mul(2)).max(1),
-                outer.size.h.saturating_sub(border.saturating_mul(2)).max(1),
-            )
-                .into(),
-        )
-    }
+    WindowChrome::for_window(window, decorations, font).client_rect(outer)
 }
 
 pub fn outer_rect_for_client(
@@ -369,43 +454,7 @@ pub fn outer_rect_for_client(
     decorations: &halley_config::Decorations,
     font: &halley_config::Font,
 ) -> Rectangle<i32, smithay::utils::Logical> {
-    let border = decorations.border_width_px.max(0);
-    if uses_server_titlebar(window, &decorations.titlebars) {
-        let height = effective_height(&decorations.titlebars, font.size);
-        Rectangle::new(
-            (client.loc.x - border, client.loc.y - height).into(),
-            (
-                client
-                    .size
-                    .w
-                    .saturating_add(border.saturating_mul(2))
-                    .max(1),
-                client
-                    .size
-                    .h
-                    .saturating_add(height.saturating_add(border))
-                    .max(1),
-            )
-                .into(),
-        )
-    } else {
-        Rectangle::new(
-            (client.loc.x - border, client.loc.y - border).into(),
-            (
-                client
-                    .size
-                    .w
-                    .saturating_add(border.saturating_mul(2))
-                    .max(1),
-                client
-                    .size
-                    .h
-                    .saturating_add(border.saturating_mul(2))
-                    .max(1),
-            )
-                .into(),
-        )
-    }
+    WindowChrome::for_window(window, decorations, font).outer_rect(client)
 }
 
 pub fn outer_size_for_client(
@@ -414,17 +463,22 @@ pub fn outer_size_for_client(
     decorations: &halley_config::Decorations,
     font: &halley_config::Font,
 ) -> smithay::utils::Size<i32, smithay::utils::Logical> {
-    let border = decorations.border_width_px.max(0);
-    let vertical = if uses_server_titlebar(window, &decorations.titlebars) {
-        effective_height(&decorations.titlebars, font.size).saturating_add(border)
-    } else {
-        border.saturating_mul(2)
-    };
-    (
-        client.w.saturating_add(border.saturating_mul(2)).max(1),
-        client.h.saturating_add(vertical).max(1),
-    )
-        .into()
+    WindowChrome::for_window(window, decorations, font)
+        .outer_rect(Rectangle::from_size(client))
+        .size
+}
+
+/// The frame Halley draws around a client, as `(left, right, top, bottom)`.
+///
+/// Derived from the same three inputs as [`outer_size_for_client`] and
+/// [`client_location_for_outer`], so a published `_NET_FRAME_EXTENTS` cannot
+/// drift from the frame that is actually rendered.
+pub fn frame_extents(
+    window: &Window,
+    decorations: &halley_config::Decorations,
+    font: &halley_config::Font,
+) -> (i32, i32, i32, i32) {
+    WindowChrome::for_window(window, decorations, font).frame_extents()
 }
 
 pub fn client_location_for_outer(
@@ -433,13 +487,8 @@ pub fn client_location_for_outer(
     decorations: &halley_config::Decorations,
     font: &halley_config::Font,
 ) -> smithay::utils::Point<i32, smithay::utils::Logical> {
-    let border = decorations.border_width_px.max(0);
-    let top = if uses_server_titlebar(window, &decorations.titlebars) {
-        effective_height(&decorations.titlebars, font.size)
-    } else {
-        border
-    };
-    (outer.x.saturating_add(border), outer.y.saturating_add(top)).into()
+    let (left, _, top, _) = WindowChrome::for_window(window, decorations, font).frame_extents();
+    (outer.x.saturating_add(left), outer.y.saturating_add(top)).into()
 }
 
 #[cfg(test)]
@@ -447,6 +496,49 @@ mod tests {
     use smithay::utils::{Logical, Point, Rectangle};
 
     use super::*;
+
+    #[test]
+    fn chrome_policy_keeps_csd_border_without_a_titlebar() {
+        let decorations = halley_config::Decorations {
+            border_width_px: 3,
+            titlebars: Titlebars {
+                enabled: true,
+                ..Titlebars::default()
+            },
+            ..halley_config::Decorations::default()
+        };
+        let font = halley_config::Font::default();
+
+        let ssd = WindowChrome::from_mode(DecorationMode::ServerSide, &decorations, &font);
+        let csd = WindowChrome::from_mode(DecorationMode::ClientSide, &decorations, &font);
+        let unmanaged = WindowChrome::from_mode(DecorationMode::Unmanaged, &decorations, &font);
+
+        assert!(ssd.has_server_titlebar());
+        assert_eq!(ssd.frame_extents().0, 3);
+        assert!(!csd.has_server_titlebar());
+        assert_eq!(csd.frame_extents(), (3, 3, 3, 3));
+        assert_eq!(unmanaged.frame_extents(), (0, 0, 0, 0));
+    }
+
+    #[test]
+    fn chrome_outer_and_client_geometry_round_trip() {
+        let decorations = halley_config::Decorations {
+            border_width_px: 3,
+            titlebars: Titlebars {
+                enabled: true,
+                ..Titlebars::default()
+            },
+            ..halley_config::Decorations::default()
+        };
+        let chrome = WindowChrome::from_mode(
+            DecorationMode::ServerSide,
+            &decorations,
+            &halley_config::Font::default(),
+        );
+        let client = Rectangle::<i32, Logical>::new((100, 80).into(), (640, 480).into());
+
+        assert_eq!(chrome.client_rect(chrome.outer_rect(client)), client);
+    }
 
     #[test]
     fn left_buttons_keep_close_at_the_outer_edge() {

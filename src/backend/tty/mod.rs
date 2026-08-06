@@ -924,6 +924,17 @@ impl TtyBackend {
     /// `apply_tty_reload(..., st: &mut Halley, ...)` had).
     pub fn resume(&mut self) -> Result<(), Box<dyn Error>> {
         self.drm_output_manager.lock().activate(false)?;
+        self.recover_outputs_after_loss("VT activation");
+        Ok(())
+    }
+
+    /// Discard scan-out state after system sleep, where logind keeps the
+    /// session active and libseat therefore emits no activate event.
+    pub fn recover_after_system_sleep(&mut self) {
+        self.recover_outputs_after_loss("system resume");
+    }
+
+    fn recover_outputs_after_loss(&mut self, reason: &str) {
         // Any frame that was in flight before the VT switch away is gone -
         // without this, a stale `pending` would permanently block that
         // output from rendering again (its VBlank is never coming).
@@ -939,8 +950,8 @@ impl TtyBackend {
                 .restore_after_resume(self.drm_output_manager.device())
             {
                 eventline::warn!(
-                    "output {:?}: failed to restore gamma after VT activation: {err}",
-                    entry.output.name()
+                    "output {:?}: failed to restore gamma after {reason}: {err}",
+                    entry.output.name(),
                 );
             }
             set_entry_vrr(
@@ -953,12 +964,11 @@ impl TtyBackend {
                     .with_compositor(|compositor| compositor.clear())
             {
                 eventline::error!(
-                    "output {:?}: failed to restore DPMS-off state after VT activation: {err}",
-                    entry.output.name()
+                    "output {:?}: failed to restore DPMS-off state after {reason}: {err}",
+                    entry.output.name(),
                 );
             }
         }
-        Ok(())
     }
 
     /// Drop DRM master before a VT switch away.

@@ -44,17 +44,31 @@ pub struct TitlebarRenderer {
     failed: bool,
 }
 
+/// One titlebar button glyph: which icon, drawn where, in what tint.
+#[derive(Clone, Copy)]
+pub struct ControlRequest {
+    pub control: Control,
+    /// Selects the unmaximize glyph in place of the maximize one.
+    pub maximized: bool,
+    pub destination: Rectangle<i32, Physical>,
+    pub color: halley_config::BorderColor,
+    pub alpha: f32,
+}
+
 impl TitlebarRenderer {
     pub fn control_element(
         &mut self,
         renderer: &mut GlesRenderer,
         decorations: &mut WindowDecorationRenderer,
-        control: Control,
-        maximized: bool,
-        destination: Rectangle<i32, Physical>,
-        color: halley_config::BorderColor,
-        alpha: f32,
+        request: ControlRequest,
     ) -> Option<RoundedTextureElement> {
+        let ControlRequest {
+            control,
+            maximized,
+            destination,
+            color,
+            alpha,
+        } = request;
         if destination.size.w <= 0 || destination.size.h <= 0 || alpha <= 0.0 {
             return None;
         }

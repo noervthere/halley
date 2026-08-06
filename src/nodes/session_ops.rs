@@ -226,7 +226,7 @@ fn apply_dynamics_positions<D: crate::session::SessionDriver>(
             record.geometry = Rectangle::new(location, size);
         }
         if crate::xwayland::is_x11(&window) {
-            crate::xwayland::configure_window(&window, Rectangle::new(location, size));
+            crate::xwayland::configure_window(session, &window, Rectangle::new(location, size));
         }
         if authority != Some(id) {
             // A physically displaced Wayland window needs only compositor
@@ -716,6 +716,13 @@ fn restore_with_centering<D: crate::session::SessionDriver>(
         .map_element(record.window.clone(), location, true);
     crate::xwayland::set_hidden(&record.window, false);
     session.xwayland.set_window_normal(&record.window);
+    // A collapsed window is not in the space, so a decoration reload while it
+    // was collapsed never reached it.
+    session.xwayland.sync_frame_extents(
+        &record.window,
+        &session.settings.decorations,
+        &session.settings.font,
+    );
     session.wayland.collapsed.remove(&record.surface);
     let now = crate::frame_clock::monotonic_now();
     let now_ms = session.start_time.elapsed().as_millis() as u64;

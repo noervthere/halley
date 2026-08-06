@@ -343,7 +343,9 @@ impl<D: SessionDriver> Session<D> {
             super::environment::publish_cursor(&config.cursor);
         }
         let window_rules_redraw = self.window_rules_reload_changes_visuals(&config.window_rules);
-        if self.settings.decorations != config.decorations || self.settings.font != config.font {
+        let decorations_changed =
+            self.settings.decorations != config.decorations || self.settings.font != config.font;
+        if decorations_changed {
             self.render.overlay_previews.mark_all_dirty();
         }
         let redraw = self.settings.visuals_changed(config)
@@ -359,6 +361,15 @@ impl<D: SessionDriver> Session<D> {
             .reload(config.clusters, config.animations.cluster);
         let font_redraw = self.render.ui_text.reload_font(&config.font);
         self.settings.reload_non_input(config);
+        if decorations_changed {
+            // A changed border width or titlebar height resizes the frame
+            // every X11 client computes its root coordinates against.
+            self.xwayland.sync_all_frame_extents(
+                &self.wayland.space,
+                &self.settings.decorations,
+                &self.settings.font,
+            );
+        }
         self.window_open_animations.reload(config.animations);
         self.render
             .window_close_animations

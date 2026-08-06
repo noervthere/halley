@@ -13,6 +13,10 @@ pub enum ToplevelCommit {
     None,
     Mapped(WlSurface),
     Unmapped(WlSurface),
+    /// The commit belonged to layer shell, which owns no toplevel. Reported
+    /// rather than folded into `None` because rearranging the layer map can
+    /// change the exclusive zone, and callers publish that outwards.
+    Layer,
 }
 
 #[derive(Clone, Copy)]

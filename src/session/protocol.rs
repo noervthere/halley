@@ -318,6 +318,12 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
                 self.window_rules.forget(&unmapped);
                 super::sync_keyboard_focus(self, SERIAL_COUNTER.next_serial());
             }
+            wayland::xdg_shell::ToplevelCommit::Layer => {
+                // The layer map was rearranged, so the exclusive zone
+                // `_NET_WORKAREA` is derived from may have moved. The control
+                // connection dedups, so an unchanged zone writes nothing.
+                self.xwayland.sync_desktop_geometry(&self.wayland.space);
+            }
             wayland::xdg_shell::ToplevelCommit::None => {}
         }
         if !matches!(
@@ -742,6 +748,8 @@ impl<D: SessionDriver> WlrLayerShellHandler for Session<D> {
         super::touch::cancel_surface(self, surface.wl_surface());
         super::gesture::cancel_surface(self, surface.wl_surface());
         wayland::layer_shell::destroyed(&mut self.wayland, &surface);
+        // Unmapping a panel gives its exclusive zone back to the work area.
+        self.xwayland.sync_desktop_geometry(&self.wayland.space);
         self.request_redraw();
     }
 

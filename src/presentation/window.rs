@@ -520,6 +520,25 @@ impl WindowPresentation {
         )
     }
 
+    /// The root wl_surface origin expressed in X11 root-desktop coordinates.
+    ///
+    /// `Space` stores the root in Field coordinates, while an X11 client sees
+    /// one fixed desktop coordinate space.  The two only coincide when the
+    /// output camera is at rest, so XWayland geometry must use this mapped
+    /// origin rather than `Space::element_location`.
+    pub(crate) fn root_screen_origin(&self) -> Point<i32, Logical> {
+        self.screen_from_source(self.root_origin).to_i32_round()
+    }
+
+    /// Converts an X11 root-desktop point back into the source coordinate of
+    /// this window's root wl_surface.
+    pub(crate) fn root_source_from_screen(
+        &self,
+        screen: Point<i32, Logical>,
+    ) -> Point<i32, Logical> {
+        self.source_from_screen(screen.to_f64()).to_i32_round()
+    }
+
     pub fn surface_origin(&self, surface: &WlSurface) -> Option<Point<f64, Logical>> {
         let offset = subsurface_offset_from_root(surface, &self.root)?;
         Some(self.root_origin + offset.to_f64())
@@ -625,6 +644,33 @@ mod tests {
 
         assert_eq!(screen, Point::from((3040.0, 270.0)));
         assert_eq!(map_point(screen, visual, source), local);
+    }
+
+    #[test]
+    fn x11_field_origin_maps_to_the_settled_secondary_root_position() {
+        let (source, visual) = transform(
+            Rectangle::new((1546, -214).into(), (1532, 1009).into()),
+            Rectangle::new((2655, 181).into(), (1532, 1009).into()),
+        );
+
+        assert_eq!(
+            map_point(Point::from((1546.0, -214.0)), source, visual),
+            Point::from((2655.0, 181.0))
+        );
+    }
+
+    #[test]
+    fn root_surface_offset_is_mapped_without_changing_native_size() {
+        let (source, visual) = transform(
+            Rectangle::new((400, 200).into(), (800, 600).into()),
+            Rectangle::new((2600, 100).into(), (400, 300).into()),
+        );
+        let root_source = Point::from((380.0, 170.0));
+
+        assert_eq!(
+            map_point(root_source, source, visual),
+            Point::from((2590.0, 85.0))
+        );
     }
 
     #[test]
