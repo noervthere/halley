@@ -28,8 +28,47 @@ pub(crate) fn capture_surface<D: SessionDriver>(
     capture_window(session, &window)
 }
 
+/// Captures a native toplevel immediately before its buffer-removal commit.
+///
+/// A close request is advisory: clients such as Firefox may keep the toplevel
+/// mapped while they ask the user for confirmation.  Waiting for this
+/// authoritative unmap boundary keeps the live client visible and interactive
+/// if it rejects the request, while still preserving the last attached frame
+/// for the close animation.
+pub(crate) fn capture_native_toplevel_before_unmap<D: SessionDriver>(
+    session: &mut Session<D>,
+    surface: &WlSurface,
+) -> bool {
+    let Some(window) = session
+        .wayland
+        .space
+        .elements()
+        .find(|window| {
+            window
+                .toplevel()
+                .is_some_and(|toplevel| toplevel.wl_surface() == surface)
+        })
+        .cloned()
+    else {
+        return false;
+    };
+    capture_window(session, &window)
+}
+
 pub(crate) fn capture_window<D: SessionDriver>(session: &mut Session<D>, window: &Window) -> bool {
     capture_window_inner(session, window, false)
+}
+
+fn captures_before_client_decision(is_x11: bool) -> bool {
+    is_x11
+}
+
+pub(crate) fn capture_before_close_request<D: SessionDriver>(
+    session: &mut Session<D>,
+    window: &Window,
+) -> bool {
+    captures_before_client_decision(crate::xwayland::is_x11(window))
+        && capture_window(session, window)
 }
 
 /// Captures a close-button target before pointer focus activates its X11
@@ -39,6 +78,9 @@ pub(crate) fn capture_close_control<D: SessionDriver>(
     session: &mut Session<D>,
     window: &Window,
 ) -> bool {
+    if !captures_before_client_decision(crate::xwayland::is_x11(window)) {
+        return false;
+    }
     capture_window_inner(session, window, true)
 }
 
@@ -281,4 +323,15 @@ fn output_for_window(
         .outputs()
         .find(|output| crate::wayland::window_is_on_output(window, output, primary))
         .cloned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::captures_before_client_decision;
+
+    #[test]
+    fn only_x11_captures_before_an_advisory_close_can_be_rejected() {
+        assert!(captures_before_client_decision(true));
+        assert!(!captures_before_client_decision(false));
+    }
 }

@@ -20,7 +20,8 @@ use smithay::utils::{Logical, Point, SERIAL_COUNTER, Serial};
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::tablet_manager::TabletSeatHandler;
 use smithay::wayland::compositor::{
-    CompositorClientState, CompositorHandler, CompositorState, add_pre_commit_hook, with_states,
+    BufferAssignment, CompositorClientState, CompositorHandler, CompositorState,
+    SurfaceAttributes, add_pre_commit_hook, with_states,
 };
 use smithay::wayland::dmabuf::{DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier};
 use smithay::wayland::drm_syncobj::{
@@ -136,6 +137,20 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
 
     fn new_surface(&mut self, surface: &WlSurface) {
         add_pre_commit_hook::<Self, _>(surface, |session, _dh, surface| {
+            let removes_buffer = with_states(surface, |states| {
+                matches!(
+                    states
+                        .cached_state
+                        .get::<SurfaceAttributes>()
+                        .pending()
+                        .buffer,
+                    Some(BufferAssignment::Removed)
+                )
+            });
+            if removes_buffer {
+                super::closing::capture_native_toplevel_before_unmap(session, surface);
+            }
+
             if session.drm_syncobj_state.is_none() {
                 return;
             }

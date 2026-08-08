@@ -74,8 +74,10 @@ selected curve once to spatial travel; its opacity and 80% -> 102% -> 100%
 scale choreography remain anchored to elapsed time so they finish exactly at
 `duration-ms`.
 
-Window closing freezes the last visible frame, removes the real window from
-input immediately, then animates the inert snapshot:
+Once a client actually unmaps, window closing freezes its last visible frame,
+removes the real window from input, then animates the inert snapshot. A close
+request alone does not freeze the client because applications may show and
+cancel their own confirmation first:
 
 ```rune
 animations:

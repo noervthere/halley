@@ -448,14 +448,15 @@ pub(crate) fn note_pointer_activity<D: SessionDriver>(session: &mut Session<D>) 
 
 /// Requests that a client close a managed window.
 ///
-/// Retain the currently visible frame before sending the close request. An X11
-/// client-owned close button has no equivalent compositor-side intent event;
-/// that path performs its capture-and-activate handoff at `UnmapNotify`.
+/// X11 clients may replace their contents before withdrawing, so retain their
+/// visible frame before sending the request. Native XDG close requests are
+/// advisory and capture only at the authoritative buffer-removal boundary;
+/// this keeps a client live if it presents and then cancels a confirmation.
 pub(crate) fn request_window_close<D: SessionDriver>(
     session: &mut Session<D>,
     window: &smithay::desktop::Window,
 ) {
-    let frozen = closing::capture_window(session, window);
+    let frozen = closing::capture_before_close_request(session, window);
     if let Some(toplevel) = window.toplevel() {
         toplevel.send_close();
     } else {
