@@ -317,7 +317,7 @@ pub(super) fn override_redirect_source_location<D: SessionDriver>(
         .owner
         .as_ref()
         .and_then(|owner| {
-            super::presentation::source_point_from_root_screen(
+            super::presentation::source_point_from_owner_x_root(
                 session,
                 &owner.window,
                 root_screen,

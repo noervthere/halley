@@ -584,18 +584,27 @@ pub(super) fn source_element_location_from_root_screen<D: SessionDriver>(
     Some(source_root + window.geometry().loc)
 }
 
-pub(super) fn source_point_from_root_screen<D: SessionDriver>(
+pub(super) fn owner_relative_source_point(
+    owner_source_root: Point<i32, Logical>,
+    owner_x_root: Point<i32, Logical>,
+    child_x_root: Point<i32, Logical>,
+) -> Point<i32, Logical> {
+    owner_source_root + (child_x_root - owner_x_root)
+}
+
+pub(super) fn source_point_from_owner_x_root<D: SessionDriver>(
     session: &Session<D>,
     owner: &Window,
-    root_screen: Point<i32, Logical>,
+    child_x_root: Point<i32, Logical>,
     now: std::time::Duration,
 ) -> Option<Point<i32, Logical>> {
+    let owner_x_root = owner.x11_surface()?.geometry().loc;
     let (_, presentation) = presentation_for_window(session, owner, now)?;
-    Some(
-        presentation
-            .source_from_screen(root_screen.to_f64())
-            .to_i32_round(),
-    )
+    Some(owner_relative_source_point(
+        presentation.root_source_origin(),
+        owner_x_root,
+        child_x_root,
+    ))
 }
 
 fn presentation_geometry_is_moving<D: SessionDriver>(

@@ -622,7 +622,9 @@ pub(super) fn constrain_window_size(
 
 #[cfg(test)]
 mod tests {
-    use super::presentation::{PositionResync, position_resync_needed};
+    use super::presentation::{
+        PositionResync, owner_relative_source_point, position_resync_needed,
+    };
     use super::{
         FullscreenRequestOrigin, OverrideRedirectIdentity, OverrideRedirectMapAdmission,
         OverrideRedirectStackAction, compositor_fullscreen_should_raise,
@@ -788,6 +790,26 @@ mod tests {
 
         assert!(owner > other_group_window);
         assert!(owner > unrelated_overlap);
+    }
+
+    #[test]
+    fn zoomed_x11_popup_keeps_its_native_offset_from_the_owner() {
+        let owner_source = Point::<i32, Logical>::from((995, 2_158));
+        let owner_x_root = Point::<i32, Logical>::from((2_647, -4));
+        let popup_x_root = Point::<i32, Logical>::from((2_886, 62));
+
+        let popup_source = owner_relative_source_point(owner_source, owner_x_root, popup_x_root);
+
+        assert_eq!(popup_source, Point::from((1_234, 2_224)));
+        let native_offset = popup_source - owner_source;
+        assert_eq!(native_offset, popup_x_root - owner_x_root);
+
+        let zoom = 0.5;
+        let presented_offset = Point::<f64, Logical>::from((
+            f64::from(native_offset.x) * zoom,
+            f64::from(native_offset.y) * zoom,
+        ));
+        assert_eq!(presented_offset, Point::from((119.5, 33.0)));
     }
 
     #[test]

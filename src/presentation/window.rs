@@ -530,6 +530,16 @@ impl WindowPresentation {
         self.screen_from_source(self.root_origin).to_i32_round()
     }
 
+    /// The root wl_surface origin in Field/source coordinates.
+    ///
+    /// X11 child windows express offsets from the owner's last published root
+    /// position in native client units. Keeping this origin available lets the
+    /// XWM preserve that relative offset before the owner's live presentation
+    /// transform scales it.
+    pub(crate) fn root_source_origin(&self) -> Point<i32, Logical> {
+        self.root_origin.to_i32_round()
+    }
+
     /// Converts an X11 root-desktop point back into the source coordinate of
     /// this window's root wl_surface.
     pub(crate) fn root_source_from_screen(

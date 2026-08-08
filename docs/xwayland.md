@@ -81,8 +81,13 @@ desktop coordinates. Halley maps the root-surface origin through the same live
 presentation transform used for rendering and input, publishes it only after
 geometry motion settles, and never copies a managed `ConfigureNotify` root
 position back into `Space`. Native client size is kept unchanged under Field
-zoom. Transient and override-redirect root positions are inverted into Field
-coordinates before their compositor elements are placed.
+zoom. Transient root positions are inverted into Field coordinates before
+their compositor elements are placed. Owner-associated override-redirect
+windows instead preserve the native-unit delta between their X root position
+and the owner's last published X root origin, then inherit the owner's live
+Field transform. This scales dropdown offsets exactly once and keeps them
+attached while the camera is zoomed or panned. Ownerless override-redirect
+windows keep using the absolute root-to-Field inversion.
 
 Left/top interactive resize computes its anchor after hint constraint snapping,
 so a terminal-size increment cannot move the opposite edge.
