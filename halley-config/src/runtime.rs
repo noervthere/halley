@@ -226,6 +226,7 @@ cursor:
   theme "Breeze"
   size 32
   hide-when-typing true
+  hide-on-touch false
   hide-after-ms 750
 end
 
@@ -275,6 +276,7 @@ end
         assert_eq!(runtime.cursor.theme, "Breeze");
         assert_eq!(runtime.cursor.size, 32);
         assert!(runtime.cursor.hide_when_typing);
+        assert!(!runtime.cursor.hide_on_touch);
         assert_eq!(runtime.cursor.hide_after_ms, Some(750));
         assert_eq!(runtime.input.repeat_rate, 45);
         assert_eq!(runtime.input.focus_mode, crate::FocusMode::Hover);

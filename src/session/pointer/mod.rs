@@ -362,7 +362,7 @@ pub(crate) fn release_for_compositor_warp<D: SessionDriver>(session: &mut Sessio
 pub(crate) fn recover_after_session_resume<D: SessionDriver>(session: &mut Session<D>) {
     constraints::deactivate_before_pointer_focus_change(session, None);
     reset_client_cursor_image(session);
-    session.cursor.set_override(None);
+    session.cursor.clear_overrides();
     session.cursor_policy.pointer_activity();
     session.request_redraw();
 }
@@ -390,6 +390,9 @@ pub(super) fn constrain_motion<D: SessionDriver>(
     pointer: &PointerHandle<Session<D>>,
 ) -> ConstrainedMotion {
     constraints::reconcile(session, pointer, None);
+    if constraints::enforcement_suspended(session, pointer) {
+        return ConstrainedMotion::Apply;
+    }
     let active = constraints::active(session, pointer);
     let confined_correction = active
         .as_ref()
@@ -411,6 +414,13 @@ pub(super) fn constrain_motion<D: SessionDriver>(
             }
         }
     }
+}
+
+pub(super) fn constraint_suspended_for_grab<D: SessionDriver>(session: &Session<D>) -> bool {
+    session
+        .seat
+        .get_pointer()
+        .is_some_and(|pointer| constraints::enforcement_suspended(session, &pointer))
 }
 
 pub(super) fn cursor_visible<D: SessionDriver>(session: &Session<D>) -> bool {

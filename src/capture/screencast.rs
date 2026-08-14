@@ -214,10 +214,12 @@ fn cursor_metadata<D: SessionDriver>(
         return None;
     }
     let (x, y) = cursor_position(session, source)?;
-    match session
-        .cursor
-        .render_cursor(1, crate::frame_clock::monotonic_now())
-    {
+    let presentation_override = crate::session::cursor_override(session);
+    match session.cursor.render_cursor_with_override(
+        1,
+        crate::frame_clock::monotonic_now(),
+        presentation_override,
+    ) {
         RenderCursor::Hidden => None,
         RenderCursor::Named(frame) => Some(halley_ipc::CursorMetadata {
             x,
@@ -229,18 +231,6 @@ fn cursor_metadata<D: SessionDriver>(
             bgra: frame.metadata_bgra.to_vec(),
         }),
         RenderCursor::Surface { surface, snapshot } => {
-            if let Some(snapshot) = snapshot {
-                let hotspot = crate::cursor::surface::hotspot(&surface);
-                return Some(halley_ipc::CursorMetadata {
-                    x,
-                    y,
-                    hotspot_x: hotspot.x,
-                    hotspot_y: hotspot.y,
-                    width: snapshot.width,
-                    height: snapshot.height,
-                    bgra: snapshot.metadata_bgra.to_vec(),
-                });
-            }
             let bounds = smithay::desktop::utils::bbox_from_surface_tree(
                 &surface,
                 Point::<i32, Logical>::from((0, 0)),
@@ -250,7 +240,12 @@ fn cursor_metadata<D: SessionDriver>(
             let mut pixels = session
                 .driver
                 .with_renderer(|renderer| {
-                    crate::capture::capture_surface_tree(renderer, &surface, bounds)
+                    crate::capture::capture_cursor_surface_tree(
+                        renderer,
+                        &surface,
+                        snapshot.as_deref(),
+                        bounds,
+                    )
                 })
                 .ok()?;
             rgba_to_bgra(&mut pixels);

@@ -609,9 +609,10 @@ pub fn toggle<D: crate::session::SessionDriver>(session: &mut crate::session::Se
         )
     };
     if changed {
-        session
-            .cursor
-            .set_override(Some(smithay::input::pointer::CursorIcon::Default));
+        session.cursor.set_override(
+            crate::cursor::OverrideSource::Modal,
+            Some(smithay::input::pointer::CursorIcon::Default),
+        );
         crate::session::note_pointer_activity(session);
         session.request_redraw();
     }
@@ -625,9 +626,10 @@ pub fn cancel<D: crate::session::SessionDriver>(session: &mut crate::session::Se
         crate::frame_clock::monotonic_now(),
     );
     if changed {
-        session
-            .cursor
-            .set_override(Some(smithay::input::pointer::CursorIcon::Default));
+        session.cursor.set_override(
+            crate::cursor::OverrideSource::Modal,
+            Some(smithay::input::pointer::CursorIcon::Default),
+        );
         session.request_redraw();
     }
     changed
@@ -641,9 +643,10 @@ pub fn select<D: crate::session::SessionDriver>(session: &mut crate::session::Se
         crate::frame_clock::monotonic_now(),
     );
     if changed {
-        session
-            .cursor
-            .set_override(Some(smithay::input::pointer::CursorIcon::Default));
+        session.cursor.set_override(
+            crate::cursor::OverrideSource::Modal,
+            Some(smithay::input::pointer::CursorIcon::Default),
+        );
         session.request_redraw();
     }
     changed
@@ -659,7 +662,9 @@ pub fn pointer_motion<D: crate::session::SessionDriver>(
     } else {
         smithay::input::pointer::CursorIcon::Default
     };
-    let cursor_changed = session.cursor.set_override(Some(icon));
+    let cursor_changed = session
+        .cursor
+        .set_override(crate::cursor::OverrideSource::Modal, Some(icon));
     if changed || cursor_changed {
         session.request_redraw();
     }
@@ -703,7 +708,9 @@ pub fn tick<D: crate::session::SessionDriver>(
             if let Some(target) = target {
                 activate_target(session, target, now);
             }
-            session.cursor.set_override(None);
+            session
+                .cursor
+                .set_override(crate::cursor::OverrideSource::Modal, None);
             crate::session::note_pointer_activity(session);
             crate::session::reconcile_pointer_constraints(session);
             session.request_redraw();

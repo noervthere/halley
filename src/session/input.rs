@@ -489,7 +489,9 @@ fn finish_cluster_creation<D: SessionDriver>(session: &mut Session<D>) -> bool {
                 );
             }
             super::sync_keyboard_focus(session, SERIAL_COUNTER.next_serial());
-            session.cursor.set_override(None);
+            session
+                .cursor
+                .set_override(crate::cursor::OverrideSource::Modal, None);
             true
         }
         Err(message) => {
@@ -503,17 +505,16 @@ fn bloom_drag_handoff(
     window_location: Point<i32, Logical>,
     window_size: smithay::utils::Size<i32, Logical>,
     pointer_world: halley_core::field::Vec2,
-    camera_scale: f32,
 ) -> (halley_core::field::Vec2, halley_core::field::Vec2) {
-    let screen_offset = halley_core::field::Vec2 {
-        x: (window_location.x as f32 - pointer_world.x) * camera_scale,
-        y: (window_location.y as f32 - pointer_world.y) * camera_scale,
+    let source_offset = halley_core::field::Vec2 {
+        x: window_location.x as f32 - pointer_world.x,
+        y: window_location.y as f32 - pointer_world.y,
     };
     let center = halley_core::field::Vec2 {
         x: window_location.x as f32 + window_size.w as f32 * 0.5,
         y: window_location.y as f32 + window_size.h as f32 * 0.5,
     };
-    (screen_offset, center)
+    (source_offset, center)
 }
 
 pub(crate) fn wakeup_cluster_interactions<D: SessionDriver>(
@@ -554,7 +555,6 @@ pub(crate) fn wakeup_cluster_interactions<D: SessionDriver>(
     };
     let position = session.pointer.position();
     let world = crate::input::grab::screen_to_world_on_output(position, camera, output_geometry);
-    let camera_scale = crate::input::zoom::scale(camera);
     if !session
         .clusters
         .detach_member(&mut session.nodes.field, cluster_id, member_id, world, now)
@@ -581,8 +581,7 @@ pub(crate) fn wakeup_cluster_interactions<D: SessionDriver>(
             .element_geometry(&record.window)
             .map(|geometry| geometry.size)
             .unwrap_or(record.geometry.size);
-        let (screen_offset, center) =
-            bloom_drag_handoff(window_location, window_size, world, camera_scale);
+        let (source_offset, center) = bloom_drag_handoff(window_location, window_size, world);
         session.interactions.grab = crate::input::grab::Grab::MoveWindow {
             id: Some(member_id),
             window: record.window.clone(),
@@ -590,7 +589,7 @@ pub(crate) fn wakeup_cluster_interactions<D: SessionDriver>(
             drag_size: None,
             button: BTN_LEFT,
             client_owned: false,
-            screen_offset,
+            anchor: crate::input::grab::WindowGrabAnchor::Source(source_offset),
             last_world: center,
             last_update: now,
             velocity: halley_core::field::Vec2 { x: 0.0, y: 0.0 },
@@ -605,9 +604,10 @@ pub(crate) fn wakeup_cluster_interactions<D: SessionDriver>(
             .release_is_suppressed(BTN_LEFT);
         super::focus_window(session, &record.window, SERIAL_COUNTER.next_serial());
     }
-    session
-        .cursor
-        .set_override(Some(smithay::input::pointer::CursorIcon::Grabbing));
+    session.cursor.set_override(
+        crate::cursor::OverrideSource::Grab,
+        Some(smithay::input::pointer::CursorIcon::Grabbing),
+    );
     true
 }
 
@@ -999,15 +999,18 @@ where
         {
             session.clusters.drag_name_selection(caret);
         }
-        session.cursor.set_override(match hit {
-            Some(crate::render::overlays::cluster_creation::CreationOverlayHit::ConfirmButton) => {
-                Some(smithay::input::pointer::CursorIcon::Pointer)
-            }
-            Some(crate::render::overlays::cluster_creation::CreationOverlayHit::InputCaret(_)) => {
-                Some(smithay::input::pointer::CursorIcon::Text)
-            }
-            None => None,
-        });
+        session.cursor.set_override(
+            crate::cursor::OverrideSource::Modal,
+            match hit {
+                Some(
+                    crate::render::overlays::cluster_creation::CreationOverlayHit::ConfirmButton,
+                ) => Some(smithay::input::pointer::CursorIcon::Pointer),
+                Some(
+                    crate::render::overlays::cluster_creation::CreationOverlayHit::InputCaret(_),
+                ) => Some(smithay::input::pointer::CursorIcon::Text),
+                None => None,
+            },
+        );
         super::pointer::finish_frame(session, &pointer_handle);
         return;
     }
@@ -1018,9 +1021,10 @@ where
             .clusters
             .update_bloom_pull(Point::<f64, Logical>::from(position_after), now);
         session.clusters.set_overlay_hovered(None);
-        session
-            .cursor
-            .set_override(Some(smithay::input::pointer::CursorIcon::Grabbing));
+        session.cursor.set_override(
+            crate::cursor::OverrideSource::Grab,
+            Some(smithay::input::pointer::CursorIcon::Grabbing),
+        );
         session.request_redraw();
         super::pointer::finish_frame(session, &pointer_handle);
         return;
@@ -1044,9 +1048,10 @@ where
             }
         }
         session.clusters.set_overlay_hovered(None);
-        session
-            .cursor
-            .set_override(Some(smithay::input::pointer::CursorIcon::Grabbing));
+        session.cursor.set_override(
+            crate::cursor::OverrideSource::Grab,
+            Some(smithay::input::pointer::CursorIcon::Grabbing),
+        );
         session.request_redraw();
         super::pointer::finish_frame(session, &pointer_handle);
         return;
@@ -1091,9 +1096,10 @@ where
                     last_update: crate::frame_clock::monotonic_now(),
                     velocity: halley_core::field::Vec2 { x: 0.0, y: 0.0 },
                 };
-                session
-                    .cursor
-                    .set_override(Some(smithay::input::pointer::CursorIcon::Grabbing));
+                session.cursor.set_override(
+                    crate::cursor::OverrideSource::Grab,
+                    Some(smithay::input::pointer::CursorIcon::Grabbing),
+                );
             }
         }
     }
@@ -1113,9 +1119,10 @@ where
                 id: *id,
                 screen_offset: *screen_offset,
             };
-            session
-                .cursor
-                .set_override(Some(smithay::input::pointer::CursorIcon::Grabbing));
+            session.cursor.set_override(
+                crate::cursor::OverrideSource::Grab,
+                Some(smithay::input::pointer::CursorIcon::Grabbing),
+            );
         }
     }
 
@@ -1131,12 +1138,16 @@ where
             PendingWindowMoveMotion::Wait => {}
             PendingWindowMoveMotion::Cancel => {
                 session.interactions.grab = crate::input::grab::Grab::None;
-                session.cursor.set_override(None);
+                session
+                    .cursor
+                    .set_override(crate::cursor::OverrideSource::Grab, None);
             }
             PendingWindowMoveMotion::Activate => {
                 session.interactions.grab = crate::input::grab::Grab::None;
                 if !super::activate_client_pointer_move(session, pending) {
-                    session.cursor.set_override(None);
+                    session
+                        .cursor
+                        .set_override(crate::cursor::OverrideSource::Grab, None);
                 }
             }
         }
@@ -1149,7 +1160,7 @@ where
             window,
             cluster_drag,
             drag_size,
-            screen_offset,
+            anchor,
             last_world,
             last_update,
             velocity,
@@ -1159,7 +1170,7 @@ where
             let window = window.clone();
             let mut cluster_drag = cluster_drag.clone();
             let drag_size = *drag_size;
-            let screen_offset = *screen_offset;
+            let anchor = *anchor;
             let previous = *last_world;
             let last_update = *last_update;
             let previous_velocity = *velocity;
@@ -1170,12 +1181,8 @@ where
                 let Some(camera) = session.cameras.get(&output_name) else {
                     return;
                 };
-                let desired_location = crate::input::grab::world_location_from_screen_grip(
-                    position_after,
-                    screen_offset,
-                    camera,
-                    output_geometry,
-                );
+                let desired_location =
+                    anchor.world_location(position_after, camera, output_geometry);
                 let output_changed =
                     wayland::window_output_name(&window).as_deref() != Some(output_name.as_str());
                 let size = drag_size.unwrap_or_else(|| {
@@ -1202,6 +1209,7 @@ where
                 if let Some(drag) = cluster_drag.as_mut() {
                     drag.on_origin_output = drag.output == output_name;
                     if let Some(id) = id {
+                        let screen_offset = anchor.screen_offset(camera);
                         let screen_location = Point::<i32, Logical>::from((
                             (position_after.0 + f64::from(screen_offset.x)).round() as i32
                                 - output_geometry.loc.x,
@@ -1520,7 +1528,9 @@ where
         crate::xwayland::configure_window(session, &window, geometry);
     }
 
-    if let Some((delta, delta_unaccel, time, time_msec)) = motion {
+    if let Some((delta, delta_unaccel, time, time_msec)) = motion
+        && !super::pointer::constraint_suspended_for_grab(session)
+    {
         let route = super::pointer::route_for_motion(session, time_msec);
         pointer_handle.relative_motion(
             session,
@@ -1601,11 +1611,14 @@ where
                 .as_ref()
                 .is_some_and(|hover| hover.member.is_some())
         {
+            session.cursor.set_override(
+                crate::cursor::OverrideSource::Hover,
+                Some(smithay::input::pointer::CursorIcon::Pointer),
+            );
+        } else if !node_grab_active {
             session
                 .cursor
-                .set_override(Some(smithay::input::pointer::CursorIcon::Pointer));
-        } else if !node_grab_active {
-            session.cursor.set_override(None);
+                .set_override(crate::cursor::OverrideSource::Hover, None);
         }
         if node_changed
             || cluster_changed
@@ -1614,6 +1627,9 @@ where
         {
             session.request_redraw();
         }
+    }
+    if motion.is_some() && super::pointer::constraint_suspended_for_grab(session) {
+        super::pointer::finish_frame(session, &pointer_handle);
     }
 
     if let InputEvent::PointerButton {
@@ -1637,7 +1653,9 @@ where
             // completes the client's click and lets its double-click handler
             // decide whether to toggle maximize.
             session.interactions.grab = crate::input::grab::Grab::None;
-            session.cursor.set_override(None);
+            session
+                .cursor
+                .set_override(crate::cursor::OverrideSource::Grab, None);
         }
         if button == BTN_LEFT && state == ButtonState::Released {
             if session.clusters.bloom_pull().is_some() {
@@ -1647,7 +1665,9 @@ where
                     .interactions
                     .suppressed_buttons
                     .release_is_suppressed(button);
-                session.cursor.set_override(None);
+                session
+                    .cursor
+                    .set_override(crate::cursor::OverrideSource::Grab, None);
                 session.request_redraw();
                 super::pointer::finish_frame(session, &pointer_handle);
                 return;
@@ -1727,7 +1747,9 @@ where
                     .interactions
                     .suppressed_buttons
                     .release_is_suppressed(button);
-                session.cursor.set_override(None);
+                session
+                    .cursor
+                    .set_override(crate::cursor::OverrideSource::Grab, None);
                 session.request_redraw();
                 super::pointer::finish_frame(session, &pointer_handle);
                 return;
@@ -1736,7 +1758,9 @@ where
                 crate::input::grab::Grab::PendingNode { id, .. } => {
                     let id = *id;
                     session.interactions.grab = crate::input::grab::Grab::None;
-                    session.cursor.set_override(None);
+                    session
+                        .cursor
+                        .set_override(crate::cursor::OverrideSource::Grab, None);
                     let _ = crate::nodes::restore(session, id, serial);
                     super::pointer::finish_frame(session, &pointer_handle);
                     return;
@@ -1750,7 +1774,9 @@ where
                         );
                     }
                     session.interactions.grab = crate::input::grab::Grab::None;
-                    session.cursor.set_override(None);
+                    session
+                        .cursor
+                        .set_override(crate::cursor::OverrideSource::Grab, None);
                     session.nodes.clear_direct_motion(id);
                     session.request_redraw();
                     super::pointer::finish_frame(session, &pointer_handle);
@@ -1765,7 +1791,9 @@ where
                         .suppressed_buttons
                         .release_is_suppressed(BTN_LEFT);
                     session.interactions.grab = crate::input::grab::Grab::None;
-                    session.cursor.set_override(None);
+                    session
+                        .cursor
+                        .set_override(crate::cursor::OverrideSource::Grab, None);
                     let output = {
                         session
                             .wayland
@@ -1790,7 +1818,9 @@ where
                         .suppressed_buttons
                         .release_is_suppressed(BTN_LEFT);
                     session.interactions.grab = crate::input::grab::Grab::None;
-                    session.cursor.set_override(None);
+                    session
+                        .cursor
+                        .set_override(crate::cursor::OverrideSource::Grab, None);
                     session.request_redraw();
                     super::pointer::finish_frame(session, &pointer_handle);
                     return;
@@ -1940,7 +1970,9 @@ where
                     };
                     if let Some(pending) = pending_titlebar {
                         session.interactions.grab = crate::input::grab::Grab::None;
-                        session.cursor.set_override(None);
+                        session
+                            .cursor
+                            .set_override(crate::cursor::OverrideSource::Grab, None);
                         let clicked_same_drag_region = route.as_ref().is_some_and(|route| {
                             matches!(
                                 &route.target,
@@ -2008,9 +2040,10 @@ where
             wayland::focus::select_output(&mut session.wayland, &output);
             session.interactions.suppressed_buttons.suppress(button);
             session.clusters.set_overlay_hovered(None);
-            session
-                .cursor
-                .set_override(Some(smithay::input::pointer::CursorIcon::Grabbing));
+            session.cursor.set_override(
+                crate::cursor::OverrideSource::Grab,
+                Some(smithay::input::pointer::CursorIcon::Grabbing),
+            );
             session.request_redraw();
             intercepted = true;
         }
@@ -2030,9 +2063,10 @@ where
             wayland::focus::select_output(&mut session.wayland, &output);
             session.interactions.suppressed_buttons.suppress(button);
             session.clusters.set_overlay_hovered(None);
-            session
-                .cursor
-                .set_override(Some(smithay::input::pointer::CursorIcon::Grabbing));
+            session.cursor.set_override(
+                crate::cursor::OverrideSource::Grab,
+                Some(smithay::input::pointer::CursorIcon::Grabbing),
+            );
             session.request_redraw();
             intercepted = true;
         }
@@ -2071,9 +2105,10 @@ where
             if crate::input::mod_key_held(&modifiers, session.keyboard.effective_mod) {
                 session.interactions.grab =
                     crate::input::grab::Grab::MoveClusterCore { id, screen_offset };
-                session
-                    .cursor
-                    .set_override(Some(smithay::input::pointer::CursorIcon::Grabbing));
+                session.cursor.set_override(
+                    crate::cursor::OverrideSource::Grab,
+                    Some(smithay::input::pointer::CursorIcon::Grabbing),
+                );
             } else {
                 session.interactions.grab = crate::input::grab::Grab::PendingClusterCore {
                     id,
@@ -2081,7 +2116,9 @@ where
                     press_screen: Point::<f64, Logical>::from(position_after),
                     screen_offset,
                 };
-                session.cursor.set_override(None);
+                session
+                    .cursor
+                    .set_override(crate::cursor::OverrideSource::Grab, None);
             }
             session.interactions.suppressed_buttons.suppress(button);
             session.request_redraw();
@@ -2172,9 +2209,10 @@ where
                     last_update: crate::frame_clock::monotonic_now(),
                     velocity: halley_core::field::Vec2 { x: 0.0, y: 0.0 },
                 };
-                session
-                    .cursor
-                    .set_override(Some(smithay::input::pointer::CursorIcon::Grabbing));
+                session.cursor.set_override(
+                    crate::cursor::OverrideSource::Grab,
+                    Some(smithay::input::pointer::CursorIcon::Grabbing),
+                );
             } else {
                 session.interactions.grab = crate::input::grab::Grab::PendingNode {
                     id,
@@ -2273,6 +2311,10 @@ where
                             session.interactions.grab = crate::input::grab::Grab::Pan {
                                 output: route.as_ref().expect("matched above").output.name(),
                             };
+                            session.cursor.set_override(
+                                crate::cursor::OverrideSource::Grab,
+                                Some(smithay::input::pointer::CursorIcon::Grabbing),
+                            );
                             intercepted = true;
                         }
                         None => {}
@@ -2398,7 +2440,9 @@ where
                             None
                         };
                         session.interactions.grab = crate::input::grab::Grab::None;
-                        session.cursor.set_override(None);
+                        session
+                            .cursor
+                            .set_override(crate::cursor::OverrideSource::Grab, None);
                         let mut cluster_drop_handled = false;
                         if let (
                             Some(id),
@@ -2502,7 +2546,9 @@ where
                         crate::input::grab::Grab::Pan { .. }
                     ) {
                         session.interactions.grab = crate::input::grab::Grab::None;
-                        session.cursor.set_override(None);
+                        session
+                            .cursor
+                            .set_override(crate::cursor::OverrideSource::Grab, None);
                         intercepted = true;
                     }
                 }
@@ -2518,6 +2564,9 @@ where
         {
             session.interactions.grab = crate::input::grab::Grab::None;
             crate::input::grab::release_resize_anchor(&mut session.interactions.resize_anchor);
+            session
+                .cursor
+                .set_override(crate::cursor::OverrideSource::Grab, None);
             intercepted = true;
         }
 
@@ -2787,18 +2836,18 @@ mod tests {
     }
 
     #[test]
-    fn bloom_drag_handoff_preserves_a_centered_grip_at_output_scale() {
+    fn bloom_drag_handoff_preserves_a_centered_source_grip() {
         let location = Point::<i32, Logical>::from((300, 200));
         let size = Size::<i32, Logical>::from((800, 600));
         let pointer = Vec2 { x: 700.0, y: 500.0 };
 
-        let (screen_offset, center) = bloom_drag_handoff(location, size, pointer, 0.75);
+        let (source_offset, center) = bloom_drag_handoff(location, size, pointer);
 
         assert_eq!(
-            screen_offset,
+            source_offset,
             Vec2 {
-                x: -300.0,
-                y: -225.0
+                x: -400.0,
+                y: -300.0
             }
         );
         assert_eq!(center, pointer);

@@ -25,7 +25,9 @@ pub fn hotspot(surface: &WlSurface) -> Point<i32, Logical> {
 }
 
 pub fn handle_commit(manager: &CursorManager, committed: &WlSurface, root: &WlSurface) -> bool {
-    if manager.current_surface() != Some(root) {
+    // Presentation overrides must not make us lose hotspot deltas committed
+    // by the client underneath them.
+    if manager.client_surface() != Some(root) {
         return false;
     }
     if committed == root {
@@ -58,7 +60,9 @@ pub fn refresh_outputs(
     space: &Space<smithay::desktop::Window>,
     pointer_position: (f64, f64),
 ) {
-    let Some(surface) = manager.current_surface() else {
+    // Keep output enter/leave and preferred scale current even while a shell
+    // or grab temporarily replaces the client's cursor image.
+    let Some(surface) = manager.client_surface() else {
         return;
     };
     let surface_position = Point::<i32, Logical>::from((

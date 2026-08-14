@@ -11,6 +11,7 @@ pub enum TimerDirective {
 enum State {
     Visible,
     HiddenByTyping,
+    HiddenByTouch,
     HiddenByInactivity,
 }
 
@@ -22,6 +23,7 @@ enum State {
 pub struct Visibility {
     state: State,
     hide_when_typing: bool,
+    hide_on_touch: bool,
     hide_after: Option<Duration>,
     timer_generation: u64,
 }
@@ -31,6 +33,7 @@ impl Visibility {
         Self {
             state: State::Visible,
             hide_when_typing: config.hide_when_typing,
+            hide_on_touch: config.hide_on_touch,
             hide_after: timeout(config),
             timer_generation: 0,
         }
@@ -59,13 +62,24 @@ impl Visibility {
         (true, TimerDirective::Cancel)
     }
 
+    pub fn touch_down(&mut self) -> (bool, TimerDirective) {
+        if !self.hide_on_touch || !self.visible() {
+            return (false, TimerDirective::Keep);
+        }
+        self.state = State::HiddenByTouch;
+        self.timer_generation = self.timer_generation.wrapping_add(1);
+        (true, TimerDirective::Cancel)
+    }
+
     pub fn reload(&mut self, config: &halley_config::Cursor) -> (bool, TimerDirective) {
         let previous_timeout = self.hide_after;
         self.hide_when_typing = config.hide_when_typing;
+        self.hide_on_touch = config.hide_on_touch;
         self.hide_after = timeout(config);
 
         let stale_hidden_state = matches!(self.state, State::HiddenByTyping)
             && !self.hide_when_typing
+            || matches!(self.state, State::HiddenByTouch) && !self.hide_on_touch
             || matches!(self.state, State::HiddenByInactivity) && self.hide_after.is_none();
         if stale_hidden_state {
             self.state = State::Visible;
@@ -135,6 +149,31 @@ mod tests {
         let mut visibility = Visibility::new(&config(false, Some(2_000)));
 
         assert!(!visibility.keyboard_press().0);
+        assert!(visibility.visible());
+    }
+
+    #[test]
+    fn touch_hides_by_default_and_pointer_activity_reveals() {
+        let mut visibility = Visibility::new(&halley_config::Cursor::default());
+
+        assert!(visibility.touch_down().0);
+        assert!(!visibility.visible());
+        assert!(visibility.pointer_activity().0);
+        assert!(visibility.visible());
+    }
+
+    #[test]
+    fn disabling_touch_policy_reveals_only_touch_hidden_state() {
+        let mut visibility = Visibility::new(&halley_config::Cursor::default());
+        assert!(visibility.touch_down().0);
+        let disabled = halley_config::Cursor {
+            hide_on_touch: false,
+            ..halley_config::Cursor::default()
+        };
+
+        let (redraw, _) = visibility.reload(&disabled);
+
+        assert!(redraw);
         assert!(visibility.visible());
     }
 

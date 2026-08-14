@@ -280,7 +280,9 @@ pub(super) fn handle<D, B>(
         Some(KeyboardOutcome::ClusterCancel) => {
             session.interactions.suppressed_keys.suppress(keycode);
             if session.clusters.back_or_cancel_creation() {
-                session.cursor.set_override(None);
+                session
+                    .cursor
+                    .set_override(crate::cursor::OverrideSource::Modal, None);
                 session.request_redraw();
             }
         }

@@ -25,13 +25,13 @@ pub struct CursorFrame {
 pub struct PreparedCursor {
     frames: Vec<Rc<CursorFrame>>,
     delays_ms: Vec<u32>,
-    duration_ms: u32,
+    duration_ms: u64,
 }
 
 impl PreparedCursor {
     fn new(images: Vec<Image>, scale: i32) -> Self {
         let delays_ms = images.iter().map(|image| image.delay).collect::<Vec<_>>();
-        let duration_ms = delays_ms.iter().copied().sum();
+        let duration_ms = delays_ms.iter().map(|delay| u64::from(*delay)).sum();
         let frames = images
             .into_iter()
             .map(|image| Rc::new(prepare_frame(image, scale)))
@@ -44,8 +44,13 @@ impl PreparedCursor {
     }
 
     pub fn frame(&self, time: Duration) -> Rc<CursorFrame> {
-        let index = animation_frame(time.as_millis() as u32, &self.delays_ms, self.duration_ms);
+        let (index, _) = animation_frame(time.as_millis(), &self.delays_ms, self.duration_ms);
         self.frames[index].clone()
+    }
+
+    pub fn next_frame_in(&self, time: Duration) -> Option<Duration> {
+        let (_, delay_ms) = animation_frame(time.as_millis(), &self.delays_ms, self.duration_ms);
+        delay_ms.map(Duration::from_millis)
     }
 
     pub fn is_animated(&self) -> bool {
@@ -105,10 +110,10 @@ fn nearest_images(images: Vec<Image>, requested_size: u32) -> Vec<Image> {
     else {
         return Vec::new();
     };
-    let dimensions = (nearest.width, nearest.height);
+    let nominal_size = nearest.size;
     images
         .into_iter()
-        .filter(|image| (image.width, image.height) == dimensions)
+        .filter(|image| image.size == nominal_size)
         .collect()
 }
 
@@ -136,18 +141,19 @@ fn prepare_frame(image: Image, scale: i32) -> CursorFrame {
     }
 }
 
-fn animation_frame(time_ms: u32, delays_ms: &[u32], duration_ms: u32) -> usize {
+fn animation_frame(time_ms: u128, delays_ms: &[u32], duration_ms: u64) -> (usize, Option<u64>) {
     if delays_ms.len() <= 1 || duration_ms == 0 {
-        return 0;
+        return (0, None);
     }
-    let mut remaining = time_ms % duration_ms;
+    let mut remaining = (time_ms % u128::from(duration_ms)) as u64;
     for (index, delay) in delays_ms.iter().copied().enumerate() {
+        let delay = u64::from(delay);
         if remaining < delay {
-            return index;
+            return (index, Some(delay - remaining));
         }
         remaining = remaining.saturating_sub(delay);
     }
-    0
+    (0, Some(duration_ms))
 }
 
 fn fallback_image() -> Image {
@@ -188,22 +194,39 @@ mod tests {
         );
 
         assert_eq!(selected.len(), 2);
-        assert!(selected.iter().all(|image| image.width == 32));
+        assert!(selected.iter().all(|image| image.size == 32));
+    }
+
+    #[test]
+    fn nominal_size_does_not_mix_same_dimension_variants() {
+        let selected = nearest_images(
+            vec![image(24, 32, 10), image(32, 32, 20), image(32, 32, 30)],
+            30,
+        );
+
+        assert_eq!(selected.len(), 2);
+        assert!(selected.iter().all(|image| image.size == 32));
     }
 
     #[test]
     fn animation_wraps_across_frame_delays() {
         let delays = [10, 20, 30];
-        assert_eq!(animation_frame(0, &delays, 60), 0);
-        assert_eq!(animation_frame(10, &delays, 60), 1);
-        assert_eq!(animation_frame(29, &delays, 60), 1);
-        assert_eq!(animation_frame(30, &delays, 60), 2);
-        assert_eq!(animation_frame(60, &delays, 60), 0);
+        assert_eq!(animation_frame(0, &delays, 60), (0, Some(10)));
+        assert_eq!(animation_frame(10, &delays, 60), (1, Some(20)));
+        assert_eq!(animation_frame(29, &delays, 60), (1, Some(1)));
+        assert_eq!(animation_frame(30, &delays, 60), (2, Some(30)));
+        assert_eq!(animation_frame(60, &delays, 60), (0, Some(10)));
     }
 
     #[test]
     fn zero_delay_cursor_is_static() {
-        assert_eq!(animation_frame(500, &[0, 0], 0), 0);
+        assert_eq!(animation_frame(500, &[0, 0], 0), (0, None));
+    }
+
+    #[test]
+    fn animation_time_does_not_wrap_after_u32_milliseconds() {
+        let time = u128::from(u32::MAX) + 25;
+        assert_eq!(animation_frame(time, &[10, 20], 30), (1, Some(20)));
     }
 
     #[test]

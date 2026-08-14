@@ -471,7 +471,7 @@ pub fn leave_secure_mode<D: SessionDriver>(session: &mut Session<D>) {
     if let Some(old_cursor) = old_cursor {
         crate::cursor::surface::clear_outputs(&old_cursor, &session.wayland.space);
     }
-    session.cursor.set_override(None);
+    session.cursor.clear_overrides();
     crate::session::sync_keyboard_focus(session, SERIAL_COUNTER.next_serial());
 }
 

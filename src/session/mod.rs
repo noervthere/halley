@@ -73,7 +73,6 @@ enum SessionControl {
 struct SpawnContext<'a> {
     socket_name: &'a OsStr,
     x11_display: Option<&'a OsStr>,
-    cursor_theme: &'a str,
     cursor_size: u8,
     environment: &'a environment::LaunchEnvironment,
 }
@@ -112,7 +111,6 @@ fn dispatch_action(
                 command,
                 spawn_context.socket_name,
                 spawn_context.x11_display,
-                spawn_context.cursor_theme,
                 spawn_context.cursor_size,
                 spawn_context.environment,
             ),
@@ -138,7 +136,6 @@ fn dispatch_action(
             &command,
             spawn_context.socket_name,
             spawn_context.x11_display,
-            spawn_context.cursor_theme,
             spawn_context.cursor_size,
             spawn_context.environment,
         ),
@@ -191,7 +188,9 @@ pub(crate) fn cancel_compositor_grab<D: SessionDriver>(session: &mut Session<D>)
         }
     }
     session.interactions.grab = crate::input::grab::Grab::None;
-    session.cursor.set_override(None);
+    session
+        .cursor
+        .set_override(crate::cursor::OverrideSource::Grab, None);
 }
 
 pub(crate) use lifecycle::{finish_window_unmap, prepare_window_unmap};
@@ -440,6 +439,12 @@ pub(crate) fn has_active_pointer_confinement<D: SessionDriver>(session: &Session
 
 pub(crate) fn cursor_visible<D: SessionDriver>(session: &Session<D>) -> bool {
     pointer::cursor_visible(session)
+}
+
+pub(crate) fn cursor_override<D: SessionDriver>(
+    session: &Session<D>,
+) -> Option<smithay::input::pointer::CursorIcon> {
+    pointer::cursor_override(session)
 }
 
 pub(crate) fn note_pointer_activity<D: SessionDriver>(session: &mut Session<D>) {
@@ -1209,6 +1214,10 @@ pub(crate) fn begin_window_resize<D: SessionDriver>(
             last_configure: None,
             last_size: start_rect.size,
         });
+    session.cursor.set_override(
+        crate::cursor::OverrideSource::Grab,
+        Some(handle.cursor_icon()),
+    );
     true
 }
 
@@ -1415,7 +1424,6 @@ fn begin_pointer_move_active<D: SessionDriver>(
     let Some(camera) = session.cameras.get(&output_name) else {
         return false;
     };
-    let scale = crate::input::zoom::scale(camera);
     let pointer_position = session.pointer.position();
     let pointer_world =
         crate::input::grab::screen_to_world_on_output(pointer_position, camera, output_geometry);
@@ -1476,7 +1484,7 @@ fn begin_pointer_move_active<D: SessionDriver>(
 
     let mut cluster_grab_location = None;
     let mut cluster_drag_rect = None;
-    let screen_offset = if cluster_drag.is_some() {
+    let anchor = if cluster_drag.is_some() {
         let offset = crate::input::grab::screen_grip_offset(
             (press_screen.x, press_screen.y),
             visual_geometry.loc,
@@ -1495,7 +1503,7 @@ fn begin_pointer_move_active<D: SessionDriver>(
             camera,
             output_geometry,
         ));
-        offset
+        crate::input::grab::WindowGrabAnchor::Screen(offset)
     } else if was_maximized {
         let source = restore
             .as_ref()
@@ -1508,15 +1516,15 @@ fn begin_pointer_move_active<D: SessionDriver>(
         let ratio_y = ((press_screen.y - f64::from(visual_geometry.loc.y))
             / f64::from(visual_geometry.size.h.max(1)))
         .clamp(0.0, 1.0);
-        halley_core::field::Vec2 {
-            x: -(source.size.w as f32 * ratio_x as f32) * scale,
-            y: -(source.size.h as f32 * ratio_y as f32) * scale,
-        }
+        crate::input::grab::WindowGrabAnchor::Source(halley_core::field::Vec2 {
+            x: -(source.size.w as f32 * ratio_x as f32),
+            y: -(source.size.h as f32 * ratio_y as f32),
+        })
     } else {
-        halley_core::field::Vec2 {
-            x: (window_location.x as f32 - press_world.x) * scale,
-            y: (window_location.y as f32 - press_world.y) * scale,
-        }
+        crate::input::grab::WindowGrabAnchor::Source(halley_core::field::Vec2 {
+            x: window_location.x as f32 - press_world.x,
+            y: window_location.y as f32 - press_world.y,
+        })
     };
 
     if let Some(expected) = restore.as_ref() {
@@ -1567,12 +1575,7 @@ fn begin_pointer_move_active<D: SessionDriver>(
     let center = drag_size
         .and_then(|size| {
             let camera = session.cameras.get(&output_name)?;
-            let location = crate::input::grab::world_location_from_screen_grip(
-                pointer_position,
-                screen_offset,
-                camera,
-                output_geometry,
-            );
+            let location = anchor.world_location(pointer_position, camera, output_geometry);
             Some(halley_core::field::Vec2 {
                 x: location.x as f32 + size.w as f32 * 0.5,
                 y: location.y as f32 + size.h as f32 * 0.5,
@@ -1596,13 +1599,14 @@ fn begin_pointer_move_active<D: SessionDriver>(
         drag_size,
         button,
         client_owned,
-        screen_offset,
+        anchor,
         last_world: center,
         last_update: crate::frame_clock::monotonic_now(),
         velocity: halley_core::field::Vec2 { x: 0.0, y: 0.0 },
     };
-    session
-        .cursor
-        .set_override(Some(smithay::input::pointer::CursorIcon::Grabbing));
+    session.cursor.set_override(
+        crate::cursor::OverrideSource::Grab,
+        Some(smithay::input::pointer::CursorIcon::Grabbing),
+    );
     true
 }

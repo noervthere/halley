@@ -450,7 +450,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
     let socket_name = super::protocol::init_wayland_listener(display, &mut event_loop);
     eventline::info!("wayland socket ready, WAYLAND_DISPLAY={socket_name:?}");
     app.arm_autostart_once(&socket_name, runtime_config.autostart.once.clone());
-    super::environment::activate_session(&socket_name, &runtime_config.cursor);
+    super::environment::activate_session(&socket_name, runtime_config.cursor.size);
     if let Err(err) = crate::xwayland::start(&event_loop.handle(), &mut app, true) {
         eventline::warn!("xwayland: unavailable: {err}");
         app.run_autostart_once();
@@ -971,11 +971,19 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
         &app.wayland.space,
         app.pointer.position(),
     );
-    let cursor_animating = show_cursor
-        && app.cursor.current_is_animated_with_override(
-            output.current_scale().integer_scale(),
-            cursor_override,
-        );
+    if pointer_is_on_output {
+        let next_cursor_frame = show_cursor
+            .then(|| {
+                app.cursor.current_next_frame_in_with_override(
+                    output.current_scale().integer_scale(),
+                    target_presentation_time,
+                    cursor_override,
+                )
+            })
+            .flatten();
+        app.cursor_policy
+            .schedule_animation(output, next_cursor_frame);
+    }
     let mut animating = camera_animating
         || fullscreen_camera_changed
         || window_animating
@@ -988,8 +996,7 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
         || overlay_animating
         || cluster_animating
         || fullscreen_animating
-        || maximize_animating
-        || cursor_animating;
+        || maximize_animating;
     if pointer_is_on_output {
         let time = app.start_time.elapsed().as_millis() as u32;
         if cluster_camera_changed || fullscreen_animating || maximize_animating {

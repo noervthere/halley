@@ -6,9 +6,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::allocator::dmabuf::Dmabuf;
-use smithay::backend::renderer::element::surface::{
-    WaylandSurfaceRenderElement, render_elements_from_surface_tree,
-};
 use smithay::backend::renderer::element::utils::{Relocate, RelocateRenderElement};
 use smithay::backend::renderer::element::{Id, Kind};
 use smithay::backend::renderer::gles::{GlesRenderer, GlesTexture};
@@ -626,13 +623,25 @@ pub(crate) fn write_capture(
     Ok(path)
 }
 
-pub(crate) fn capture_surface_tree(
+pub(crate) fn capture_cursor_surface_tree(
     renderer: &mut GlesRenderer,
     surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+    snapshot: Option<&crate::cursor::CursorSurfaceSnapshot>,
     geometry: Rectangle<i32, Logical>,
 ) -> Result<Vec<u8>, Box<dyn Error>> {
     let size = geometry.size.to_physical(1);
-    let elements = surface_tree_elements(renderer, surface, geometry)?;
+    let location = smithay::utils::Point::from((-geometry.loc.x, -geometry.loc.y)).to_physical(1);
+    let elements = crate::cursor::render::surface_elements(
+        renderer,
+        surface,
+        snapshot,
+        location,
+        Scale::from(1.0),
+        Kind::Cursor,
+    )?;
+    if elements.is_empty() {
+        return Err(io::Error::other("cursor surface tree is empty").into());
+    }
     capture_elements(
         renderer,
         Fourcc::Abgr8888,
@@ -640,27 +649,6 @@ pub(crate) fn capture_surface_tree(
         &elements,
         Color32F::TRANSPARENT,
     )
-}
-
-fn surface_tree_elements(
-    renderer: &mut GlesRenderer,
-    surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
-    geometry: Rectangle<i32, Logical>,
-) -> Result<Vec<WaylandSurfaceRenderElement<GlesRenderer>>, Box<dyn Error>> {
-    let location = smithay::utils::Point::from((-geometry.loc.x, -geometry.loc.y)).to_physical(1);
-    let elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
-        render_elements_from_surface_tree(
-            renderer,
-            surface,
-            location,
-            Scale::from(1.0),
-            1.0,
-            Kind::Unspecified,
-        );
-    if elements.is_empty() {
-        return Err(io::Error::other("selected window surface tree is empty").into());
-    }
-    Ok(elements)
 }
 
 fn capture_elements<E>(

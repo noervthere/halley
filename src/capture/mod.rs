@@ -15,8 +15,10 @@ use smithay::wayland::seat::WaylandFocus;
 use menu::{ScreenshotMenu, ScreenshotMode};
 use picker::RegionPicker;
 pub(crate) use screenshot::screenshot_directory;
+pub(crate) use screenshot::{
+    capture_cursor_surface_tree, capture_source_pixels, render_source_dmabuf,
+};
 pub(crate) use screenshot::{capture_monitor_region_pixels, render_monitor_region_dmabuf};
-pub(crate) use screenshot::{capture_source_pixels, capture_surface_tree, render_source_dmabuf};
 pub use screenshot::{save_area, save_region, save_window};
 use source_chooser::{SourceChooser, SourceMode, SourcePhase};
 

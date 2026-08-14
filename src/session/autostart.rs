@@ -55,7 +55,6 @@ impl Autostart {
     pub fn run_once(
         &mut self,
         x11_display: Option<&OsStr>,
-        cursor_theme: &str,
         cursor_size: u8,
         environment: &LaunchEnvironment,
     ) {
@@ -63,31 +62,18 @@ impl Autostart {
         else {
             return;
         };
-        self.run_commands(
-            &commands,
-            x11_display,
-            cursor_theme,
-            cursor_size,
-            environment,
-        );
+        self.run_commands(&commands, x11_display, cursor_size, environment);
     }
 
     pub fn run_reload(
         &mut self,
         commands: &[String],
         x11_display: Option<&OsStr>,
-        cursor_theme: &str,
         cursor_size: u8,
         environment: &LaunchEnvironment,
     ) {
         if self.enabled {
-            self.run_commands(
-                commands,
-                x11_display,
-                cursor_theme,
-                cursor_size,
-                environment,
-            );
+            self.run_commands(commands, x11_display, cursor_size, environment);
         }
     }
 
@@ -109,7 +95,6 @@ impl Autostart {
         &mut self,
         commands: &[String],
         x11_display: Option<&OsStr>,
-        cursor_theme: &str,
         cursor_size: u8,
         environment: &LaunchEnvironment,
     ) {
@@ -126,7 +111,6 @@ impl Autostart {
                 command,
                 wayland_display,
                 x11_display,
-                cursor_theme,
                 cursor_size,
                 environment,
             );
@@ -211,8 +195,8 @@ mod tests {
         let mut autostart = Autostart::enabled();
         autostart.arm_once(&display, Vec::new());
         autostart.arm_once(&display, vec!["sleep 30".to_string()]);
-        autostart.run_once(None, "default", 24, &environment);
-        autostart.run_once(None, "default", 24, &environment);
+        autostart.run_once(None, 24, &environment);
+        autostart.run_once(None, 24, &environment);
 
         assert!(matches!(autostart.once, OnceState::Finished));
         assert!(autostart.children.is_empty());
@@ -223,8 +207,8 @@ mod tests {
         let (environment, display) = context();
         let mut autostart = Autostart::disabled();
         autostart.arm_once(&display, vec!["sleep 30".to_string()]);
-        autostart.run_once(None, "default", 24, &environment);
-        autostart.run_reload(&["sleep 30".to_string()], None, "default", 24, &environment);
+        autostart.run_once(None, 24, &environment);
+        autostart.run_reload(&["sleep 30".to_string()], None, 24, &environment);
 
         assert!(autostart.children.is_empty());
     }
@@ -234,7 +218,7 @@ mod tests {
         let (environment, display) = context();
         let mut autostart = Autostart::enabled();
         autostart.arm_once(&display, vec!["exit 7".to_string(), "sleep 30".to_string()]);
-        autostart.run_once(None, "default", 24, &environment);
+        autostart.run_once(None, 24, &environment);
         std::thread::sleep(Duration::from_millis(30));
         autostart.reap_finished();
 
@@ -246,7 +230,7 @@ mod tests {
         let (environment, display) = context();
         let mut autostart = Autostart::enabled();
         autostart.arm_once(&display, Vec::new());
-        autostart.run_reload(&["sleep 30".to_string()], None, "default", 24, &environment);
+        autostart.run_reload(&["sleep 30".to_string()], None, 24, &environment);
         let pid = i32::try_from(autostart.children[0].id()).unwrap();
 
         assert!(matches!(autostart.once, OnceState::Pending(_)));

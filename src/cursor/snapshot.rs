@@ -13,7 +13,7 @@ use super::{CursorManager, CursorSurfaceSnapshot};
 /// buffer. Its renderer damage history is surface-scoped, so a replacement
 /// buffer can otherwise inherit damage larger than its new texture.
 pub fn prepare_commit(manager: &CursorManager, committed: &WlSurface) {
-    if manager.current_surface() != Some(committed) {
+    if manager.client_surface() != Some(committed) {
         return;
     }
 
@@ -93,7 +93,6 @@ pub fn prepare_commit(manager: &CursorManager, committed: &WlSurface) {
     *slot = Some(Rc::new(CursorSurfaceSnapshot {
         surface: committed.clone(),
         buffer: render_buffer,
-        metadata_bgra: snapshot.metadata_bgra.into(),
         width: snapshot.width,
         height: snapshot.height,
         scale,
@@ -104,7 +103,6 @@ pub fn prepare_commit(manager: &CursorManager, committed: &WlSurface) {
 
 struct ShmCursorCopy {
     pixels: Vec<u8>,
-    metadata_bgra: Vec<u8>,
     width: u32,
     height: u32,
     format: Fourcc,
@@ -156,15 +154,8 @@ fn copy_shm_cursor(buffer: &WlBuffer) -> Result<Option<ShmCursorCopy>, String> {
                 );
             }
         }
-        let mut metadata_bgra = pixels.clone();
-        if format == Fourcc::Xrgb8888 {
-            for pixel in metadata_bgra.chunks_exact_mut(4) {
-                pixel[3] = 255;
-            }
-        }
         Ok(Some(ShmCursorCopy {
             pixels,
-            metadata_bgra,
             width: width as u32,
             height: height as u32,
             format,

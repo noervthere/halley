@@ -17,7 +17,6 @@ pub(super) fn spawn_detached(
     command_line: &str,
     wayland_display: &OsStr,
     x11_display: Option<&OsStr>,
-    cursor_theme: &str,
     cursor_size: u8,
     environment: &LaunchEnvironment,
 ) {
@@ -25,7 +24,6 @@ pub(super) fn spawn_detached(
         command_line,
         wayland_display,
         x11_display,
-        cursor_theme,
         cursor_size,
         environment,
     );
@@ -51,7 +49,6 @@ fn detached_process(
     command_line: &str,
     wayland_display: &OsStr,
     x11_display: Option<&OsStr>,
-    cursor_theme: &str,
     cursor_size: u8,
     environment: &LaunchEnvironment,
 ) -> Command {
@@ -59,7 +56,6 @@ fn detached_process(
         command_line,
         wayland_display,
         x11_display,
-        cursor_theme,
         cursor_size,
         environment,
     );
@@ -83,7 +79,6 @@ pub(super) fn managed_process(
     command_line: &str,
     wayland_display: &OsStr,
     x11_display: Option<&OsStr>,
-    cursor_theme: &str,
     cursor_size: u8,
     environment: &LaunchEnvironment,
 ) -> Command {
@@ -91,7 +86,6 @@ pub(super) fn managed_process(
         command_line,
         wayland_display,
         x11_display,
-        cursor_theme,
         cursor_size,
         environment,
     );
@@ -112,7 +106,6 @@ fn configured_process(
     command_line: &str,
     wayland_display: &OsStr,
     x11_display: Option<&OsStr>,
-    cursor_theme: &str,
     cursor_size: u8,
     environment: &LaunchEnvironment,
 ) -> Command {
@@ -122,7 +115,6 @@ fn configured_process(
         .arg("-c")
         .arg(command_line)
         .env("WAYLAND_DISPLAY", wayland_display)
-        .env("XCURSOR_THEME", cursor_theme)
         .env("XCURSOR_SIZE", cursor_size.to_string())
         .env_remove("DISPLAY")
         .stdin(Stdio::null())
@@ -144,7 +136,6 @@ mod tests {
             "grim -g \"$(slurp)\" ~/shot.png",
             OsStr::new("wayland-9"),
             Some(OsStr::new(":12")),
-            "Breeze",
             32,
             &LaunchEnvironment::default(),
         );
@@ -161,9 +152,6 @@ mod tests {
                 .get_envs()
                 .any(|(name, value)| name == "DISPLAY" && value == Some(OsStr::new(":12")))
         );
-        assert!(process.get_envs().any(|(name, value)| {
-            name == "XCURSOR_THEME" && value == Some(OsStr::new("Breeze"))
-        }));
         assert!(
             process
                 .get_envs()
@@ -177,7 +165,6 @@ mod tests {
             "foot",
             OsStr::new("wayland-2"),
             None,
-            "default",
             24,
             &LaunchEnvironment::default(),
         );
@@ -200,7 +187,6 @@ mod tests {
             "true",
             OsStr::new("wayland-4"),
             Some(OsStr::new(":8")),
-            "Adwaita",
             24,
             &environment,
         );

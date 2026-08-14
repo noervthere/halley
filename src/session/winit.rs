@@ -402,11 +402,17 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                 let show_cursor = super::pointer::cursor_visible(app);
                 let cursor_override = super::pointer::cursor_override(app);
                 crate::cursor::surface::refresh_outputs(&app.cursor, &app.wayland.space, position);
-                let cursor_animating = show_cursor
-                    && app.cursor.current_is_animated_with_override(
-                        output.current_scale().integer_scale(),
-                        cursor_override,
-                    );
+                let next_cursor_frame = show_cursor
+                    .then(|| {
+                        app.cursor.current_next_frame_in_with_override(
+                            output.current_scale().integer_scale(),
+                            target_presentation_time,
+                            cursor_override,
+                        )
+                    })
+                    .flatten();
+                app.cursor_policy
+                    .schedule_animation(&output, next_cursor_frame);
                 let outcome = app.driver.backend.render(
                     &output,
                     RenderRequest {
@@ -567,7 +573,6 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                     || cluster_animating
                     || app.shell.overlays.animating(target_presentation_time)
                     || app.render.node_renderer.has_pending_icons()
-                    || cursor_animating
                 {
                     app.request_redraw();
                 }

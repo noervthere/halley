@@ -87,7 +87,12 @@ where
     B: InputBackend,
 {
     match event {
-        InputEvent::TouchDown { event } => down::<D, B>(session, event),
+        InputEvent::TouchDown { event } => {
+            if session.cursor_policy.touch_down() {
+                session.request_redraw();
+            }
+            down::<D, B>(session, event);
+        }
         InputEvent::TouchMotion { event } => motion::<D, B>(session, event),
         InputEvent::TouchUp { event } => up::<D, B>(session, event),
         InputEvent::TouchFrame { .. } => frame(session),
@@ -104,6 +109,9 @@ where
 {
     match event {
         InputEvent::TouchDown { event } => {
+            if session.cursor_policy.touch_down() {
+                session.request_redraw();
+            }
             let Some(handle) = session.seat.get_touch() else {
                 return true;
             };

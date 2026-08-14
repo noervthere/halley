@@ -1,9 +1,9 @@
 use smithay::backend::renderer::utils::with_renderer_surface_state;
-use smithay::input::pointer::PointerHandle;
+use smithay::input::pointer::{MotionEvent, PointerHandle};
 use smithay::reexports::wayland_server::Resource;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::utils::{IsAlive, Logical, Point, Rectangle, Size};
-use smithay::wayland::compositor::RegionAttributes;
+use smithay::utils::{IsAlive, Logical, Point, Rectangle, SERIAL_COUNTER, Size};
+use smithay::wayland::compositor::{RegionAttributes, SurfaceAttributes, with_states};
 use smithay::wayland::pointer_constraints::{PointerConstraint, with_pointer_constraint};
 use smithay::wayland::seat::WaylandFocus;
 
@@ -55,6 +55,7 @@ struct ConstraintGeometry {
     origin: Point<f64, Logical>,
     surface_size: Size<i32, Logical>,
     region: Option<RegionAttributes>,
+    input_region: Option<RegionAttributes>,
     presentation: WindowPresentation,
 }
 
@@ -64,6 +65,14 @@ struct ConstraintGeometry {
 #[derive(Default)]
 pub struct PointerConstraintLifecycle {
     active: Option<TrackedConstraint>,
+    suspended: Option<SuspendedConstraint>,
+}
+
+#[derive(Clone)]
+struct SuspendedConstraint {
+    surface: WlSurface,
+    kind: ConstraintKind,
+    lock_anchor: Option<Point<f64, Logical>>,
 }
 
 #[derive(Clone)]
@@ -99,6 +108,7 @@ enum DeactivationReason {
     RequestedKeyboardFocusChange,
     RequestedPointerFocusChange,
     RequestedOwnerUnmap,
+    EffectiveRegionEmpty,
 }
 
 fn reconcile_decision(
@@ -203,6 +213,17 @@ fn surface_size(surface: &WlSurface) -> Option<Size<i32, Logical>> {
     with_renderer_surface_state(surface, |state| state.surface_size()).flatten()
 }
 
+fn surface_input_region(surface: &WlSurface) -> Option<RegionAttributes> {
+    with_states(surface, |states| {
+        states
+            .cached_state
+            .get::<SurfaceAttributes>()
+            .current()
+            .input_region
+            .clone()
+    })
+}
+
 fn owner_context<D: SessionDriver>(
     session: &Session<D>,
     surface: &WlSurface,
@@ -265,6 +286,81 @@ fn owner_is_authoritative<D: SessionDriver>(session: &Session<D>, surface: &WlSu
     owner_authority_loss(session, surface).is_none()
 }
 
+fn grab_owns_surface<D: SessionDriver>(session: &Session<D>, surface: &WlSurface) -> bool {
+    crate::input::grab::belongs_to_surface(&session.interactions.grab, surface)
+}
+
+fn sync_grab_suspension<D: SessionDriver>(
+    session: &mut Session<D>,
+    pointer: &PointerHandle<Session<D>>,
+) {
+    let tracked = session.interactions.pointer_constraints.active.clone();
+    let should_suspend = tracked
+        .as_ref()
+        .is_some_and(|tracked| grab_owns_surface(session, &tracked.surface));
+    if should_suspend {
+        let tracked = tracked.expect("suspension requires a tracked constraint");
+        let already_suspended = session
+            .interactions
+            .pointer_constraints
+            .suspended
+            .as_ref()
+            .is_some_and(|suspended| suspended.surface == tracked.surface);
+        if !already_suspended {
+            let screen = Point::from(session.pointer.position());
+            let lock_anchor = (tracked.kind == ConstraintKind::Locked)
+                .then(|| {
+                    tracked
+                        .geometry
+                        .presentation
+                        .surface_from_screen(&tracked.surface, screen)
+                })
+                .flatten();
+            session.interactions.pointer_constraints.suspended = Some(SuspendedConstraint {
+                surface: tracked.surface,
+                kind: tracked.kind,
+                lock_anchor,
+            });
+        }
+        return;
+    }
+
+    let Some(suspended) = session.interactions.pointer_constraints.suspended.take() else {
+        return;
+    };
+    let Some(tracked) = tracked
+        .filter(|tracked| tracked.surface == suspended.surface && tracked.kind == suspended.kind)
+    else {
+        return;
+    };
+    if suspended.kind == ConstraintKind::Locked
+        && let Some(anchor) = suspended.lock_anchor
+        && let Some(screen) = tracked
+            .geometry
+            .presentation
+            .screen_from_surface(&tracked.surface, anchor)
+    {
+        session.pointer.set_position((screen.x, screen.y));
+        pointer.set_location(tracked.geometry.origin + anchor);
+    }
+}
+
+pub(super) fn enforcement_suspended<D: SessionDriver>(
+    session: &Session<D>,
+    pointer: &PointerHandle<Session<D>>,
+) -> bool {
+    let Some(tracked) = session.interactions.pointer_constraints.active.as_ref() else {
+        return false;
+    };
+    valid_active_owner(session, pointer, tracked)
+        && session
+            .interactions
+            .pointer_constraints
+            .suspended
+            .as_ref()
+            .is_some_and(|suspended| suspended.surface == tracked.surface)
+}
+
 fn constraint_geometry(
     surface: &WlSurface,
     context: OwnerContext,
@@ -274,6 +370,7 @@ fn constraint_geometry(
         origin: context.presentation.surface_origin(surface)?,
         surface_size: context.surface_size,
         region: constraint.region.clone(),
+        input_region: surface_input_region(surface),
         presentation: context.presentation,
     })
 }
@@ -366,6 +463,9 @@ fn deactivate_tracked<D: SessionDriver>(
                 .as_ref()
                 .and_then(|state| state.region.as_ref())
                 .or(geometry.region.as_ref()),
+            surface_input_region(&tracked.surface)
+                .as_ref()
+                .or(geometry.input_region.as_ref()),
         ) && let Some(screen) = geometry
             .presentation
             .screen_from_surface(&tracked.surface, local)
@@ -403,17 +503,21 @@ fn nearest_valid_point(
     desired: Point<f64, Logical>,
     surface_size: Size<i32, Logical>,
     region: Option<&RegionAttributes>,
+    input_region: Option<&RegionAttributes>,
 ) -> Option<Point<f64, Logical>> {
     if surface_size.w <= 0 || surface_size.h <= 0 {
         return None;
     }
     let bounds = Rectangle::from_size(surface_size);
     let allowed = |point: Point<i32, Logical>| {
-        bounds.contains(point) && region.is_none_or(|region| region.contains(point))
+        bounds.contains(point)
+            && region.is_none_or(|region| region.contains(point))
+            && input_region.is_none_or(|region| region.contains(point))
     };
     let rounded: Point<i32, Logical> = desired.to_i32_round();
     if bounds.to_f64().contains(desired)
         && region.is_none_or(|region| region.contains(desired.to_i32_floor()))
+        && input_region.is_none_or(|region| region.contains(desired.to_i32_floor()))
     {
         return Some(desired);
     }
@@ -429,6 +533,26 @@ fn nearest_valid_point(
         rounded.y.clamp(0, surface_size.h - 1),
     ];
     if let Some(region) = region {
+        for (_, rect) in &region.rects {
+            for x in [
+                rect.loc.x - 1,
+                rect.loc.x,
+                rect.loc.x + rect.size.w - 1,
+                rect.loc.x + rect.size.w,
+            ] {
+                xs.push(x.clamp(0, surface_size.w - 1));
+            }
+            for y in [
+                rect.loc.y - 1,
+                rect.loc.y,
+                rect.loc.y + rect.size.h - 1,
+                rect.loc.y + rect.size.h,
+            ] {
+                ys.push(y.clamp(0, surface_size.h - 1));
+            }
+        }
+    }
+    if let Some(region) = input_region {
         for (_, rect) in &region.rects {
             for x in [
                 rect.loc.x - 1,
@@ -483,6 +607,9 @@ fn prepare_candidate<D: SessionDriver>(
     if !bounds.to_f64().contains(local)
         || !constraint
             .region
+            .as_ref()
+            .is_none_or(|region| region.contains(local.to_i32_floor()))
+        || !surface_input_region(surface)
             .as_ref()
             .is_none_or(|region| region.contains(local.to_i32_floor()))
     {
@@ -563,40 +690,113 @@ pub(super) fn reconcile<D: SessionDriver>(
         let reason = current_loss.unwrap_or(DeactivationReason::CandidateChanged);
         deactivate_tracked(session, pointer, tracked, reason);
         session.interactions.pointer_constraints.active = None;
+        session.interactions.pointer_constraints.suspended = None;
     }
 
     let Some(candidate) = candidate else {
         session.interactions.pointer_constraints.active = None;
+        session.interactions.pointer_constraints.suspended = None;
         return;
     };
     let Some(context) = owner_context(session, &candidate) else {
         if retain_cached_geometry(current_valid, current_is_candidate) {
             session.interactions.pointer_constraints.active = tracked;
+            sync_grab_suspension(session, pointer);
         } else {
             session.interactions.pointer_constraints.active = None;
+            session.interactions.pointer_constraints.suspended = None;
         }
         return;
     };
     let Some(mut constraint) = descriptor(&candidate, pointer) else {
         session.interactions.pointer_constraints.active = None;
+        session.interactions.pointer_constraints.suspended = None;
         return;
     };
 
-    let Some(geometry) = prepare_candidate(session, pointer, &candidate, &context, &constraint)
-    else {
+    let refreshing_active = current_valid && current_is_candidate && constraint.active;
+    let grab_suspends_candidate = refreshing_active && grab_owns_surface(session, &candidate);
+    let geometry = if refreshing_active {
+        constraint_geometry(&candidate, context, &constraint)
+    } else {
+        prepare_candidate(session, pointer, &candidate, &context, &constraint)
+    };
+    let Some(geometry) = geometry else {
         // Live presentation data can be transiently absent while an already
         // active owner is resizing or changing output. Keep its last valid
         // inverse transform until an authoritative lifecycle transition.
         if retain_cached_geometry(current_valid, current_is_candidate) {
             session.interactions.pointer_constraints.active = tracked;
+            sync_grab_suspension(session, pointer);
         } else {
             session.interactions.pointer_constraints.active = None;
+            session.interactions.pointer_constraints.suspended = None;
         }
         return;
     };
+    if refreshing_active {
+        let screen = Point::from(session.pointer.position());
+        let local = geometry
+            .presentation
+            .surface_from_screen(&candidate, screen);
+        match constraint.kind {
+            ConstraintKind::Locked => {
+                if let Some(local) = local {
+                    pointer.set_location(geometry.origin + local);
+                }
+            }
+            ConstraintKind::Confined if !grab_suspends_candidate => {
+                let corrected = local.and_then(|local| {
+                    clamp_into_constraint(
+                        local,
+                        geometry.surface_size,
+                        geometry.region.as_ref(),
+                        geometry.input_region.as_ref(),
+                    )
+                    .map(|corrected| (local, corrected))
+                });
+                let Some((local, corrected)) = corrected else {
+                    if let Some(tracked) = tracked.as_ref() {
+                        deactivate_tracked(
+                            session,
+                            pointer,
+                            tracked,
+                            DeactivationReason::EffectiveRegionEmpty,
+                        );
+                    }
+                    session.interactions.pointer_constraints.active = None;
+                    session.interactions.pointer_constraints.suspended = None;
+                    return;
+                };
+                pointer.set_location(geometry.origin + corrected);
+                if corrected != local
+                    && let Some(screen) = geometry
+                        .presentation
+                        .screen_from_surface(&candidate, corrected)
+                {
+                    session.pointer.set_position((screen.x, screen.y));
+                    pointer.motion(
+                        session,
+                        Some((candidate.clone(), geometry.origin)),
+                        &MotionEvent {
+                            location: geometry.origin + corrected,
+                            serial: SERIAL_COUNTER.next_serial(),
+                            time: session.start_time.elapsed().as_millis() as u32,
+                        },
+                    );
+                }
+            }
+            ConstraintKind::Confined => {
+                if let Some(local) = local {
+                    pointer.set_location(geometry.origin + local);
+                }
+            }
+        }
+    }
     if decision.activate_candidate {
         if !activate(&candidate, pointer) {
             session.interactions.pointer_constraints.active = None;
+            session.interactions.pointer_constraints.suspended = None;
             return;
         }
         eventline::debug!(
@@ -619,9 +819,11 @@ pub(super) fn reconcile<D: SessionDriver>(
             position_hint: constraint.position_hint,
             geometry,
         });
+        sync_grab_suspension(session, pointer);
         session.request_redraw();
     } else {
         session.interactions.pointer_constraints.active = None;
+        session.interactions.pointer_constraints.suspended = None;
     }
 }
 
@@ -643,6 +845,7 @@ pub(super) fn deactivate_before_focus_change<D: SessionDriver>(
         });
     if should_deactivate {
         if let Some(tracked) = session.interactions.pointer_constraints.active.take() {
+            session.interactions.pointer_constraints.suspended = None;
             deactivate_tracked(
                 session,
                 &pointer,
@@ -669,6 +872,7 @@ pub(super) fn deactivate_before_pointer_focus_change<D: SessionDriver>(
         .is_some_and(|tracked| Some(&tracked.surface) != next_focus);
     if should_deactivate {
         if let Some(tracked) = session.interactions.pointer_constraints.active.take() {
+            session.interactions.pointer_constraints.suspended = None;
             deactivate_tracked(
                 session,
                 &pointer,
@@ -695,6 +899,7 @@ pub(super) fn deactivate_before_unmap<D: SessionDriver>(
         .is_some_and(|tracked| crate::wayland::compositor::root_surface(&tracked.surface) == *root);
     if should_deactivate {
         if let Some(tracked) = session.interactions.pointer_constraints.active.take() {
+            session.interactions.pointer_constraints.suspended = None;
             deactivate_tracked(
                 session,
                 &pointer,
@@ -720,6 +925,7 @@ pub(super) fn active<D: SessionDriver>(
         kind: tracked.kind,
         surface_size: tracked.geometry.surface_size,
         region: tracked.geometry.region.clone(),
+        input_region: tracked.geometry.input_region.clone(),
         presentation: tracked.geometry.presentation.clone(),
     })
 }
@@ -744,12 +950,15 @@ pub(super) struct ActiveConstraint {
     pub kind: ConstraintKind,
     surface_size: Size<i32, Logical>,
     region: Option<RegionAttributes>,
+    input_region: Option<RegionAttributes>,
     presentation: WindowPresentation,
 }
 
 pub(super) fn cursor_visible<D: SessionDriver>(session: &Session<D>) -> bool {
     session.seat.get_pointer().is_none_or(|pointer| {
-        active(session, &pointer).is_none_or(|constraint| constraint.kind != ConstraintKind::Locked)
+        active(session, &pointer).is_none_or(|constraint| {
+            constraint.kind != ConstraintKind::Locked || enforcement_suspended(session, &pointer)
+        })
     })
 }
 
@@ -769,8 +978,12 @@ pub(super) fn confined_position<D: SessionDriver>(
     let local = constraint
         .presentation
         .surface_from_screen(&constraint.surface, screen)?;
-    let corrected =
-        clamp_into_constraint(local, constraint.surface_size, constraint.region.as_ref())?;
+    let corrected = clamp_into_constraint(
+        local,
+        constraint.surface_size,
+        constraint.region.as_ref(),
+        constraint.input_region.as_ref(),
+    )?;
     if corrected == local {
         return None;
     }
@@ -790,6 +1003,7 @@ fn clamp_into_constraint(
     local: Point<f64, Logical>,
     surface_size: Size<i32, Logical>,
     region: Option<&RegionAttributes>,
+    input_region: Option<&RegionAttributes>,
 ) -> Option<Point<f64, Logical>> {
     if surface_size.w <= 0 || surface_size.h <= 0 {
         return None;
@@ -800,10 +1014,12 @@ fn clamp_into_constraint(
         local.x.clamp(0.0, f64::from(surface_size.w).next_down()),
         local.y.clamp(0.0, f64::from(surface_size.h).next_down()),
     ));
-    if region.is_none_or(|region| region.contains(clamped.to_i32_floor())) {
+    if region.is_none_or(|region| region.contains(clamped.to_i32_floor()))
+        && input_region.is_none_or(|region| region.contains(clamped.to_i32_floor()))
+    {
         return Some(clamped);
     }
-    nearest_valid_point(local, surface_size, region)
+    nearest_valid_point(local, surface_size, region, input_region)
 }
 
 pub(super) fn apply_position_hint<D: SessionDriver>(
@@ -978,7 +1194,7 @@ mod tests {
         };
 
         assert_eq!(
-            nearest_valid_point((50.0, 50.0).into(), (100, 100).into(), Some(&region)),
+            nearest_valid_point((50.0, 50.0).into(), (100, 100).into(), Some(&region), None,),
             Some(Point::from((50.0, 60.0)))
         );
     }
@@ -1011,12 +1227,12 @@ mod tests {
 
         // Inside stays untouched, so no correction is reported upstream.
         assert_eq!(
-            clamp_into_constraint((40.5, 20.25).into(), surface, None),
+            clamp_into_constraint((40.5, 20.25).into(), surface, None, None),
             Some(Point::from((40.5, 20.25)))
         );
         // Outside on both axes is pulled back onto the surface.
         assert_eq!(
-            clamp_into_constraint((-30.0, 500.0).into(), surface, None),
+            clamp_into_constraint((-30.0, 500.0).into(), surface, None, None),
             Some(Point::from((0.0, f64::from(80).next_down())))
         );
     }
@@ -1024,7 +1240,7 @@ mod tests {
     #[test]
     fn clamping_preserves_the_tangential_component_of_an_edge_slide() {
         let surface = Size::from((100, 80));
-        let slide = clamp_into_constraint((-5.0, 33.75).into(), surface, None)
+        let slide = clamp_into_constraint((-5.0, 33.75).into(), surface, None, None)
             .expect("a positive surface size always yields a projection");
 
         assert_eq!(slide.x, 0.0);
@@ -1050,7 +1266,7 @@ mod tests {
 
         // A bounds clamp cannot describe the hole, so the projection runs.
         assert_eq!(
-            clamp_into_constraint((50.0, 50.0).into(), (100, 100).into(), Some(&region)),
+            clamp_into_constraint((50.0, 50.0).into(), (100, 100).into(), Some(&region), None,),
             Some(Point::from((50.0, 60.0)))
         );
     }
@@ -1058,8 +1274,43 @@ mod tests {
     #[test]
     fn a_degenerate_surface_has_no_valid_position() {
         assert_eq!(
-            clamp_into_constraint((5.0, 5.0).into(), (0, 40).into(), None),
+            clamp_into_constraint((5.0, 5.0).into(), (0, 40).into(), None, None),
             None
+        );
+    }
+
+    #[test]
+    fn confinement_intersects_constraint_and_surface_input_regions() {
+        let constraint = RegionAttributes {
+            rects: vec![(
+                RectangleKind::Add,
+                Rectangle::new((0, 0).into(), (80, 80).into()),
+            )],
+        };
+        let input = RegionAttributes {
+            rects: vec![(
+                RectangleKind::Add,
+                Rectangle::new((40, 20).into(), (50, 50).into()),
+            )],
+        };
+
+        assert_eq!(
+            clamp_into_constraint(
+                (10.0, 30.0).into(),
+                (100, 100).into(),
+                Some(&constraint),
+                Some(&input),
+            ),
+            Some(Point::from((40.0, 30.0)))
+        );
+        assert_eq!(
+            clamp_into_constraint(
+                (90.0, 30.0).into(),
+                (100, 100).into(),
+                Some(&constraint),
+                Some(&input),
+            ),
+            Some(Point::from((79.0, 30.0)))
         );
     }
 }

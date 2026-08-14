@@ -166,7 +166,6 @@ pub(super) fn dispatch<D: SessionDriver>(
         super::super::SpawnContext {
             socket_name,
             x11_display: x11_display.as_deref(),
-            cursor_theme: session.cursor.theme_name(),
             cursor_size: session.cursor.size(),
             environment: &session.launch_environment,
         },

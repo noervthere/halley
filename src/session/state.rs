@@ -164,7 +164,6 @@ impl<D: SessionDriver> Session<D> {
         let x11_display = self.xwayland.display_name();
         self.autostart.run_once(
             x11_display.as_deref(),
-            self.cursor.theme_name(),
             self.cursor.size(),
             &self.launch_environment,
         );
@@ -175,7 +174,6 @@ impl<D: SessionDriver> Session<D> {
         self.autostart.run_reload(
             commands,
             x11_display.as_deref(),
-            self.cursor.theme_name(),
             self.cursor.size(),
             &self.launch_environment,
         );
@@ -337,10 +335,11 @@ impl<D: SessionDriver> Session<D> {
         self.keyboard
             .reload(&config.keybinds, D::BACKEND_KIND, launch_path.as_deref());
         crate::input::config::reload(self, &config.input);
+        let cursor_size_changed = self.cursor.size() != config.cursor.size;
         let cursor_changed = self.cursor.reload(&config.cursor);
         let cursor_visibility_changed = self.cursor_policy.reload(&config.cursor);
-        if cursor_changed && self.publish_session_environment {
-            super::environment::publish_cursor(&config.cursor);
+        if cursor_size_changed && self.publish_session_environment {
+            super::environment::publish_cursor_size(config.cursor.size);
         }
         let window_rules_redraw = self.window_rules_reload_changes_visuals(&config.window_rules);
         let decorations_changed =

@@ -1,16 +1,17 @@
 use std::error::Error;
 
-use smithay::backend::renderer::element::Kind;
 use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
 use smithay::backend::renderer::element::surface::{
     WaylandSurfaceRenderElement, render_elements_from_surface_tree,
 };
+use smithay::backend::renderer::element::{Element, Id, Kind};
 use smithay::backend::renderer::gles::GlesRenderer;
+use smithay::backend::renderer::utils::with_renderer_surface_state;
 use smithay::input::pointer::CursorIcon;
 use smithay::output::Output;
 use smithay::utils::{Logical, Physical, Point, Rectangle, Scale};
 
-use super::{CursorFrame, CursorManager, RenderCursor};
+use super::{CursorFrame, CursorManager, CursorSurfaceSnapshot, RenderCursor};
 
 smithay::backend::renderer::element::render_elements! {
     pub CursorRenderElement<=GlesRenderer>;
@@ -61,29 +62,14 @@ pub fn elements(
             ) else {
                 return Ok(Vec::new());
             };
-            if let Some(snapshot) = snapshot {
-                return Ok(vec![
-                    MemoryRenderBufferRenderElement::from_buffer(
-                        renderer,
-                        position.to_f64(),
-                        &snapshot.buffer,
-                        None,
-                        None,
-                        None,
-                        Kind::Cursor,
-                    )?
-                    .into(),
-                ]);
-            }
-            let elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
-                render_elements_from_surface_tree(
-                    renderer,
-                    &surface,
-                    position,
-                    Scale::from(output.current_scale().fractional_scale()),
-                    1.0,
-                    Kind::Cursor,
-                );
+            let elements = surface_elements(
+                renderer,
+                &surface,
+                snapshot.as_deref(),
+                position,
+                Scale::from(output.current_scale().fractional_scale()),
+                Kind::Cursor,
+            )?;
             // A cursor surface can remain alive while losing its committed
             // buffer across a lock, VT switch, suspend, or client teardown.
             // Treat that as stale client state and draw the themed arrow for
@@ -109,9 +95,53 @@ pub fn elements(
                     .into(),
                 ]);
             }
-            Ok(elements.into_iter().map(Into::into).collect())
+            Ok(elements)
         }
     }
+}
+
+pub(crate) fn surface_elements(
+    renderer: &mut GlesRenderer,
+    surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+    snapshot: Option<&CursorSurfaceSnapshot>,
+    position: Point<i32, Physical>,
+    scale: Scale<f64>,
+    kind: Kind,
+) -> Result<Vec<CursorRenderElement>, Box<dyn Error>> {
+    let elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
+        render_elements_from_surface_tree(renderer, surface, position, scale, 1.0, kind);
+    let Some(snapshot) = snapshot else {
+        return Ok(elements.into_iter().map(Into::into).collect());
+    };
+    let Some(view) = with_renderer_surface_state(surface, |state| state.view()).flatten() else {
+        return Ok(elements.into_iter().map(Into::into).collect());
+    };
+
+    let root_id = Id::from_wayland_resource(surface);
+    let root = MemoryRenderBufferRenderElement::from_buffer(
+        renderer,
+        position.to_f64() + view.offset.to_f64().to_physical(scale),
+        &snapshot.buffer,
+        None,
+        Some(view.src),
+        Some(view.dst),
+        kind,
+    )?;
+    let mut root = Some(root);
+    let mut rendered = Vec::with_capacity(elements.len().max(1));
+    for element in elements {
+        if element.id() == &root_id {
+            rendered.push(root.take().expect("cursor root appears once").into());
+        } else {
+            rendered.push(element.into());
+        }
+    }
+    // A snapshot can outlive the renderer's texture for one commit. Keep the
+    // root visible and preserve any imported subsurfaces in that interval.
+    if let Some(root) = root {
+        rendered.push(root.into());
+    }
+    Ok(rendered)
 }
 
 fn named_cursor_origin(

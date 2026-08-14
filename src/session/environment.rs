@@ -81,7 +81,7 @@ pub fn prepare_session() {
 
 /// Publishes the compositor socket only after it exists, then refreshes the
 /// portal frontend so D-Bus activation sees the complete Halley environment.
-pub fn activate_session(wayland_display: &OsStr, cursor: &halley_config::Cursor) {
+pub fn activate_session(wayland_display: &OsStr, cursor_size: u8) {
     unsafe {
         std::env::set_var("WAYLAND_DISPLAY", wayland_display);
     }
@@ -122,13 +122,13 @@ pub fn activate_session(wayland_display: &OsStr, cursor: &halley_config::Cursor)
     } else {
         publish_dinit_variables(&SESSION_VARIABLES);
     }
-    publish_cursor(cursor);
+    publish_cursor_size(cursor_size);
 }
 
-/// Updates activation environments for applications started after a cursor
-/// config reload. Existing processes retain their launch environment.
-pub fn publish_cursor(cursor: &halley_config::Cursor) {
-    let assignments = cursor_assignments(cursor);
+/// Updates the cursor size for applications activated after a config reload.
+/// Existing processes retain their launch environment.
+pub fn publish_cursor_size(cursor_size: u8) {
+    let assignments = cursor_assignments(cursor_size);
     let mut dbus = Command::new("dbus-update-activation-environment");
     if systemd_is_enabled() {
         dbus.arg("--systemd");
@@ -271,11 +271,8 @@ fn run_optional(label: &str, command: &mut Command) {
     }
 }
 
-fn cursor_assignments(cursor: &halley_config::Cursor) -> [OsString; 2] {
-    [
-        OsString::from(format!("XCURSOR_THEME={}", cursor.theme)),
-        OsString::from(format!("XCURSOR_SIZE={}", cursor.size)),
-    ]
+fn cursor_assignments(cursor_size: u8) -> [OsString; 1] {
+    [OsString::from(format!("XCURSOR_SIZE={cursor_size}"))]
 }
 
 #[cfg(test)]
@@ -295,17 +292,9 @@ mod tests {
 
     #[test]
     fn cursor_assignments_use_the_validated_runtime_config() {
-        let cursor = halley_config::Cursor {
-            theme: "Breeze".to_string(),
-            size: 32,
-            ..halley_config::Cursor::default()
-        };
         assert_eq!(
-            cursor_assignments(&cursor),
-            [
-                std::ffi::OsString::from("XCURSOR_THEME=Breeze"),
-                std::ffi::OsString::from("XCURSOR_SIZE=32"),
-            ]
+            cursor_assignments(32),
+            [std::ffi::OsString::from("XCURSOR_SIZE=32")]
         );
     }
 

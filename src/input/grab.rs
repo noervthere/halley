@@ -37,6 +37,49 @@ pub struct PendingWindowMove {
     pub client_owned: bool,
 }
 
+/// Coordinate space used to keep a dragged window attached to the pointer.
+///
+/// Field windows scale with the destination camera, so their grip must remain
+/// in source/`Space` coordinates. Cluster workspace cards are deliberately
+/// screen-sized while held, so they retain a screen-pixel offset instead.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum WindowGrabAnchor {
+    Source(Vec2),
+    Screen(Vec2),
+}
+
+impl WindowGrabAnchor {
+    pub fn world_location(
+        self,
+        pointer: (f64, f64),
+        camera: &Camera,
+        output_geometry: Rectangle<i32, Logical>,
+    ) -> Point<i32, Logical> {
+        let world = screen_to_world_on_output(pointer, camera, output_geometry);
+        let offset = match self {
+            Self::Source(offset) => offset,
+            Self::Screen(offset) => screen_offset_to_world(offset, camera),
+        };
+        Point::from((
+            (world.x + offset.x).round() as i32,
+            (world.y + offset.y).round() as i32,
+        ))
+    }
+
+    pub fn screen_offset(self, camera: &Camera) -> Vec2 {
+        match self {
+            Self::Source(offset) => {
+                let scale = crate::input::zoom::scale(camera);
+                Vec2 {
+                    x: offset.x * scale,
+                    y: offset.y * scale,
+                }
+            }
+            Self::Screen(offset) => offset,
+        }
+    }
+}
+
 /// What's currently being dragged with the left mouse button held, if
 /// anything - `None` the rest of the time. Lives on `App`/`TtyApp` next to
 /// `pointer`/`camera`, mirroring how each of those was added for one
@@ -48,9 +91,9 @@ pub enum Grab {
     /// or drag, so no compositor move side effects happen until motion crosses
     /// the shared drag threshold.
     PendingWindowMove(PendingWindowMove),
-    /// Cursor-to-window offset in screen pixels. Keeping this in screen
-    /// space preserves the exact grip point when crossing between outputs
-    /// with different zoom scales.
+    /// Cursor-to-window anchor in the coordinate space of the window's live
+    /// presentation. Field windows use source coordinates; screen-sized
+    /// cluster cards use output pixels.
     MoveWindow {
         id: Option<halley_core::field::NodeId>,
         window: Window,
@@ -66,7 +109,7 @@ pub enum Grab {
         /// client's implicit pointer grab. Compositor-only moves must not send
         /// an orphan release for a press they intercepted.
         client_owned: bool,
-        screen_offset: Vec2,
+        anchor: WindowGrabAnchor,
         last_world: Vec2,
         last_update: Duration,
         velocity: Vec2,
@@ -125,12 +168,7 @@ pub(crate) fn world_location_from_screen_grip(
     camera: &Camera,
     output_geometry: Rectangle<i32, Logical>,
 ) -> Point<i32, Logical> {
-    let world = screen_to_world_on_output(pointer, camera, output_geometry);
-    let world_offset = screen_offset_to_world(screen_offset, camera);
-    Point::from((
-        (world.x + world_offset.x).round() as i32,
-        (world.y + world_offset.y).round() as i32,
-    ))
+    WindowGrabAnchor::Screen(screen_offset).world_location(pointer, camera, output_geometry)
 }
 
 impl Grab {
@@ -148,6 +186,7 @@ impl Grab {
 }
 
 pub fn belongs_to_surface(grab: &Grab, surface: &WlSurface) -> bool {
+    let root = crate::wayland::compositor::root_surface(surface);
     let window = match grab {
         Grab::PendingWindowMove(pending) => Some(&pending.window),
         Grab::MoveWindow { window, .. } => Some(window),
@@ -160,9 +199,9 @@ pub fn belongs_to_surface(grab: &Grab, surface: &WlSurface) -> bool {
         | Grab::MoveClusterCore { .. } => None,
     };
     window.is_some_and(|window| {
-        window
-            .wl_surface()
-            .is_some_and(|candidate| candidate.as_ref() == surface)
+        window.wl_surface().is_some_and(|candidate| {
+            crate::wayland::compositor::root_surface(candidate.as_ref()) == root
+        })
     }) || matches!(
         grab,
         Grab::PendingNode {
@@ -171,7 +210,7 @@ pub fn belongs_to_surface(grab: &Grab, surface: &WlSurface) -> bool {
         } | Grab::MoveNode {
             surface: candidate,
             ..
-        } if candidate == surface
+        } if crate::wayland::compositor::root_surface(candidate) == root
     )
 }
 
@@ -190,6 +229,20 @@ pub enum ResizeHandle {
 }
 
 impl ResizeHandle {
+    pub fn cursor_icon(self) -> smithay::input::pointer::CursorIcon {
+        use smithay::input::pointer::CursorIcon;
+        match self {
+            Self::Left => CursorIcon::WResize,
+            Self::Right => CursorIcon::EResize,
+            Self::Top => CursorIcon::NResize,
+            Self::Bottom => CursorIcon::SResize,
+            Self::TopLeft => CursorIcon::NwResize,
+            Self::TopRight => CursorIcon::NeResize,
+            Self::BottomLeft => CursorIcon::SwResize,
+            Self::BottomRight => CursorIcon::SeResize,
+        }
+    }
+
     pub fn moves_left(self) -> bool {
         matches!(self, Self::Left | Self::TopLeft | Self::BottomLeft)
     }
@@ -572,6 +625,22 @@ pub fn screen_offset_to_world(offset: Vec2, camera: &Camera) -> Vec2 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resize_handles_map_to_directional_cursor_icons() {
+        use smithay::input::pointer::CursorIcon;
+        assert_eq!(ResizeHandle::Left.cursor_icon(), CursorIcon::WResize);
+        assert_eq!(ResizeHandle::Right.cursor_icon(), CursorIcon::EResize);
+        assert_eq!(ResizeHandle::Top.cursor_icon(), CursorIcon::NResize);
+        assert_eq!(ResizeHandle::Bottom.cursor_icon(), CursorIcon::SResize);
+        assert_eq!(ResizeHandle::TopLeft.cursor_icon(), CursorIcon::NwResize);
+        assert_eq!(ResizeHandle::TopRight.cursor_icon(), CursorIcon::NeResize);
+        assert_eq!(ResizeHandle::BottomLeft.cursor_icon(), CursorIcon::SwResize);
+        assert_eq!(
+            ResizeHandle::BottomRight.cursor_icon(),
+            CursorIcon::SeResize
+        );
+    }
 
     fn camera_at_rest() -> Camera {
         Camera::new(
@@ -962,6 +1031,71 @@ mod tests {
         assert_eq!(
             world_location_from_screen_grip(pointer, offset, &camera, output),
             Point::from((0, -40))
+        );
+    }
+
+    #[test]
+    fn source_grip_stays_inside_a_window_when_destination_zoom_shrinks_it() {
+        let source_offset = Vec2 {
+            x: -900.0,
+            y: -400.0,
+        };
+        let anchor = WindowGrabAnchor::Source(source_offset);
+        let output = Rectangle::new((1280, 0).into(), (1280, 800).into());
+        let mut camera = camera_at_rest();
+        camera.center = Vec2 { x: 740.0, y: 450.0 };
+        camera.view_size = Vec2 {
+            x: 2560.0,
+            y: 1600.0,
+        };
+        let pointer = (2200.0, 500.0);
+
+        let location = anchor.world_location(pointer, &camera, output);
+        let visual_offset = anchor.screen_offset(&camera);
+        let world = screen_to_world_on_output(pointer, &camera, output);
+
+        assert_eq!(
+            location,
+            Point::from((
+                (world.x + source_offset.x).round() as i32,
+                (world.y + source_offset.y).round() as i32,
+            ))
+        );
+        assert_eq!(
+            visual_offset,
+            Vec2 {
+                x: -450.0,
+                y: -200.0,
+            }
+        );
+        // The same logical point remains under the cursor: a grip 900 units
+        // into a 1000-unit-wide window becomes 450 px into its 500 px visual.
+        assert!(-visual_offset.x < 1000.0 * crate::input::zoom::scale(&camera));
+        assert!(-visual_offset.y < 500.0 * crate::input::zoom::scale(&camera));
+    }
+
+    #[test]
+    fn source_and_screen_anchors_scale_differently_across_outputs() {
+        let mut camera = camera_at_rest();
+        camera.view_size = Vec2 {
+            x: 2560.0,
+            y: 1600.0,
+        };
+        let offset = Vec2 {
+            x: -300.0,
+            y: -120.0,
+        };
+
+        assert_eq!(
+            WindowGrabAnchor::Source(offset).screen_offset(&camera),
+            Vec2 {
+                x: -150.0,
+                y: -60.0,
+            }
+        );
+        assert_eq!(
+            WindowGrabAnchor::Screen(offset).screen_offset(&camera),
+            offset
         );
     }
 }

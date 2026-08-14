@@ -224,12 +224,11 @@ input:
   # end
 end
 
-# Cursor themes use the standard Xcursor search path and inheritance rules.
-# Changes are applied immediately to Halley's cursor and exported to programs
-# launched after the reload.
+# Cursor themes use the standard Xcursor search path and theme inheritance.
+# Theme changes are applied immediately to Halley's compositor cursor.
 cursor:
-  # `"default"` follows the desktop's configured Xcursor theme. Theme names
-  # are case-sensitive; use `"Adwaita"` to require that theme explicitly.
+  # This configured name is authoritative; Halley does not inherit the theme
+  # from its process environment. Theme names are case-sensitive.
   theme "default"
 
   # Base logical size. Halley selects the closest frame supplied by the theme
@@ -239,6 +238,10 @@ cursor:
   # Hide after a physical keyboard press, without changing pointer focus,
   # grabs, or constraints. Pointer motion, buttons, and scrolling reveal it.
   hide-when-typing false
+
+  # Hide on touch-down so a stale mouse cursor does not sit over touch UI.
+  # Physical pointer activity reveals it again.
+  hide-on-touch true
 
   # Hide after this many milliseconds without pointer activity. Set to 0 to
   # disable inactivity hiding.

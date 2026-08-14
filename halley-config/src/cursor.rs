@@ -12,6 +12,7 @@ pub struct Cursor {
     pub theme: String,
     pub size: u8,
     pub hide_when_typing: bool,
+    pub hide_on_touch: bool,
     pub hide_after_ms: Option<u32>,
 }
 
@@ -21,6 +22,7 @@ impl Default for Cursor {
             theme: "default".to_string(),
             size: DEFAULT_SIZE,
             hide_when_typing: false,
+            hide_on_touch: true,
             hide_after_ms: Some(DEFAULT_HIDE_AFTER_MS),
         }
     }
@@ -52,6 +54,7 @@ pub fn parse_cursor(config: &RuneConfig) -> Cursor {
         theme,
         size,
         hide_when_typing: config.get_or("cursor.hide-when-typing", defaults.hide_when_typing),
+        hide_on_touch: config.get_or("cursor.hide-on-touch", defaults.hide_on_touch),
         hide_after_ms,
     }
 }
@@ -68,6 +71,7 @@ cursor:
   theme "Breeze"
   size 32
   hide-when-typing true
+  hide-on-touch false
   hide-after-ms 750
 end
 "#,
@@ -80,6 +84,7 @@ end
                 theme: "Breeze".to_string(),
                 size: 32,
                 hide_when_typing: true,
+                hide_on_touch: false,
                 hide_after_ms: Some(750),
             }
         );

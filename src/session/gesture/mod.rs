@@ -317,9 +317,10 @@ where
                         session.settings.apogee,
                     );
                     if gesture.interactive_started {
-                        session
-                            .cursor
-                            .set_override(Some(smithay::input::pointer::CursorIcon::Default));
+                        session.cursor.set_override(
+                            crate::cursor::OverrideSource::Modal,
+                            Some(smithay::input::pointer::CursorIcon::Default),
+                        );
                         super::note_pointer_activity(session);
                     }
                 }
