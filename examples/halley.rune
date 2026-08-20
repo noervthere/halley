@@ -330,19 +330,6 @@ effects:
     # notifications, popups, and labels) to use blur.
     overlays true
 
-    # Client window blur behaviour:
-    #   "off"    = no global client-window blur
-    #   "auto"   = blur only when requested by a translucent client
-    #   "always" = blur managed windows, including compositor fullscreen;
-    #              client-requested fullscreen keeps its immersive fast path
-    windows "auto"
-
-    # Layer-shell blur behaviour for bars, launchers, notifications, etc.:
-    #   "off"    = no global layer-shell blur
-    #   "auto"   = blur top/overlay layer-shell clients
-    #   "always" = blur background/bottom/top/overlay layer-shell clients
-    layer-shell "off"
-
     # Quality / performance. Dual Kawase is a downsampled multi-pass blur
     # tuned to look Gaussian-ish without a true large-kernel Gaussian's cost.
     method "dual-kawase"
@@ -410,6 +397,7 @@ background:
   # animated true
 end
 
+# Window and layer-shell rules make client blur activation explicit.
 # Managed-window rules are shared by native Wayland and XWayland windows.
 # Rules are checked top-to-bottom and only the first complete match applies.
 # Exact strings are case-sensitive; r"..." values are regular expressions.
@@ -423,6 +411,12 @@ rules:
   #   blur true
   #   spawn-placement "cursor"
   #   cluster-participation "float"
+  # end
+  #
+  # layer-rule:
+  #   namespace ["waybar", r"^fuzzel$"]
+  #   layer ["top", "overlay"]
+  #   blur true
   # end
 end
 

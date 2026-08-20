@@ -7,13 +7,13 @@ use rune_cfg::RuneConfig;
 use crate::{
     Animations, Apogee, Autostart, Background, BackgroundParseError, Bearings, Clusters, Cursor,
     Debug, Decay, Decorations, Effects, EffectsParseError, Field, FieldParseError, FocusRings,
-    Font, Input, InputParseError, Keybinds, LaunchConfigError, NodeParseError, Nodes, OutputConfig,
-    OverlayParseError, Overlays, Physics, Screenshot, WindowRule, WindowRuleParseError,
-    parse_animations, parse_apogee, parse_autostart, parse_background, parse_bearings,
-    parse_clusters, parse_cursor, parse_debug, parse_decay, parse_decorations, parse_effects,
-    parse_env, parse_field_checked, parse_font, parse_input, parse_keybinds, parse_nodes_checked,
-    parse_overlays_checked, parse_physics, parse_screenshot, parse_view_checked,
-    parse_window_rules,
+    Font, Input, InputParseError, Keybinds, LaunchConfigError, LayerRule, NodeParseError, Nodes,
+    OutputConfig, OverlayParseError, Overlays, Physics, Screenshot, WindowRule,
+    WindowRuleParseError, parse_animations, parse_apogee, parse_autostart, parse_background,
+    parse_bearings, parse_clusters, parse_cursor, parse_debug, parse_decay, parse_decorations,
+    parse_effects, parse_env, parse_field_checked, parse_font, parse_input, parse_keybinds,
+    parse_nodes_checked, parse_overlays_checked, parse_physics, parse_rules, parse_screenshot,
+    parse_view_checked,
 };
 use crate::{ViewConfig, ViewParseError};
 
@@ -28,6 +28,7 @@ pub struct RuntimeConfig {
     pub decorations: Decorations,
     pub background: Background,
     pub window_rules: Vec<WindowRule>,
+    pub layer_rules: Vec<LayerRule>,
     pub field: Field,
     pub screenshot: Screenshot,
     pub cursor: Cursor,
@@ -59,7 +60,7 @@ pub enum RuntimeConfigError {
     Effects(EffectsParseError),
     Field(FieldParseError),
     Background(BackgroundParseError),
-    WindowRule(WindowRuleParseError),
+    Rule(WindowRuleParseError),
 }
 
 impl fmt::Display for RuntimeConfigError {
@@ -75,7 +76,7 @@ impl fmt::Display for RuntimeConfigError {
             Self::Effects(err) => write!(f, "{err}"),
             Self::Field(err) => write!(f, "{err}"),
             Self::Background(err) => write!(f, "{err}"),
-            Self::WindowRule(err) => write!(f, "{err}"),
+            Self::Rule(err) => write!(f, "{err}"),
         }
     }
 }
@@ -144,7 +145,7 @@ impl From<BackgroundParseError> for RuntimeConfigError {
 
 impl From<WindowRuleParseError> for RuntimeConfigError {
     fn from(value: WindowRuleParseError) -> Self {
-        Self::WindowRule(value)
+        Self::Rule(value)
     }
 }
 
@@ -153,13 +154,15 @@ pub fn parse_runtime_config(config: &RuneConfig) -> Result<RuntimeConfig, Runtim
         outputs,
         focus_rings,
     } = parse_view_checked(config)?;
+    let rules = parse_rules(config)?;
     Ok(RuntimeConfig {
         env: parse_env(config)?,
         autostart: parse_autostart(config)?,
         keybinds: parse_keybinds(config)?,
         decorations: parse_decorations(config),
         background: parse_background(config)?,
-        window_rules: parse_window_rules(config)?,
+        window_rules: rules.windows,
+        layer_rules: rules.layers,
         field: parse_field_checked(config)?,
         screenshot: parse_screenshot(config),
         cursor: parse_cursor(config),

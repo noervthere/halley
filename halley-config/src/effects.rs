@@ -3,13 +3,6 @@ use std::fmt;
 use rune_cfg::RuneConfig;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ClientBlurMode {
-    Off,
-    Auto,
-    Always,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BlurMethod {
     DualKawase,
 }
@@ -18,8 +11,6 @@ pub enum BlurMethod {
 pub struct Blur {
     pub enabled: bool,
     pub overlays: bool,
-    pub windows: ClientBlurMode,
-    pub layer_shell: ClientBlurMode,
     pub method: BlurMethod,
     pub radius: f32,
     pub passes: u32,
@@ -27,28 +18,11 @@ pub struct Blur {
     pub noise: f32,
 }
 
-/// Resolves compositor-policy blur for one managed window.
-///
-/// Explicit client background-effect regions are separate: this policy only
-/// decides whether Halley adds a full-window backdrop blur of its own.
-pub fn window_blur_enabled(
-    blur: Blur,
-    rule_blur: Option<bool>,
-    opacity: f32,
-    excluded: bool,
-) -> bool {
-    if !blur.enabled || excluded {
-        return false;
-    }
-    match rule_blur {
-        Some(false) => false,
-        Some(true) => true,
-        None => match blur.windows {
-            ClientBlurMode::Off => false,
-            ClientBlurMode::Always => true,
-            ClientBlurMode::Auto => opacity < 0.999,
-        },
-    }
+/// Resolves whether Halley should add a full-window blur when the client did
+/// not supply an explicit region. A false rule is handled by the caller before
+/// protocol regions are read, because it suppresses client-requested blur too.
+pub fn window_blur_enabled(blur: Blur, rule_blur: Option<bool>, excluded: bool) -> bool {
+    blur.enabled && !excluded && rule_blur == Some(true)
 }
 
 impl Default for Blur {
@@ -56,8 +30,6 @@ impl Default for Blur {
         Self {
             enabled: false,
             overlays: true,
-            windows: ClientBlurMode::Auto,
-            layer_shell: ClientBlurMode::Off,
             method: BlurMethod::DualKawase,
             radius: 24.0,
             passes: 3,
@@ -141,7 +113,14 @@ pub struct Effects {
 #[derive(Debug)]
 pub enum EffectsParseError {
     Rune(rune_cfg::RuneError),
-    InvalidValue { path: &'static str, value: String },
+    InvalidValue {
+        path: &'static str,
+        value: String,
+    },
+    Deprecated {
+        path: &'static str,
+        replacement: &'static str,
+    },
 }
 
 impl fmt::Display for EffectsParseError {
@@ -150,6 +129,9 @@ impl fmt::Display for EffectsParseError {
             Self::Rune(error) => write!(f, "{error}"),
             Self::InvalidValue { path, value } => {
                 write!(f, "invalid value {value:?} for {path}")
+            }
+            Self::Deprecated { path, replacement } => {
+                write!(f, "{path} has been removed; {replacement}")
             }
         }
     }
@@ -165,6 +147,16 @@ impl From<rune_cfg::RuneError> for EffectsParseError {
 
 pub fn parse_effects(config: &RuneConfig) -> Result<Effects, EffectsParseError> {
     let defaults = Blur::default();
+    reject_legacy_blur_policy(
+        config,
+        "effects.blur.windows",
+        "use `rules.rule.blur` instead",
+    )?;
+    reject_legacy_blur_policy(
+        config,
+        "effects.blur.layer-shell",
+        "use `rules.layer-rule.blur` instead",
+    )?;
     let radius = finite_clamp(
         config.get_or("effects.blur.radius", defaults.radius),
         0.0,
@@ -187,8 +179,6 @@ pub fn parse_effects(config: &RuneConfig) -> Result<Effects, EffectsParseError> 
         blur: Blur {
             enabled: config.get_or("effects.blur.enabled", defaults.enabled),
             overlays: config.get_or("effects.blur.overlays", defaults.overlays),
-            windows: parse_mode(config, "effects.blur.windows", defaults.windows)?,
-            layer_shell: parse_mode(config, "effects.blur.layer-shell", defaults.layer_shell)?,
             method: parse_method(config, defaults.method)?,
             radius,
             passes: config
@@ -199,6 +189,17 @@ pub fn parse_effects(config: &RuneConfig) -> Result<Effects, EffectsParseError> 
         },
         shadows: parse_shadows(config)?,
     })
+}
+
+fn reject_legacy_blur_policy(
+    config: &RuneConfig,
+    path: &'static str,
+    replacement: &'static str,
+) -> Result<(), EffectsParseError> {
+    if config.get_optional::<String>(path)?.is_some() {
+        return Err(EffectsParseError::Deprecated { path, replacement });
+    }
+    Ok(())
 }
 
 fn parse_shadows(config: &RuneConfig) -> Result<Shadows, EffectsParseError> {
@@ -284,22 +285,6 @@ fn parse_hex_rgba(value: &str) -> Option<ShadowColor> {
     })
 }
 
-fn parse_mode(
-    config: &RuneConfig,
-    path: &'static str,
-    default: ClientBlurMode,
-) -> Result<ClientBlurMode, EffectsParseError> {
-    let Some(value) = config.get_optional::<String>(path)? else {
-        return Ok(default);
-    };
-    match value.trim().to_ascii_lowercase().as_str() {
-        "off" => Ok(ClientBlurMode::Off),
-        "auto" => Ok(ClientBlurMode::Auto),
-        "always" => Ok(ClientBlurMode::Always),
-        _ => Err(EffectsParseError::InvalidValue { path, value }),
-    }
-}
-
 fn parse_method(config: &RuneConfig, default: BlurMethod) -> Result<BlurMethod, EffectsParseError> {
     let Some(value) = config.get_optional::<String>("effects.blur.method")? else {
         return Ok(default);
@@ -330,8 +315,6 @@ mod tests {
         let blur = Blur::default();
         assert!(!blur.enabled);
         assert!(blur.overlays);
-        assert_eq!(blur.windows, ClientBlurMode::Auto);
-        assert_eq!(blur.layer_shell, ClientBlurMode::Off);
         assert_eq!(blur.method, BlurMethod::DualKawase);
         assert_eq!(blur.radius, 24.0);
         assert_eq!(blur.passes, 3);
@@ -348,17 +331,15 @@ mod tests {
     }
 
     #[test]
-    fn window_blur_respects_rule_precedence_and_auto_opacity() {
+    fn window_blur_only_forces_explicitly_enabled_rules() {
         let blur = Blur {
             enabled: true,
-            windows: ClientBlurMode::Auto,
             ..Blur::default()
         };
-        assert!(window_blur_enabled(blur, Some(true), 1.0, false));
-        assert!(!window_blur_enabled(blur, Some(false), 0.5, false));
-        assert!(window_blur_enabled(blur, None, 0.5, false));
-        assert!(!window_blur_enabled(blur, None, 1.0, false));
-        assert!(!window_blur_enabled(blur, Some(true), 0.5, true));
+        assert!(window_blur_enabled(blur, Some(true), false));
+        assert!(!window_blur_enabled(blur, Some(false), false));
+        assert!(!window_blur_enabled(blur, None, false));
+        assert!(!window_blur_enabled(blur, Some(true), true));
     }
 
     #[test]
@@ -369,8 +350,6 @@ effects:
   blur:
     enabled true
     overlays false
-    windows "always"
-    layer-shell "auto"
     method "dual-kawase"
     radius 30.0
     passes 9
@@ -384,8 +363,6 @@ end
         let blur = parse_effects(&config).unwrap().blur;
         assert!(blur.enabled);
         assert!(!blur.overlays);
-        assert_eq!(blur.windows, ClientBlurMode::Always);
-        assert_eq!(blur.layer_shell, ClientBlurMode::Auto);
         assert_eq!(blur.radius, 30.0);
         assert_eq!(blur.passes, 5);
         assert_eq!(blur.saturation, 1.2);
@@ -393,15 +370,16 @@ end
     }
 
     #[test]
-    fn rejects_unknown_policy_and_method() {
+    fn rejects_legacy_policy_and_unknown_method() {
         for source in [
-            "effects:\n  blur:\n    windows \"sometimes\"\n  end\nend\n",
+            "effects:\n  blur:\n    windows \"always\"\n  end\nend\n",
+            "effects:\n  blur:\n    layer-shell \"auto\"\n  end\nend\n",
             "effects:\n  blur:\n    method \"gaussian\"\n  end\nend\n",
         ] {
             let config = RuneConfig::from_str(source).unwrap();
             assert!(matches!(
                 parse_effects(&config),
-                Err(EffectsParseError::InvalidValue { .. })
+                Err(EffectsParseError::InvalidValue { .. } | EffectsParseError::Deprecated { .. })
             ));
         }
     }

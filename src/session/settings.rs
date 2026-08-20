@@ -15,6 +15,8 @@ pub struct RuntimeSettings {
     pub field: halley_config::Field,
     pub zoom: halley_config::Zoom,
     pub screenshot: halley_config::Screenshot,
+    pub debug: halley_config::Debug,
+    pub layer_rules: Vec<halley_config::LayerRule>,
 }
 
 impl RuntimeSettings {
@@ -30,6 +32,7 @@ impl RuntimeSettings {
             field: config.field,
             zoom: config.field.zoom,
             screenshot: config.screenshot.clone(),
+            layer_rules: config.layer_rules.clone(),
         }
     }
 
@@ -40,6 +43,7 @@ impl RuntimeSettings {
             || self.background != config.background
             || self.zoom != config.field.zoom
             || self.overlays != config.overlays
+            || self.layer_rules != config.layer_rules
     }
 
     /// Replaces settings that do not need protocol-specific application.
@@ -55,6 +59,7 @@ impl RuntimeSettings {
         self.overlays = config.overlays;
         self.zoom = config.field.zoom;
         self.screenshot = config.screenshot.clone();
+        self.layer_rules.clone_from(&config.layer_rules);
     }
 }
 

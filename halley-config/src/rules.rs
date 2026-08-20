@@ -5,12 +5,12 @@ use rune_cfg::RuneConfig;
 use rune_cfg::ast::{ObjectItem, Value};
 
 #[derive(Clone, Debug)]
-pub enum WindowRulePattern {
+pub enum RulePattern {
     Exact(String),
     Regex(Regex),
 }
 
-impl PartialEq for WindowRulePattern {
+impl PartialEq for RulePattern {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Exact(a), Self::Exact(b)) => a == b,
@@ -20,9 +20,9 @@ impl PartialEq for WindowRulePattern {
     }
 }
 
-impl Eq for WindowRulePattern {}
+impl Eq for RulePattern {}
 
-impl WindowRulePattern {
+impl RulePattern {
     pub fn matches(&self, value: &str) -> bool {
         match self {
             Self::Exact(exact) => exact == value,
@@ -37,6 +37,9 @@ impl WindowRulePattern {
         }
     }
 }
+
+/// Backwards-compatible name for patterns used by managed-window rules.
+pub type WindowRulePattern = RulePattern;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum WindowSpawnPlacement {
@@ -67,6 +70,40 @@ pub struct WindowRule {
     pub cluster_participation: WindowClusterParticipation,
 }
 
+/// One protocol layer that a layer-shell rule may match.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LayerShellLayer {
+    Background,
+    Bottom,
+    Top,
+    Overlay,
+}
+
+/// Visual policy for a layer-shell root and its popup tree.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LayerRule {
+    pub namespaces: Vec<RulePattern>,
+    pub layers: Vec<LayerShellLayer>,
+    pub blur: bool,
+}
+
+impl LayerRule {
+    pub fn matches(&self, namespace: &str, layer: LayerShellLayer) -> bool {
+        (self.namespaces.is_empty()
+            || self
+                .namespaces
+                .iter()
+                .any(|pattern| pattern.matches(namespace)))
+            && (self.layers.is_empty() || self.layers.contains(&layer))
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Rules {
+    pub windows: Vec<WindowRule>,
+    pub layers: Vec<LayerRule>,
+}
+
 impl WindowRule {
     pub fn matches(&self, app_id: Option<&str>, title: Option<&str>) -> bool {
         let app_matches = self.app_ids.is_empty()
@@ -88,7 +125,7 @@ impl fmt::Display for WindowRuleParseError {
 
 impl std::error::Error for WindowRuleParseError {}
 
-pub fn parse_window_rules(config: &RuneConfig) -> Result<Vec<WindowRule>, WindowRuleParseError> {
+pub fn parse_rules(config: &RuneConfig) -> Result<Rules, WindowRuleParseError> {
     let Value::Object(root) = config
         .get_value("")
         .map_err(|error| WindowRuleParseError(format!("rules config: {error}")))?
@@ -97,7 +134,7 @@ pub fn parse_window_rules(config: &RuneConfig) -> Result<Vec<WindowRule>, Window
             "rules config root must be an object".to_string(),
         ));
     };
-    let mut rules = Vec::new();
+    let mut rules = Rules::default();
     for section in root.iter().filter_map(|item| match item {
         ObjectItem::Assign(key, Value::Object(fields)) if key == "rules" => Some(fields),
         _ => None,
@@ -108,20 +145,28 @@ pub fn parse_window_rules(config: &RuneConfig) -> Result<Vec<WindowRule>, Window
                     "conditionals are not supported directly inside rules".to_string(),
                 ));
             };
-            if key != "rule" {
+            if !matches!(key.as_str(), "rule" | "layer-rule") {
                 return Err(WindowRuleParseError(format!(
-                    "unknown entry {key:?} inside rules; expected `rule:`"
+                    "unknown entry {key:?} inside rules; expected `rule:` or `layer-rule:`"
                 )));
             }
             let Value::Object(fields) = value else {
-                return Err(WindowRuleParseError(
-                    "rule entry must be an object".to_string(),
-                ));
+                return Err(WindowRuleParseError(format!(
+                    "{key} entry must be an object"
+                )));
             };
-            rules.push(parse_rule(fields)?);
+            match key.as_str() {
+                "rule" => rules.windows.push(parse_rule(fields)?),
+                "layer-rule" => rules.layers.push(parse_layer_rule(fields)?),
+                _ => unreachable!("validated above"),
+            }
         }
     }
     Ok(rules)
+}
+
+pub fn parse_window_rules(config: &RuneConfig) -> Result<Vec<WindowRule>, WindowRuleParseError> {
+    Ok(parse_rules(config)?.windows)
 }
 
 fn parse_rule(fields: &[ObjectItem]) -> Result<WindowRule, WindowRuleParseError> {
@@ -247,6 +292,49 @@ fn parse_rule(fields: &[ObjectItem]) -> Result<WindowRule, WindowRuleParseError>
     })
 }
 
+fn parse_layer_rule(fields: &[ObjectItem]) -> Result<LayerRule, WindowRuleParseError> {
+    for item in fields {
+        let ObjectItem::Assign(key, _) = item else {
+            return Err(WindowRuleParseError(
+                "conditionals are not supported inside a layer rule".to_string(),
+            ));
+        };
+        if !matches!(key.as_str(), "namespace" | "layer" | "blur") {
+            return Err(WindowRuleParseError(format!(
+                "unknown layer rule key {key:?}"
+            )));
+        }
+    }
+
+    let namespaces = field(fields, &["namespace"])
+        .map(|value| patterns(value, "namespace"))
+        .transpose()?
+        .unwrap_or_default();
+    let layers = field(fields, &["layer"])
+        .map(layer_values)
+        .transpose()?
+        .unwrap_or_default();
+    if namespaces.is_empty() && layers.is_empty() {
+        return Err(WindowRuleParseError(
+            "layer rule requires namespace and/or layer".to_string(),
+        ));
+    }
+    let Some(blur) = field(fields, &["blur"])
+        .map(|value| boolean(value, "blur"))
+        .transpose()?
+    else {
+        return Err(WindowRuleParseError(
+            "layer rule requires blur true or false".to_string(),
+        ));
+    };
+
+    Ok(LayerRule {
+        namespaces,
+        layers,
+        blur,
+    })
+}
+
 fn field<'a>(fields: &'a [ObjectItem], names: &[&str]) -> Option<&'a Value> {
     fields.iter().find_map(|item| match item {
         ObjectItem::Assign(key, value) if names.contains(&key.as_str()) => Some(value),
@@ -254,25 +342,58 @@ fn field<'a>(fields: &'a [ObjectItem], names: &[&str]) -> Option<&'a Value> {
     })
 }
 
-fn patterns(
-    value: &Value,
-    field_name: &str,
-) -> Result<Vec<WindowRulePattern>, WindowRuleParseError> {
+fn patterns(value: &Value, field_name: &str) -> Result<Vec<RulePattern>, WindowRuleParseError> {
     match value {
-        Value::String(value) => Ok(vec![WindowRulePattern::Exact(value.clone())]),
-        Value::Regex(value) => Ok(vec![WindowRulePattern::Regex(value.clone())]),
+        Value::String(value) => Ok(vec![RulePattern::Exact(value.clone())]),
+        Value::Regex(value) => Ok(vec![RulePattern::Regex(value.clone())]),
         Value::Array(values) => values
             .iter()
             .map(|value| match value {
-                Value::String(value) => Ok(WindowRulePattern::Exact(value.clone())),
-                Value::Regex(value) => Ok(WindowRulePattern::Regex(value.clone())),
+                Value::String(value) => Ok(RulePattern::Exact(value.clone())),
+                Value::Regex(value) => Ok(RulePattern::Regex(value.clone())),
                 _ => Err(WindowRuleParseError(format!(
-                    "window rule {field_name} array accepts only strings and regexes"
+                    "rule {field_name} array accepts only strings and regexes"
                 ))),
             })
             .collect(),
         _ => Err(WindowRuleParseError(format!(
-            "window rule {field_name} must be a string, regex, or array"
+            "rule {field_name} must be a string, regex, or array"
+        ))),
+    }
+}
+
+fn layer_values(value: &Value) -> Result<Vec<LayerShellLayer>, WindowRuleParseError> {
+    let values = match value {
+        Value::String(value) => std::slice::from_ref(value),
+        Value::Array(values) => {
+            let mut parsed = Vec::with_capacity(values.len());
+            for value in values {
+                let Value::String(value) = value else {
+                    return Err(WindowRuleParseError(
+                        "layer rule layer array accepts only strings".to_string(),
+                    ));
+                };
+                parsed.push(parse_layer(value)?);
+            }
+            return Ok(parsed);
+        }
+        _ => {
+            return Err(WindowRuleParseError(
+                "layer rule layer must be a string or array".to_string(),
+            ));
+        }
+    };
+    values.iter().map(|value| parse_layer(value)).collect()
+}
+
+fn parse_layer(value: &str) -> Result<LayerShellLayer, WindowRuleParseError> {
+    match value {
+        "background" => Ok(LayerShellLayer::Background),
+        "bottom" => Ok(LayerShellLayer::Bottom),
+        "top" => Ok(LayerShellLayer::Top),
+        "overlay" => Ok(LayerShellLayer::Overlay),
+        _ => Err(WindowRuleParseError(format!(
+            "unknown layer rule layer {value:?}"
         ))),
     }
 }
@@ -370,5 +491,45 @@ end
         )
         .unwrap();
         assert_eq!(parse_window_rules(&config).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn parses_layer_rules_and_matches_namespace_and_layer() {
+        let config = RuneConfig::from_str(
+            r#"
+rules:
+  layer-rule:
+    namespace ["waybar", r"^fuzzel$"]
+    layer ["top", "overlay"]
+    blur true
+  end
+  layer-rule:
+    layer "bottom"
+    blur false
+  end
+end
+"#,
+        )
+        .unwrap();
+        let rules = parse_rules(&config).unwrap();
+        assert!(rules.windows.is_empty());
+        assert_eq!(rules.layers.len(), 2);
+        assert!(rules.layers[0].matches("waybar", LayerShellLayer::Top));
+        assert!(rules.layers[0].matches("fuzzel", LayerShellLayer::Overlay));
+        assert!(!rules.layers[0].matches("waybar", LayerShellLayer::Bottom));
+        assert!(rules.layers[1].matches("anything", LayerShellLayer::Bottom));
+        assert!(!rules.layers[1].blur);
+    }
+
+    #[test]
+    fn rejects_incomplete_or_invalid_layer_rules() {
+        for source in [
+            "rules:\n  layer-rule:\n    blur true\n  end\nend\n",
+            "rules:\n  layer-rule:\n    namespace \"waybar\"\n  end\nend\n",
+            "rules:\n  layer-rule:\n    layer \"middle\"\n    blur true\n  end\nend\n",
+        ] {
+            let config = RuneConfig::from_str(source).unwrap();
+            assert!(parse_rules(&config).is_err());
+        }
     }
 }

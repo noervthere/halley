@@ -1,4 +1,4 @@
-# Window rules
+# Window and layer-shell rules
 
 Window rules apply one shared policy to managed native Wayland and XWayland
 windows. X11 override-redirect menus and tooltips are not managed windows and
@@ -33,9 +33,11 @@ the X11 window class. `title` uses the corresponding toplevel/window title.
   Halley enforces a safe minimum of 96 by 72 logical pixels.
 - `opacity` accepts `0.0` through `1.0` and applies to content, popups,
   decorations, shadows, and transitions as one visual policy.
-- `blur` explicitly enables or disables compositor window blur for the match.
-  It takes precedence over the global automatic window-blur decision; an
-  explicit client background-effect request is still honored.
+- `blur true` explicitly enables full-surface compositor blur for the match;
+  a client-provided nonempty background-effect region remains region-limited.
+- `blur false` disables all blur for the match, including client background-
+  effect requests. With no blur rule, Halley honors explicit client regions
+  only; opacity never enables blur implicitly.
 - `spawn-placement` controls only initial placement. Existing windows are never
   moved by a rule reload or identity change.
 
@@ -62,3 +64,26 @@ runtime effect; new configurations should omit it.
 
 Live reload re-resolves visual fields such as opacity and blur for mapped
 windows. Initial size and placement remain initial-map decisions.
+
+## Layer-shell rules
+
+Layer-shell roots use `layer-rule` entries in the same ordered `rules:` block.
+They match the protocol namespace and/or current layer; strings are exact and
+case-sensitive, `r"..."` values are regular expressions, and arrays are OR
+lists. When both fields are supplied, both must match. The first matching rule
+wins.
+
+```rune
+rules:
+  layer-rule:
+    namespace ["waybar", r"^fuzzel$"]
+    layer ["top", "overlay"]
+    blur true
+  end
+end
+```
+
+`layer` accepts `background`, `bottom`, `top`, or `overlay`. A layer rule must
+have `namespace` and/or `layer`, and must set `blur`. The resolved policy also
+applies to that layer root's popups; popup background-effect regions remain
+region-limited when blur is enabled.

@@ -52,8 +52,8 @@ pub use decorations::{
 };
 pub use diagnostic::ConfigDiagnostic;
 pub use effects::{
-    Blur, BlurMethod, ClientBlurMode, Effects, EffectsParseError, ShadowColor, ShadowLayer,
-    Shadows, parse_effects, window_blur_enabled,
+    Blur, BlurMethod, Effects, EffectsParseError, ShadowColor, ShadowLayer, Shadows, parse_effects,
+    window_blur_enabled,
 };
 pub use field::{CloseRestorePan, Field, FieldParseError, parse_field, parse_field_checked};
 pub use font::{Font, parse_font};
@@ -80,8 +80,8 @@ pub use overlays::{
 pub use parse::{ParseError, parse_keybinds};
 pub use physics::{Physics, parse_physics};
 pub use rules::{
-    WindowClusterParticipation, WindowRule, WindowRuleParseError, WindowRulePattern,
-    WindowSpawnPlacement, parse_window_rules,
+    LayerRule, LayerShellLayer, RulePattern, Rules, WindowClusterParticipation, WindowRule,
+    WindowRuleParseError, WindowRulePattern, WindowSpawnPlacement, parse_rules, parse_window_rules,
 };
 pub use runtime::{
     RuntimeConfig, RuntimeConfigError, load_runtime_config_at, load_runtime_config_diagnostic_at,

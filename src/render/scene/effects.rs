@@ -92,6 +92,7 @@ pub(super) fn layer_surface_scene_elements(
     output: &Output,
     output_geometry: Rectangle<i32, Logical>,
     layer: Layer,
+    layer_rules: &[halley_config::LayerRule],
     blur_config: halley_config::Blur,
     backdrop_blur_renderer: &mut crate::render::effects::backdrop_blur::BackdropBlurRenderer,
 ) -> Result<Vec<SceneElement>, Box<dyn Error>> {
@@ -104,6 +105,10 @@ pub(super) fn layer_surface_scene_elements(
         let Some(geometry) = map.layer_geometry(surface) else {
             continue;
         };
+        let rule_blur = layer_rules
+            .iter()
+            .find(|rule| rule.matches(surface.namespace(), layer_shell_layer(surface.layer())))
+            .map(|rule| rule.blur);
         for (popup, popup_offset) in PopupManager::popups_for_surface(surface.wl_surface()) {
             let popup_origin = geometry.loc + popup_offset - popup.geometry().loc;
             let location = popup_origin.to_f64().to_physical(scale).to_i32_round();
@@ -127,7 +132,7 @@ pub(super) fn layer_surface_scene_elements(
                 popup.wl_surface(),
                 popup_origin,
                 scale,
-                layer,
+                rule_blur,
                 blur_config,
                 backdrop_blur_renderer,
                 &mut elements,
@@ -155,7 +160,7 @@ pub(super) fn layer_surface_scene_elements(
             surface.wl_surface(),
             geometry.loc,
             scale,
-            layer,
+            rule_blur,
             blur_config,
             backdrop_blur_renderer,
             &mut elements,
@@ -163,6 +168,15 @@ pub(super) fn layer_surface_scene_elements(
     }
 
     Ok(elements)
+}
+
+fn layer_shell_layer(layer: Layer) -> halley_config::LayerShellLayer {
+    match layer {
+        Layer::Background => halley_config::LayerShellLayer::Background,
+        Layer::Bottom => halley_config::LayerShellLayer::Bottom,
+        Layer::Top => halley_config::LayerShellLayer::Top,
+        Layer::Overlay => halley_config::LayerShellLayer::Overlay,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -174,7 +188,7 @@ pub(super) fn append_surface_backdrop_blur(
     surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
     surface_origin: smithay::utils::Point<i32, Logical>,
     scale: Scale<f64>,
-    layer: Layer,
+    rule_blur: Option<bool>,
     blur_config: halley_config::Blur,
     backdrop_blur_renderer: &mut crate::render::effects::backdrop_blur::BackdropBlurRenderer,
     elements: &mut Vec<SceneElement>,
@@ -184,13 +198,12 @@ pub(super) fn append_surface_backdrop_blur(
     else {
         return Ok(());
     };
-    let mut requested = crate::wayland::background_effect::blur_rects(surface, surface_size);
-    let policy_blur = match blur_config.layer_shell {
-        halley_config::ClientBlurMode::Off => false,
-        halley_config::ClientBlurMode::Auto => matches!(layer, Layer::Top | Layer::Overlay),
-        halley_config::ClientBlurMode::Always => true,
+    let mut requested = if blur_config.enabled && rule_blur != Some(false) {
+        crate::wayland::background_effect::blur_rects(surface, surface_size)
+    } else {
+        Vec::new()
     };
-    if requested.is_empty() && policy_blur {
+    if requested.is_empty() && rule_blur == Some(true) && blur_config.enabled {
         requested.push(Rectangle::from_size(surface_size));
     }
     let patches = requested

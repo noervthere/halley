@@ -95,7 +95,7 @@ pub fn build(
     request
         .resources
         .backdrop_blur_renderer
-        .begin_scene(&output.name());
+        .begin_scene(&output.name(), request.visuals.blur.enabled);
     request.resources.node_renderer.begin_scene(&output.name());
     request.resources.ui_text.begin_scene();
     if request.desktop.session_lock.active() {
@@ -330,6 +330,7 @@ pub fn build(
         output,
         output_geometry,
         Layer::Overlay,
+        request.desktop.layer_rules,
         request.visuals.blur,
         request.resources.backdrop_blur_renderer,
     )?);
@@ -378,6 +379,7 @@ pub fn build(
             output,
             output_geometry,
             Layer::Top,
+            request.desktop.layer_rules,
             request.visuals.blur,
             request.resources.backdrop_blur_renderer,
         )?);
@@ -739,6 +741,7 @@ pub fn build(
         output,
         output_geometry,
         Layer::Bottom,
+        request.desktop.layer_rules,
         request.visuals.blur,
         request.resources.backdrop_blur_renderer,
     )?);
@@ -747,6 +750,7 @@ pub fn build(
         output,
         output_geometry,
         Layer::Background,
+        request.desktop.layer_rules,
         request.visuals.blur,
         request.resources.backdrop_blur_renderer,
     )?);

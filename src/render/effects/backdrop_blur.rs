@@ -8,18 +8,25 @@ use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::element::{Element, Id, Kind, RenderElement, UnderlyingStorage};
 use smithay::backend::renderer::gles::{
     GlesError, GlesFrame, GlesRenderer, GlesTexProgram, GlesTexture, Uniform, UniformName,
-    UniformType, ffi,
+    UniformType, ffi, link_program,
 };
 use smithay::backend::renderer::utils::CommitCounter;
-use smithay::backend::renderer::{
-    Bind, Color32F, ContextId, Frame, FrameContext, Offscreen, Renderer, Texture,
-};
+use smithay::backend::renderer::{ContextId, Offscreen, Renderer, Texture};
 use smithay::utils::user_data::UserDataMap;
 use smithay::utils::{Buffer, Logical, Physical, Rectangle, Scale, Size, Transform};
 
 const DOWN_SHADER: &str = include_str!("shaders/blur_down.frag");
 const UP_SHADER: &str = include_str!("shaders/blur_up.frag");
 const COMPOSITE_SHADER: &str = include_str!("shaders/blur_composite.frag");
+const BLUR_VERTEX_SHADER: &str = r#"#version 100
+attribute vec2 vert;
+varying vec2 v_coords;
+
+void main() {
+    v_coords = vert;
+    gl_Position = vec4(vert * 2.0 - 1.0, 1.0, 1.0);
+}
+"#;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BlurPatch {
     pub rect: Rectangle<i32, Physical>,
@@ -33,9 +40,19 @@ pub struct BlurPatch {
 
 struct Programs {
     context: ContextId<GlesTexture>,
-    down: GlesTexProgram,
-    up: GlesTexProgram,
+    down: RawPassProgram,
+    up: RawPassProgram,
     composite: GlesTexProgram,
+}
+
+#[derive(Clone, Copy)]
+struct RawPassProgram {
+    program: ffi::types::GLuint,
+    texture: ffi::types::GLint,
+    alpha: ffi::types::GLint,
+    halfpixel: ffi::types::GLint,
+    offset: ffi::types::GLint,
+    vertex: ffi::types::GLint,
 }
 
 struct BlurTextures {
@@ -45,6 +62,7 @@ struct BlurTextures {
     chain: Vec<GlesTexture>,
     result: GlesTexture,
     dirty: bool,
+    failed: bool,
 }
 
 struct OutputResources {
@@ -75,8 +93,8 @@ pub struct BackdropBlurElement {
     size: Size<i32, Physical>,
     patches: Vec<BlurPatch>,
     textures: Rc<RefCell<BlurTextures>>,
-    down: GlesTexProgram,
-    up: GlesTexProgram,
+    down: RawPassProgram,
+    up: RawPassProgram,
     composite: GlesTexProgram,
     offset: f32,
     saturation: f32,
@@ -84,10 +102,18 @@ pub struct BackdropBlurElement {
 }
 
 impl BackdropBlurRenderer {
-    pub fn begin_scene(&mut self, output: &str) {
+    pub fn begin_scene(&mut self, output: &str, enabled: bool) {
+        if !enabled {
+            self.outputs.remove(output);
+            return;
+        }
         if let Some(resources) = self.outputs.get_mut(output) {
             resources.scene_identities.clear();
         }
+    }
+
+    pub fn remove_output(&mut self, output: &str) {
+        self.outputs.remove(output);
     }
 
     pub fn blur_element(
@@ -102,7 +128,10 @@ impl BackdropBlurRenderer {
         if !config.enabled || patches.is_empty() {
             return Ok(None);
         }
-        self.ensure_programs(renderer)?;
+        if let Err(error) = self.ensure_programs(renderer) {
+            eventline::error!("backdrop-blur: disabling effect after shader setup failed: {error}");
+            return Ok(None);
+        }
         let physical_size = size.to_physical(1);
         let context = renderer.context_id();
         let levels = config.passes.clamp(1, 5);
@@ -111,11 +140,15 @@ impl BackdropBlurRenderer {
             textures.size != physical_size || textures.levels != levels
         });
         if needs_textures {
-            let textures = Rc::new(RefCell::new(create_textures(
-                renderer,
-                physical_size,
-                levels,
-            )?));
+            let textures = match create_textures(renderer, physical_size, levels) {
+                Ok(textures) => Rc::new(RefCell::new(textures)),
+                Err(error) => {
+                    eventline::error!(
+                        "backdrop-blur: skipping effect after scratch allocation failed: {error}"
+                    );
+                    return Ok(None);
+                }
+            };
             match self.outputs.get_mut(output) {
                 Some(resources) => resources.textures = textures,
                 None => {
@@ -172,10 +205,6 @@ impl BackdropBlurRenderer {
             return Ok(());
         }
         self.outputs.clear();
-        let pass_uniforms = [
-            UniformName::new("halfpixel", UniformType::_2f),
-            UniformName::new("offset", UniformType::_1f),
-        ];
         let composite_uniforms = [
             UniformName::new("rect_size", UniformType::_2f),
             UniformName::new("patch_origin_uv", UniformType::_2f),
@@ -188,15 +217,42 @@ impl BackdropBlurRenderer {
             UniformName::new("saturation", UniformType::_1f),
             UniformName::new("noise", UniformType::_1f),
         ];
+        let down_source = raw_fragment_shader(DOWN_SHADER);
+        let up_source = raw_fragment_shader(UP_SHADER);
+        let (down, up) = renderer.with_context(|gl| unsafe {
+            Ok::<_, GlesError>((
+                compile_raw_pass_program(gl, &down_source)?,
+                compile_raw_pass_program(gl, &up_source)?,
+            ))
+        })??;
         self.programs = Some(Programs {
             context,
-            down: renderer.compile_custom_texture_shader(DOWN_SHADER, &pass_uniforms)?,
-            up: renderer.compile_custom_texture_shader(UP_SHADER, &pass_uniforms)?,
+            down,
+            up,
             composite: renderer
                 .compile_custom_texture_shader(COMPOSITE_SHADER, &composite_uniforms)?,
         });
         Ok(())
     }
+}
+
+fn raw_fragment_shader(source: &str) -> String {
+    format!("#version 100\n{}", source.replacen("//_DEFINES\n", "", 1))
+}
+
+unsafe fn compile_raw_pass_program(
+    gl: &ffi::Gles2,
+    fragment: &str,
+) -> Result<RawPassProgram, GlesError> {
+    let program = unsafe { link_program(gl, BLUR_VERTEX_SHADER, fragment)? };
+    Ok(RawPassProgram {
+        program,
+        texture: unsafe { gl.GetUniformLocation(program, c"tex".as_ptr()) },
+        alpha: unsafe { gl.GetUniformLocation(program, c"alpha".as_ptr()) },
+        halfpixel: unsafe { gl.GetUniformLocation(program, c"halfpixel".as_ptr()) },
+        offset: unsafe { gl.GetUniformLocation(program, c"offset".as_ptr()) },
+        vertex: unsafe { gl.GetAttribLocation(program, c"vert".as_ptr()) },
+    })
 }
 
 fn level_size(size: Size<i32, Physical>, level: u32) -> Size<i32, Physical> {
@@ -232,99 +288,155 @@ fn create_textures(
         chain,
         result: create_texture(renderer, size)?,
         dirty: true,
+        failed: false,
     })
 }
 
-fn blur_pass(
-    renderer: &mut GlesRenderer,
-    target: &mut GlesTexture,
-    target_size: Size<i32, Physical>,
-    source: &GlesTexture,
-    source_size: Size<i32, Physical>,
-    program: &GlesTexProgram,
-    offset: f32,
-) -> Result<(), GlesError> {
-    let mut bound = renderer.bind(target)?;
-    let damage = Rectangle::<i32, Physical>::from_size(target_size);
-    let mut frame = renderer.render(&mut bound, target_size, Transform::Normal)?;
-    frame.clear(Color32F::TRANSPARENT, &[damage])?;
-    frame.render_texture_from_to(
-        source,
-        Rectangle::<f64, Buffer>::new(
-            (0.0, 0.0).into(),
-            (f64::from(source_size.w), f64::from(source_size.h)).into(),
-        ),
-        Rectangle::from_size(target_size),
-        &[damage],
-        &[],
-        Transform::Normal,
-        1.0,
-        Some(program),
-        &[
-            Uniform::new(
-                "halfpixel",
-                (
-                    0.5 / source_size.w.max(1) as f32,
-                    0.5 / source_size.h.max(1) as f32,
-                ),
-            ),
-            Uniform::new("offset", offset),
-        ],
-    )?;
-    let _ = frame.finish()?;
-    Ok(())
-}
-
 fn run_blur(
-    renderer: &mut GlesRenderer,
+    frame: &mut GlesFrame<'_, '_>,
     textures: &mut BlurTextures,
-    down: &GlesTexProgram,
-    up: &GlesTexProgram,
+    down: RawPassProgram,
+    up: RawPassProgram,
     offset: f32,
 ) -> Result<(), GlesError> {
     let size = textures.size;
-    blur_pass(
-        renderer,
-        &mut textures.chain[0],
-        level_size(size, 0),
-        &textures.accum,
-        size,
-        down,
-        offset,
-    )?;
-    for index in 1..textures.chain.len() {
-        let (lower, upper) = textures.chain.split_at_mut(index);
-        blur_pass(
-            renderer,
-            &mut upper[0],
-            level_size(size, index as u32),
-            &lower[index - 1],
-            level_size(size, index as u32 - 1),
-            down,
-            offset,
-        )?;
-    }
-    for index in (1..textures.chain.len()).rev() {
-        let (lower, upper) = textures.chain.split_at_mut(index);
-        blur_pass(
-            renderer,
-            &mut lower[index - 1],
-            level_size(size, index as u32 - 1),
-            &upper[0],
-            level_size(size, index as u32),
-            up,
-            offset,
-        )?;
-    }
-    blur_pass(
-        renderer,
-        &mut textures.result,
-        size,
-        &textures.chain[0],
-        level_size(size, 0),
-        up,
-        offset,
-    )
+    frame.with_context(|gl| unsafe {
+        let mut draw_fbo = 0_i32;
+        let mut viewport = [0_i32; 4];
+        let mut active_texture = 0_i32;
+        let mut texture_binding = 0_i32;
+        let mut program = 0_i32;
+        let mut array_buffer = 0_i32;
+        gl.GetIntegerv(ffi::DRAW_FRAMEBUFFER_BINDING, &mut draw_fbo);
+        gl.GetIntegerv(ffi::VIEWPORT, viewport.as_mut_ptr());
+        gl.GetIntegerv(ffi::ACTIVE_TEXTURE, &mut active_texture);
+        gl.ActiveTexture(ffi::TEXTURE0);
+        gl.GetIntegerv(ffi::TEXTURE_BINDING_2D, &mut texture_binding);
+        gl.GetIntegerv(ffi::CURRENT_PROGRAM, &mut program);
+        gl.GetIntegerv(ffi::ARRAY_BUFFER_BINDING, &mut array_buffer);
+        let blend_enabled = gl.IsEnabled(ffi::BLEND) == ffi::TRUE;
+        let scissor_enabled = gl.IsEnabled(ffi::SCISSOR_TEST) == ffi::TRUE;
+
+        let mut fbo = 0;
+        gl.GenFramebuffers(1, &mut fbo);
+        let result = (|| {
+            gl.BindFramebuffer(ffi::DRAW_FRAMEBUFFER, fbo);
+            gl.Disable(ffi::BLEND);
+            gl.Disable(ffi::SCISSOR_TEST);
+
+            let vertices: [f32; 12] = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 0.0];
+            let render_pass = |source: &GlesTexture,
+                               source_size: Size<i32, Physical>,
+                               target: &GlesTexture,
+                               target_size: Size<i32, Physical>,
+                               pass: RawPassProgram|
+             -> Result<(), GlesError> {
+                gl.UseProgram(pass.program);
+                gl.Uniform1i(pass.texture, 0);
+                gl.Uniform1f(pass.alpha, 1.0);
+                gl.Uniform2f(
+                    pass.halfpixel,
+                    0.5 / source_size.w.max(1) as f32,
+                    0.5 / source_size.h.max(1) as f32,
+                );
+                gl.Uniform1f(pass.offset, offset);
+                gl.Viewport(0, 0, target_size.w, target_size.h);
+                gl.FramebufferTexture2D(
+                    ffi::DRAW_FRAMEBUFFER,
+                    ffi::COLOR_ATTACHMENT0,
+                    ffi::TEXTURE_2D,
+                    target.tex_id(),
+                    0,
+                );
+                if gl.CheckFramebufferStatus(ffi::DRAW_FRAMEBUFFER) != ffi::FRAMEBUFFER_COMPLETE {
+                    return Err(GlesError::FramebufferBindingError);
+                }
+                gl.BindTexture(ffi::TEXTURE_2D, source.tex_id());
+                gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_MIN_FILTER, ffi::LINEAR as i32);
+                gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_MAG_FILTER, ffi::LINEAR as i32);
+                gl.TexParameteri(
+                    ffi::TEXTURE_2D,
+                    ffi::TEXTURE_WRAP_S,
+                    ffi::CLAMP_TO_EDGE as i32,
+                );
+                gl.TexParameteri(
+                    ffi::TEXTURE_2D,
+                    ffi::TEXTURE_WRAP_T,
+                    ffi::CLAMP_TO_EDGE as i32,
+                );
+                gl.EnableVertexAttribArray(pass.vertex as u32);
+                gl.BindBuffer(ffi::ARRAY_BUFFER, 0);
+                gl.VertexAttribPointer(
+                    pass.vertex as u32,
+                    2,
+                    ffi::FLOAT,
+                    ffi::FALSE,
+                    0,
+                    vertices.as_ptr().cast(),
+                );
+                gl.DrawArrays(ffi::TRIANGLES, 0, 6);
+                gl.DisableVertexAttribArray(pass.vertex as u32);
+                if gl.GetError() == ffi::NO_ERROR {
+                    Ok(())
+                } else {
+                    Err(GlesError::BlitError)
+                }
+            };
+
+            render_pass(
+                &textures.accum,
+                size,
+                &textures.chain[0],
+                level_size(size, 0),
+                down,
+            )?;
+            for index in 1..textures.chain.len() {
+                render_pass(
+                    &textures.chain[index - 1],
+                    level_size(size, index as u32 - 1),
+                    &textures.chain[index],
+                    level_size(size, index as u32),
+                    down,
+                )?;
+            }
+            for index in (1..textures.chain.len()).rev() {
+                render_pass(
+                    &textures.chain[index],
+                    level_size(size, index as u32),
+                    &textures.chain[index - 1],
+                    level_size(size, index as u32 - 1),
+                    up,
+                )?;
+            }
+            render_pass(
+                &textures.chain[0],
+                level_size(size, 0),
+                &textures.result,
+                size,
+                up,
+            )?;
+            Ok(())
+        })();
+        gl.DeleteFramebuffers(1, &fbo);
+
+        gl.BindFramebuffer(ffi::DRAW_FRAMEBUFFER, draw_fbo as u32);
+        gl.Viewport(viewport[0], viewport[1], viewport[2], viewport[3]);
+        gl.BindBuffer(ffi::ARRAY_BUFFER, array_buffer as u32);
+        gl.BindTexture(ffi::TEXTURE_2D, texture_binding as u32);
+        gl.ActiveTexture(active_texture as u32);
+        gl.UseProgram(program as u32);
+        if blend_enabled {
+            gl.Enable(ffi::BLEND);
+        } else {
+            gl.Disable(ffi::BLEND);
+        }
+        if scissor_enabled {
+            gl.Enable(ffi::SCISSOR_TEST);
+        } else {
+            gl.Disable(ffi::SCISSOR_TEST);
+        }
+        result
+    })?
 }
 
 impl Element for BackdropBlurElement {
@@ -365,6 +477,9 @@ impl RenderElement<GlesRenderer> for BackdropBlurElement {
         _cache: &UserDataMap,
     ) -> Result<(), GlesError> {
         let mut textures = self.textures.borrow_mut();
+        if textures.failed {
+            return Ok(());
+        }
         let size = textures.size;
         frame.with_context(|gl| unsafe {
             let mut prior_error = gl.GetError();
@@ -434,15 +549,15 @@ impl RenderElement<GlesRenderer> for BackdropBlurElement {
         _cache: Option<&UserDataMap>,
     ) -> Result<(), GlesError> {
         let mut textures = self.textures.borrow_mut();
+        if textures.failed {
+            return Ok(());
+        }
         if textures.dirty {
-            let mut renderer = frame.renderer();
-            run_blur(
-                renderer.as_mut(),
-                &mut textures,
-                &self.down,
-                &self.up,
-                self.offset,
-            )?;
+            if let Err(error) = run_blur(frame, &mut textures, self.down, self.up, self.offset) {
+                eventline::error!("backdrop-blur: skipping effect after render failure: {error}");
+                textures.failed = true;
+                return Ok(());
+            }
             textures.dirty = false;
         }
         for patch in &self.patches {
@@ -582,8 +697,9 @@ mod tests {
     use std::collections::HashSet;
 
     use smithay::backend::renderer::element::Id;
+    use smithay::utils::{Physical, Size};
 
-    use super::BlurIdentity;
+    use super::{BlurIdentity, DOWN_SHADER, level_size, raw_fragment_shader};
 
     #[test]
     fn typed_identities_do_not_alias_across_scene_roles() {
@@ -606,5 +722,20 @@ mod tests {
             BlurIdentity::Overlay("shell-overlay"),
             BlurIdentity::Overlay("shell-overlay")
         );
+    }
+
+    #[test]
+    fn blur_levels_stay_nonzero_and_halve_per_pass() {
+        let size = Size::<i32, Physical>::from((9, 5));
+        assert_eq!(level_size(size, 0), Size::from((4, 2)));
+        assert_eq!(level_size(size, 1), Size::from((2, 1)));
+        assert_eq!(level_size(size, 4), Size::from((1, 1)));
+    }
+
+    #[test]
+    fn raw_blur_shader_has_a_gles_version_and_no_smithay_defines_marker() {
+        let shader = raw_fragment_shader(DOWN_SHADER);
+        assert!(shader.starts_with("#version 100\n"));
+        assert!(!shader.contains("//_DEFINES"));
     }
 }
