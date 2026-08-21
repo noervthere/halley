@@ -9,7 +9,6 @@ pub enum BlurMethod {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Blur {
-    pub enabled: bool,
     pub overlays: bool,
     pub method: BlurMethod,
     pub radius: f32,
@@ -21,14 +20,13 @@ pub struct Blur {
 /// Resolves whether Halley should add a full-window blur when the client did
 /// not supply an explicit region. A false rule is handled by the caller before
 /// protocol regions are read, because it suppresses client-requested blur too.
-pub fn window_blur_enabled(blur: Blur, rule_blur: Option<bool>, excluded: bool) -> bool {
-    blur.enabled && !excluded && rule_blur == Some(true)
+pub fn window_blur_enabled(rule_blur: Option<bool>, excluded: bool) -> bool {
+    !excluded && rule_blur == Some(true)
 }
 
 impl Default for Blur {
     fn default() -> Self {
         Self {
-            enabled: false,
             overlays: true,
             method: BlurMethod::DualKawase,
             radius: 24.0,
@@ -150,12 +148,17 @@ pub fn parse_effects(config: &RuneConfig) -> Result<Effects, EffectsParseError> 
     reject_legacy_blur_policy(
         config,
         "effects.blur.windows",
-        "use `rules.rule.blur` instead",
+        "use `rules.window-rule.blur` instead",
     )?;
     reject_legacy_blur_policy(
         config,
         "effects.blur.layer-shell",
         "use `rules.layer-rule.blur` instead",
+    )?;
+    reject_legacy_blur_policy(
+        config,
+        "effects.blur.enabled",
+        "remove it; `rules.window-rule.blur` and `rules.layer-rule.blur` activate blur",
     )?;
     let radius = finite_clamp(
         config.get_or("effects.blur.radius", defaults.radius),
@@ -177,7 +180,6 @@ pub fn parse_effects(config: &RuneConfig) -> Result<Effects, EffectsParseError> 
     );
     Ok(Effects {
         blur: Blur {
-            enabled: config.get_or("effects.blur.enabled", defaults.enabled),
             overlays: config.get_or("effects.blur.overlays", defaults.overlays),
             method: parse_method(config, defaults.method)?,
             radius,
@@ -196,7 +198,7 @@ fn reject_legacy_blur_policy(
     path: &'static str,
     replacement: &'static str,
 ) -> Result<(), EffectsParseError> {
-    if config.get_optional::<String>(path)?.is_some() {
+    if config.get_value(path).is_ok() {
         return Err(EffectsParseError::Deprecated { path, replacement });
     }
     Ok(())
@@ -313,7 +315,6 @@ mod tests {
     #[test]
     fn defaults_match_old_halley() {
         let blur = Blur::default();
-        assert!(!blur.enabled);
         assert!(blur.overlays);
         assert_eq!(blur.method, BlurMethod::DualKawase);
         assert_eq!(blur.radius, 24.0);
@@ -332,14 +333,10 @@ mod tests {
 
     #[test]
     fn window_blur_only_forces_explicitly_enabled_rules() {
-        let blur = Blur {
-            enabled: true,
-            ..Blur::default()
-        };
-        assert!(window_blur_enabled(blur, Some(true), false));
-        assert!(!window_blur_enabled(blur, Some(false), false));
-        assert!(!window_blur_enabled(blur, None, false));
-        assert!(!window_blur_enabled(blur, Some(true), true));
+        assert!(window_blur_enabled(Some(true), false));
+        assert!(!window_blur_enabled(Some(false), false));
+        assert!(!window_blur_enabled(None, false));
+        assert!(!window_blur_enabled(Some(true), true));
     }
 
     #[test]
@@ -348,7 +345,6 @@ mod tests {
             r#"
 effects:
   blur:
-    enabled true
     overlays false
     method "dual-kawase"
     radius 30.0
@@ -361,7 +357,6 @@ end
         )
         .unwrap();
         let blur = parse_effects(&config).unwrap().blur;
-        assert!(blur.enabled);
         assert!(!blur.overlays);
         assert_eq!(blur.radius, 30.0);
         assert_eq!(blur.passes, 5);
@@ -374,6 +369,7 @@ end
         for source in [
             "effects:\n  blur:\n    windows \"always\"\n  end\nend\n",
             "effects:\n  blur:\n    layer-shell \"auto\"\n  end\nend\n",
+            "effects:\n  blur:\n    enabled true\n  end\nend\n",
             "effects:\n  blur:\n    method \"gaussian\"\n  end\nend\n",
         ] {
             let config = RuneConfig::from_str(source).unwrap();
@@ -382,6 +378,20 @@ end
                 Err(EffectsParseError::InvalidValue { .. } | EffectsParseError::Deprecated { .. })
             ));
         }
+    }
+
+    #[test]
+    fn rejects_removed_global_blur_enable_with_migration_guidance() {
+        let config =
+            RuneConfig::from_str("effects:\n  blur:\n    enabled true\n  end\nend\n").unwrap();
+        let error = parse_effects(&config).unwrap_err();
+        assert!(matches!(
+            error,
+            EffectsParseError::Deprecated {
+                path: "effects.blur.enabled",
+                ..
+            }
+        ));
     }
 
     #[test]

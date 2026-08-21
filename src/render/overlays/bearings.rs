@@ -196,7 +196,7 @@ pub fn elements(
             .collect(),
     );
 
-    let blur_patches = if bearings.config.blur && blur_config.enabled && blur_config.overlays {
+    let blur_patches = if bearings.config.blur && blur_config.overlays {
         layouts
             .iter()
             .filter(|layout| layout.alpha >= 0.04)

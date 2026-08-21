@@ -399,7 +399,7 @@ pub(super) fn live_window_elements(
         let output_bounds =
             Rectangle::<i32, Physical>::from_size(context.output_geometry.size.to_physical(1));
         let rule_blur = context.window_rules.blur(window_surface.as_ref());
-        let mut requested = if context.blur.enabled && rule_blur != Some(false) {
+        let mut requested = if rule_blur != Some(false) {
             crate::wayland::background_effect::blur_rects(window_surface.as_ref(), surface_size)
         } else {
             Vec::new()
@@ -407,8 +407,8 @@ pub(super) fn live_window_elements(
         let global_blur_allowed = context
             .fullscreen
             .allows_global_blur(window_surface.as_ref());
-        let policy_blur = managed
-            && halley_config::window_blur_enabled(context.blur, rule_blur, !global_blur_allowed);
+        let policy_blur =
+            managed && halley_config::window_blur_enabled(rule_blur, !global_blur_allowed);
         if requested.is_empty() && policy_blur {
             requested.push(Rectangle::from_size(surface_size));
         }

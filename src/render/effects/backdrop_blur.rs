@@ -102,11 +102,7 @@ pub struct BackdropBlurElement {
 }
 
 impl BackdropBlurRenderer {
-    pub fn begin_scene(&mut self, output: &str, enabled: bool) {
-        if !enabled {
-            self.outputs.remove(output);
-            return;
-        }
+    pub fn begin_scene(&mut self, output: &str) {
         if let Some(resources) = self.outputs.get_mut(output) {
             resources.scene_identities.clear();
         }
@@ -125,7 +121,7 @@ impl BackdropBlurRenderer {
         patches: Vec<BlurPatch>,
         config: halley_config::Blur,
     ) -> Result<Option<BackdropBlurElement>, Box<dyn Error>> {
-        if !config.enabled || patches.is_empty() {
+        if patches.is_empty() {
             return Ok(None);
         }
         if let Err(error) = self.ensure_programs(renderer) {

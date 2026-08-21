@@ -6,7 +6,7 @@ are deliberately excluded.
 
 ```rune
 rules:
-  rule:
+  window-rule:
     app-id ["firefox", r"org\.mozilla\..*"]
     title r"Picture.*"
     width 720
@@ -19,7 +19,7 @@ rules:
 end
 ```
 
-Rules are evaluated from top to bottom and the first matching rule wins.
+Window rules are evaluated from top to bottom and the first matching rule wins.
 Strings match exactly and case-sensitively. `r"..."` values are regular
 expressions. An array is an OR-list. When both `app-id` and `title` are
 present, both fields must match.
@@ -64,6 +64,11 @@ runtime effect; new configurations should omit it.
 
 Live reload re-resolves visual fields such as opacity and blur for mapped
 windows. Initial size and placement remain initial-map decisions.
+
+Blur activation is entirely rule-driven: `effects.blur` configures quality and
+whether compositor-owned overlays may blur, but has no global enable switch.
+An old `rules.rule` entry must be renamed to `rules.window-rule`; the old
+`effects.blur.enabled` setting has been removed.
 
 ## Layer-shell rules
 

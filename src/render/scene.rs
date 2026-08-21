@@ -95,7 +95,7 @@ pub fn build(
     request
         .resources
         .backdrop_blur_renderer
-        .begin_scene(&output.name(), request.visuals.blur.enabled);
+        .begin_scene(&output.name());
     request.resources.node_renderer.begin_scene(&output.name());
     request.resources.ui_text.begin_scene();
     if request.desktop.session_lock.active() {

@@ -145,9 +145,14 @@ pub fn parse_rules(config: &RuneConfig) -> Result<Rules, WindowRuleParseError> {
                     "conditionals are not supported directly inside rules".to_string(),
                 ));
             };
-            if !matches!(key.as_str(), "rule" | "layer-rule") {
+            if key == "rule" {
+                return Err(WindowRuleParseError(
+                    "`rules.rule` has been renamed to `rules.window-rule`".to_string(),
+                ));
+            }
+            if !matches!(key.as_str(), "window-rule" | "layer-rule") {
                 return Err(WindowRuleParseError(format!(
-                    "unknown entry {key:?} inside rules; expected `rule:` or `layer-rule:`"
+                    "unknown entry {key:?} inside rules; expected `window-rule:` or `layer-rule:`"
                 )));
             }
             let Value::Object(fields) = value else {
@@ -156,7 +161,7 @@ pub fn parse_rules(config: &RuneConfig) -> Result<Rules, WindowRuleParseError> {
                 )));
             };
             match key.as_str() {
-                "rule" => rules.windows.push(parse_rule(fields)?),
+                "window-rule" => rules.windows.push(parse_rule(fields)?),
                 "layer-rule" => rules.layers.push(parse_layer_rule(fields)?),
                 _ => unreachable!("validated above"),
             }
@@ -444,7 +449,7 @@ mod tests {
         let config = RuneConfig::from_str(
             r#"
 rules:
-  rule:
+  window-rule:
     app-id ["firefox", r"org\.mozilla\..*"]
     title r"Picture.*"
     width 720
@@ -454,7 +459,7 @@ rules:
     spawn-placement "center"
     cluster-participation "float"
   end
-  rule:
+  window-rule:
     title "Terminal"
   end
 end
@@ -475,22 +480,32 @@ end
 
     #[test]
     fn rejects_incomplete_or_matcherless_rules() {
-        let config = RuneConfig::from_str("rules:\n  rule:\n    width 100\n  end\nend\n").unwrap();
+        let config =
+            RuneConfig::from_str("rules:\n  window-rule:\n    width 100\n  end\nend\n").unwrap();
         assert!(parse_window_rules(&config).is_err());
 
-        let config =
-            RuneConfig::from_str("rules:\n  rule:\n    app-id \"x\"\n    width 100\n  end\nend\n")
-                .unwrap();
+        let config = RuneConfig::from_str(
+            "rules:\n  window-rule:\n    app-id \"x\"\n    width 100\n  end\nend\n",
+        )
+        .unwrap();
         assert!(parse_window_rules(&config).is_err());
     }
 
     #[test]
     fn accepts_but_discards_deprecated_overlap_policy() {
         let config = RuneConfig::from_str(
-            "rules:\n  rule:\n    app-id \"x\"\n    overlap-policy \"all\"\n  end\nend\n",
+            "rules:\n  window-rule:\n    app-id \"x\"\n    overlap-policy \"all\"\n  end\nend\n",
         )
         .unwrap();
         assert_eq!(parse_window_rules(&config).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn rejects_renamed_window_rule_entry() {
+        let config =
+            RuneConfig::from_str("rules:\n  rule:\n    app-id \"x\"\n  end\nend\n").unwrap();
+        let error = parse_rules(&config).unwrap_err();
+        assert!(error.to_string().contains("window-rule"));
     }
 
     #[test]

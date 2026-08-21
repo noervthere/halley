@@ -16,7 +16,7 @@ pub(super) fn append_compositor_overlay_blur(
     shadow_renderer: &mut crate::render::effects::shadow::ShadowRenderer,
     elements: &mut Vec<SceneElement>,
 ) -> Result<(), Box<dyn Error>> {
-    if style.blur.enabled && style.blur.overlays {
+    if style.blur.overlays {
         let patches = elements
             .iter()
             .filter_map(|element| match element {
@@ -198,12 +198,12 @@ pub(super) fn append_surface_backdrop_blur(
     else {
         return Ok(());
     };
-    let mut requested = if blur_config.enabled && rule_blur != Some(false) {
+    let mut requested = if rule_blur != Some(false) {
         crate::wayland::background_effect::blur_rects(surface, surface_size)
     } else {
         Vec::new()
     };
-    if requested.is_empty() && rule_blur == Some(true) && blur_config.enabled {
+    if requested.is_empty() && rule_blur == Some(true) {
         requested.push(Rectangle::from_size(surface_size));
     }
     let patches = requested

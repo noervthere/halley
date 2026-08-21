@@ -323,9 +323,6 @@ end
 # than under `decorations:` (which is compositor chrome attached to surfaces).
 effects:
   blur:
-    # Master switch. When false, no blur is computed anywhere.
-    enabled false
-
     # Allow compositor-owned overlays (Bearings, Apogee, Alt-Tab,
     # notifications, popups, and labels) to use blur.
     overlays true
@@ -397,12 +394,12 @@ background:
   # animated true
 end
 
-# Window and layer-shell rules make client blur activation explicit.
+# Window and layer-shell rules are the only client blur activation policy.
 # Managed-window rules are shared by native Wayland and XWayland windows.
 # Rules are checked top-to-bottom and only the first complete match applies.
 # Exact strings are case-sensitive; r"..." values are regular expressions.
 rules:
-  # rule:
+  # window-rule:
   #   app-id ["firefox", r"org\.mozilla\..*"]
   #   title r"Picture.*"
   #   width 720
