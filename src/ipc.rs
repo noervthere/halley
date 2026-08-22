@@ -228,6 +228,22 @@ impl ApiSubscriptions {
             true
         });
     }
+
+    fn publish_event(&mut self, topic: halley_ipc::EventTopic, event: halley_ipc::ApiEvent) {
+        self.subscribers.retain_mut(|subscriber| {
+            if !subscriber.topics.contains(&topic) {
+                return true;
+            }
+            subscriber.sequence = subscriber.sequence.saturating_add(1);
+            subscriber
+                .sender
+                .try_send(halley_ipc::Response::Event(event_with_sequence(
+                    event.clone(),
+                    subscriber.sequence,
+                )))
+                .is_ok()
+        });
+    }
 }
 
 fn event_with_sequence(event: halley_ipc::ApiEvent, sequence: u64) -> halley_ipc::ApiEvent {
@@ -661,12 +677,16 @@ pub fn handle_request<D: crate::session::SessionDriver>(
             }
         }
         halley_ipc::Request::Subscribe(_) => unreachable!(),
-        halley_ipc::Request::ConfigReload => {
-            halley_ipc::Response::ApiError(halley_ipc::ServerError::new(
-                halley_ipc::ServerErrorKind::Unsupported,
-                "runtime config reload is not available until a config watcher is active",
-            ))
-        }
+        halley_ipc::Request::ConfigReload => match app.config_watcher.as_ref() {
+            Some(watcher) => {
+                watcher.request_reload();
+                halley_ipc::Response::Ack
+            }
+            None => halley_ipc::Response::ApiError(halley_ipc::ServerError::new(
+                halley_ipc::ServerErrorKind::NotFound,
+                "no configuration file is being watched",
+            )),
+        },
     };
     let _ = reply.send(response, Vec::new());
 }
@@ -712,4 +732,17 @@ pub fn publish_api_events<D: crate::session::SessionDriver>(app: &mut crate::ses
     }
     let snapshot = api_snapshot(app);
     app.api_subscriptions.publish(snapshot);
+}
+
+pub fn publish_config_reload<D: crate::session::SessionDriver>(
+    app: &mut crate::session::Session<D>,
+    accepted: bool,
+) {
+    app.api_subscriptions.publish_event(
+        halley_ipc::EventTopic::Config,
+        halley_ipc::ApiEvent::ConfigReloaded {
+            sequence: 0,
+            accepted,
+        },
+    );
 }

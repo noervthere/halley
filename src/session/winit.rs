@@ -145,6 +145,7 @@ impl super::SessionDriver for WinitDriver {
 type App = Session<WinitDriver>;
 
 fn apply_runtime_config(app: &mut App, reload: crate::config::ConfigReload) {
+    let accepted = matches!(reload, crate::config::ConfigReload::Loaded(_));
     match reload {
         crate::config::ConfigReload::Loaded(config) => {
             let config = *config;
@@ -156,6 +157,7 @@ fn apply_runtime_config(app: &mut App, reload: crate::config::ConfigReload) {
             app.show_config_reload_error();
         }
     }
+    crate::ipc::publish_config_reload(app, accepted);
 }
 
 /// Runs the nested (winit) session - a real window on the host desktop,
@@ -240,6 +242,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
         session_lock,
         start_time: Instant::now(),
         config_path: config_path.clone(),
+        config_watcher: None,
         startup_config_diagnostic: initial.diagnostic,
         shell: crate::shell::state::ShellState::new(&runtime_config),
         settings: super::RuntimeSettings::new(&runtime_config, applied_input),
@@ -304,10 +307,11 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
         Ok(encoder) => app.screenshot_encoder = Some(encoder),
         Err(err) => eventline::error!("screenshot: failed to start encoder: {err}"),
     }
-    if let Some(path) = config_path
-        && let Err(err) = crate::config::watch(&event_loop.handle(), path, apply_runtime_config)
-    {
-        eventline::warn!("config: failed to start watcher: {err}");
+    if let Some(path) = config_path {
+        match crate::config::watch(&event_loop.handle(), path, apply_runtime_config) {
+            Ok(watcher) => app.config_watcher = Some(watcher),
+            Err(err) => eventline::warn!("config: failed to start watcher: {err}"),
+        }
     }
     if let Err(err) = super::install_node_decay_timer(&event_loop.handle()) {
         eventline::warn!("nodes: failed to start decay timer: {err}");

@@ -1,6 +1,8 @@
 use std::error::Error;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, SystemTime};
 
@@ -76,6 +78,17 @@ pub struct InitialConfig {
 pub enum ConfigReload {
     Loaded(Box<halley_config::RuntimeConfig>),
     Rejected(halley_config::ConfigDiagnostic),
+}
+
+#[derive(Clone)]
+pub struct ConfigWatcher {
+    reload_requested: Arc<AtomicBool>,
+}
+
+impl ConfigWatcher {
+    pub fn request_reload(&self) {
+        self.reload_requested.store(true, Ordering::Release);
+    }
 }
 
 /// Resolve a user-supplied path without requiring the file to exist.
@@ -163,15 +176,18 @@ pub fn watch<App: 'static>(
     loop_handle: &LoopHandle<'_, App>,
     path: PathBuf,
     mut notify: impl FnMut(&mut App, ConfigReload) + 'static,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<ConfigWatcher, Box<dyn Error>> {
     let (sender, receiver) = sync_channel(1);
+    let reload_requested = Arc::new(AtomicBool::new(false));
+    let watcher_reload_requested = reload_requested.clone();
     thread::Builder::new()
         .name(format!("halley config watcher for {path:?}"))
         .spawn(move || {
             let mut state = ConfigFileState::new(path);
             loop {
                 thread::sleep(POLLING_INTERVAL);
-                if !state.changed() {
+                let forced = watcher_reload_requested.swap(false, Ordering::AcqRel);
+                if !forced && !state.changed() {
                     continue;
                 }
                 let loaded = halley_config::load_runtime_config_diagnostic_at(&state.path);
@@ -186,7 +202,7 @@ pub fn watch<App: 'static>(
             notify(app, classify_reload(loaded));
         }
     })?;
-    Ok(())
+    Ok(ConfigWatcher { reload_requested })
 }
 
 fn classify_reload(

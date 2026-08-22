@@ -125,6 +125,7 @@ pub struct Session<D: SessionDriver> {
     pub session_lock: crate::wayland::session_lock::State,
     pub start_time: std::time::Instant,
     pub config_path: Option<PathBuf>,
+    pub(crate) config_watcher: Option<crate::config::ConfigWatcher>,
     pub startup_config_diagnostic: Option<halley_config::ConfigDiagnostic>,
     pub shell: crate::shell::state::ShellState,
     pub settings: super::RuntimeSettings,
