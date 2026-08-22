@@ -110,6 +110,7 @@ pub trait SessionDriver: RenderDriver + OutputDriver + 'static {
 pub struct Session<D: SessionDriver> {
     pub driver: D,
     pub keyboard: Keyboard,
+    pub(crate) key_repeat: super::input::repeat::Policy<D>,
     pub(super) launch_environment: super::environment::LaunchEnvironment,
     pub(super) autostart: super::autostart::Autostart,
     pub pointer: Pointer,
@@ -324,6 +325,7 @@ impl<D: SessionDriver> Session<D> {
     /// Applies every backend-independent setting from one validated config
     /// snapshot. Output hardware policy remains with the concrete driver.
     pub fn apply_common_config(&mut self, config: &halley_config::RuntimeConfig) {
+        self.key_repeat.cancel();
         let cancel_touch = self.settings.input.gestures.touch_passthrough
             && !config.input.gestures.touch_passthrough;
         let cancel_gestures = self.settings.input.gestures != config.input.gestures;

@@ -1,7 +1,7 @@
 use super::*;
 
 enum KeyboardOutcome {
-    Action(halley_config::Action),
+    Action(crate::input::keybinds::ResolvedBind),
     ExitConfirm,
     ExitCancel,
     ExitIntercept,
@@ -62,7 +62,10 @@ pub(super) fn handle<D, B>(
     let state = key_event.state();
     let time = key_event.time_msec();
     if state == KeyState::Released {
+        session.key_repeat.release(keycode);
         session.clusters.stop_name_repeat(keycode.raw());
+    } else {
+        session.key_repeat.cancel();
     }
     if state == KeyState::Pressed && session.cursor_policy.keyboard_press() {
         session.request_redraw();
@@ -158,13 +161,16 @@ pub(super) fn handle<D, B>(
                         KeyboardOutcome::ApogeeMove(crate::shell::apogee::Direction::Down)
                     }
                     _ => {
-                        if let Some(
-                            action @ (halley_config::Action::Apogee
-                            | halley_config::Action::Quit
-                            | halley_config::Action::OpenTerminal),
-                        ) = match_keyboard_bind(&data.keyboard.binds, modifiers, sym, keycode)
+                        if let Some(bind) =
+                            match_keyboard_binding(&data.keyboard.binds, modifiers, sym, keycode)
+                            && matches!(
+                                bind.action,
+                                halley_config::Action::Apogee
+                                    | halley_config::Action::Quit
+                                    | halley_config::Action::OpenTerminal
+                            )
                         {
-                            KeyboardOutcome::Action(action)
+                            KeyboardOutcome::Action(bind.clone())
                         } else {
                             KeyboardOutcome::ApogeeIntercept
                         }
@@ -182,10 +188,11 @@ pub(super) fn handle<D, B>(
                     return FilterResult::Intercept(KeyboardOutcome::FocusCycleCancel);
                 }
                 if state == KeyState::Pressed
-                    && let Some(action @ halley_config::Action::FocusCycle(_)) =
-                        match_keyboard_bind(&data.keyboard.binds, modifiers, sym, keycode)
+                    && let Some(bind) =
+                        match_keyboard_binding(&data.keyboard.binds, modifiers, sym, keycode)
+                    && matches!(bind.action, halley_config::Action::FocusCycle(_))
                 {
-                    return FilterResult::Intercept(KeyboardOutcome::Action(action));
+                    return FilterResult::Intercept(KeyboardOutcome::Action(bind.clone()));
                 }
                 return FilterResult::Intercept(KeyboardOutcome::FocusCycleIntercept);
             }
@@ -228,8 +235,8 @@ pub(super) fn handle<D, B>(
                 forwarded_non_modifier_press = non_modifier;
                 return FilterResult::Forward;
             }
-            match match_keyboard_bind(&data.keyboard.binds, modifiers, sym, keycode) {
-                Some(action) => FilterResult::Intercept(KeyboardOutcome::Action(action)),
+            match match_keyboard_binding(&data.keyboard.binds, modifiers, sym, keycode) {
+                Some(bind) => FilterResult::Intercept(KeyboardOutcome::Action(bind.clone())),
                 None => {
                     forwarded_non_modifier_press = non_modifier;
                     FilterResult::Forward
@@ -261,15 +268,21 @@ pub(super) fn handle<D, B>(
                 session.interactions.suppressed_keys.suppress(keycode);
             }
         }
-        Some(KeyboardOutcome::Action(action)) => {
+        Some(KeyboardOutcome::Action(bind)) => {
             session.interactions.suppressed_keys.suppress(keycode);
             close_blooms_for_keybind(session, pointer_output.as_deref());
             actions::dispatch(
                 session,
-                action,
+                bind.action.clone(),
                 socket_name,
                 pointer_output.as_deref(),
                 Some(keycode.raw()),
+            );
+            session.key_repeat.start(
+                keycode,
+                bind,
+                session.settings.input.repeat_delay,
+                session.settings.input.repeat_rate,
             );
         }
         Some(KeyboardOutcome::BearingsRelease) => {

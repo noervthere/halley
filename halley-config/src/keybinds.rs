@@ -362,4 +362,41 @@ mod tests {
         assert_eq!(screenshot.modifiers, Modifiers::default());
         assert_eq!(screenshot.key, "Print");
     }
+
+    #[test]
+    fn repeat_defaults_are_limited_to_continuous_actions() {
+        for action in [
+            Action::FocusCycle(FocusCycleDirection::Forward),
+            Action::FocusDirection(Direction::Left),
+            Action::MoveNode(Direction::Right),
+            Action::ClusterTileFocus(Direction::Up),
+            Action::ClusterTileSwap(Direction::Down),
+            Action::MonitorFocus(Direction::Left),
+            Action::ZoomIn,
+            Action::ZoomOut,
+        ] {
+            assert!(action.repeats_by_default(), "{action:?}");
+        }
+        for action in [
+            Action::Quit,
+            Action::CloseFocusedWindow,
+            Action::ToggleFullscreen,
+            Action::ToggleFieldMaximize,
+            Action::ToggleState,
+            Action::Apogee,
+            Action::BearingsShow,
+            Action::BearingsToggle,
+            Action::CenterLastFocused,
+            Action::ClusterMode,
+            Action::ClusterLayoutCycle,
+            Action::ClusterToggleFloat,
+            Action::ClusterSlot(1),
+            Action::OpenTerminal,
+            Action::ZoomReset,
+            Action::Screenshot,
+            Action::Spawn("command".to_string()),
+        ] {
+            assert!(!action.repeats_by_default(), "{action:?}");
+        }
+    }
 }

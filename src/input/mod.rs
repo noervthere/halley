@@ -21,7 +21,7 @@ pub fn modifiers_match(state: &ModifiersState, expected: Modifiers) -> bool {
         && state.logo == expected.super_key
 }
 
-fn keyboard_modifiers_match(
+pub(crate) fn keyboard_modifiers_match(
     state: &ModifiersState,
     expected: Modifiers,
     trigger: ResolvedTrigger,
@@ -58,12 +58,24 @@ pub fn mod_key_held(state: &ModifiersState, key: ModifierKey) -> bool {
 /// Looks up a pressed keysym/raw keycode plus modifiers against the resolved
 /// bind table. This remains pure and backend-independent so both sessions
 /// can share it from their real `KeyboardHandle::input()` filter closures.
+#[cfg(test)]
 pub fn match_keyboard_bind(
     binds: &[ResolvedBind],
     mods: &ModifiersState,
     keysym: Option<Keysym>,
     keycode: Keycode,
 ) -> Option<Action> {
+    match_keyboard_binding(binds, mods, keysym, keycode).map(|bind| bind.action.clone())
+}
+
+/// Returns the complete resolved binding for input paths that also need
+/// trigger metadata such as repeat policy.
+pub fn match_keyboard_binding<'a>(
+    binds: &'a [ResolvedBind],
+    mods: &ModifiersState,
+    keysym: Option<Keysym>,
+    keycode: Keycode,
+) -> Option<&'a ResolvedBind> {
     let bind = binds.iter().find(|bind| {
         let trigger_matches = match bind.trigger {
             ResolvedTrigger::Keysym(expected) => Some(expected) == keysym,
@@ -72,15 +84,12 @@ pub fn match_keyboard_bind(
         };
         trigger_matches && keyboard_modifiers_match(mods, bind.modifiers, bind.trigger)
     })?;
-    // Low-frequency (only fires on an actual match, not every keystroke) and
-    // genuinely useful - confirms which action a chord resolved to without
-    // needing to reason about it from config alone.
     eventline::debug!(
         "keybinds: {:?} + {mods:?} -> {:?}",
         bind.trigger,
         bind.action
     );
-    Some(bind.action.clone())
+    Some(bind)
 }
 
 pub fn match_pointer_bind(

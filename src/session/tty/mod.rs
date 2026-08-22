@@ -381,6 +381,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
             BackendKind::Tty,
             launch_path.as_deref(),
         ),
+        key_repeat: super::input::repeat::Policy::new(loop_handle.clone()),
         launch_environment,
         autostart: super::autostart::Autostart::enabled(),
         pointer: Pointer::new((100.0, 100.0)),
@@ -518,6 +519,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                     // reaching this VT. Do not retain compositor release-pair
                     // bookkeeping across that boundary.
                     app.interactions.suppressed_keys.clear();
+                    app.key_repeat.cancel();
                     match app.driver.backend.change_vt(vt) {
                         Ok(()) => eventline::debug!("tty input: requested VT switch to {vt}"),
                         Err(err) => {

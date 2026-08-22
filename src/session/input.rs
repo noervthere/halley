@@ -16,12 +16,13 @@ use smithay::wayland::seat::WaylandFocus;
 use super::{Session, SessionDriver};
 use crate::input::pointer::{axis_frame_filtered, process_wheel_bindings};
 use crate::input::{
-    PointerBindingResult, match_keyboard_bind, match_wheel_bind, process_pointer_binding,
+    PointerBindingResult, match_keyboard_binding, match_wheel_bind, process_pointer_binding,
 };
 use crate::wayland;
 
 mod actions;
 mod keyboard;
+pub(crate) mod repeat;
 
 const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
@@ -106,7 +107,7 @@ fn shortcut_policy_allows_bindings(focus_bypasses_shortcuts: bool, inhibitor_act
     !focus_bypasses_shortcuts && !inhibitor_active
 }
 
-fn bindings_enabled<D: SessionDriver>(session: &Session<D>) -> bool {
+pub(super) fn bindings_enabled<D: SessionDriver>(session: &Session<D>) -> bool {
     let focus = wayland::focus::current(
         &session.wayland,
         &session.fullscreen,

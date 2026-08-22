@@ -227,6 +227,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
             BackendKind::Winit,
             launch_path.as_deref(),
         ),
+        key_repeat: super::input::repeat::Policy::new(event_loop.handle()),
         launch_environment,
         autostart: super::autostart::Autostart::disabled(),
         pointer: Pointer::new((100.0, 100.0)),
