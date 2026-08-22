@@ -731,34 +731,6 @@ fn typed_api_response(response: halley_ipc::Response) -> halley_ipc::Response {
     api_error(kind, message)
 }
 
-#[cfg(test)]
-mod typed_error_tests {
-    use super::*;
-
-    fn kind(message: &str) -> halley_ipc::ServerErrorKind {
-        match typed_api_response(halley_ipc::Response::Error(message.into())) {
-            halley_ipc::Response::ApiError(error) => error.kind,
-            response => panic!("expected typed API error, got {response:?}"),
-        }
-    }
-
-    #[test]
-    fn classifies_public_control_errors() {
-        assert_eq!(
-            kind("selector app:term matched multiple nodes"),
-            halley_ipc::ServerErrorKind::Ambiguous
-        );
-        assert_eq!(
-            kind("cluster 7 was not found"),
-            halley_ipc::ServerErrorKind::NotFound
-        );
-        assert_eq!(
-            kind("cluster slot must be between 1 and 10, got 0"),
-            halley_ipc::ServerErrorKind::InvalidRequest
-        );
-    }
-}
-
 fn api_snapshot<D: crate::session::SessionDriver>(
     app: &mut crate::session::Session<D>,
 ) -> halley_ipc::StateSnapshot {
@@ -830,4 +802,32 @@ pub fn publish_cluster_draft<D: crate::session::SessionDriver>(
             message,
         },
     );
+}
+
+#[cfg(test)]
+mod typed_error_tests {
+    use super::*;
+
+    fn kind(message: &str) -> halley_ipc::ServerErrorKind {
+        match typed_api_response(halley_ipc::Response::Error(message.into())) {
+            halley_ipc::Response::ApiError(error) => error.kind,
+            response => panic!("expected typed API error, got {response:?}"),
+        }
+    }
+
+    #[test]
+    fn classifies_public_control_errors() {
+        assert_eq!(
+            kind("selector app:term matched multiple nodes"),
+            halley_ipc::ServerErrorKind::Ambiguous
+        );
+        assert_eq!(
+            kind("cluster 7 was not found"),
+            halley_ipc::ServerErrorKind::NotFound
+        );
+        assert_eq!(
+            kind("cluster slot must be between 1 and 10, got 0"),
+            halley_ipc::ServerErrorKind::InvalidRequest
+        );
+    }
 }
