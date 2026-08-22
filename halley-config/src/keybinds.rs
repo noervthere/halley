@@ -135,7 +135,15 @@ mod tests {
                 )
             }
         }
-        assert_eq!(kb.binds.len(), 44);
+        assert_eq!(kb.binds.len(), 45);
+
+        let lift = kb
+            .binds
+            .iter()
+            .find(|bind| bind.action == Action::Spawn("halley-lift".into()))
+            .expect("Lift launcher bind present");
+        assert!(lift.modifiers.super_key);
+        assert_eq!(lift.key, "space");
 
         let quit = kb.binds.iter().find(|b| b.action == Action::Quit).unwrap();
         assert!(quit.modifiers.super_key);
