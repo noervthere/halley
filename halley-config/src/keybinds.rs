@@ -143,7 +143,7 @@ mod tests {
             .find(|bind| bind.action == Action::Spawn("halley-lift".into()))
             .expect("Lift launcher bind present");
         assert!(lift.modifiers.super_key);
-        assert_eq!(lift.key, "space");
+        assert_eq!(lift.key, "d");
 
         let quit = kb.binds.iter().find(|b| b.action == Action::Quit).unwrap();
         assert!(quit.modifiers.super_key);

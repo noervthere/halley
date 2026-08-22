@@ -28,7 +28,7 @@ fn example_config_parses_end_to_end() {
         .iter()
         .find(|bind| bind.action == Action::Spawn("halley-lift".into()))
         .expect("Lift launcher bind present");
-    assert_eq!(lift.key, "space");
+    assert_eq!(lift.key, "d");
     assert!(lift.modifiers.super_key);
 
     let quit = keybinds

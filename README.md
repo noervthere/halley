@@ -37,7 +37,7 @@ Run `target/release/halley --winit` for a nested development session or
 `--config PATH`) to select a configuration explicitly. `halleyctl` exposes
 output, DPMS, node, Bearings, configuration verification, and quit controls;
 `halleyctl --help` lists the current surface. `halley-lift` is the bundled
-search and action launcher; the default `Mod+Space` binding toggles it.
+search and action launcher; the default `Mod+D` binding toggles it.
 
 Third-party launchers, panels, and automation should use the supported
 [`halley-api` Rust SDK](docs/api.md). It exposes typed commands and queries,

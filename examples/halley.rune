@@ -763,7 +763,7 @@ keybinds:
   "$var.mod+t" "open-terminal"
 
   # Toggle Halley's bundled search and action launcher.
-  "$var.mod+space" "halley-lift"
+  "$var.mod+d" "halley-lift"
 
   # Any action string that is not a built-in action is executed as a command
   # line. These bindings control the default PipeWire sink through `wpctl`.
