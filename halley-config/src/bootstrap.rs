@@ -152,8 +152,8 @@ mod tests {
             "show-icons false",
             "show-title true",
             "height 32",
-            "XF86AudioRaiseVolume\": action",
-            "repeat true end",
+            "XF86AudioRaiseVolume\" \"wpctl",
+            "with repeat true",
         ] {
             assert!(
                 DEFAULT_CONFIG.contains(expected),

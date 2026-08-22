@@ -187,11 +187,11 @@ cycling and directional focus, Field node movement, cluster tile focus and
 swapping, monitor focus, and zoom in/out. Destructive, modal, toggle, reset,
 screenshot, terminal, and arbitrary command actions are one-shot by default.
 
-Both defaults can be overridden with Rune's compact one-line object form:
+Both defaults can be overridden with Rune's inline `with` attributes:
 
 ```rune
-"$var.mod+left": action "focus-left" repeat false end
-"XF86AudioRaiseVolume": action "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+" repeat true end
+"$var.mod+left" "focus-left" with repeat false
+"XF86AudioRaiseVolume" "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+" with repeat true
 ```
 
 Repeat fires once immediately, waits for `input.repeat-delay`, then follows
