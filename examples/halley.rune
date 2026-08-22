@@ -769,8 +769,10 @@ keybinds:
   "$var.mod+ctrl+up" "cluster-tile-swap-up"
   "$var.mod+ctrl+down" "cluster-tile-swap-down"
 
-  # `open-terminal` uses `default-terminal` near the end of this section.
-  "$var.mod+t" "open-terminal"
+  # `default-terminal` launches the first installed terminal from Halley's built-in
+  # priority list. Replace this bind with e.g. `"$var.mod+t" "kitty"` to use
+  # one command explicitly.
+  "$var.mod+t" "default-terminal"
 
   # Toggle Halley's bundled search and action launcher.
   "$var.mod+d" "halley-lift"
@@ -804,7 +806,4 @@ keybinds:
   #
   # See docs/keybinds.md for the complete trigger reference.
 
-  # "auto" selects the first available terminal from Halley's detection
-  # list. Replace it with an exact command such as "kitty" to skip detection.
-  default-terminal "auto"
 end

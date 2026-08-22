@@ -230,6 +230,13 @@ pointer warp after its opening transition. Escape cancels without changing
 focus or pointer position. `Mod+O` opens or closes
 the multi-monitor Apogee overview. Apogee stops trapping keys as soon as its
 close transition begins.
+`default-terminal` (also accepted as `open-terminal`) launches the first
+available built-in terminal in this order:
+`alacritty`, `kitty`, `ghostty`, `wezterm`, `foot`, `footclient`, `rio`,
+`contour`, `kgx`, `gnome-terminal`, `konsole`, `xfce4-terminal`, `tilix`,
+`terminator`, `mate-terminal`, `qterminal`, `lxterminal`, then `xterm`.
+To choose an exact terminal instead, bind its command directly—for example,
+`"$var.mod+t" "kitty"`.
 The interactive screenshot menu and its area, screen, and window selectors
 force the compositor cursor visible even if a client or inactivity policy had
 hidden it.

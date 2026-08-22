@@ -4,7 +4,7 @@ use std::fmt;
 use rune_cfg::{RuneConfig, Value};
 
 use crate::chord::parse_chord;
-use crate::keybinds::{Action, DefaultTerminal, Keybind, Keybinds, ModifierKey};
+use crate::keybinds::{Action, Keybind, Keybinds, ModifierKey};
 
 const KEY_MOD: &str = "mod";
 const KEY_DEFAULT_TERMINAL_KEBAB: &str = "default-terminal";
@@ -166,7 +166,9 @@ fn parse_action(s: &str) -> Action {
             Action::ClusterLayoutCycle
         }
         "cluster-toggle-float" | "cluster_toggle_float" => Action::ClusterToggleFloat,
-        "open-terminal" | "open_terminal" => Action::OpenTerminal,
+        "open-terminal" | "open_terminal" | "default-terminal" | "default_terminal" => {
+            Action::OpenTerminal
+        }
         "zoom-in" | "zoom_in" => Action::ZoomIn,
         "zoom-out" | "zoom_out" => Action::ZoomOut,
         "zoom-reset" | "zoom_reset" => Action::ZoomReset,
@@ -178,10 +180,8 @@ fn parse_action(s: &str) -> Action {
 /// Parse the `keybinds:` section of a loaded `RuneConfig` into a `Keybinds`
 /// value.
 ///
-/// Every value in the section happens to be a plain string (`mod`,
-/// `default-terminal`, and every chord->action pair), so this reads the
-/// whole section as `HashMap<String, String>` in one call rather than
-/// walking the AST by hand.
+/// Values are either compact action strings or one-line binding objects with
+/// `action` and optional `repeat` fields.
 ///
 /// Chord keys reference the modifier via a literal `$var.mod` substring
 /// (e.g. `"$var.mod+shift+e"`) - rune-cfg's `$var` resolution only applies
@@ -200,30 +200,16 @@ pub fn parse_keybinds(config: &RuneConfig) -> Result<Keybinds, ParseError> {
         .unwrap_or_else(|| "super".to_string());
     let modifier = parse_modifier_key(&modifier_str)
         .ok_or_else(|| ParseError::UnknownModifier(modifier_str.clone()))?;
-
-    let default_terminal = match map
-        .get(KEY_DEFAULT_TERMINAL_KEBAB)
-        .or_else(|| map.get(KEY_DEFAULT_TERMINAL_SNAKE))
+    if map.contains_key(KEY_DEFAULT_TERMINAL_KEBAB) || map.contains_key(KEY_DEFAULT_TERMINAL_SNAKE)
     {
-        None => DefaultTerminal::Auto,
-        Some(value) => {
-            let value = binding_string("default-terminal", value)?;
-            if value.eq_ignore_ascii_case("auto") {
-                DefaultTerminal::Auto
-            } else {
-                DefaultTerminal::Explicit(value.to_owned())
-            }
-        }
-    };
+        return Err(ParseError::InvalidBinding {
+            chord: KEY_DEFAULT_TERMINAL_KEBAB.to_string(),
+            message: "default-terminal is now an action, not a setting; bind it to a chord or replace that chord with the command you want to run".to_string(),
+        });
+    }
 
-    let mut entries: Vec<(&String, &Value)> = map
-        .iter()
-        .filter(|(k, _)| {
-            k.as_str() != KEY_MOD
-                && k.as_str() != KEY_DEFAULT_TERMINAL_KEBAB
-                && k.as_str() != KEY_DEFAULT_TERMINAL_SNAKE
-        })
-        .collect();
+    let mut entries: Vec<(&String, &Value)> =
+        map.iter().filter(|(k, _)| k.as_str() != KEY_MOD).collect();
     // HashMap iteration order isn't stable - sort so parsing the same file
     // always produces binds in the same order.
     entries.sort_by_key(|(k, _)| *k);
@@ -249,11 +235,7 @@ pub fn parse_keybinds(config: &RuneConfig) -> Result<Keybinds, ParseError> {
         });
     }
 
-    Ok(Keybinds {
-        modifier,
-        default_terminal,
-        binds,
-    })
+    Ok(Keybinds { modifier, binds })
 }
 
 fn binding_string<'a>(field: &str, value: &'a Value) -> Result<&'a str, ParseError> {
@@ -330,14 +312,11 @@ keybinds:
   "$var.mod+shift+e" "quit"
   "$var.mod+c" "close-focused"
   "$var.mod+t" "open-terminal"
-
-  default-terminal "auto"
 end
 "#,
         );
 
         assert_eq!(kb.modifier, ModifierKey::Super);
-        assert_eq!(kb.default_terminal, DefaultTerminal::Auto);
         assert_eq!(kb.binds.len(), 3);
 
         let quit = kb.binds.iter().find(|b| b.action == Action::Quit).unwrap();
@@ -588,32 +567,19 @@ end
     }
 
     #[test]
-    fn explicit_default_terminal_bypasses_auto() {
-        let kb = parse(
+    fn legacy_default_terminal_reports_the_keybind_migration() {
+        let config = RuneConfig::from_str(
             r#"
 keybinds:
   mod "super"
   default-terminal "foot"
 end
 "#,
-        );
-        assert_eq!(
-            kb.default_terminal,
-            DefaultTerminal::Explicit("foot".to_string())
-        );
-    }
-
-    #[test]
-    fn missing_default_terminal_defaults_to_auto() {
-        let kb = parse(
-            r#"
-keybinds:
-  mod "super"
-end
-"#,
-        );
-        assert_eq!(kb.default_terminal, DefaultTerminal::Auto);
-        assert_eq!(kb.binds, Vec::<Keybind>::new());
+        )
+        .unwrap();
+        let error = parse_keybinds(&config).unwrap_err().to_string();
+        assert!(error.contains("default-terminal is now an action"));
+        assert!(error.contains("bind it to a chord"));
     }
 
     #[test]

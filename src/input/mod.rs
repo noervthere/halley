@@ -205,11 +205,7 @@ pub struct Keyboard {
     /// use, just via a live `modifier_state()` query instead of a filter
     /// closure (pointer events don't carry modifier state directly).
     pub effective_mod: ModifierKey,
-    /// Resolved once at startup from the user's config - `None` if nothing
-    /// was configured and nothing from `TERMINAL_PRIORITY` was found on
-    /// `PATH`. `Action::OpenTerminal`'s dispatch (driving code) needs this,
-    /// but resolving *what* to launch is keybind-config concern, not
-    /// something the caller should redo itself.
+    /// Resolved once at startup from Halley's built-in terminal priority list.
     terminal_command: Option<String>,
 }
 
@@ -221,8 +217,7 @@ impl Keyboard {
     ) -> Self {
         let binds = keybinds::resolve_binds(keybinds, backend);
         let effective_mod = keybinds::effective_mod(keybinds.modifier, backend);
-        let terminal_command =
-            halley_config::resolve_default_terminal_in_path(&keybinds.default_terminal, path);
+        let terminal_command = halley_config::resolve_default_terminal_in_path(path);
 
         Self {
             binds,
@@ -240,9 +235,8 @@ impl Keyboard {
         *self = Self::from_config(keybinds, backend, path);
     }
 
-    /// The command `Action::OpenTerminal` should launch - `None` if nothing
-    /// was configured and nothing from the priority list was found on
-    /// `PATH`.
+    /// The command `Action::OpenTerminal` should launch, if one of Halley's
+    /// built-in terminal candidates is available on `PATH`.
     pub fn terminal_command(&self) -> Option<&str> {
         self.terminal_command.as_deref()
     }

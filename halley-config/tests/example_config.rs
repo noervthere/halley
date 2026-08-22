@@ -1,4 +1,4 @@
-use halley_config::{Action, DefaultTerminal, Direction, ModifierKey, parse_keybinds};
+use halley_config::{Action, Direction, ModifierKey, parse_keybinds};
 use rune_cfg::RuneConfig;
 
 const EXAMPLE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../examples/halley.rune");
@@ -12,15 +12,6 @@ fn example_config_parses_end_to_end() {
     let keybinds = parse_keybinds(&config).expect("example keybinds section parses");
 
     assert_eq!(keybinds.modifier, ModifierKey::Super);
-    match &keybinds.default_terminal {
-        DefaultTerminal::Auto => {}
-        DefaultTerminal::Explicit(command) => {
-            assert!(
-                !command.trim().is_empty(),
-                "explicit terminal cannot be empty"
-            )
-        }
-    }
     assert_eq!(keybinds.binds.len(), 49);
 
     let lift = keybinds

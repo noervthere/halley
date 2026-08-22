@@ -115,20 +115,10 @@ pub struct Keybind {
     pub repeat: bool,
 }
 
-/// What terminal `Action::OpenTerminal` should launch.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum DefaultTerminal {
-    /// Detect an installed terminal from a priority list (see `terminal.rs`).
-    Auto,
-    /// Use this exact command, no detection.
-    Explicit(String),
-}
-
 /// The whole (currently keybinds-only) parsed config.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Keybinds {
     pub modifier: ModifierKey,
-    pub default_terminal: DefaultTerminal,
     pub binds: Vec<Keybind>,
 }
 
@@ -150,15 +140,6 @@ mod tests {
     fn default_matches_the_shipped_keybinds() {
         let kb = Keybinds::default();
         assert_eq!(kb.modifier, ModifierKey::Super);
-        match &kb.default_terminal {
-            DefaultTerminal::Auto => {}
-            DefaultTerminal::Explicit(command) => {
-                assert!(
-                    !command.trim().is_empty(),
-                    "explicit terminal cannot be empty"
-                )
-            }
-        }
         assert_eq!(kb.binds.len(), 49);
 
         let lift = kb
