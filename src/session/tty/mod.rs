@@ -404,6 +404,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
             runtime_config.clusters,
             runtime_config.animations.cluster,
         ),
+        api_subscriptions: crate::ipc::ApiSubscriptions::default(),
         pending_pointer_warp: None,
         window_rules: crate::window::rules::WindowRulesState::new(
             runtime_config.window_rules.clone(),
@@ -629,6 +630,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
             if !app.driver.pause_reasons.any() {
                 redraw_queued_outputs(app, &loop_handle);
             }
+            crate::ipc::publish_api_events(app);
             let _ = app.wayland.display_handle.flush_clients();
         })
         .expect("event loop run failed");

@@ -6,7 +6,8 @@ use serde::{Deserialize, Serialize};
 /// the end of `Request`/`Response` silently breaks wire-compatibility with
 /// a differently-versioned build - worth remembering as this grows, not
 /// solved here (this first pass has nothing to negotiate against yet).
-pub const HALLEY_IPC_VERSION: u32 = 15;
+pub const HALLEY_IPC_VERSION: u32 = 16;
+pub const HALLEY_API_VERSION: u32 = 1;
 
 /// A request from `halleyctl`, the portal backend, or another local client.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -37,6 +38,11 @@ pub enum Request {
     },
     Cluster(ClusterRequest),
     CaptureCapabilities,
+    /// Negotiate the external SDK contract before issuing API requests.
+    Hello(HelloRequest),
+    /// Turn this connection into a dedicated event stream.
+    Subscribe(SubscribeRequest),
+    ConfigReload,
 }
 
 /// The compositor's reply to a `Request`.
@@ -56,6 +62,150 @@ pub enum Response {
     ClusterList(ClusterListResponse),
     ClusterInfo(ClusterInfo),
     CaptureCapabilities(CaptureCapabilities),
+    Hello(ServerInfo),
+    Subscribed(StateSnapshot),
+    Event(ApiEvent),
+    ApiError(ServerError),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ServerErrorKind {
+    InvalidRequest,
+    NotFound,
+    Ambiguous,
+    Unsupported,
+    VersionMismatch,
+    Busy,
+    Internal,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServerError {
+    pub kind: ServerErrorKind,
+    pub message: String,
+}
+
+impl ServerError {
+    pub fn new(kind: ServerErrorKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HelloRequest {
+    pub api_version: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServerInfo {
+    pub compositor_version: String,
+    pub api_version: u32,
+    pub ipc_protocol: u32,
+    pub capabilities: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum EventTopic {
+    Outputs,
+    Nodes,
+    NodeGeometry,
+    Clusters,
+    Config,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubscribeRequest {
+    pub api_version: u32,
+    pub topics: Vec<EventTopic>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct StateSnapshot {
+    pub sequence: u64,
+    pub outputs: Vec<OutputInfo>,
+    pub nodes: Vec<NodeInfo>,
+    pub clusters: Vec<ClusterSummary>,
+    pub config_path: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum ApiEvent {
+    OutputAdded {
+        sequence: u64,
+        output: OutputInfo,
+    },
+    OutputChanged {
+        sequence: u64,
+        output: OutputInfo,
+    },
+    OutputRemoved {
+        sequence: u64,
+        name: String,
+    },
+    NodeAdded {
+        sequence: u64,
+        node: NodeInfo,
+    },
+    NodeChanged {
+        sequence: u64,
+        node: NodeInfo,
+    },
+    NodeGeometryChanged {
+        sequence: u64,
+        id: u64,
+        pos_x: f32,
+        pos_y: f32,
+        width: f32,
+        height: f32,
+    },
+    NodeRemoved {
+        sequence: u64,
+        id: u64,
+    },
+    ClusterAdded {
+        sequence: u64,
+        cluster: ClusterSummary,
+    },
+    ClusterChanged {
+        sequence: u64,
+        cluster: ClusterSummary,
+    },
+    ClusterRemoved {
+        sequence: u64,
+        id: u64,
+    },
+    ConfigReloaded {
+        sequence: u64,
+        accepted: bool,
+    },
+    ClusterDraftChanged {
+        sequence: u64,
+        id: u64,
+        state: ClusterDraftState,
+        message: Option<String>,
+    },
+}
+
+impl ApiEvent {
+    pub fn sequence(&self) -> u64 {
+        match self {
+            Self::OutputAdded { sequence, .. }
+            | Self::OutputChanged { sequence, .. }
+            | Self::OutputRemoved { sequence, .. }
+            | Self::NodeAdded { sequence, .. }
+            | Self::NodeChanged { sequence, .. }
+            | Self::NodeGeometryChanged { sequence, .. }
+            | Self::NodeRemoved { sequence, .. }
+            | Self::ClusterAdded { sequence, .. }
+            | Self::ClusterChanged { sequence, .. }
+            | Self::ClusterRemoved { sequence, .. }
+            | Self::ConfigReloaded { sequence, .. }
+            | Self::ClusterDraftChanged { sequence, .. } => *sequence,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -99,6 +249,44 @@ pub enum ClusterRequest {
         slot: u8,
         output: Option<String>,
     },
+    Open {
+        target: ClusterTarget,
+        output: Option<String>,
+    },
+    OpenFinalizeDraft {
+        draft: ClusterDraftRequest,
+        output: Option<String>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ClusterDraftSource {
+    HalleyLift,
+    External,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ClusterDraftState {
+    Started,
+    AwaitingName,
+    Launching,
+    Completed,
+    Cancelled,
+    Failed,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClusterDraftAppLaunch {
+    pub app_id: String,
+    pub command: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClusterDraftRequest {
+    pub name_hint: Option<String>,
+    pub app_launches: Vec<ClusterDraftAppLaunch>,
+    pub running_node_ids: Vec<u64>,
+    pub source: ClusterDraftSource,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

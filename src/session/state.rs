@@ -130,6 +130,7 @@ pub struct Session<D: SessionDriver> {
     pub settings: super::RuntimeSettings,
     pub nodes: crate::nodes::NodesState,
     pub clusters: crate::clusters::ClusterSystem,
+    pub(crate) api_subscriptions: crate::ipc::ApiSubscriptions,
     pub pending_pointer_warp: Option<WlSurface>,
     pub window_rules: crate::window::rules::WindowRulesState,
     pub cameras: OutputCameras,

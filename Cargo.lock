@@ -1183,6 +1183,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "halley-api"
+version = "0.1.0"
+dependencies = [
+ "halley-ipc",
+]
+
+[[package]]
 name = "halley-cli"
 version = "0.1.0"
 dependencies = [

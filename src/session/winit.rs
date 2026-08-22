@@ -248,6 +248,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
             runtime_config.clusters,
             runtime_config.animations.cluster,
         ),
+        api_subscriptions: crate::ipc::ApiSubscriptions::default(),
         pending_pointer_warp: None,
         window_rules: crate::window::rules::WindowRulesState::new(
             runtime_config.window_rules.clone(),
@@ -614,6 +615,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
         event_loop
             .dispatch(None, &mut app)
             .expect("event loop dispatch failed");
+        crate::ipc::publish_api_events(&mut app);
         let _ = app.wayland.display_handle.flush_clients();
     }
 }

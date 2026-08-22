@@ -7,21 +7,24 @@ use std::os::fd::{OwnedFd, RawFd};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 pub use codec::{
     CodecError, decode_request, decode_response, encode_request, encode_response, read_frame,
     read_frame_with_fds, write_frame, write_frame_with_fds,
 };
 pub use types::{
-    BearingsRequest, BearingsStatusResponse, CaptureBuffer, CaptureCapabilities,
-    CaptureFrameRequest, CaptureFrameResponse, CaptureSource, ClusterInfo, ClusterLayoutKind,
+    ApiEvent, BearingsRequest, BearingsStatusResponse, CaptureBuffer, CaptureCapabilities,
+    CaptureFrameRequest, CaptureFrameResponse, CaptureSource, ClusterDraftAppLaunch,
+    ClusterDraftRequest, ClusterDraftSource, ClusterDraftState, ClusterInfo, ClusterLayoutKind,
     ClusterListResponse, ClusterOutputGroup, ClusterRequest, ClusterSummary, ClusterTarget,
-    CursorMetadata, CursorMode, DmabufFormat, DmabufPlane, DpmsCommand, HALLEY_IPC_VERSION,
-    ModeInfo, NodeInfo, NodeKind, NodeListResponse, NodeMoveDirection, NodeOutputGroup,
-    NodeProtocolFamily, NodeRelationInfo, NodeRequest, NodeRole, NodeSelector, NodeState,
-    OutputInfo, OutputsResponse, RegisterDmabufRequest, Request, Response, SOURCE_MONITOR,
-    SOURCE_WINDOW, ScreenshotRequest, ScreenshotResponse, ScreenshotTarget, SourceChooserRequest,
-    SourceChooserResponse, VersionInfo,
+    CursorMetadata, CursorMode, DmabufFormat, DmabufPlane, DpmsCommand, EventTopic,
+    HALLEY_API_VERSION, HALLEY_IPC_VERSION, HelloRequest, ModeInfo, NodeInfo, NodeKind,
+    NodeListResponse, NodeMoveDirection, NodeOutputGroup, NodeProtocolFamily, NodeRelationInfo,
+    NodeRequest, NodeRole, NodeSelector, NodeState, OutputInfo, OutputsResponse,
+    RegisterDmabufRequest, Request, Response, SOURCE_MONITOR, SOURCE_WINDOW, ScreenshotRequest,
+    ScreenshotResponse, ScreenshotTarget, ServerError, ServerErrorKind, ServerInfo,
+    SourceChooserRequest, SourceChooserResponse, StateSnapshot, SubscribeRequest, VersionInfo,
 };
 
 fn runtime_dir_from(base: impl AsRef<Path>) -> PathBuf {
@@ -93,6 +96,22 @@ impl Connection {
             response: decode_response(&bytes)?,
             fds,
         })
+    }
+
+    pub fn receive(&mut self) -> Result<ResponseEnvelope, CodecError> {
+        let (bytes, fds) = read_frame_with_fds(&self.stream, 32)?;
+        Ok(ResponseEnvelope {
+            response: decode_response(&bytes)?,
+            fds,
+        })
+    }
+
+    pub fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
+        self.stream.set_read_timeout(timeout)
+    }
+
+    pub fn set_write_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
+        self.stream.set_write_timeout(timeout)
     }
 }
 

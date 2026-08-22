@@ -1,0 +1,9 @@
+[package]
+name = "halley-api"
+version = "0.1.0"
+edition = "2024"
+description = "Stable Rust client API for the Halley compositor"
+license = "GPL-3.0-only"
+
+[dependencies]
+halley-ipc = { path = "../halley-ipc" }

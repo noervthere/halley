@@ -181,5 +181,75 @@ pub fn handle_request<D: crate::session::SessionDriver>(
                 ))
             }
         }
+        halley_ipc::ClusterRequest::Open { target, output } => {
+            let id = match target {
+                halley_ipc::ClusterTarget::Id(raw) => ClusterId::new(raw),
+                halley_ipc::ClusterTarget::Current => {
+                    let output = match output_context(session, output.as_deref()) {
+                        Ok(output) => output,
+                        Err(message) => return halley_ipc::Response::Error(message),
+                    };
+                    let Some(id) = session.clusters.active_on(&output) else {
+                        return halley_ipc::Response::Error(format!(
+                            "no active cluster on output {output}"
+                        ));
+                    };
+                    return if session.clusters.active_on(&output) == Some(id) {
+                        halley_ipc::Response::Ack
+                    } else {
+                        halley_ipc::Response::Error("cluster disappeared".into())
+                    };
+                }
+            };
+            let Some(metadata) = session.clusters.metadata(id) else {
+                return halley_ipc::Response::Error(format!(
+                    "cluster {} was not found",
+                    id.as_u64()
+                ));
+            };
+            let owned_output = metadata.output.clone();
+            if let Some(requested) = output.as_deref()
+                && requested != owned_output
+            {
+                return halley_ipc::Response::Error(format!(
+                    "cluster {} belongs to output {owned_output}, not {requested}",
+                    id.as_u64()
+                ));
+            }
+            if session.clusters.active_on(&owned_output) == Some(id) {
+                return halley_ipc::Response::Ack;
+            }
+            let owned_focus = crate::session::cluster_owns_focus(session, id);
+            let output_handle = session
+                .wayland
+                .space
+                .outputs()
+                .find(|candidate| candidate.name() == owned_output)
+                .cloned();
+            if session
+                .clusters
+                .activate(&owned_output, id, crate::frame_clock::monotonic_now())
+            {
+                if let Some(output_handle) = output_handle {
+                    crate::session::sync_cluster_activation_focus(
+                        session,
+                        &output_handle,
+                        id,
+                        owned_focus,
+                        smithay::utils::SERIAL_COUNTER.next_serial(),
+                    );
+                }
+                session.request_redraw();
+                halley_ipc::Response::Ack
+            } else {
+                halley_ipc::Response::Error(format!("failed to open cluster {}", id.as_u64()))
+            }
+        }
+        halley_ipc::ClusterRequest::OpenFinalizeDraft { .. } => {
+            halley_ipc::Response::ApiError(halley_ipc::ServerError::new(
+                halley_ipc::ServerErrorKind::Unsupported,
+                "cluster drafts are not available in this build",
+            ))
+        }
     }
 }
