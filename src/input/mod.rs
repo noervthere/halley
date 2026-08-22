@@ -249,6 +249,7 @@ mod tests {
             modifiers,
             trigger,
             action: Action::Quit,
+            repeat: false,
         }
     }
 

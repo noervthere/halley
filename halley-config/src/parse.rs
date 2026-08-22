@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fmt;
 
-use rune_cfg::RuneConfig;
+use rune_cfg::{RuneConfig, Value};
 
 use crate::chord::parse_chord;
 use crate::keybinds::{Action, DefaultTerminal, Keybind, Keybinds, ModifierKey};
@@ -15,6 +15,7 @@ pub enum ParseError {
     Rune(rune_cfg::RuneError),
     UnknownModifier(String),
     InvalidChord(String),
+    InvalidBinding { chord: String, message: String },
 }
 
 impl fmt::Display for ParseError {
@@ -23,6 +24,9 @@ impl fmt::Display for ParseError {
             ParseError::Rune(e) => write!(f, "config error: {e}"),
             ParseError::UnknownModifier(m) => write!(f, "unknown modifier key: {m:?}"),
             ParseError::InvalidChord(c) => write!(f, "invalid keybind chord: {c:?}"),
+            ParseError::InvalidBinding { chord, message } => {
+                write!(f, "invalid keybind {chord:?}: {message}")
+            }
         }
     }
 }
@@ -186,11 +190,13 @@ fn parse_action(s: &str) -> Action {
 /// `$var.mod` with the already-parsed modifier string itself before
 /// chord-parsing, rather than relying on rune-cfg to do it.
 pub fn parse_keybinds(config: &RuneConfig) -> Result<Keybinds, ParseError> {
-    let map: HashMap<String, String> = config.get("keybinds")?;
+    let map: HashMap<String, Value> = config.get("keybinds")?;
 
     let modifier_str = map
         .get(KEY_MOD)
-        .cloned()
+        .map(|value| binding_string(KEY_MOD, value))
+        .transpose()?
+        .map(str::to_owned)
         .unwrap_or_else(|| "super".to_string());
     let modifier = parse_modifier_key(&modifier_str)
         .ok_or_else(|| ParseError::UnknownModifier(modifier_str.clone()))?;
@@ -200,11 +206,17 @@ pub fn parse_keybinds(config: &RuneConfig) -> Result<Keybinds, ParseError> {
         .or_else(|| map.get(KEY_DEFAULT_TERMINAL_SNAKE))
     {
         None => DefaultTerminal::Auto,
-        Some(s) if s.eq_ignore_ascii_case("auto") => DefaultTerminal::Auto,
-        Some(s) => DefaultTerminal::Explicit(s.clone()),
+        Some(value) => {
+            let value = binding_string("default-terminal", value)?;
+            if value.eq_ignore_ascii_case("auto") {
+                DefaultTerminal::Auto
+            } else {
+                DefaultTerminal::Explicit(value.to_owned())
+            }
+        }
     };
 
-    let mut entries: Vec<(&String, &String)> = map
+    let mut entries: Vec<(&String, &Value)> = map
         .iter()
         .filter(|(k, _)| {
             k.as_str() != KEY_MOD
@@ -217,15 +229,23 @@ pub fn parse_keybinds(config: &RuneConfig) -> Result<Keybinds, ParseError> {
     entries.sort_by_key(|(k, _)| *k);
 
     let mut binds = Vec::with_capacity(entries.len());
-    for (chord_key, action_str) in entries {
+    for (chord_key, value) in entries {
         let resolved_chord = chord_key.replace("$var.mod", &modifier_str);
         let (modifiers, key) = parse_chord(&resolved_chord)
             .ok_or_else(|| ParseError::InvalidChord(chord_key.clone()))?;
-        let action = parse_action(action_str);
+        let (action, repeat_override) = parse_binding(chord_key, value)?;
+        if repeat_override == Some(true) && is_pointer_trigger(&key) {
+            return Err(ParseError::InvalidBinding {
+                chord: chord_key.clone(),
+                message: "repeat true is only valid for keyboard triggers".to_string(),
+            });
+        }
+        let repeat = repeat_override.unwrap_or_else(|| action.repeats_by_default());
         binds.push(Keybind {
             modifiers,
             key,
             action,
+            repeat,
         });
     }
 
@@ -234,6 +254,61 @@ pub fn parse_keybinds(config: &RuneConfig) -> Result<Keybinds, ParseError> {
         default_terminal,
         binds,
     })
+}
+
+fn binding_string<'a>(field: &str, value: &'a Value) -> Result<&'a str, ParseError> {
+    let Value::String(value) = value else {
+        return Err(ParseError::InvalidBinding {
+            chord: field.to_string(),
+            message: "expected a string".to_string(),
+        });
+    };
+    Ok(value)
+}
+
+fn parse_binding(chord: &str, value: &Value) -> Result<(Action, Option<bool>), ParseError> {
+    if let Value::String(action) = value {
+        return Ok((parse_action(action), None));
+    }
+    let Value::Object(items) = value else {
+        return Err(ParseError::InvalidBinding {
+            chord: chord.to_string(),
+            message: "expected an action string or an object with action/repeat fields".to_string(),
+        });
+    };
+    let fields: HashMap<String, Value> = Value::Object(items.clone()).try_into()?;
+    if let Some(field) = fields
+        .keys()
+        .find(|field| !matches!(field.as_str(), "action" | "repeat"))
+    {
+        return Err(ParseError::InvalidBinding {
+            chord: chord.to_string(),
+            message: format!("unsupported field {field:?}"),
+        });
+    }
+    let action = fields
+        .get("action")
+        .ok_or_else(|| ParseError::InvalidBinding {
+            chord: chord.to_string(),
+            message: "missing required action field".to_string(),
+        })
+        .and_then(|value| binding_string(chord, value))?;
+    let repeat = match fields.get("repeat") {
+        None => None,
+        Some(Value::Bool(repeat)) => Some(*repeat),
+        Some(_) => {
+            return Err(ParseError::InvalidBinding {
+                chord: chord.to_string(),
+                message: "repeat must be a boolean".to_string(),
+            });
+        }
+    };
+    Ok((parse_action(action), repeat))
+}
+
+fn is_pointer_trigger(key: &str) -> bool {
+    let key = key.to_ascii_lowercase();
+    key.starts_with("click-") || key.starts_with("button-") || key.starts_with("scroll-")
 }
 
 #[cfg(test)]
@@ -370,6 +445,76 @@ end
                 "keybinds:\n  mod \"super\"\n  \"$var.mod+alt+x\" \"{source}\"\nend\n"
             ));
             assert_eq!(kb.binds[0].action, Action::MoveNode(direction));
+        }
+    }
+
+    #[test]
+    fn compact_bindings_use_action_aware_repeat_defaults() {
+        let kb = parse(
+            r#"keybinds:
+  mod "super"
+  "$var.mod+left" "node-move left"
+  "$var.mod+t" "open-terminal"
+  "$var.mod+v" "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+"
+end
+"#,
+        );
+        assert!(
+            kb.binds
+                .iter()
+                .find(|bind| bind.key == "left")
+                .unwrap()
+                .repeat
+        );
+        assert!(!kb.binds.iter().find(|bind| bind.key == "t").unwrap().repeat);
+        assert!(!kb.binds.iter().find(|bind| bind.key == "v").unwrap().repeat);
+    }
+
+    #[test]
+    fn one_line_binding_objects_override_repeat() {
+        let kb = parse(
+            r#"keybinds:
+  mod "super"
+  "$var.mod+left": action "node-move left" repeat false end
+  "$var.mod+t": action "open-terminal" repeat true end
+end
+"#,
+        );
+        assert!(
+            !kb.binds
+                .iter()
+                .find(|bind| bind.key == "left")
+                .unwrap()
+                .repeat
+        );
+        assert!(kb.binds.iter().find(|bind| bind.key == "t").unwrap().repeat);
+    }
+
+    #[test]
+    fn binding_objects_validate_fields_and_keyboard_only_repeat() {
+        for (binding, expected) in [
+            (
+                r#""$var.mod+x": repeat true end"#,
+                "missing required action field",
+            ),
+            (
+                r#""$var.mod+x": action "zoom-in" repeat "yes" end"#,
+                "repeat must be a boolean",
+            ),
+            (
+                r#""$var.mod+x": action "zoom-in" cooldown 20 end"#,
+                "unsupported field",
+            ),
+            (
+                r#""$var.mod+scroll-up": action "zoom-in" repeat true end"#,
+                "only valid for keyboard triggers",
+            ),
+        ] {
+            let config =
+                RuneConfig::from_str(&format!("keybinds:\n  mod \"super\"\n  {binding}\nend\n"))
+                    .expect("valid Rune syntax");
+            let error = parse_keybinds(&config).unwrap_err().to_string();
+            assert!(error.contains(expected), "{error:?}");
         }
     }
 

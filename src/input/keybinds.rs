@@ -115,6 +115,7 @@ pub struct ResolvedBind {
     pub modifiers: Modifiers,
     pub trigger: ResolvedTrigger,
     pub action: Action,
+    pub repeat: bool,
 }
 
 fn raw_code(name: &str, prefix: &str) -> Option<u32> {
@@ -172,6 +173,7 @@ pub fn resolve_binds(keybinds: &Keybinds, backend: BackendKind) -> Vec<ResolvedB
                 modifiers: remap_mod_bit(bind.modifiers, keybinds.modifier, effective),
                 trigger,
                 action: bind.action.clone(),
+                repeat: bind.repeat,
             })
         })
         .collect()
@@ -351,6 +353,7 @@ mod tests {
             },
             key: "x".to_string(),
             action: Action::Spawn("fuzzel --show-actions".to_string()),
+            repeat: false,
         });
 
         let resolved = resolve_binds(&keybinds, BackendKind::Winit);

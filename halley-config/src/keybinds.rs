@@ -83,6 +83,25 @@ pub enum Action {
     Spawn(String),
 }
 
+impl Action {
+    /// Whether a compact keybind repeats when it does not provide an explicit
+    /// `repeat` override. Continuous navigation and geometry actions repeat;
+    /// destructive, modal, toggle, and process-launching actions do not.
+    pub fn repeats_by_default(&self) -> bool {
+        matches!(
+            self,
+            Self::FocusCycle(_)
+                | Self::FocusDirection(_)
+                | Self::MoveNode(_)
+                | Self::ClusterTileFocus(_)
+                | Self::ClusterTileSwap(_)
+                | Self::MonitorFocus(_)
+                | Self::ZoomIn
+                | Self::ZoomOut
+        )
+    }
+}
+
 /// A single parsed keybind: the modifier combination, the key name (as
 /// written in config - e.g. `"e"`, `"return"` - not a resolved keycode),
 /// and the action it triggers.
@@ -91,6 +110,9 @@ pub struct Keybind {
     pub modifiers: Modifiers,
     pub key: String,
     pub action: Action,
+    /// Whether holding this keyboard trigger repeats the action using the
+    /// compositor's configured input repeat delay and rate.
+    pub repeat: bool,
 }
 
 /// What terminal `Action::OpenTerminal` should launch.
@@ -160,7 +182,10 @@ mod tests {
                 .expect("Field movement bind present");
             assert!(movement.modifiers.super_key);
             assert!(movement.modifiers.alt);
+            assert!(movement.repeat);
         }
+
+        assert!(!lift.repeat);
 
         let quit = kb.binds.iter().find(|b| b.action == Action::Quit).unwrap();
         assert!(quit.modifiers.super_key);
