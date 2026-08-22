@@ -47,7 +47,7 @@ Packaged resources use the distribution `/usr` layout:
 
 | Resource | Destination |
 | --- | --- |
-| `halley`, `halleyctl`, `xdg-desktop-portal-halley` | `/usr/bin/` |
+| `halley`, `halleyctl`, `halley-lift`, `xdg-desktop-portal-halley` | `/usr/bin/` |
 | `packaging/wayland-sessions/halley-session` | `/usr/bin/` |
 | `packaging/wayland-sessions/halley.desktop` | `/usr/share/wayland-sessions/` |
 | `packaging/xdg-desktop-portal/halley-portals.conf` | `/usr/share/xdg-desktop-portal/` |

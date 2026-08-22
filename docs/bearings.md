@@ -65,5 +65,6 @@ halleyctl bearings toggle
 halleyctl bearings status
 ```
 
-`status` prints `visible` or `hidden`. These commands and node controls use IPC
-protocol version 9; keep `halleyctl` and the compositor from the same build.
+`status` prints `visible` or `hidden`. These commands use the versioned
+[`halley-api` contract](api.md), including its connection handshake and
+structured failures.

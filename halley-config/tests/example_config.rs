@@ -21,7 +21,15 @@ fn example_config_parses_end_to_end() {
             )
         }
     }
-    assert_eq!(keybinds.binds.len(), 44);
+    assert_eq!(keybinds.binds.len(), 45);
+
+    let lift = keybinds
+        .binds
+        .iter()
+        .find(|bind| bind.action == Action::Spawn("halley-lift".into()))
+        .expect("Lift launcher bind present");
+    assert_eq!(lift.key, "space");
+    assert!(lift.modifiers.super_key);
 
     let quit = keybinds
         .binds

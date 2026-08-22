@@ -762,6 +762,9 @@ keybinds:
   # `open-terminal` uses `default-terminal` near the end of this section.
   "$var.mod+t" "open-terminal"
 
+  # Toggle Halley's bundled search and action launcher.
+  "$var.mod+space" "halley-lift"
+
   # Any action string that is not a built-in action is executed as a command
   # line. These bindings control the default PipeWire sink through `wpctl`.
   "XF86AudioRaiseVolume" "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+ --limit 1.0"

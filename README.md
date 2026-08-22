@@ -36,7 +36,13 @@ Run `target/release/halley --winit` for a nested development session or
 `target/release/halley --session` for a real TTY session. Pass `-c PATH` (or
 `--config PATH`) to select a configuration explicitly. `halleyctl` exposes
 output, DPMS, node, Bearings, configuration verification, and quit controls;
-`halleyctl --help` lists the current surface.
+`halleyctl --help` lists the current surface. `halley-lift` is the bundled
+search and action launcher; the default `Mod+Space` binding toggles it.
+
+Third-party launchers, panels, and automation should use the supported
+[`halley-api` Rust SDK](docs/api.md). It exposes typed commands and queries,
+structured errors, capability negotiation, and sequenced state subscriptions;
+the internal postcard IPC codec is not the external compatibility boundary.
 
 On the TTY backend, `halleyctl dpms off|on|toggle [-o OUTPUT]` controls
 connector power. Omitting `--output` applies the command to every active
@@ -47,6 +53,7 @@ commands.
 References:
 
 - [Keybind triggers and actions](docs/keybinds.md)
+- [Compositor API for external tools](docs/api.md)
 - [Field behavior, maximize, zoom, and close succession](docs/field.md)
 - [Nodes, decay, focus rings, landmarks, and physics](docs/nodes.md)
 - [Bearings](docs/bearings.md)
