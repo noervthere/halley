@@ -213,6 +213,7 @@ fn run() -> Result<(), String> {
         },
         results: Vec::new(),
         selected: 0,
+        selection_authority: SelectionAuthority::Keyboard,
         draft: ClusterDraft::default(),
         modifiers: Modifiers::default(),
         status: None,
@@ -383,9 +384,31 @@ struct LiftApp {
     input: ModeInputState,
     results: Vec<LiftResult>,
     selected: usize,
+    selection_authority: SelectionAuthority,
     draft: ClusterDraft,
     modifiers: Modifiers,
     status: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum SelectionAuthority {
+    #[default]
+    Keyboard,
+    Pointer,
+}
+
+impl SelectionAuthority {
+    fn keyboard_activity(&mut self) {
+        *self = Self::Keyboard;
+    }
+
+    fn pointer_activity(&mut self) {
+        *self = Self::Pointer;
+    }
+
+    fn enter_can_hover(self) -> bool {
+        self == Self::Pointer
+    }
 }
 
 impl LiftApp {
@@ -419,6 +442,7 @@ impl LiftApp {
     fn refresh_results_typed(&mut self) {
         self.refresh_results();
         self.selected = 0;
+        self.selection_authority.keyboard_activity();
     }
 
     fn effective_search(&self) -> (LiftMode, String) {
@@ -755,6 +779,7 @@ impl LiftApp {
     }
 
     fn handle_key(&mut self, event: KeyEvent) {
+        self.selection_authority.keyboard_activity();
         if self.modifiers.alt
             && self.config.alt_number_jump
             && let Some(offset) = alt_number_offset(event.keysym)
@@ -1053,7 +1078,8 @@ impl PointerHandler for LiftApp {
                 continue;
             }
             match event.kind {
-                PointerEventKind::Motion { .. } | PointerEventKind::Enter { .. } => {
+                PointerEventKind::Motion { .. } => {
+                    self.selection_authority.pointer_activity();
                     if let Some(index) = result_index_at(
                         self.current_view(),
                         self.width,
@@ -1064,7 +1090,21 @@ impl PointerHandler for LiftApp {
                         self.set_selection(index);
                     }
                 }
+                PointerEventKind::Enter { .. } => {
+                    if self.selection_authority.enter_can_hover()
+                        && let Some(index) = result_index_at(
+                            self.current_view(),
+                            self.width,
+                            self.height,
+                            event.position.0,
+                            event.position.1,
+                        )
+                    {
+                        self.set_selection(index);
+                    }
+                }
                 PointerEventKind::Press { button, .. } => {
+                    self.selection_authority.pointer_activity();
                     let panel = panel_rect(&self.config, self.width, self.height);
                     if !contains(panel, event.position.0, event.position.1) {
                         continue;
@@ -1083,6 +1123,7 @@ impl PointerHandler for LiftApp {
                     }
                 }
                 PointerEventKind::Axis { vertical, .. } => {
+                    self.selection_authority.pointer_activity();
                     if vertical.value120 > 0 || vertical.discrete > 0 || vertical.absolute < 0.0 {
                         self.move_selection(-1);
                     } else if vertical.value120 < 0
@@ -1119,4 +1160,23 @@ impl ProvidesRegistryState for LiftApp {
         &mut self.registry_state
     }
     registry_handlers!(OutputState, SeatState);
+}
+
+#[cfg(test)]
+mod selection_tests {
+    use super::SelectionAuthority;
+
+    #[test]
+    fn keyboard_activity_blocks_stationary_pointer_enter() {
+        let mut authority = SelectionAuthority::Pointer;
+        authority.keyboard_activity();
+        assert!(!authority.enter_can_hover());
+    }
+
+    #[test]
+    fn real_pointer_motion_returns_hover_authority() {
+        let mut authority = SelectionAuthority::Keyboard;
+        authority.pointer_activity();
+        assert!(authority.enter_can_hover());
+    }
 }
