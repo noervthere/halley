@@ -163,6 +163,7 @@ fn example_config_parses_end_to_end() {
             .expect("media key bind present");
         assert_eq!(binding.modifiers, halley_config::Modifiers::default());
         assert_eq!(&binding.action, &Action::Spawn(command.to_string()));
+        assert_eq!(binding.repeat, key != "XF86AudioMute");
     }
 
     let zoom_out = keybinds

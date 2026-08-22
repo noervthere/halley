@@ -152,6 +152,8 @@ mod tests {
             "show-icons false",
             "show-title true",
             "height 32",
+            "XF86AudioRaiseVolume\": action",
+            "repeat true end",
         ] {
             assert!(
                 DEFAULT_CONFIG.contains(expected),

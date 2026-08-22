@@ -94,7 +94,8 @@ end
 # Physical device settings apply when Halley owns libinput devices on a tty.
 input:
   # Key-repeat frequency in presses per second and the delay before repeating.
-  # A rate of 0 disables repeat. Both values update without restarting.
+  # These drive clients and repeat-enabled compositor keybinds. A rate of 0
+  # disables repeat. Both values update without restarting.
   repeat-rate 30
   repeat-delay 500
 
@@ -694,7 +695,9 @@ animations:
   end
 end
 
-# A keybind entry is `"chord" "action"`. Modifiers are matched exactly:
+# A keybind entry is `"chord" "action"`. Continuous built-in actions repeat
+# automatically. Override any keyboard bind on one line with
+# `"chord": action "..." repeat true|false end`. Modifiers are matched exactly:
 # extra held modifiers prevent a chord from matching unless they are written
 # into that chord. Trigger names are case-insensitive.
 keybinds:
@@ -774,8 +777,8 @@ keybinds:
 
   # Any action string that is not a built-in action is executed as a command
   # line. These bindings control the default PipeWire sink through `wpctl`.
-  "XF86AudioRaiseVolume" "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+ --limit 1.0"
-  "XF86AudioLowerVolume" "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-"
+  "XF86AudioRaiseVolume": action "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+ --limit 1.0" repeat true end
+  "XF86AudioLowerVolume": action "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-" repeat true end
   "XF86AudioMute" "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle"
 
   # Zoom out, walk back inward, or reset directly to native scale.

@@ -180,6 +180,24 @@ Wheel binds apply only to a physical mouse wheel. High-resolution wheel input
 is accumulated to one action per complete notch. Touchpad/finger scrolling
 continues to the focused client and is not treated as a keybind.
 
+## Key repeat
+
+Keyboard bindings for continuous built-in actions repeat by default: focus
+cycling and directional focus, Field node movement, cluster tile focus and
+swapping, monitor focus, and zoom in/out. Destructive, modal, toggle, reset,
+screenshot, terminal, and arbitrary command actions are one-shot by default.
+
+Both defaults can be overridden with Rune's compact one-line object form:
+
+```rune
+"$var.mod+left": action "focus-left" repeat false end
+"XF86AudioRaiseVolume": action "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+" repeat true end
+```
+
+Repeat fires once immediately, waits for `input.repeat-delay`, then follows
+`input.repeat-rate`; rate `0` disables client and compositor key repeat.
+Pointer-button and wheel bindings cannot use `repeat true`.
+
 ## Raw Linux input codes
 
 Raw codes cover hardware that has no useful XKB name:
