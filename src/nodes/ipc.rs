@@ -236,6 +236,24 @@ fn contains_case_insensitive(value: &str, needle: &str) -> bool {
     value.to_lowercase().contains(&needle.to_lowercase())
 }
 
+pub(crate) fn move_selected_direction<D: crate::session::SessionDriver>(
+    session: &mut crate::session::Session<D>,
+    direction: halley_config::Direction,
+    output: Option<&str>,
+) -> bool {
+    session.nodes.sync_from_space(&session.wayland.space);
+    let Ok(id) = resolve(session, None, output) else {
+        return false;
+    };
+    let direction = match direction {
+        halley_config::Direction::Left => halley_ipc::NodeMoveDirection::Left,
+        halley_config::Direction::Right => halley_ipc::NodeMoveDirection::Right,
+        halley_config::Direction::Up => halley_ipc::NodeMoveDirection::Up,
+        halley_config::Direction::Down => halley_ipc::NodeMoveDirection::Down,
+    };
+    move_node(session, id, direction)
+}
+
 fn move_node<D: crate::session::SessionDriver>(
     session: &mut crate::session::Session<D>,
     id: NodeId,

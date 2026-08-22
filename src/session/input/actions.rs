@@ -233,6 +233,13 @@ pub(super) fn dispatch<D: SessionDriver>(
                 }
             }
         }
+        super::super::SessionControl::MoveNode(direction) => {
+            if let Some(output) = action_output
+                && session.clusters.active_on(&output).is_none()
+            {
+                crate::nodes::move_selected_direction(session, direction, Some(&output));
+            }
+        }
         super::super::SessionControl::CenterLastFocused => {
             if let Some(output) = action_output {
                 super::super::navigation::center_last_focused(session, &output);

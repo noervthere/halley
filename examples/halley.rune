@@ -753,6 +753,13 @@ keybinds:
   "$var.mod+up" "focus-up"
   "$var.mod+down" "focus-down"
 
+  # Move the focused or most-recent Field window/node by one placement step.
+  # Alt keeps this distinct from directional focus and cluster tile swapping.
+  "$var.mod+alt+left" "node-move left"
+  "$var.mod+alt+right" "node-move right"
+  "$var.mod+alt+up" "node-move up"
+  "$var.mod+alt+down" "node-move down"
+
   # Reorder the focused tile with its nearest neighbour in that direction.
   "$var.mod+ctrl+left" "cluster-tile-swap-left"
   "$var.mod+ctrl+right" "cluster-tile-swap-right"

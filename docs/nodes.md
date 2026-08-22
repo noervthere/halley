@@ -279,6 +279,11 @@ and are idempotent; `toggle` inverts it. `close` sends the appropriate XDG or
 X11 close request without restoring first. `--json` is available for `list`
 and `info`.
 
+The same movement is available directly from the compositor with
+`node-move left|right|up|down`. The default `Mod+Alt+Arrow` bindings target the
+focused or most-recent node on the selected output and operate only in the
+Field; cluster workspaces retain their own focus and swap controls.
+
 `halleyctl` implements these controls through the versioned [`halley-api`
 contract](api.md). External tools can use the same typed node operations and
 subscriptions without depending on postcard wire layout.

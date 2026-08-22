@@ -100,6 +100,21 @@ fn parse_action(s: &str) -> Action {
     {
         return Action::FocusDirection(direction);
     }
+    if let ["node", "move", direction] | ["node-move", direction] | ["move", direction] =
+        words.as_slice()
+        && let Some(direction) = parse_direction(direction)
+    {
+        return Action::MoveNode(direction);
+    }
+    if let Some(direction) = s
+        .strip_prefix("node-move-")
+        .or_else(|| s.strip_prefix("node_move_"))
+        .or_else(|| s.strip_prefix("move-"))
+        .or_else(|| s.strip_prefix("move_"))
+        .and_then(parse_direction)
+    {
+        return Action::MoveNode(direction);
+    }
     if let ["tile", "swap", direction] | ["tile-swap", direction] = words.as_slice()
         && let Some(direction) = parse_direction(direction)
     {
@@ -341,6 +356,21 @@ end
             .unwrap();
         assert_eq!(zoom_reset.key, "click-middle");
         assert!(zoom_reset.modifiers.super_key);
+    }
+
+    #[test]
+    fn accepts_old_field_node_move_spellings() {
+        for (source, direction) in [
+            ("node-move left", crate::Direction::Left),
+            ("node move right", crate::Direction::Right),
+            ("node-move-up", crate::Direction::Up),
+            ("move-down", crate::Direction::Down),
+        ] {
+            let kb = parse(&format!(
+                "keybinds:\n  mod \"super\"\n  \"$var.mod+alt+x\" \"{source}\"\nend\n"
+            ));
+            assert_eq!(kb.binds[0].action, Action::MoveNode(direction));
+        }
     }
 
     #[test]

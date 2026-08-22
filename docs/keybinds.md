@@ -201,8 +201,10 @@ The built-in action strings are `quit`, `close-focused`, `toggle-fullscreen`,
 `center-last-focused`, `zoom-in`, `zoom-out`, `zoom-reset`, `screenshot`, and
 `cluster-toggle-float`. Parameterized actions also include
 `focus-DIRECTION`, `cluster-focus-DIRECTION`, `cluster-tile-swap-DIRECTION`,
-and `monitor-focus DIRECTION`, where `DIRECTION` is `left`, `right`, `up`, or
-`down`. `Alt+Tab` and
+`node-move DIRECTION`, and `monitor-focus DIRECTION`, where `DIRECTION` is
+`left`, `right`, `up`, or `down`. `node-move` shifts the focused or
+most-recent Field window/collapsed node by one legal placement step; the
+default binding is `Mod+Alt+Arrow`. `Alt+Tab` and
 `Alt+Shift+Tab` open and navigate the focus carousel; releasing Alt commits,
 focuses and raises the selected window, and moves the pointer to its final
 presentation center. A collapsed target restores first and receives one

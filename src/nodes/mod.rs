@@ -19,6 +19,7 @@ pub(crate) mod ipc;
 mod session_ops;
 
 pub use ipc::handle_request;
+pub(crate) use ipc::move_selected_direction;
 pub use session_ops::{
     close, close_focused_on_output, collapse, focus_or_reveal_node, pan_after_close_restore,
     reconcile_landmarks, reconcile_landmarks_at_scale, restore, restore_for_close,

@@ -21,7 +21,7 @@ fn example_config_parses_end_to_end() {
             )
         }
     }
-    assert_eq!(keybinds.binds.len(), 45);
+    assert_eq!(keybinds.binds.len(), 49);
 
     let lift = keybinds
         .binds

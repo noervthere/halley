@@ -63,6 +63,8 @@ pub enum Action {
     BearingsToggle,
     FocusCycle(FocusCycleDirection),
     FocusDirection(Direction),
+    /// Move the focused or most-recent Field node by one placement step.
+    MoveNode(Direction),
     CenterLastFocused,
     ClusterMode,
     ClusterLayoutCycle,
@@ -135,7 +137,7 @@ mod tests {
                 )
             }
         }
-        assert_eq!(kb.binds.len(), 45);
+        assert_eq!(kb.binds.len(), 49);
 
         let lift = kb
             .binds
@@ -144,6 +146,21 @@ mod tests {
             .expect("Lift launcher bind present");
         assert!(lift.modifiers.super_key);
         assert_eq!(lift.key, "d");
+
+        for direction in [
+            Direction::Left,
+            Direction::Right,
+            Direction::Up,
+            Direction::Down,
+        ] {
+            let movement = kb
+                .binds
+                .iter()
+                .find(|bind| bind.action == Action::MoveNode(direction))
+                .expect("Field movement bind present");
+            assert!(movement.modifiers.super_key);
+            assert!(movement.modifiers.alt);
+        }
 
         let quit = kb.binds.iter().find(|b| b.action == Action::Quit).unwrap();
         assert!(quit.modifiers.super_key);

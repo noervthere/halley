@@ -349,7 +349,7 @@ mod tests {
                 super_key: true,
                 ..Modifiers::default()
             },
-            key: "d".to_string(),
+            key: "x".to_string(),
             action: Action::Spawn("fuzzel --show-actions".to_string()),
         });
 
@@ -358,7 +358,7 @@ mod tests {
             .iter()
             .find(|bind| {
                 bind.trigger
-                    == ResolvedTrigger::Keysym(xkb::keysym_from_name("d", xkb::KEYSYM_NO_FLAGS))
+                    == ResolvedTrigger::Keysym(xkb::keysym_from_name("x", xkb::KEYSYM_NO_FLAGS))
             })
             .expect("spawn bind resolves");
         assert!(command.modifiers.alt);
