@@ -5,4 +5,4 @@ edition = "2024"
 
 [dependencies]
 regex = "1"
-rune-cfg = "0.6.1"
+rune-cfg = "0.7.0"

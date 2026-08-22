@@ -180,8 +180,9 @@ fn parse_action(s: &str) -> Action {
 /// Parse the `keybinds:` section of a loaded `RuneConfig` into a `Keybinds`
 /// value.
 ///
-/// Values are either compact action strings or one-line binding objects with
-/// `action` and optional `repeat` fields.
+/// Values are compact action strings with an optional inline `repeat`
+/// attribute. The older one-line object form remains accepted for config
+/// compatibility.
 ///
 /// Chord keys reference the modifier via a literal `$var.mod` substring
 /// (e.g. `"$var.mod+shift+e"`) - rune-cfg's `$var` resolution only applies
@@ -252,10 +253,46 @@ fn parse_binding(chord: &str, value: &Value) -> Result<(Action, Option<bool>), P
     if let Value::String(action) = value {
         return Ok((parse_action(action), None));
     }
+    if let Value::Annotated(binding) = value {
+        let action = binding_string(chord, &binding.value)?;
+        if let Some((field, _)) = binding
+            .attributes
+            .iter()
+            .find(|(field, _)| field != "repeat")
+        {
+            return Err(ParseError::InvalidBinding {
+                chord: chord.to_string(),
+                message: format!("unsupported inline attribute {field:?}"),
+            });
+        }
+        let repeat_fields = binding
+            .attributes
+            .iter()
+            .filter(|(field, _)| field == "repeat")
+            .collect::<Vec<_>>();
+        if repeat_fields.len() > 1 {
+            return Err(ParseError::InvalidBinding {
+                chord: chord.to_string(),
+                message: "duplicate inline attribute \"repeat\"".to_string(),
+            });
+        }
+        let repeat = match repeat_fields.first().map(|(_, value)| value) {
+            None => None,
+            Some(Value::Bool(repeat)) => Some(*repeat),
+            Some(_) => {
+                return Err(ParseError::InvalidBinding {
+                    chord: chord.to_string(),
+                    message: "repeat must be a boolean".to_string(),
+                });
+            }
+        };
+        return Ok((parse_action(action), repeat));
+    }
     let Value::Object(items) = value else {
         return Err(ParseError::InvalidBinding {
             chord: chord.to_string(),
-            message: "expected an action string or an object with action/repeat fields".to_string(),
+            message: "expected an action string optionally followed by `with repeat true|false`"
+                .to_string(),
         });
     };
     let fields: HashMap<String, Value> = Value::Object(items.clone()).try_into()?;
@@ -450,12 +487,12 @@ end
     }
 
     #[test]
-    fn one_line_binding_objects_override_repeat() {
+    fn inline_with_attributes_override_repeat() {
         let kb = parse(
             r#"keybinds:
   mod "super"
-  "$var.mod+left": action "node-move left" repeat false end
-  "$var.mod+t": action "open-terminal" repeat true end
+  "$var.mod+left" "node-move left" with repeat false
+  "$var.mod+t" "open-terminal" with repeat true
 end
 "#,
         );
@@ -470,22 +507,34 @@ end
     }
 
     #[test]
-    fn binding_objects_validate_fields_and_keyboard_only_repeat() {
+    fn legacy_one_line_binding_objects_still_override_repeat() {
+        let kb = parse(
+            r#"keybinds:
+  mod "super"
+  "$var.mod+left": action "node-move left" repeat false end
+end
+"#,
+        );
+        assert!(!kb.binds[0].repeat);
+    }
+
+    #[test]
+    fn inline_attributes_validate_fields_and_keyboard_only_repeat() {
         for (binding, expected) in [
             (
-                r#""$var.mod+x": repeat true end"#,
-                "missing required action field",
-            ),
-            (
-                r#""$var.mod+x": action "zoom-in" repeat "yes" end"#,
+                r#""$var.mod+x" "zoom-in" with repeat "yes""#,
                 "repeat must be a boolean",
             ),
             (
-                r#""$var.mod+x": action "zoom-in" cooldown 20 end"#,
-                "unsupported field",
+                r#""$var.mod+x" "zoom-in" with cooldown 20"#,
+                "unsupported inline attribute",
             ),
             (
-                r#""$var.mod+scroll-up": action "zoom-in" repeat true end"#,
+                r#""$var.mod+x" "zoom-in" with repeat true repeat false"#,
+                "duplicate inline attribute",
+            ),
+            (
+                r#""$var.mod+scroll-up" "zoom-in" with repeat true"#,
                 "only valid for keyboard triggers",
             ),
         ] {
