@@ -746,3 +746,20 @@ pub fn publish_config_reload<D: crate::session::SessionDriver>(
         },
     );
 }
+
+pub fn publish_cluster_draft<D: crate::session::SessionDriver>(
+    app: &mut crate::session::Session<D>,
+    id: u64,
+    state: halley_ipc::ClusterDraftState,
+    message: Option<String>,
+) {
+    app.api_subscriptions.publish_event(
+        halley_ipc::EventTopic::Clusters,
+        halley_ipc::ApiEvent::ClusterDraftChanged {
+            sequence: 0,
+            id,
+            state,
+            message,
+        },
+    );
+}

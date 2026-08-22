@@ -229,8 +229,12 @@ impl Client {
             },
         ))
     }
-    pub fn finalize_cluster_draft(&self, draft: ClusterDraft, output: Option<&str>) -> Result<()> {
-        self.ack(halley_ipc::Request::Cluster(
+    pub fn finalize_cluster_draft(
+        &self,
+        draft: ClusterDraft,
+        output: Option<&str>,
+    ) -> Result<crate::ClusterDraftId> {
+        match self.request(halley_ipc::Request::Cluster(
             halley_ipc::ClusterRequest::OpenFinalizeDraft {
                 draft: halley_ipc::ClusterDraftRequest {
                     name_hint: draft.name_hint,
@@ -247,7 +251,10 @@ impl Client {
                 },
                 output: output.map(str::to_owned),
             },
-        ))
+        ))? {
+            halley_ipc::Response::ClusterDraftStarted { id } => Ok(crate::ClusterDraftId::new(id)),
+            other => Err(unexpected("cluster draft", other)),
+        }
     }
 
     pub fn bearings_visible(&self) -> Result<bool> {

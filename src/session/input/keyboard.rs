@@ -279,11 +279,22 @@ pub(super) fn handle<D, B>(
         }
         Some(KeyboardOutcome::ClusterCancel) => {
             session.interactions.suppressed_keys.suppress(keycode);
+            let draft_id = session.clusters.creation_draft_id();
             if session.clusters.back_or_cancel_creation() {
                 session
                     .cursor
                     .set_override(crate::cursor::OverrideSource::Modal, None);
                 session.request_redraw();
+                if session.clusters.creation().is_none()
+                    && let Some(draft_id) = draft_id
+                {
+                    crate::ipc::publish_cluster_draft(
+                        session,
+                        draft_id,
+                        halley_ipc::ClusterDraftState::Cancelled,
+                        None,
+                    );
+                }
             }
         }
         Some(KeyboardOutcome::ClusterAccept) => {

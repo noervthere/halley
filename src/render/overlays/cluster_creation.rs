@@ -738,6 +738,7 @@ mod tests {
             scroll_char: 0,
             dragging_selection: true,
             name_repeat: None,
+            draft: None,
         };
         assert_eq!(selection_range(&creation), Some((2, 5)));
     }

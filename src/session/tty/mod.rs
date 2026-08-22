@@ -395,6 +395,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
         drm_syncobj_state,
         session_lock,
         start_time: Instant::now(),
+        wayland_display: None,
         config_path: config_path.clone(),
         config_watcher: None,
         startup_config_diagnostic: initial.diagnostic,
@@ -450,6 +451,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
     app.initialize_config_notification();
 
     let socket_name = super::protocol::init_wayland_listener(display, &mut event_loop);
+    app.wayland_display = Some(socket_name.clone());
     eventline::info!("wayland socket ready, WAYLAND_DISPLAY={socket_name:?}");
     app.arm_autostart_once(&socket_name, runtime_config.autostart.once.clone());
     super::environment::activate_session(&socket_name, runtime_config.cursor.size);

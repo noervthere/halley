@@ -494,17 +494,22 @@ fn admit_window<D: SessionDriver>(session: &mut Session<D>, xid: u32) {
             session.start_time.elapsed().as_millis() as u64,
         );
         if let Some(id) = session.nodes.id_for_surface(wl_surface.as_ref()) {
-            if session.clusters.admit_mapped_window(
-                &mut session.nodes.field,
-                &output.name(),
-                id,
-                rule.cluster_participation,
-                smithay::desktop::layer_map_for_output(&output).non_exclusive_zone(),
-                crate::frame_clock::monotonic_now(),
-            ) {
+            let admitted_to_draft = crate::session::admit_cluster_draft_window(session, id);
+            if !admitted_to_draft
+                && session.clusters.admit_mapped_window(
+                    &mut session.nodes.field,
+                    &output.name(),
+                    id,
+                    rule.cluster_participation,
+                    smithay::desktop::layer_map_for_output(&output).non_exclusive_zone(),
+                    crate::frame_clock::monotonic_now(),
+                )
+            {
                 session.request_redraw();
             }
-            crate::nodes::displace_landmarks_for_new_window(session, id);
+            if !admitted_to_draft {
+                crate::nodes::displace_landmarks_for_new_window(session, id);
+            }
             crate::session::trace::x11_event(
                 session,
                 &surface,

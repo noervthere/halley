@@ -18,6 +18,30 @@ pub struct CreationState {
     pub scroll_char: usize,
     pub dragging_selection: bool,
     pub(crate) name_repeat: Option<NameRepeat>,
+    pub(crate) draft: Option<DraftProposal>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct DraftProposal {
+    id: u64,
+    app_launches: Vec<halley_ipc::ClusterDraftAppLaunch>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct DraftBuild {
+    pub id: u64,
+    pub output: String,
+    pub name: String,
+    pub selected: HashSet<NodeId>,
+    pub staged: HashSet<NodeId>,
+    pub matched_app_ids: Vec<String>,
+    pub app_launches: Vec<halley_ipc::ClusterDraftAppLaunch>,
+    pub started_at: std::time::Duration,
+}
+
+pub(crate) struct DraftConfirmation {
+    pub id: u64,
+    pub launches: Vec<halley_ipc::ClusterDraftAppLaunch>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -113,12 +137,166 @@ impl ClusterSystem {
             scroll_char: 0,
             dragging_selection: false,
             name_repeat: None,
+            draft: None,
         });
         true
     }
 
     pub fn cancel_creation(&mut self) -> bool {
         self.creation.take().is_some()
+    }
+
+    pub(crate) fn begin_draft(
+        &mut self,
+        field: &Field,
+        output: String,
+        name_hint: Option<String>,
+        running_nodes: Vec<NodeId>,
+        app_launches: Vec<halley_ipc::ClusterDraftAppLaunch>,
+    ) -> Result<u64, String> {
+        if self.creation.is_some() || self.pending_draft.is_some() {
+            return Err("another cluster draft or creation modal is already active".into());
+        }
+        let mut selected = HashSet::new();
+        for id in running_nodes {
+            if field.node(id).is_none() {
+                return Err(format!("node {} was not found", id.as_u64()));
+            }
+            if self.registry.is_cluster_member(id) {
+                return Err(format!("node {} already belongs to a cluster", id.as_u64()));
+            }
+            selected.insert(id);
+        }
+        if selected.is_empty() && app_launches.is_empty() {
+            return Err("a cluster draft needs at least one running node or app".into());
+        }
+        let default_name = next_default_name(&output, self.metadata.values());
+        let name_buffer = name_hint
+            .map(|name| name.trim().to_string())
+            .filter(|name| !name.is_empty())
+            .unwrap_or(default_name);
+        let id = self.next_draft_id;
+        self.next_draft_id = self.next_draft_id.saturating_add(1);
+        let caret = char_len(&name_buffer);
+        self.creation = Some(CreationState {
+            output,
+            selected,
+            naming: true,
+            name_buffer,
+            caret_char: caret,
+            selection_anchor_char: 0,
+            selection_focus_char: caret,
+            scroll_char: 0,
+            dragging_selection: false,
+            name_repeat: None,
+            draft: Some(DraftProposal { id, app_launches }),
+        });
+        Ok(id)
+    }
+
+    pub(crate) fn creation_draft_id(&self) -> Option<u64> {
+        self.creation.as_ref()?.draft.as_ref().map(|draft| draft.id)
+    }
+
+    pub(crate) fn confirm_draft(&mut self, now: std::time::Duration) -> Option<DraftConfirmation> {
+        let creation = self.creation.as_ref()?;
+        let draft = creation.draft.as_ref()?;
+        if draft.app_launches.is_empty() {
+            return None;
+        }
+        let creation = self.creation.take()?;
+        let draft = creation.draft?;
+        let confirmation = DraftConfirmation {
+            id: draft.id,
+            launches: draft.app_launches.clone(),
+        };
+        self.pending_draft = Some(DraftBuild {
+            id: draft.id,
+            output: creation.output,
+            name: creation.name_buffer,
+            selected: creation.selected,
+            staged: HashSet::new(),
+            matched_app_ids: Vec::new(),
+            app_launches: draft.app_launches,
+            started_at: now,
+        });
+        Some(confirmation)
+    }
+
+    pub(crate) fn match_pending_draft(&mut self, id: NodeId, app_id: &str) -> Option<bool> {
+        let build = self.pending_draft.as_mut()?;
+        let actual = normalize_app_id(app_id);
+        if actual.is_empty() {
+            return None;
+        }
+        let expected_count = build
+            .app_launches
+            .iter()
+            .map(|launch| normalize_app_id(&launch.app_id))
+            .filter(|candidate| app_ids_match(candidate, &actual))
+            .count();
+        let matched_count = build
+            .matched_app_ids
+            .iter()
+            .filter(|candidate| app_ids_match(candidate, &actual))
+            .count();
+        if expected_count <= matched_count {
+            return None;
+        }
+        build.matched_app_ids.push(actual);
+        build.selected.insert(id);
+        build.staged.insert(id);
+        Some(build.matched_app_ids.len() == build.app_launches.len())
+    }
+
+    pub(crate) fn ready_draft_members(&self) -> Option<Vec<NodeId>> {
+        let build = self.pending_draft.as_ref()?;
+        (build.matched_app_ids.len() == build.app_launches.len())
+            .then(|| build.selected.iter().copied().collect())
+    }
+
+    pub(crate) fn pending_draft_output(&self) -> Option<&str> {
+        self.pending_draft
+            .as_ref()
+            .map(|build| build.output.as_str())
+    }
+
+    pub(crate) fn finish_pending_draft(
+        &mut self,
+        field: &mut Field,
+    ) -> Result<(ClusterId, DraftBuild), String> {
+        let build = self
+            .pending_draft
+            .take()
+            .ok_or_else(|| "no cluster draft is ready".to_string())?;
+        self.creation = Some(CreationState {
+            output: build.output.clone(),
+            selected: build.selected.clone(),
+            naming: true,
+            name_buffer: build.name.clone(),
+            caret_char: char_len(&build.name),
+            selection_anchor_char: 0,
+            selection_focus_char: char_len(&build.name),
+            scroll_char: 0,
+            dragging_selection: false,
+            name_repeat: None,
+            draft: None,
+        });
+        match self.finish_creation(field) {
+            Ok(id) => Ok((id, build)),
+            Err(error) => {
+                self.creation = None;
+                self.pending_draft = Some(build);
+                Err(error)
+            }
+        }
+    }
+
+    pub(crate) fn take_timed_out_draft(&mut self, now: std::time::Duration) -> Option<DraftBuild> {
+        self.pending_draft.as_ref().filter(|build| {
+            now.saturating_sub(build.started_at) >= std::time::Duration::from_secs(30)
+        })?;
+        self.pending_draft.take()
     }
 
     /// Escape backs out of the naming page before it exits selection mode,
@@ -404,6 +582,18 @@ impl ClusterSystem {
     }
 }
 
+fn normalize_app_id(value: &str) -> String {
+    let value = value.trim().to_ascii_lowercase();
+    value.strip_suffix(".desktop").unwrap_or(&value).to_string()
+}
+
+fn app_ids_match(expected: &str, actual: &str) -> bool {
+    expected == actual
+        || expected.rsplit('.').next() == Some(actual)
+        || actual.rsplit('.').next() == Some(expected)
+        || expected.rsplit('.').next() == actual.rsplit('.').next()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -413,6 +603,66 @@ mod tests {
             halley_config::Clusters::default(),
             halley_config::ClusterAnimation::default(),
         )
+    }
+
+    #[test]
+    fn draft_launches_wait_for_name_confirmation_and_match_desktop_ids() {
+        let mut system = system();
+        let field = Field::new();
+        let id = system
+            .begin_draft(
+                &field,
+                "DP-1".into(),
+                Some("Work".into()),
+                Vec::new(),
+                vec![halley_ipc::ClusterDraftAppLaunch {
+                    app_id: "org.mozilla.firefox.desktop".into(),
+                    command: "firefox".into(),
+                }],
+            )
+            .unwrap();
+        assert_eq!(system.creation_draft_id(), Some(id));
+        assert!(system.pending_draft.is_none());
+
+        let confirmation = system
+            .confirm_draft(std::time::Duration::from_secs(2))
+            .unwrap();
+        assert_eq!(confirmation.launches[0].command, "firefox");
+        assert_eq!(
+            system.match_pending_draft(NodeId::new(9), "firefox"),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn pending_draft_times_out_after_thirty_seconds() {
+        let mut system = system();
+        let field = Field::new();
+        system
+            .begin_draft(
+                &field,
+                "DP-1".into(),
+                None,
+                Vec::new(),
+                vec![halley_ipc::ClusterDraftAppLaunch {
+                    app_id: "missing".into(),
+                    command: "missing".into(),
+                }],
+            )
+            .unwrap();
+        system
+            .confirm_draft(std::time::Duration::from_secs(5))
+            .unwrap();
+        assert!(
+            system
+                .take_timed_out_draft(std::time::Duration::from_secs(34))
+                .is_none()
+        );
+        assert!(
+            system
+                .take_timed_out_draft(std::time::Duration::from_secs(35))
+                .is_some()
+        );
     }
 
     #[test]

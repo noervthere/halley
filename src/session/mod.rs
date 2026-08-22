@@ -193,6 +193,148 @@ pub(crate) fn cancel_compositor_grab<D: SessionDriver>(session: &mut Session<D>)
         .set_override(crate::cursor::OverrideSource::Grab, None);
 }
 
+pub(crate) fn admit_cluster_draft_window<D: SessionDriver>(
+    session: &mut Session<D>,
+    id: halley_core::field::NodeId,
+) -> bool {
+    let Some(app_id) = session
+        .nodes
+        .record(id)
+        .and_then(|record| record.app_id.clone())
+    else {
+        return false;
+    };
+    let Some(complete) = session.clusters.match_pending_draft(id, &app_id) else {
+        return false;
+    };
+    stage_draft_window(session, id);
+    if !complete {
+        return true;
+    }
+
+    let Some(output_name) = session.clusters.pending_draft_output().map(str::to_string) else {
+        return true;
+    };
+    let members = session.clusters.ready_draft_members().unwrap_or_default();
+    for member in members {
+        restore_draft_window(session, member, &output_name);
+    }
+    match session
+        .clusters
+        .finish_pending_draft(&mut session.nodes.field)
+    {
+        Ok((cluster, build)) => {
+            crate::nodes::resolve_new_cluster_core(session, cluster);
+            if let Some(core) = session.clusters.core_node(cluster)
+                && let Some(output) = session
+                    .wayland
+                    .space
+                    .outputs()
+                    .find(|output| output.name() == output_name)
+                    .cloned()
+                && let (Some(geometry), Some(view)) = (
+                    session.wayland.space.output_geometry(&output),
+                    session.cameras.view(&output_name),
+                )
+            {
+                let position = halley_core::field::Vec2 {
+                    x: geometry.loc.x as f32 + view.center.x,
+                    y: geometry.loc.y as f32 + view.center.y,
+                };
+                if let Some(node) = session.nodes.field.node_mut(core) {
+                    node.pos = position;
+                }
+                session.clusters.set_core_position(cluster, position);
+            }
+            crate::ipc::publish_cluster_draft(
+                session,
+                build.id,
+                halley_ipc::ClusterDraftState::Completed,
+                None,
+            );
+        }
+        Err(message) => {
+            eventline::warn!("clusters: failed to complete draft: {message}");
+        }
+    }
+    session.request_redraw();
+    true
+}
+
+fn stage_draft_window<D: SessionDriver>(session: &mut Session<D>, id: halley_core::field::NodeId) {
+    let Some(record) = session.nodes.record(id).cloned() else {
+        return;
+    };
+    session.wayland.space.unmap_elem(&record.window);
+    if record.window.toplevel().is_some() {
+        session
+            .wayland
+            .collapsed
+            .insert(record.surface.clone(), record.window.clone());
+    } else {
+        crate::xwayland::set_hidden(&record.window, true);
+        session.xwayland.set_window_iconic(&record.window);
+    }
+    session
+        .nodes
+        .set_collapsed(id, true, session.start_time.elapsed().as_millis() as u64);
+    let _ = session.nodes.field.set_detached(id, true);
+}
+
+fn restore_draft_window<D: SessionDriver>(
+    session: &mut Session<D>,
+    id: halley_core::field::NodeId,
+    output_name: &str,
+) {
+    let Some(record) = session.nodes.record(id).cloned() else {
+        return;
+    };
+    if let Some(output) = session
+        .wayland
+        .space
+        .outputs()
+        .find(|output| output.name() == output_name)
+        .cloned()
+    {
+        crate::wayland::set_window_output(&record.window, &output);
+    }
+    if let Some(window) = session.wayland.collapsed.remove(&record.surface) {
+        session
+            .wayland
+            .space
+            .map_element(window, record.geometry.loc, false);
+    } else {
+        crate::xwayland::set_hidden(&record.window, false);
+        session.xwayland.set_window_normal(&record.window);
+    }
+    if let Some(record) = session.nodes.record_mut(id) {
+        record.output = output_name.to_string();
+    }
+    session
+        .nodes
+        .set_collapsed(id, false, session.start_time.elapsed().as_millis() as u64);
+    let _ = session.nodes.field.set_detached(id, false);
+}
+
+fn expire_cluster_draft<D: SessionDriver>(
+    session: &mut Session<D>,
+    now: std::time::Duration,
+) -> bool {
+    let Some(build) = session.clusters.take_timed_out_draft(now) else {
+        return false;
+    };
+    for id in build.staged.iter().copied() {
+        restore_draft_window(session, id, &build.output);
+    }
+    crate::ipc::publish_cluster_draft(
+        session,
+        build.id,
+        halley_ipc::ClusterDraftState::Failed,
+        Some("timed out waiting 30 seconds for launched windows".into()),
+    );
+    true
+}
+
 pub(crate) use lifecycle::{finish_window_unmap, prepare_window_unmap};
 
 fn install_node_decay_timer<D: SessionDriver>(

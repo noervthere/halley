@@ -20,6 +20,7 @@ mod surfaces;
 mod transition;
 
 pub use bloom::{DETACH_HOLD_DURATION, TokenLayout};
+pub(crate) use creation::DraftBuild;
 pub use creation::{CreationState, NameInput};
 pub use ipc::handle_request;
 pub use overflow::REVEAL_EDGE_PX;
@@ -114,6 +115,8 @@ pub struct ClusterSystem {
     overlay_hovered: Option<(String, NodeId)>,
     overlay_label_hover: RefCell<HashMap<NodeId, f32>>,
     creation: Option<CreationState>,
+    pending_draft: Option<DraftBuild>,
+    next_draft_id: u64,
     surfaces: surfaces::WorkspaceSurfaceState,
     config: halley_config::Clusters,
     animations: halley_config::ClusterAnimation,
@@ -142,6 +145,8 @@ impl ClusterSystem {
             overlay_hovered: None,
             overlay_label_hover: RefCell::new(HashMap::new()),
             creation: None,
+            pending_draft: None,
+            next_draft_id: 1,
             surfaces: surfaces::WorkspaceSurfaceState::default(),
             config,
             animations,
@@ -478,6 +483,12 @@ impl ClusterSystem {
 
     pub fn core_node(&self, id: ClusterId) -> Option<NodeId> {
         self.registry.cluster(id)?.core_node()
+    }
+
+    pub(crate) fn set_core_position(&mut self, id: ClusterId, position: Vec2) {
+        if let Some(metadata) = self.metadata.get_mut(&id) {
+            metadata.core_position = position;
+        }
     }
 
     pub(crate) fn collapsed_core_landmarks(&self) -> Vec<(ClusterId, NodeId, String, Vec2, bool)> {

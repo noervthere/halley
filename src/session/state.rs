@@ -124,6 +124,7 @@ pub struct Session<D: SessionDriver> {
     pub drm_syncobj_state: Option<DrmSyncobjState>,
     pub session_lock: crate::wayland::session_lock::State,
     pub start_time: std::time::Instant,
+    pub(crate) wayland_display: Option<std::ffi::OsString>,
     pub config_path: Option<PathBuf>,
     pub(crate) config_watcher: Option<crate::config::ConfigWatcher>,
     pub startup_config_diagnostic: Option<halley_config::ConfigDiagnostic>,

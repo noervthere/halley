@@ -475,6 +475,39 @@ fn close_blooms_for_typing_away<D: SessionDriver>(session: &mut Session<D>) -> b
 }
 
 fn finish_cluster_creation<D: SessionDriver>(session: &mut Session<D>) -> bool {
+    let draft_id = session.clusters.creation_draft_id();
+    if let Some(confirmation) = session
+        .clusters
+        .confirm_draft(crate::frame_clock::monotonic_now())
+    {
+        let Some(wayland_display) = session.wayland_display.clone() else {
+            eventline::warn!("clusters: cannot launch draft apps before Wayland is ready");
+            return false;
+        };
+        let x11_display = session.xwayland.display_name();
+        for launch in confirmation.launches {
+            if !launch.command.trim().is_empty() {
+                super::spawn::spawn_detached(
+                    &launch.command,
+                    &wayland_display,
+                    x11_display.as_deref(),
+                    session.cursor.size(),
+                    &session.launch_environment,
+                );
+            }
+        }
+        session
+            .cursor
+            .set_override(crate::cursor::OverrideSource::Modal, None);
+        crate::ipc::publish_cluster_draft(
+            session,
+            confirmation.id,
+            halley_ipc::ClusterDraftState::Launching,
+            None,
+        );
+        session.request_redraw();
+        return true;
+    }
     let focused_before = session.nodes.focused();
     match session.clusters.finish_creation(&mut session.nodes.field) {
         Ok(id) => {
@@ -492,6 +525,14 @@ fn finish_cluster_creation<D: SessionDriver>(session: &mut Session<D>) -> bool {
             session
                 .cursor
                 .set_override(crate::cursor::OverrideSource::Modal, None);
+            if let Some(draft_id) = draft_id {
+                crate::ipc::publish_cluster_draft(
+                    session,
+                    draft_id,
+                    halley_ipc::ClusterDraftState::Completed,
+                    None,
+                );
+            }
             true
         }
         Err(message) => {
@@ -522,6 +563,7 @@ pub(crate) fn wakeup_cluster_interactions<D: SessionDriver>(
     now: std::time::Duration,
 ) -> bool {
     let mut changed = session.clusters.repeat_name_input_if_due(now);
+    changed |= super::expire_cluster_draft(session, now);
     changed |= session.clusters.overflow_wakeup(now);
     changed |= session.clusters.tick_join_candidate_ready(now);
 

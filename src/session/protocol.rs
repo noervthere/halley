@@ -251,6 +251,10 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
                     &mapped,
                     self.start_time.elapsed().as_millis() as u64,
                 );
+                let admitted_to_draft = self
+                    .nodes
+                    .id_for_surface(&mapped)
+                    .is_some_and(|id| super::admit_cluster_draft_window(self, id));
                 let now = crate::frame_clock::monotonic_now();
                 let cluster_admission = self.nodes.id_for_surface(&mapped).and_then(|id| {
                     let output = self.nodes.record(id)?.output.clone();
@@ -264,7 +268,8 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
                         smithay::desktop::layer_map_for_output(&output_handle).non_exclusive_zone();
                     Some((id, output, work_area))
                 });
-                if let Some((id, output, work_area)) = cluster_admission
+                if !admitted_to_draft
+                    && let Some((id, output, work_area)) = cluster_admission
                     && self.clusters.admit_mapped_window(
                         &mut self.nodes.field,
                         &output,
@@ -276,7 +281,7 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
                 {
                     self.request_redraw();
                 }
-                if let Some(id) = self.nodes.id_for_surface(&mapped) {
+                if !admitted_to_draft && let Some(id) = self.nodes.id_for_surface(&mapped) {
                     crate::nodes::displace_landmarks_for_new_window(self, id);
                 }
                 let remains_collapsed = self
@@ -297,7 +302,11 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
                             .cloned()
                     })
                     .flatten();
-                if let Some(window) = remapped_window {
+                if admitted_to_draft {
+                    self.opening_origins.forget(&mapped);
+                    self.window_open_animations.remove(&mapped);
+                    super::closing::mapped(self, &mapped);
+                } else if let Some(window) = remapped_window {
                     self.wayland.space.unmap_elem(&window);
                     self.wayland.collapsed.insert(mapped.clone(), window);
                     self.wayland.focused_window = None;

@@ -241,6 +241,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
         drm_syncobj_state: None,
         session_lock,
         start_time: Instant::now(),
+        wayland_display: None,
         config_path: config_path.clone(),
         config_watcher: None,
         startup_config_diagnostic: initial.diagnostic,
@@ -287,6 +288,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
     app.initialize_config_notification();
 
     let socket_name = super::protocol::init_wayland_listener(display, &mut event_loop);
+    app.wayland_display = Some(socket_name.clone());
     eventline::info!("halley (winit) starting, WAYLAND_DISPLAY={socket_name:?}");
     if let Err(err) = crate::xwayland::start(&event_loop.handle(), &mut app, false) {
         eventline::warn!("xwayland: unavailable: {err}");

@@ -245,11 +245,52 @@ pub fn handle_request<D: crate::session::SessionDriver>(
                 halley_ipc::Response::Error(format!("failed to open cluster {}", id.as_u64()))
             }
         }
-        halley_ipc::ClusterRequest::OpenFinalizeDraft { .. } => {
-            halley_ipc::Response::ApiError(halley_ipc::ServerError::new(
-                halley_ipc::ServerErrorKind::Unsupported,
-                "cluster drafts are not available in this build",
-            ))
+        halley_ipc::ClusterRequest::OpenFinalizeDraft { draft, output } => {
+            let output = match output_context(session, output.as_deref()) {
+                Ok(output) => output,
+                Err(message) => {
+                    return halley_ipc::Response::ApiError(halley_ipc::ServerError::new(
+                        halley_ipc::ServerErrorKind::NotFound,
+                        message,
+                    ));
+                }
+            };
+            let running_nodes = draft
+                .running_node_ids
+                .into_iter()
+                .map(NodeId::new)
+                .collect();
+            match session.clusters.begin_draft(
+                &session.nodes.field,
+                output,
+                draft.name_hint,
+                running_nodes,
+                draft.app_launches,
+            ) {
+                Ok(id) => {
+                    session
+                        .cursor
+                        .set_override(crate::cursor::OverrideSource::Modal, None);
+                    session.request_redraw();
+                    crate::ipc::publish_cluster_draft(
+                        session,
+                        id,
+                        halley_ipc::ClusterDraftState::Started,
+                        None,
+                    );
+                    crate::ipc::publish_cluster_draft(
+                        session,
+                        id,
+                        halley_ipc::ClusterDraftState::AwaitingName,
+                        None,
+                    );
+                    halley_ipc::Response::ClusterDraftStarted { id }
+                }
+                Err(message) => halley_ipc::Response::ApiError(halley_ipc::ServerError::new(
+                    halley_ipc::ServerErrorKind::InvalidRequest,
+                    message,
+                )),
+            }
         }
     }
 }
