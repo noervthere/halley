@@ -171,13 +171,41 @@ impl FontRenderer {
         } else {
             family.trim()
         };
-        let families = if requested.eq_ignore_ascii_case("monospace") {
-            vec![Family::Monospace, Family::SansSerif]
+        let requested_lower = requested.to_ascii_lowercase();
+        let wants_monospace = requested_lower == "monospace";
+        let families = if wants_monospace {
+            vec![
+                Family::Name("Noto Sans Mono"),
+                Family::Name("DejaVu Sans Mono"),
+                Family::Name("Liberation Mono"),
+                Family::Monospace,
+                Family::SansSerif,
+            ]
         } else if requested.eq_ignore_ascii_case("serif") {
-            vec![Family::Serif, Family::SansSerif]
+            vec![
+                Family::Name("Noto Serif"),
+                Family::Name("DejaVu Serif"),
+                Family::Name("Liberation Serif"),
+                Family::Serif,
+                Family::SansSerif,
+            ]
+        } else if matches!(
+            requested_lower.as_str(),
+            "sans-serif" | "sans serif" | "sans"
+        ) {
+            vec![
+                Family::Name("Noto Sans"),
+                Family::Name("DejaVu Sans"),
+                Family::Name("Liberation Sans"),
+                Family::SansSerif,
+                Family::Monospace,
+            ]
         } else {
             vec![
                 Family::Name(requested),
+                Family::Name("Noto Sans"),
+                Family::Name("DejaVu Sans"),
+                Family::Name("Liberation Sans"),
                 Family::SansSerif,
                 Family::Monospace,
             ]
@@ -189,11 +217,23 @@ impl FontRenderer {
                 stretch: Stretch::Normal,
                 style: Style::Normal,
             })
+            .or_else(|| {
+                db.faces()
+                    .filter(|face| !wants_monospace || face.monospaced)
+                    .min_by_key(|face| {
+                        let style_penalty = u16::from(face.style != Style::Normal) * 1_000;
+                        let stretch_penalty = u16::from(face.stretch != Stretch::Normal) * 1_000;
+                        style_penalty + stretch_penalty + face.weight.0.abs_diff(Weight::NORMAL.0)
+                    })
+                    .map(|face| face.id)
+            })
+            .or_else(|| db.faces().next().map(|face| face.id))
             .ok_or_else(|| format!("unable to resolve font `{family}`"))?;
-        let bytes = db
-            .with_face_data(id, |data, _| data.to_vec())
+        let (bytes, face_index) = db
+            .with_face_data(id, |data, face_index| (data.to_vec(), face_index))
             .ok_or_else(|| format!("unable to read font `{family}`"))?;
-        let font = Font::try_from_vec(bytes).ok_or_else(|| format!("invalid font `{family}`"))?;
+        let font = Font::try_from_vec_and_index(bytes, face_index)
+            .ok_or_else(|| format!("invalid font `{family}`"))?;
         Ok(Self {
             font,
             widths: RefCell::new((HashMap::new(), VecDeque::new())),
@@ -1779,6 +1819,11 @@ fn unpremultiply_rgba(pixels: &mut [u8]) {
 mod tests {
     use super::*;
     use crate::model::LiftAction;
+
+    #[test]
+    fn generic_sans_font_resolves_from_system_fonts() {
+        FontRenderer::new("sans-serif").expect("generic sans-serif font");
+    }
 
     #[test]
     fn outline_search_fill_preserves_configured_alpha() {
