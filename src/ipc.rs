@@ -599,7 +599,9 @@ pub fn handle_request<D: crate::session::SessionDriver>(
                 Err(message) => halley_ipc::Response::Error(message),
             }
         }
-        halley_ipc::Request::Node(request) => crate::nodes::handle_request(app, request),
+        halley_ipc::Request::Node(request) => {
+            typed_api_response(crate::nodes::handle_request(app, request))
+        }
         halley_ipc::Request::Bearings(request) => match request {
             halley_ipc::BearingsRequest::Show => {
                 if app.shell.bearings.set_visible(true) {
@@ -639,10 +641,12 @@ pub fn handle_request<D: crate::session::SessionDriver>(
                     crate::wayland::session_lock::confirm_unlit_outputs(app);
                     halley_ipc::Response::Ack
                 }
-                Err(message) => halley_ipc::Response::Error(message),
+                Err(message) => typed_api_response(halley_ipc::Response::Error(message)),
             }
         }
-        halley_ipc::Request::Cluster(request) => crate::clusters::handle_request(app, request),
+        halley_ipc::Request::Cluster(request) => {
+            typed_api_response(crate::clusters::handle_request(app, request))
+        }
         halley_ipc::Request::CaptureCapabilities => {
             let capabilities = app.driver.dmabuf_capabilities();
             halley_ipc::Response::CaptureCapabilities(halley_ipc::CaptureCapabilities {
@@ -689,6 +693,70 @@ pub fn handle_request<D: crate::session::SessionDriver>(
         },
     };
     let _ = reply.send(response, Vec::new());
+}
+
+fn api_error(
+    kind: halley_ipc::ServerErrorKind,
+    message: impl Into<String>,
+) -> halley_ipc::Response {
+    halley_ipc::Response::ApiError(halley_ipc::ServerError::new(kind, message))
+}
+
+/// Older internal handlers still produce their human-readable diagnostics as
+/// `Response::Error`. Normalize those at the public API boundary so clients
+/// receive a stable category and never need to inspect message text.
+fn typed_api_response(response: halley_ipc::Response) -> halley_ipc::Response {
+    let halley_ipc::Response::Error(message) = response else {
+        return response;
+    };
+    let normalized = message.to_ascii_lowercase();
+    let kind = if normalized.contains("matched multiple") || normalized.contains("ambiguous") {
+        halley_ipc::ServerErrorKind::Ambiguous
+    } else if normalized.contains("must be")
+        || normalized.contains("between 1 and 10")
+        || normalized.contains("belongs to output")
+    {
+        halley_ipc::ServerErrorKind::InvalidRequest
+    } else if normalized.contains("not found")
+        || normalized.contains("no node")
+        || normalized.contains("no active cluster")
+        || normalized.contains("no cluster exists")
+        || normalized.contains("unknown output")
+        || normalized.contains("disappeared")
+    {
+        halley_ipc::ServerErrorKind::NotFound
+    } else {
+        halley_ipc::ServerErrorKind::Internal
+    };
+    api_error(kind, message)
+}
+
+#[cfg(test)]
+mod typed_error_tests {
+    use super::*;
+
+    fn kind(message: &str) -> halley_ipc::ServerErrorKind {
+        match typed_api_response(halley_ipc::Response::Error(message.into())) {
+            halley_ipc::Response::ApiError(error) => error.kind,
+            response => panic!("expected typed API error, got {response:?}"),
+        }
+    }
+
+    #[test]
+    fn classifies_public_control_errors() {
+        assert_eq!(
+            kind("selector app:term matched multiple nodes"),
+            halley_ipc::ServerErrorKind::Ambiguous
+        );
+        assert_eq!(
+            kind("cluster 7 was not found"),
+            halley_ipc::ServerErrorKind::NotFound
+        );
+        assert_eq!(
+            kind("cluster slot must be between 1 and 10, got 0"),
+            halley_ipc::ServerErrorKind::InvalidRequest
+        );
+    }
 }
 
 fn api_snapshot<D: crate::session::SessionDriver>(

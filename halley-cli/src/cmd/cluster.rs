@@ -1,6 +1,24 @@
-use halley_ipc::{ClusterRequest, ClusterTarget};
+use halley_api::{ClusterId, ClusterTarget};
 
 use super::{Action, ClusterOutput};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ClusterCommand {
+    List {
+        output: Option<String>,
+    },
+    Inspect {
+        target: ClusterTarget,
+        output: Option<String>,
+    },
+    LayoutCycle {
+        output: Option<String>,
+    },
+    Slot {
+        slot: u8,
+        output: Option<String>,
+    },
+}
 
 pub(super) fn parse(args: &[String]) -> Result<Action, String> {
     let Some(command) = args.first().map(String::as_str) else {
@@ -13,7 +31,7 @@ pub(super) fn parse(args: &[String]) -> Result<Action, String> {
         "list" => {
             let options = options(&args[1..], true)?;
             (
-                ClusterRequest::List {
+                ClusterCommand::List {
                     output: options.output,
                 },
                 ClusterOutput::List { json: options.json },
@@ -26,7 +44,7 @@ pub(super) fn parse(args: &[String]) -> Result<Action, String> {
             };
             let options = options(rest, true)?;
             (
-                ClusterRequest::Inspect {
+                ClusterCommand::Inspect {
                     target,
                     output: options.output,
                 },
@@ -36,7 +54,7 @@ pub(super) fn parse(args: &[String]) -> Result<Action, String> {
         "layout-cycle" | "layout" => {
             let options = options(&args[1..], false)?;
             (
-                ClusterRequest::LayoutCycle {
+                ClusterCommand::LayoutCycle {
                     output: options.output,
                 },
                 ClusterOutput::Ack,
@@ -53,7 +71,7 @@ pub(super) fn parse(args: &[String]) -> Result<Action, String> {
                 .ok_or_else(|| format!("invalid cluster slot {raw:?}; expected 1 through 10"))?;
             let options = options(&args[2..], false)?;
             (
-                ClusterRequest::Slot {
+                ClusterCommand::Slot {
                     slot,
                     output: options.output,
                 },
@@ -72,6 +90,7 @@ fn parse_target(value: &str) -> Result<ClusterTarget, String> {
     let value = value.strip_prefix("id:").unwrap_or(value);
     value
         .parse::<u64>()
+        .map(ClusterId::new)
         .map(ClusterTarget::Id)
         .map_err(|_| format!("invalid cluster target {value:?}; expected current, ID, or id:ID"))
 }
@@ -118,7 +137,7 @@ mod tests {
         assert_eq!(
             parse(&args(&["list", "-o", "DP-1", "--json"])),
             Ok(Action::Cluster {
-                request: ClusterRequest::List {
+                request: ClusterCommand::List {
                     output: Some("DP-1".into())
                 },
                 output: ClusterOutput::List { json: true },
@@ -127,8 +146,8 @@ mod tests {
         assert_eq!(
             parse(&args(&["info", "id:7"])),
             Ok(Action::Cluster {
-                request: ClusterRequest::Inspect {
-                    target: ClusterTarget::Id(7),
+                request: ClusterCommand::Inspect {
+                    target: ClusterTarget::Id(ClusterId::new(7)),
                     output: None,
                 },
                 output: ClusterOutput::Info { json: false },
@@ -137,7 +156,7 @@ mod tests {
         assert_eq!(
             parse(&args(&["slot", "10"])),
             Ok(Action::Cluster {
-                request: ClusterRequest::Slot {
+                request: ClusterCommand::Slot {
                     slot: 10,
                     output: None,
                 },

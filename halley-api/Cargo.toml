@@ -7,3 +7,4 @@ license = "GPL-3.0-only"
 
 [dependencies]
 halley-ipc = { path = "../halley-ipc" }
+serde = { version = "1", features = ["derive"] }

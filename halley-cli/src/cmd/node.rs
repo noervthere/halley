@@ -1,6 +1,42 @@
-use halley_ipc::{NodeMoveDirection, NodeRequest, NodeSelector};
+use halley_api::{NodeId, NodeMoveDirection, NodeSelector};
 
 use super::{Action, NodeOutput};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NodeCommand {
+    List {
+        output: Option<String>,
+    },
+    Info {
+        selector: Option<NodeSelector>,
+        output: Option<String>,
+    },
+    Focus {
+        selector: Option<NodeSelector>,
+        output: Option<String>,
+    },
+    Collapse {
+        selector: Option<NodeSelector>,
+        output: Option<String>,
+    },
+    Restore {
+        selector: Option<NodeSelector>,
+        output: Option<String>,
+    },
+    Toggle {
+        selector: Option<NodeSelector>,
+        output: Option<String>,
+    },
+    Close {
+        selector: Option<NodeSelector>,
+        output: Option<String>,
+    },
+    Move {
+        direction: NodeMoveDirection,
+        selector: Option<NodeSelector>,
+        output: Option<String>,
+    },
+}
 
 pub(super) fn parse(args: &[String]) -> Result<Action, String> {
     let Some(command) = args.first().map(String::as_str) else {
@@ -17,7 +53,7 @@ pub(super) fn parse(args: &[String]) -> Result<Action, String> {
             let (selector, output, json) = parse_flags(&args[1..], false)?;
             debug_assert!(selector.is_none());
             Ok(Action::Node {
-                request: NodeRequest::List { output },
+                request: NodeCommand::List { output },
                 output: NodeOutput::List { json },
             })
         }
@@ -27,12 +63,12 @@ pub(super) fn parse(args: &[String]) -> Result<Action, String> {
                 return Err("--json is supported only by node list and node info".to_string());
             }
             let request = match command {
-                "info" => NodeRequest::Info { selector, output },
-                "focus" => NodeRequest::Focus { selector, output },
-                "collapse" => NodeRequest::Collapse { selector, output },
-                "restore" => NodeRequest::Restore { selector, output },
-                "toggle" => NodeRequest::Toggle { selector, output },
-                "close" => NodeRequest::Close { selector, output },
+                "info" => NodeCommand::Info { selector, output },
+                "focus" => NodeCommand::Focus { selector, output },
+                "collapse" => NodeCommand::Collapse { selector, output },
+                "restore" => NodeCommand::Restore { selector, output },
+                "toggle" => NodeCommand::Toggle { selector, output },
+                "close" => NodeCommand::Close { selector, output },
                 _ => unreachable!(),
             };
             Ok(Action::Node {
@@ -58,7 +94,7 @@ pub(super) fn parse(args: &[String]) -> Result<Action, String> {
                 return Err("--json is supported only by node list and node info".to_string());
             }
             Ok(Action::Node {
-                request: NodeRequest::Move {
+                request: NodeCommand::Move {
                     direction,
                     selector,
                     output,
@@ -108,11 +144,12 @@ fn parse_selector(value: &str) -> Result<NodeSelector, String> {
     match value {
         _ if value.eq_ignore_ascii_case("focused") => Ok(NodeSelector::Focused),
         _ if value.eq_ignore_ascii_case("latest") => Ok(NodeSelector::Latest),
-        _ if value.parse::<u64>().is_ok() => Ok(NodeSelector::Id(
+        _ if value.parse::<u64>().is_ok() => Ok(NodeSelector::Id(NodeId::new(
             value.parse().expect("checked numeric selector"),
-        )),
+        ))),
         _ if value.starts_with("id:") => value[3..]
             .parse::<u64>()
+            .map(NodeId::new)
             .map(NodeSelector::Id)
             .map_err(|_| format!("invalid node id selector {value:?}")),
         _ if value.starts_with("title:") => Ok(NodeSelector::Title(value[6..].to_string())),

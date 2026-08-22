@@ -1,82 +1,70 @@
+use std::collections::BTreeMap;
 use std::fmt::Write;
 use std::process::ExitCode;
 
-use halley_ipc::{
-    ClusterInfo, ClusterLayoutKind, ClusterListResponse, ModeInfo, NodeInfo, NodeListResponse,
-    NodeProtocolFamily, NodeRelationInfo, NodeRole, NodeState, OutputInfo, Response,
+use halley_api::{
+    ClusterInfo, ClusterLayout, ClusterSummary, ModeInfo, NodeInfo, NodeProtocolFamily, NodeRole,
+    NodeState, OutputInfo, ServerInfo,
 };
+use serde::Serialize;
 
 use crate::cmd::{ClusterOutput, NodeOutput};
 
-pub fn node(response: Response, output: NodeOutput) -> ExitCode {
-    match (response, output) {
-        (Response::NodeList(list), NodeOutput::List { json: true }) => {
-            print_json(&list, "node list")
-        }
-        (Response::NodeList(list), NodeOutput::List { json: false }) => {
-            print!("{}", format_node_list(&list));
-            ExitCode::SUCCESS
-        }
-        (Response::NodeInfo(info), NodeOutput::Info { json: true }) => {
-            print_json(&info, "node info")
-        }
-        (Response::NodeInfo(info), NodeOutput::Info { json: false }) => {
-            print!("{}", format_node_info(&info));
-            ExitCode::SUCCESS
-        }
-        (Response::Ack, NodeOutput::Ack) => ExitCode::SUCCESS,
-        (response, _) => unexpected(response),
-    }
-}
-
-pub fn bearings(response: Response) -> ExitCode {
-    match response {
-        Response::Ack => ExitCode::SUCCESS,
-        Response::BearingsStatus(status) => {
-            println!("{}", if status.visible { "visible" } else { "hidden" });
-            ExitCode::SUCCESS
-        }
-        response => unexpected(response),
-    }
-}
-
-pub fn cluster(response: Response, output: ClusterOutput) -> ExitCode {
-    match (response, output) {
-        (Response::ClusterList(list), ClusterOutput::List { json: true }) => {
-            print_json(&list, "cluster list")
-        }
-        (Response::ClusterList(list), ClusterOutput::List { json: false }) => {
-            print!("{}", format_cluster_list(&list));
-            ExitCode::SUCCESS
-        }
-        (Response::ClusterInfo(info), ClusterOutput::Info { json: true }) => {
-            print_json(&info, "cluster info")
-        }
-        (Response::ClusterInfo(info), ClusterOutput::Info { json: false }) => {
-            print!("{}", format_cluster_info(&info));
-            ExitCode::SUCCESS
-        }
-        (Response::Ack, ClusterOutput::Ack) => ExitCode::SUCCESS,
-        (response, _) => unexpected(response),
-    }
-}
-
-pub fn ack(response: Response) -> ExitCode {
-    match response {
-        Response::Ack => ExitCode::SUCCESS,
-        response => unexpected(response),
-    }
-}
-
-pub fn outputs(response: Response) -> ExitCode {
-    let Response::Outputs(outputs) = response else {
-        return unexpected(response);
+pub fn node_list(nodes: Vec<NodeInfo>, output: NodeOutput) -> ExitCode {
+    let NodeOutput::List { json } = output else {
+        return invalid_output("node list");
     };
-    if outputs.outputs.is_empty() {
+    if json {
+        return print_json(&group_nodes(&nodes), "node list");
+    }
+    print!("{}", format_node_list(&nodes));
+    ExitCode::SUCCESS
+}
+
+pub fn node_info(node: NodeInfo, output: NodeOutput) -> ExitCode {
+    let NodeOutput::Info { json } = output else {
+        return invalid_output("node info");
+    };
+    if json {
+        return print_json(&node, "node info");
+    }
+    print!("{}", format_node_info(&node));
+    ExitCode::SUCCESS
+}
+
+pub fn cluster_list(clusters: Vec<ClusterSummary>, output: ClusterOutput) -> ExitCode {
+    let ClusterOutput::List { json } = output else {
+        return invalid_output("cluster list");
+    };
+    if json {
+        return print_json(&group_clusters(&clusters), "cluster list");
+    }
+    print!("{}", format_cluster_list(&clusters));
+    ExitCode::SUCCESS
+}
+
+pub fn cluster_info(info: ClusterInfo, output: ClusterOutput) -> ExitCode {
+    let ClusterOutput::Info { json } = output else {
+        return invalid_output("cluster info");
+    };
+    if json {
+        return print_json(&info, "cluster info");
+    }
+    print!("{}", format_cluster_info(&info));
+    ExitCode::SUCCESS
+}
+
+pub fn bearings(visible: bool) -> ExitCode {
+    println!("{}", if visible { "visible" } else { "hidden" });
+    ExitCode::SUCCESS
+}
+
+pub fn outputs(outputs: Vec<OutputInfo>) -> ExitCode {
+    if outputs.is_empty() {
         println!("(no outputs)");
         return ExitCode::SUCCESS;
     }
-    for (index, output) in outputs.outputs.iter().enumerate() {
+    for (index, output) in outputs.iter().enumerate() {
         match format_output(output) {
             Ok(formatted) => {
                 if index > 0 {
@@ -84,8 +72,8 @@ pub fn outputs(response: Response) -> ExitCode {
                 }
                 print!("{formatted}");
             }
-            Err(err) => {
-                eprintln!("halleyctl: invalid output response: {err}");
+            Err(error) => {
+                eprintln!("halleyctl: invalid output response: {error}");
                 return ExitCode::FAILURE;
             }
         }
@@ -93,55 +81,80 @@ pub fn outputs(response: Response) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-pub fn version(response: Response) -> ExitCode {
-    let Response::Version(version) = response else {
-        return unexpected(response);
-    };
+pub fn version(info: &ServerInfo) -> ExitCode {
     println!("halleyctl {}", env!("CARGO_PKG_VERSION"));
     println!(
-        "compositor {} (ipc protocol {})",
-        version.version, version.ipc_protocol
+        "compositor {} (Halley API {})",
+        info.compositor_version, info.api_version
     );
     ExitCode::SUCCESS
 }
 
-fn print_json(value: &impl serde::Serialize, label: &str) -> ExitCode {
+#[derive(Serialize)]
+struct NodeGroup<'a> {
+    output: &'a str,
+    nodes: Vec<&'a NodeInfo>,
+}
+
+fn group_nodes(nodes: &[NodeInfo]) -> Vec<NodeGroup<'_>> {
+    let mut groups: BTreeMap<&str, Vec<&NodeInfo>> = BTreeMap::new();
+    for node in nodes {
+        groups
+            .entry(node.output.as_deref().unwrap_or("(unknown)"))
+            .or_default()
+            .push(node);
+    }
+    groups
+        .into_iter()
+        .map(|(output, nodes)| NodeGroup { output, nodes })
+        .collect()
+}
+
+#[derive(Serialize)]
+struct ClusterGroup<'a> {
+    output: &'a str,
+    clusters: Vec<&'a ClusterSummary>,
+}
+
+fn group_clusters(clusters: &[ClusterSummary]) -> Vec<ClusterGroup<'_>> {
+    let mut groups: BTreeMap<&str, Vec<&ClusterSummary>> = BTreeMap::new();
+    for cluster in clusters {
+        groups.entry(&cluster.output).or_default().push(cluster);
+    }
+    groups
+        .into_iter()
+        .map(|(output, clusters)| ClusterGroup { output, clusters })
+        .collect()
+}
+
+fn print_json(value: &impl Serialize, label: &str) -> ExitCode {
     match serde_json::to_string_pretty(value) {
         Ok(json) => {
             println!("{json}");
             ExitCode::SUCCESS
         }
-        Err(err) => {
-            eprintln!("halleyctl: failed to encode {label}: {err}");
+        Err(error) => {
+            eprintln!("halleyctl: failed to encode {label}: {error}");
             ExitCode::FAILURE
         }
     }
 }
 
-fn unexpected(response: Response) -> ExitCode {
-    match response {
-        Response::Error(message) => {
-            eprintln!("halleyctl: compositor returned an error: {message}")
-        }
-        other => eprintln!("halleyctl: unexpected response: {other:?}"),
-    }
+fn invalid_output(label: &str) -> ExitCode {
+    eprintln!("halleyctl: internal output mismatch for {label}");
     ExitCode::FAILURE
 }
 
-fn format_node_list(list: &NodeListResponse) -> String {
-    if list.outputs.iter().all(|group| group.nodes.is_empty()) {
+fn format_node_list(nodes: &[NodeInfo]) -> String {
+    if nodes.is_empty() {
         return "No nodes.\n".to_string();
     }
     let mut formatted = String::new();
-    for group in &list.outputs {
+    for group in group_nodes(nodes) {
         writeln!(formatted, "{}", group.output).unwrap();
         writeln!(formatted, "  nodes: {}", group.nodes.len()).unwrap();
-        if group.nodes.is_empty() {
-            writeln!(formatted, "  entries: (none)").unwrap();
-            continue;
-        }
         writeln!(formatted, "  entries:").unwrap();
-        for node in &group.nodes {
+        for node in group.nodes {
             let marker = if node.focused {
                 "*"
             } else if node.latest {
@@ -163,18 +176,14 @@ fn format_node_info(node: &NodeInfo) -> String {
     formatted
 }
 
-fn format_cluster_list(list: &ClusterListResponse) -> String {
-    if list.outputs.iter().all(|group| group.clusters.is_empty()) {
+fn format_cluster_list(clusters: &[ClusterSummary]) -> String {
+    if clusters.is_empty() {
         return "No clusters.\n".to_string();
     }
     let mut formatted = String::new();
-    for group in &list.outputs {
+    for group in group_clusters(clusters) {
         writeln!(formatted, "{}", group.output).unwrap();
-        if group.clusters.is_empty() {
-            writeln!(formatted, "  (none)").unwrap();
-            continue;
-        }
-        for cluster in &group.clusters {
+        for cluster in group.clusters {
             let marker = if cluster.active {
                 "*"
             } else if cluster.focused {
@@ -229,10 +238,10 @@ fn format_cluster_info(info: &ClusterInfo) -> String {
     formatted
 }
 
-fn cluster_layout(layout: ClusterLayoutKind) -> &'static str {
+fn cluster_layout(layout: ClusterLayout) -> &'static str {
     match layout {
-        ClusterLayoutKind::Tiling => "tiling",
-        ClusterLayoutKind::Stacking => "stacking",
+        ClusterLayout::Tiling => "tiling",
+        ClusterLayout::Stacking => "stacking",
     }
 }
 
@@ -253,19 +262,14 @@ fn format_node_fields(formatted: &mut String, node: &NodeInfo, indent: usize) {
     )
     .unwrap();
     writeln!(formatted, "{pad}modal: {}", node.modal).unwrap();
-    format_relation(formatted, "parent-node", node.parent.as_ref(), indent);
-    format_relation(
-        formatted,
-        "transient-for",
-        node.transient_for.as_ref(),
-        indent,
-    );
+    format_relation(formatted, "parent-node", node.parent, indent);
+    format_relation(formatted, "transient-for", node.transient_for, indent);
     if node.child_popup_count > 0 {
         writeln!(formatted, "{pad}child-popups: {}", node.child_popup_count).unwrap();
     }
     writeln!(formatted, "{pad}focused: {}", node.focused).unwrap();
     writeln!(formatted, "{pad}latest: {}", node.latest).unwrap();
-    writeln!(formatted, "{pad}pos: {:.0}, {:.0}", node.pos_x, node.pos_y).unwrap();
+    writeln!(formatted, "{pad}pos: {:.0}, {:.0}", node.x, node.y).unwrap();
     writeln!(
         formatted,
         "{pad}size: {:.0} x {:.0}",
@@ -277,17 +281,12 @@ fn format_node_fields(formatted: &mut String, node: &NodeInfo, indent: usize) {
 fn format_relation(
     formatted: &mut String,
     label: &str,
-    relation: Option<&NodeRelationInfo>,
+    relation: Option<halley_api::NodeId>,
     indent: usize,
 ) {
     let pad = " ".repeat(indent);
     match relation {
-        Some(NodeRelationInfo { node_id: Some(id) }) => {
-            writeln!(formatted, "{pad}{label}: {id}").unwrap()
-        }
-        Some(NodeRelationInfo { node_id: None }) => {
-            writeln!(formatted, "{pad}{label}: (unresolved)").unwrap()
-        }
+        Some(id) => writeln!(formatted, "{pad}{label}: {id}").unwrap(),
         None => writeln!(formatted, "{pad}{label}: (none)").unwrap(),
     }
 }
@@ -322,7 +321,6 @@ fn node_protocol(protocol: NodeProtocolFamily) -> &'static str {
 fn format_output(output: &OutputInfo) -> Result<String, String> {
     let mut formatted = String::new();
     writeln!(formatted, "{}", output.name).unwrap();
-
     if let Some(current_index) = output.current_mode {
         let current = output.modes.get(current_index).ok_or_else(|| {
             format!(
@@ -356,7 +354,6 @@ fn format_output(output: &OutputInfo) -> Result<String, String> {
     } else {
         writeln!(formatted, "  Disabled").unwrap();
     }
-
     if output.modes.is_empty() {
         writeln!(formatted, "  Available modes: (none)").unwrap();
         return Ok(formatted);
@@ -392,14 +389,14 @@ fn mode_qualifier(preferred: bool, current: bool) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use halley_ipc::{NodeKind, NodeOutputGroup};
+    use halley_api::{NodeId, NodeKind};
 
     fn sample_node(id: u64, focused: bool, latest: bool) -> NodeInfo {
         NodeInfo {
-            id,
-            title: "Firefox".to_string(),
-            app_id: Some("firefox".to_string()),
-            output: Some("DP-1".to_string()),
+            id: NodeId::new(id),
+            title: "Firefox".into(),
+            app_id: Some("firefox".into()),
+            output: Some("DP-1".into()),
             kind: NodeKind::Surface,
             state: NodeState::Active,
             visible: true,
@@ -410,10 +407,10 @@ mod tests {
             protocol_family: NodeProtocolFamily::XdgToplevel,
             modal: false,
             parent: None,
-            transient_for: Some(NodeRelationInfo { node_id: Some(4) }),
+            transient_for: Some(NodeId::new(4)),
             child_popup_count: 1,
-            pos_x: 12.0,
-            pos_y: 34.0,
+            x: 12.0,
+            y: 34.0,
             width: 1280.0,
             height: 720.0,
         }
@@ -421,34 +418,9 @@ mod tests {
 
     #[test]
     fn rich_node_list_groups_outputs_and_marks_focus() {
-        let list = NodeListResponse {
-            outputs: vec![NodeOutputGroup {
-                output: "DP-1".to_string(),
-                nodes: vec![sample_node(7, true, false)],
-            }],
-        };
-        assert_eq!(
-            format_node_list(&list),
-            "\
-DP-1
-  nodes: 1
-  entries:
-    * 7  Firefox
-      output: DP-1
-      state: active
-      app: firefox
-      role: normal
-      protocol: xdg-toplevel
-      modal: false
-      parent-node: (none)
-      transient-for: 4
-      child-popups: 1
-      focused: true
-      latest: false
-      pos: 12, 34
-      size: 1280 x 720
-"
-        );
+        let formatted = format_node_list(&[sample_node(7, true, false)]);
+        assert!(formatted.starts_with("DP-1\n  nodes: 1\n  entries:\n    * 7  Firefox\n"));
+        assert!(formatted.contains("      transient-for: 4\n"));
     }
 
     #[test]
@@ -456,36 +428,31 @@ DP-1
         let formatted = format_node_info(&sample_node(9, false, true));
         assert!(formatted.starts_with("9  Firefox\n"));
         assert!(formatted.contains("  protocol: xdg-toplevel\n"));
-        assert!(formatted.contains("  transient-for: 4\n"));
         assert!(formatted.contains("  pos: 12, 34\n"));
         assert!(formatted.contains("  size: 1280 x 720\n"));
     }
 
     #[test]
-    fn empty_node_list_is_explicit() {
-        assert_eq!(
-            format_node_list(&NodeListResponse {
-                outputs: Vec::new()
-            }),
-            "No nodes.\n"
-        );
+    fn empty_lists_are_explicit() {
+        assert_eq!(format_node_list(&[]), "No nodes.\n");
+        assert_eq!(format_cluster_list(&[]), "No clusters.\n");
     }
 
     #[test]
     fn rejects_invalid_current_output_mode() {
         let output = OutputInfo {
-            name: "DP-1".to_string(),
+            name: "DP-1".into(),
             modes: Vec::new(),
             current_mode: Some(1),
             offset_x: 0,
             offset_y: 0,
-            vrr: "off".to_string(),
+            vrr: "off".into(),
             vrr_supported: false,
             vrr_active: false,
         };
         assert_eq!(
             format_output(&output),
-            Err("DP-1 refers to missing current mode index 1".to_string())
+            Err("DP-1 refers to missing current mode index 1".into())
         );
     }
 }

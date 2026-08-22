@@ -2,7 +2,7 @@ use std::fmt::Write;
 use std::path::PathBuf;
 use std::process::{Command, ExitCode};
 
-use halley_ipc::{Request, Response};
+use halley_api::{Client, ErrorKind};
 
 pub fn edit(explicit: Option<PathBuf>) -> ExitCode {
     let path = match resolve_config_path(explicit) {
@@ -107,46 +107,18 @@ fn absolute_path(path: PathBuf) -> std::io::Result<PathBuf> {
 }
 
 fn discover_config_path() -> Result<PathBuf, String> {
-    let socket = match halley_ipc::default_socket_path() {
-        Ok(path) => path,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return default_config_path();
-        }
-        Err(error) => return Err(format!("could not resolve the compositor socket: {error}")),
-    };
-    let mut connection = match halley_ipc::Connection::connect_to(&socket) {
-        Ok(connection) => connection,
-        Err(halley_ipc::CodecError::Io(error))
-            if matches!(
-                error.kind(),
-                std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
-            ) =>
-        {
-            return default_config_path();
-        }
+    let client = match Client::connect() {
+        Ok(client) => client,
+        Err(error) if error.kind() == ErrorKind::Connection => return default_config_path(),
         Err(error) => return Err(format!("could not connect to the compositor: {error}")),
     };
-    let response = connection.request(&Request::ConfigPath, &[]).map_err(|error| {
+    match client.config_path().map_err(|error| {
         format!(
             "the running compositor cannot report its config path ({error}); pass `-c PATH` explicitly"
         )
-    })?;
-    if !response.fds.is_empty() {
-        return Err(
-            "the compositor returned unexpected descriptors for its config path".to_string(),
-        );
-    }
-    match response.response {
-        Response::ConfigPath(Some(path)) => Ok(PathBuf::from(path)),
-        Response::ConfigPath(None) => {
-            Err("the running compositor has no selected config path; pass `-c PATH`".to_string())
-        }
-        Response::Error(error) => Err(format!(
-            "the running compositor cannot report its config path ({error}); pass `-c PATH` explicitly"
-        )),
-        response => Err(format!(
-            "the running compositor returned {response:?} instead of its config path; pass `-c PATH` explicitly"
-        )),
+    })? {
+        Some(path) => Ok(path),
+        None => Err("the running compositor has no selected config path; pass `-c PATH`".to_string()),
     }
 }
 

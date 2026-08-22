@@ -1,8 +1,13 @@
 use std::path::PathBuf;
 
+use serde::{Deserialize, Serialize};
+
 macro_rules! id_type {
     ($name:ident) => {
-        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        #[derive(
+            Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize,
+        )]
+        #[serde(transparent)]
         pub struct $name(u64);
 
         impl $name {
@@ -19,6 +24,12 @@ macro_rules! id_type {
                 Self(value)
             }
         }
+
+        impl std::fmt::Display for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                self.0.fmt(f)
+            }
+        }
     };
 }
 
@@ -26,28 +37,28 @@ id_type!(NodeId);
 id_type!(ClusterId);
 id_type!(ClusterDraftId);
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServerInfo {
     pub compositor_version: String,
     pub api_version: u32,
     pub capabilities: Vec<String>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DpmsCommand {
     Off,
     On,
     Toggle,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BearingsCommand {
     Show,
     Hide,
     Toggle,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NodeMoveDirection {
     Left,
     Right,
@@ -55,7 +66,7 @@ pub enum NodeMoveDirection {
     Down,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NodeSelector {
     Focused,
     Latest,
@@ -64,13 +75,13 @@ pub enum NodeSelector {
     App(String),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NodeKind {
     Surface,
     Core,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NodeState {
     Active,
     Drifting,
@@ -78,7 +89,7 @@ pub enum NodeState {
     Core,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NodeRole {
     NormalToplevel,
     Dialog,
@@ -86,7 +97,7 @@ pub enum NodeRole {
     Unknown,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NodeProtocolFamily {
     XdgToplevel,
     XdgPopup,
@@ -94,7 +105,7 @@ pub enum NodeProtocolFamily {
     Unknown,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct NodeInfo {
     pub id: NodeId,
     pub title: String,
@@ -118,7 +129,7 @@ pub struct NodeInfo {
     pub height: f32,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ModeInfo {
     pub width: i32,
     pub height: i32,
@@ -126,7 +137,7 @@ pub struct ModeInfo {
     pub preferred: bool,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct OutputInfo {
     pub name: String,
     pub modes: Vec<ModeInfo>,
@@ -138,19 +149,19 @@ pub struct OutputInfo {
     pub vrr_active: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ClusterLayout {
     Tiling,
     Stacking,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ClusterTarget {
     Current,
     Id(ClusterId),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClusterSummary {
     pub id: ClusterId,
     pub slot: Option<u8>,
@@ -162,27 +173,27 @@ pub struct ClusterSummary {
     pub focused: bool,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ClusterInfo {
     pub summary: ClusterSummary,
     pub core_node_id: Option<NodeId>,
     pub members: Vec<NodeInfo>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClusterDraftApp {
     pub app_id: String,
     pub command: String,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClusterDraft {
     pub name_hint: Option<String>,
     pub apps: Vec<ClusterDraftApp>,
     pub running_nodes: Vec<NodeId>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ClusterDraftState {
     Started,
     AwaitingName,
@@ -192,7 +203,7 @@ pub enum ClusterDraftState {
     Failed,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Snapshot {
     pub sequence: u64,
     pub outputs: Vec<OutputInfo>,

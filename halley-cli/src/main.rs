@@ -2,46 +2,133 @@ mod cmd;
 mod config;
 mod help;
 mod print;
-mod transport;
 
 use std::process::ExitCode;
 
-use cmd::Action;
-use halley_ipc::Request;
+use cmd::{Action, BearingsAction, ClusterCommand, NodeCommand};
+use halley_api::{BearingsCommand, Client};
 
 fn main() -> ExitCode {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     match cmd::parse(&args) {
-        Ok(Action::Outputs) => transport::query(Request::Outputs, print::outputs),
-        Ok(Action::Dpms { command, output }) => {
-            transport::query(Request::Dpms { command, output }, print::ack)
-        }
+        Ok(Action::Outputs) => with_client(|client| Ok(print::outputs(client.outputs()?))),
+        Ok(Action::Dpms { command, output }) => with_client(|client| {
+            client.set_dpms(command, output.as_deref())?;
+            Ok(ExitCode::SUCCESS)
+        }),
         Ok(Action::DpmsHelp) => show(help::DPMS_HELP),
-        Ok(Action::Node { request, output }) => {
-            transport::query(Request::Node(request), |response| {
-                print::node(response, output)
-            })
-        }
+        Ok(Action::Node {
+            request,
+            output: presentation,
+        }) => with_client(|client| {
+            match request {
+                NodeCommand::List { output } => {
+                    return Ok(print::node_list(
+                        client.nodes(output.as_deref())?,
+                        presentation,
+                    ));
+                }
+                NodeCommand::Info { selector, output } => {
+                    return Ok(print::node_info(
+                        client.node_info(selector, output.as_deref())?,
+                        presentation,
+                    ));
+                }
+                NodeCommand::Focus { selector, output } => {
+                    client.focus_node(selector, output.as_deref())?;
+                }
+                NodeCommand::Collapse { selector, output } => {
+                    client.collapse_node(selector, output.as_deref())?;
+                }
+                NodeCommand::Restore { selector, output } => {
+                    client.restore_node(selector, output.as_deref())?;
+                }
+                NodeCommand::Toggle { selector, output } => {
+                    client.toggle_node(selector, output.as_deref())?;
+                }
+                NodeCommand::Close { selector, output } => {
+                    client.close_node(selector, output.as_deref())?;
+                }
+                NodeCommand::Move {
+                    direction,
+                    selector,
+                    output,
+                } => client.move_node(direction, selector, output.as_deref())?,
+            }
+            Ok(ExitCode::SUCCESS)
+        }),
         Ok(Action::NodeHelp) => show(help::NODE_HELP),
-        Ok(Action::Cluster { request, output }) => {
-            transport::query(Request::Cluster(request), |response| {
-                print::cluster(response, output)
-            })
-        }
+        Ok(Action::Cluster { request, output }) => with_client(|client| match request {
+            ClusterCommand::List { output: connector } => Ok(print::cluster_list(
+                client.clusters(connector.as_deref())?,
+                output,
+            )),
+            ClusterCommand::Inspect {
+                target,
+                output: connector,
+            } => Ok(print::cluster_info(
+                client.cluster_info(target, connector.as_deref())?,
+                output,
+            )),
+            ClusterCommand::LayoutCycle { output } => {
+                client.cycle_cluster_layout(output.as_deref())?;
+                Ok(ExitCode::SUCCESS)
+            }
+            ClusterCommand::Slot { slot, output } => {
+                client.activate_cluster_slot(slot, output.as_deref())?;
+                Ok(ExitCode::SUCCESS)
+            }
+        }),
         Ok(Action::ClusterHelp) => show(help::CLUSTER_HELP),
-        Ok(Action::Bearings(request)) => {
-            transport::query(Request::Bearings(request), print::bearings)
-        }
+        Ok(Action::Bearings(action)) => with_client(|client| match action {
+            BearingsAction::Status => Ok(print::bearings(client.bearings_visible()?)),
+            BearingsAction::Show => {
+                client.set_bearings(BearingsCommand::Show)?;
+                Ok(ExitCode::SUCCESS)
+            }
+            BearingsAction::Hide => {
+                client.set_bearings(BearingsCommand::Hide)?;
+                Ok(ExitCode::SUCCESS)
+            }
+            BearingsAction::Toggle => {
+                client.set_bearings(BearingsCommand::Toggle)?;
+                Ok(ExitCode::SUCCESS)
+            }
+        }),
         Ok(Action::BearingsHelp) => show(help::BEARINGS_HELP),
         Ok(Action::ConfigEdit(path)) => config::edit(path),
         Ok(Action::ConfigVerify(path)) => config::verify(path),
         Ok(Action::ConfigHelp) => show(help::CONFIG_HELP),
-        Ok(Action::Quit) => transport::query(Request::Quit, print::ack),
-        Ok(Action::Version) => transport::query(Request::Version, print::version),
+        Ok(Action::Quit) => with_client(|client| {
+            client.request_quit()?;
+            Ok(ExitCode::SUCCESS)
+        }),
+        Ok(Action::Version) => with_client(|client| Ok(print::version(client.server_info()))),
         Ok(Action::Help) => show(help::HELP),
         Err(err) => {
             eprintln!("halleyctl: {err}\n\n{}", help::HELP);
             ExitCode::from(2)
+        }
+    }
+}
+
+fn with_client(operation: impl FnOnce(&Client) -> halley_api::Result<ExitCode>) -> ExitCode {
+    let client = match Client::connect() {
+        Ok(client) => client,
+        Err(error) => {
+            eprintln!("halleyctl: failed to reach the running compositor: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match operation(&client) {
+        Ok(code) => code,
+        Err(error) => {
+            eprintln!(
+                "halleyctl: compositor request failed ({:?}): {}",
+                error.kind(),
+                error.message()
+            );
+            ExitCode::FAILURE
         }
     }
 }

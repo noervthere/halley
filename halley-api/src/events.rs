@@ -2,8 +2,9 @@ use crate::{
     ClusterDraftId, ClusterDraftState, ClusterSummary, Error, ErrorKind, NodeId, NodeInfo,
     OutputInfo, Result, Snapshot,
 };
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum EventTopic {
     Outputs,
     Nodes,
@@ -12,7 +13,7 @@ pub enum EventTopic {
     Config,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Event {
     OutputAdded {
         sequence: u64,

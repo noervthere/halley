@@ -3,7 +3,18 @@ mod node;
 
 use std::path::PathBuf;
 
-use halley_ipc::{BearingsRequest, ClusterRequest, DpmsCommand, NodeRequest};
+use halley_api::DpmsCommand;
+
+pub use cluster::ClusterCommand;
+pub use node::NodeCommand;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BearingsAction {
+    Show,
+    Hide,
+    Toggle,
+    Status,
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
@@ -14,16 +25,16 @@ pub enum Action {
     },
     DpmsHelp,
     Node {
-        request: NodeRequest,
+        request: NodeCommand,
         output: NodeOutput,
     },
     NodeHelp,
     Cluster {
-        request: ClusterRequest,
+        request: ClusterCommand,
         output: ClusterOutput,
     },
     ClusterHelp,
-    Bearings(BearingsRequest),
+    Bearings(BearingsAction),
     BearingsHelp,
     ConfigEdit(Option<PathBuf>),
     ConfigVerify(Option<PathBuf>),
@@ -169,10 +180,10 @@ fn parse_bearings(args: &[String]) -> Result<Action, String> {
         return Err(format!("unexpected argument {unexpected:?}"));
     }
     let request = match command {
-        "show" => BearingsRequest::Show,
-        "hide" => BearingsRequest::Hide,
-        "toggle" => BearingsRequest::Toggle,
-        "status" => BearingsRequest::Status,
+        "show" => BearingsAction::Show,
+        "hide" => BearingsAction::Hide,
+        "toggle" => BearingsAction::Toggle,
+        "status" => BearingsAction::Status,
         other => return Err(format!("unknown bearings command {other:?}")),
     };
     Ok(Action::Bearings(request))
@@ -181,7 +192,7 @@ fn parse_bearings(args: &[String]) -> Result<Action, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use halley_ipc::{NodeMoveDirection, NodeSelector};
+    use halley_api::{NodeMoveDirection, NodeSelector};
 
     fn args(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).to_string()).collect()
@@ -202,7 +213,7 @@ mod tests {
     fn parser_covers_bearings_dpms_and_config() {
         assert_eq!(
             parse(&args(&["bearings", "show"])),
-            Ok(Action::Bearings(BearingsRequest::Show))
+            Ok(Action::Bearings(BearingsAction::Show))
         );
         assert_eq!(
             parse(&args(&["dpms", "-o", "DP-1", "on"])),
@@ -233,7 +244,7 @@ mod tests {
         assert_eq!(
             parse(&args(&["node", "list", "-o", "DP-1", "--json"])),
             Ok(Action::Node {
-                request: NodeRequest::List {
+                request: NodeCommand::List {
                     output: Some("DP-1".into())
                 },
                 output: NodeOutput::List { json: true },
@@ -242,7 +253,7 @@ mod tests {
         assert_eq!(
             parse(&args(&["node", "collapse", "focused"])),
             Ok(Action::Node {
-                request: NodeRequest::Collapse {
+                request: NodeCommand::Collapse {
                     selector: Some(NodeSelector::Focused),
                     output: None,
                 },
@@ -252,7 +263,7 @@ mod tests {
         assert_eq!(
             parse(&args(&["node", "move", "left", "app:firefox"])),
             Ok(Action::Node {
-                request: NodeRequest::Move {
+                request: NodeCommand::Move {
                     direction: NodeMoveDirection::Left,
                     selector: Some(NodeSelector::App("firefox".into())),
                     output: None,

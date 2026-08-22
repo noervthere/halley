@@ -120,15 +120,11 @@ impl Client {
             output: output.map(str::to_owned),
         })
     }
-    pub fn focus_node(
-        &self,
-        selector: Option<NodeSelector>,
-        output: Option<&str>,
-    ) -> Result<NodeInfo> {
-        self.node_query(halley_ipc::NodeRequest::Focus {
+    pub fn focus_node(&self, selector: Option<NodeSelector>, output: Option<&str>) -> Result<()> {
+        self.ack(halley_ipc::Request::Node(halley_ipc::NodeRequest::Focus {
             selector: selector.map(selector_wire),
             output: output.map(str::to_owned),
-        })
+        }))
     }
     pub fn move_node(
         &self,
