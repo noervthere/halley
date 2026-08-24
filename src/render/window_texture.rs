@@ -61,7 +61,6 @@ pub fn capture(
         return Err("window snapshot has empty geometry".into());
     }
 
-    let size = geometry.size.to_physical(1);
     let location = smithay::utils::Point::from((-geometry.loc.x, -geometry.loc.y)).to_physical(1);
     let elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
         render_elements_from_surface_tree(
@@ -72,10 +71,28 @@ pub fn capture(
             1.0,
             Kind::Unspecified,
         );
+    capture_surface_elements(renderer, geometry, &elements, reusable)
+}
+
+pub fn capture_presented(
+    renderer: &mut GlesRenderer,
+    frame: &crate::render::presented_x11::PresentedX11Frame,
+    reusable: Option<GlesTexture>,
+) -> Result<WindowTexture, Box<dyn Error>> {
+    capture_surface_elements(renderer, frame.geometry, &frame.elements, reusable)
+}
+
+fn capture_surface_elements(
+    renderer: &mut GlesRenderer,
+    geometry: Rectangle<i32, Logical>,
+    elements: &[WaylandSurfaceRenderElement<GlesRenderer>],
+    reusable: Option<GlesTexture>,
+) -> Result<WindowTexture, Box<dyn Error>> {
     if elements.is_empty() {
         return Err("window snapshot surface tree is empty".into());
     }
 
+    let size = geometry.size.to_physical(1);
     let context = renderer.context_id();
     let buffer_size = geometry.size.to_buffer(1, Transform::Normal);
     let mut reusable = reusable;
@@ -96,7 +113,7 @@ pub fn capture(
         let mut target = renderer.bind(&mut texture)?;
         let mut frame = renderer.render(&mut target, size, Transform::Normal)?;
         frame.clear(Color32F::TRANSPARENT, &[damage])?;
-        draw_render_elements(&mut frame, 1.0, &elements, &[damage])?;
+        draw_render_elements(&mut frame, 1.0, elements, &[damage])?;
         let _ = frame.finish()?;
     }
 
@@ -118,12 +135,81 @@ pub fn capture_decorated(
     node_renderer: &mut crate::render::node::NodeRenderer,
     ui_text: &mut crate::render::text::UiTextRenderer,
 ) -> Result<WindowTexture, Box<dyn Error>> {
-    if !chrome_visible || crate::xwayland::is_override_redirect(window) {
-        return capture(renderer, window, reusable);
-    }
-    let client = capture(renderer, window, None)?;
+    capture_decorated_inner(
+        renderer,
+        window,
+        reusable,
+        decorations,
+        font,
+        focused,
+        chrome_visible,
+        maximized,
+        titlebar_renderer,
+        window_decoration_renderer,
+        node_renderer,
+        ui_text,
+        |renderer, reusable| capture(renderer, window, reusable),
+    )
+}
 
-    let client_size = window.geometry().size;
+#[allow(clippy::too_many_arguments)]
+pub fn capture_decorated_presented(
+    renderer: &mut GlesRenderer,
+    window: &Window,
+    frame: &crate::render::presented_x11::PresentedX11Frame,
+    reusable: Option<GlesTexture>,
+    decorations: &halley_config::Decorations,
+    font: &halley_config::Font,
+    focused: bool,
+    chrome_visible: bool,
+    maximized: bool,
+    titlebar_renderer: &mut crate::render::titlebar::TitlebarRenderer,
+    window_decoration_renderer: &mut crate::render::window_decoration::WindowDecorationRenderer,
+    node_renderer: &mut crate::render::node::NodeRenderer,
+    ui_text: &mut crate::render::text::UiTextRenderer,
+) -> Result<WindowTexture, Box<dyn Error>> {
+    capture_decorated_inner(
+        renderer,
+        window,
+        reusable,
+        decorations,
+        font,
+        focused,
+        chrome_visible,
+        maximized,
+        titlebar_renderer,
+        window_decoration_renderer,
+        node_renderer,
+        ui_text,
+        |renderer, reusable| capture_presented(renderer, frame, reusable),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn capture_decorated_inner(
+    renderer: &mut GlesRenderer,
+    window: &Window,
+    reusable: Option<GlesTexture>,
+    decorations: &halley_config::Decorations,
+    font: &halley_config::Font,
+    focused: bool,
+    chrome_visible: bool,
+    maximized: bool,
+    titlebar_renderer: &mut crate::render::titlebar::TitlebarRenderer,
+    window_decoration_renderer: &mut crate::render::window_decoration::WindowDecorationRenderer,
+    node_renderer: &mut crate::render::node::NodeRenderer,
+    ui_text: &mut crate::render::text::UiTextRenderer,
+    capture_client: impl FnOnce(
+        &mut GlesRenderer,
+        Option<GlesTexture>,
+    ) -> Result<WindowTexture, Box<dyn Error>>,
+) -> Result<WindowTexture, Box<dyn Error>> {
+    if !chrome_visible || crate::xwayland::is_override_redirect(window) {
+        return capture_client(renderer, reusable);
+    }
+    let client = capture_client(renderer, None)?;
+
+    let client_size = client.texture.size().to_logical(1, Transform::Normal);
     let native_client = Rectangle::<i32, Logical>::from_size(client_size);
     let chrome = crate::titlebar::WindowChrome::for_window(window, decorations, font);
     let native_outer = chrome.outer_rect(native_client);

@@ -18,13 +18,37 @@ pub use focus::KeyboardFocusTarget;
 
 pub struct State<D: SessionDriver> {
     _driver: PhantomData<D>,
+    presented_frames: crate::render::presented_x11::PresentedX11Frames,
 }
 
 impl<D: SessionDriver> State<D> {
     pub fn new(_display: &DisplayHandle, _loop_handle: LoopHandle<'static, Session<D>>) -> Self {
         Self {
             _driver: PhantomData,
+            presented_frames: crate::render::presented_x11::PresentedX11Frames::default(),
         }
+    }
+
+    pub fn presented_frame(
+        &self,
+        surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+    ) -> Option<&crate::render::presented_x11::PresentedX11Frame> {
+        self.presented_frames.get(surface)
+    }
+
+    pub fn promote_presented_frames(
+        &mut self,
+        frames: Vec<crate::render::presented_x11::PresentedX11Frame>,
+        space: &Space<Window>,
+    ) {
+        self.presented_frames.promote(frames, space);
+    }
+
+    pub fn forget_presented_frame(
+        &mut self,
+        surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+    ) -> bool {
+        self.presented_frames.remove(surface)
     }
 
     pub fn display_name(&self) -> Option<OsString> {

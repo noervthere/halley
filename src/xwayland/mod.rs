@@ -78,6 +78,7 @@ pub struct State<D: SessionDriver> {
     normal_sizes: HashMap<WindowIdentity, SavedNormalSize>,
     managed_states: xwm::ManagedStateRegistry,
     published_stacking: Vec<u32>,
+    presented_frames: crate::render::presented_x11::PresentedX11Frames,
 }
 
 impl<D: SessionDriver> State<D> {
@@ -107,7 +108,30 @@ impl<D: SessionDriver> State<D> {
             normal_sizes: HashMap::new(),
             managed_states: xwm::ManagedStateRegistry::default(),
             published_stacking: Vec::new(),
+            presented_frames: crate::render::presented_x11::PresentedX11Frames::default(),
         }
+    }
+
+    pub fn presented_frame(
+        &self,
+        surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+    ) -> Option<&crate::render::presented_x11::PresentedX11Frame> {
+        self.presented_frames.get(surface)
+    }
+
+    pub fn promote_presented_frames(
+        &mut self,
+        frames: Vec<crate::render::presented_x11::PresentedX11Frame>,
+        space: &Space<Window>,
+    ) {
+        self.presented_frames.promote(frames, space);
+    }
+
+    pub fn forget_presented_frame(
+        &mut self,
+        surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+    ) -> bool {
+        self.presented_frames.remove(surface)
     }
 
     pub fn display_name(&self) -> Option<OsString> {

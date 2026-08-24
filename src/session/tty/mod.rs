@@ -680,6 +680,10 @@ fn on_vblank(app: &mut TtyApp, crtc: crtc::Handle, metadata: Option<&DrmEventMet
     }
 
     if let Some(mut submission) = submission {
+        app.xwayland.promote_presented_frames(
+            std::mem::take(&mut submission.presented_x11_frames),
+            &app.wayland.space,
+        );
         if let Some(generation) = submission.session_lock_generation {
             app.session_lock.presented(&output, generation);
         }

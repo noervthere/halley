@@ -1116,11 +1116,19 @@ impl Renderable for TtyBackend {
             session_lock,
             &element_states,
         );
+        let presented_x11_frames = crate::render::presented_x11::candidates_for_output(
+            &mut self.renderer,
+            space,
+            &entry.output,
+            &primary_output,
+            &element_states,
+        );
         entry.drm_output.queue_frame(FrameSubmission {
             target_presentation_time,
             presentation_feedback,
             session_lock_generation,
             variable_refresh: entry.vrr_active,
+            presented_x11_frames,
         })?;
         entry.pending = true;
         Ok(RenderOutcome::new(

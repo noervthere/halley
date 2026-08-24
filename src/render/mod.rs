@@ -6,6 +6,7 @@ pub mod fullscreen_texture;
 pub mod ids;
 pub mod node;
 pub mod overlays;
+pub mod presented_x11;
 pub mod rescale;
 pub mod resources;
 pub mod scene;
@@ -160,6 +161,7 @@ pub enum RenderStatus {
 pub struct RenderOutcome {
     status: RenderStatus,
     element_states: Option<RenderElementStates>,
+    presented_x11_frames: Vec<presented_x11::PresentedX11Frame>,
 }
 
 impl RenderOutcome {
@@ -167,6 +169,7 @@ impl RenderOutcome {
         Self {
             status,
             element_states,
+            presented_x11_frames: Vec::new(),
         }
     }
 
@@ -177,6 +180,18 @@ impl RenderOutcome {
     pub fn element_states(&self) -> Option<&RenderElementStates> {
         self.element_states.as_ref()
     }
+
+    pub fn with_presented_x11_frames(
+        mut self,
+        frames: Vec<presented_x11::PresentedX11Frame>,
+    ) -> Self {
+        self.presented_x11_frames = frames;
+        self
+    }
+
+    pub fn take_presented_x11_frames(&mut self) -> Vec<presented_x11::PresentedX11Frame> {
+        std::mem::take(&mut self.presented_x11_frames)
+    }
 }
 
 #[derive(Debug)]
@@ -185,6 +200,7 @@ pub struct FrameSubmission {
     pub presentation_feedback: smithay::desktop::utils::OutputPresentationFeedback,
     pub session_lock_generation: Option<u64>,
     pub variable_refresh: bool,
+    pub presented_x11_frames: Vec<presented_x11::PresentedX11Frame>,
 }
 
 /// Per-frame scheduling and output policy.
