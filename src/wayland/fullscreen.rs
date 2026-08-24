@@ -159,12 +159,31 @@ impl FullscreenManager {
         origin: FullscreenOrigin,
     ) {
         let window = find_window(wayland, toplevel.wl_surface()).cloned();
+        // A client can enter its own fullscreen mode while the compositor is
+        // already presenting the same toplevel through Mod+F. Firefox does
+        // this for HTML video fullscreen. Keep the compositor's output and
+        // ownership in that case: the nested client request must not resize a
+        // Mod+F presentation for a different wl_output or gain authority to
+        // release it again with unset_fullscreen.
+        let retained_compositor_target = self
+            .windows
+            .get(toplevel.wl_surface())
+            .filter(|entry| retains_compositor_fullscreen(entry, origin))
+            .map(|entry| entry.target_output.clone());
+        let origin = if retained_compositor_target.is_some() {
+            FullscreenOrigin::Compositor
+        } else {
+            origin
+        };
         let requested = requested.filter(|resource| {
             Output::from_resource(resource)
                 .is_some_and(|output| wayland.space.outputs().any(|known| known == &output))
         });
         let requested_output = requested.as_ref().and_then(Output::from_resource);
-        let target = requested_output
+        let target = retained_compositor_target
+            .as_deref()
+            .and_then(|name| output_by_name(wayland, name))
+            .or(requested_output)
             .or_else(|| {
                 window
                     .as_ref()
@@ -231,6 +250,23 @@ impl FullscreenManager {
         {
             entry.snapshot_serials.push(serial);
         }
+    }
+
+    /// Applies an xdg_toplevel `unset_fullscreen` request without allowing a
+    /// client to cancel fullscreen which was explicitly selected by Mod+F.
+    pub fn unrequest_client(&mut self, wayland: &WaylandState, toplevel: &ToplevelSurface) {
+        if self
+            .windows
+            .get(toplevel.wl_surface())
+            .is_some_and(client_unfullscreen_is_nested)
+        {
+            // Reaffirm the unchanged compositor-owned state. This also gives
+            // clients which pair unset/set during an HTML fullscreen handoff a
+            // configure serial for the state they must continue to honor.
+            send_required_configure(toplevel);
+            return;
+        }
+        self.unrequest(wayland, toplevel);
     }
 
     pub fn unrequest(&mut self, wayland: &WaylandState, toplevel: &ToplevelSurface) {
@@ -1098,6 +1134,16 @@ fn fullscreen_entry_suppresses_chrome(entry: &FullscreenWindow) -> bool {
     entry.desired && entry.origin != FullscreenOrigin::Maximize
 }
 
+fn retains_compositor_fullscreen(entry: &FullscreenWindow, request: FullscreenOrigin) -> bool {
+    entry.desired
+        && entry.origin == FullscreenOrigin::Compositor
+        && request == FullscreenOrigin::Client
+}
+
+fn client_unfullscreen_is_nested(entry: &FullscreenWindow) -> bool {
+    entry.desired && entry.origin == FullscreenOrigin::Compositor
+}
+
 /// Whether a commit may retarget the fullscreen rect to the client's own size.
 ///
 /// Adopting the committed size is how a client that stays smaller than the
@@ -1419,6 +1465,36 @@ mod tests {
 
         assert!(state.states.contains(State::Fullscreen));
         assert!(!state.states.contains(State::Maximized));
+    }
+
+    #[test]
+    fn nested_client_fullscreen_keeps_compositor_ownership() {
+        let mut entry = test_entry(true);
+        entry.origin = FullscreenOrigin::Compositor;
+
+        assert!(retains_compositor_fullscreen(
+            &entry,
+            FullscreenOrigin::Client
+        ));
+        assert!(client_unfullscreen_is_nested(&entry));
+
+        entry.desired = false;
+        assert!(!retains_compositor_fullscreen(
+            &entry,
+            FullscreenOrigin::Client
+        ));
+        assert!(!client_unfullscreen_is_nested(&entry));
+    }
+
+    #[test]
+    fn client_owned_fullscreen_can_still_be_released_by_the_client() {
+        let entry = test_entry(true);
+
+        assert!(!retains_compositor_fullscreen(
+            &entry,
+            FullscreenOrigin::Client
+        ));
+        assert!(!client_unfullscreen_is_nested(&entry));
     }
 
     #[test]

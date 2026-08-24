@@ -562,7 +562,7 @@ impl<D: SessionDriver> XdgShellHandler for Session<D> {
                 restore.presentation_output,
             );
         }
-        self.fullscreen.unrequest(&self.wayland, &surface);
+        self.fullscreen.unrequest_client(&self.wayland, &surface);
         super::pointer::reconcile_state(self);
         self.request_redraw();
     }
