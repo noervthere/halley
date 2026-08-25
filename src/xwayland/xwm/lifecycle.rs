@@ -90,6 +90,7 @@ pub(super) fn forget_window<D: SessionDriver>(
             crate::session::forget_destroyed_cluster_member(session, id);
         }
         if let Some(record) = session.nodes.remove_surface(&wl_surface) {
+            session.forget_trail_node(record.id);
             session.render.overlay_previews.remove(record.id);
         }
     } else {

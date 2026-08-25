@@ -1,5 +1,6 @@
 mod cluster;
 mod node;
+mod trail;
 
 use std::path::PathBuf;
 
@@ -7,6 +8,7 @@ use halley_api::DpmsCommand;
 
 pub use cluster::ClusterCommand;
 pub use node::NodeCommand;
+pub use trail::TrailCommand;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BearingsAction {
@@ -36,6 +38,11 @@ pub enum Action {
     ClusterHelp,
     Bearings(BearingsAction),
     BearingsHelp,
+    Trail {
+        request: TrailCommand,
+        output: TrailOutput,
+    },
+    TrailHelp,
     ConfigEdit(Option<PathBuf>),
     ConfigVerify(Option<PathBuf>),
     ConfigHelp,
@@ -58,6 +65,12 @@ pub enum ClusterOutput {
     Ack,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TrailOutput {
+    List { json: bool },
+    Ack,
+}
+
 pub fn parse(args: &[String]) -> Result<Action, String> {
     let action = match args.first().map(String::as_str) {
         None | Some("--help") | Some("-h") => Action::Help,
@@ -72,6 +85,7 @@ pub fn parse(args: &[String]) -> Result<Action, String> {
         Some("node") => return node::parse(&args[1..]),
         Some("cluster") => return cluster::parse(&args[1..]),
         Some("bearings") => return parse_bearings(&args[1..]),
+        Some("trail") => return trail::parse(&args[1..]),
         Some("config") => return parse_config(&args[1..]),
         Some("quit") => Action::Quit,
         Some(other) => return Err(format!("unknown command {other:?}")),

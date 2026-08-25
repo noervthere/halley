@@ -17,6 +17,7 @@ mod render;
 mod session;
 mod shell;
 mod titlebar;
+mod trail;
 mod wayland;
 mod window;
 #[cfg(feature = "xwayland")]

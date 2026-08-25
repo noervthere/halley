@@ -7,6 +7,7 @@ Commands:
   node           List, inspect, focus, move, collapse, restore, toggle, or close nodes
   cluster        List, inspect, switch, or change cluster workspaces
   bearings       Show, hide, toggle, or inspect Bearings
+  trail          Navigate or inspect per-monitor focus history
   config         Edit or verify the configuration selected by the compositor
   quit           Open Halley's exit confirmation
 
@@ -63,6 +64,17 @@ Usage:
   halleyctl bearings hide
   halleyctl bearings toggle
   halleyctl bearings status
+";
+
+pub const TRAIL_HELP: &str = "\
+Usage:
+  halleyctl trail prev [-o OUTPUT]
+  halleyctl trail next [-o OUTPUT]
+  halleyctl trail list [-o OUTPUT] [--json]
+  halleyctl trail goto INDEX|SELECTOR [-o OUTPUT]
+
+Selectors:
+  focused, latest, ID, id:ID, title:TEXT, app:APP_ID
 ";
 
 pub const DPMS_HELP: &str = "\

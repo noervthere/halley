@@ -227,6 +227,12 @@ pub(super) fn dispatch<D: SessionDriver>(
                 }
             }
         }
+        super::super::SessionControl::Trail(direction) => {
+            if let Err(error) = crate::trail::navigate(session, direction, action_output.as_deref())
+            {
+                eventline::debug!("trail: {error}");
+            }
+        }
         super::super::SessionControl::FocusDirection(direction) => {
             if let Some(output) = action_output {
                 if session.clusters.active_on(&output).is_some() {

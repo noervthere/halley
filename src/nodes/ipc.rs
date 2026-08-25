@@ -157,7 +157,7 @@ fn requested_outputs<D: crate::session::SessionDriver>(
     }
 }
 
-fn resolve<D: crate::session::SessionDriver>(
+pub(crate) fn resolve<D: crate::session::SessionDriver>(
     session: &crate::session::Session<D>,
     selector: Option<&halley_ipc::NodeSelector>,
     output: Option<&str>,

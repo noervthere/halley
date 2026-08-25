@@ -76,6 +76,32 @@ pub enum NodeSelector {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TrailDirection {
+    Previous,
+    Next,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TrailTarget {
+    Index(usize),
+    Selector(NodeSelector),
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TrailEntry {
+    pub index: usize,
+    pub cursor: bool,
+    pub node: NodeInfo,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TrailInfo {
+    pub output: String,
+    pub cursor_index: Option<usize>,
+    pub entries: Vec<TrailEntry>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NodeKind {
     Surface,
     Core,
@@ -279,6 +305,24 @@ impl From<halley_ipc::NodeInfo> for NodeInfo {
             y: v.pos_y,
             width: v.width,
             height: v.height,
+        }
+    }
+}
+
+impl From<halley_ipc::TrailListResponse> for TrailInfo {
+    fn from(v: halley_ipc::TrailListResponse) -> Self {
+        Self {
+            output: v.output,
+            cursor_index: v.cursor_index,
+            entries: v
+                .entries
+                .into_iter()
+                .map(|entry| TrailEntry {
+                    index: entry.index,
+                    cursor: entry.cursor,
+                    node: entry.node.into(),
+                })
+                .collect(),
         }
     }
 }

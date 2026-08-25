@@ -5,7 +5,7 @@ mod print;
 
 use std::process::ExitCode;
 
-use cmd::{Action, BearingsAction, ClusterCommand, NodeCommand};
+use cmd::{Action, BearingsAction, ClusterCommand, NodeCommand, TrailCommand};
 use halley_api::{BearingsCommand, Client};
 
 fn main() -> ExitCode {
@@ -96,6 +96,20 @@ fn main() -> ExitCode {
             }
         }),
         Ok(Action::BearingsHelp) => show(help::BEARINGS_HELP),
+        Ok(Action::Trail { request, output }) => with_client(|client| match request {
+            TrailCommand::Navigate { direction, output } => {
+                client.navigate_trail(direction, output.as_deref())?;
+                Ok(ExitCode::SUCCESS)
+            }
+            TrailCommand::List { output: connector } => {
+                Ok(print::trail(client.trail(connector.as_deref())?, output))
+            }
+            TrailCommand::Goto { target, output } => {
+                client.goto_trail(target, output.as_deref())?;
+                Ok(ExitCode::SUCCESS)
+            }
+        }),
+        Ok(Action::TrailHelp) => show(help::TRAIL_HELP),
         Ok(Action::ConfigEdit(path)) => config::edit(path),
         Ok(Action::ConfigVerify(path)) => config::verify(path),
         Ok(Action::ConfigHelp) => show(help::CONFIG_HELP),
@@ -153,6 +167,7 @@ mod tests {
         assert!(commands.contains("node"));
         assert!(commands.contains("cluster"));
         assert!(commands.contains("bearings"));
+        assert!(commands.contains("trail"));
         assert!(commands.contains("config"));
         assert!(commands.contains("quit"));
         assert!(!commands.contains("--help"));

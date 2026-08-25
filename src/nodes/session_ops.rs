@@ -658,7 +658,10 @@ pub fn collapse<D: crate::session::SessionDriver>(
         .window_close_animations
         .retarget_pending_to_node(&record.surface, node_position);
     let _ = crate::session::closing::start(session, &record.surface);
-    session.nodes.focus(logical_focus, now_ms);
+    let focus_changed = session.nodes.focus(logical_focus, now_ms);
+    if focus_changed && let Some(id) = logical_focus {
+        session.record_trail_focus(id);
+    }
     crate::session::sync_keyboard_focus(session, serial);
     crate::session::reconcile_pointer_constraints(session);
     session.request_redraw();

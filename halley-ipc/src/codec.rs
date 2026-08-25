@@ -327,6 +327,10 @@ mod tests {
                 output: Some("DP-1".to_string()),
             },
             Request::CaptureCapabilities,
+            Request::Trail(crate::TrailRequest::Goto {
+                target: crate::TrailTarget::Index(2),
+                output: Some("DP-1".to_string()),
+            }),
         ] {
             let bytes = encode_request(&req).unwrap();
             let decoded = decode_request(&bytes).unwrap();

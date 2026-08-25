@@ -132,6 +132,7 @@ pub struct Session<D: SessionDriver> {
     pub shell: crate::shell::state::ShellState,
     pub settings: super::RuntimeSettings,
     pub nodes: crate::nodes::NodesState,
+    pub(crate) trail: crate::trail::TrailState,
     pub clusters: crate::clusters::ClusterSystem,
     pub(crate) api_subscriptions: crate::ipc::ApiSubscriptions,
     pub pending_pointer_warp: Option<WlSurface>,
@@ -357,6 +358,7 @@ impl<D: SessionDriver> Session<D> {
         let nodes_redraw = self
             .nodes
             .reload(config, crate::frame_clock::monotonic_now());
+        self.trail.reload(config.trail);
         let bearings_redraw = self.shell.bearings.reload(config.bearings);
         let clusters_redraw = self
             .clusters

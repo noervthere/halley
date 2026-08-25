@@ -40,6 +40,12 @@ pub enum Direction {
     Down,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TrailDirection {
+    Previous,
+    Next,
+}
+
 /// Compatibility name retained for callers written before directional
 /// navigation expanded beyond cluster tiles.
 pub type ClusterDirection = Direction;
@@ -63,6 +69,7 @@ pub enum Action {
     BearingsShow,
     BearingsToggle,
     FocusCycle(FocusCycleDirection),
+    Trail(TrailDirection),
     FocusDirection(Direction),
     /// Move the focused or most-recent Field node by one placement step.
     MoveNode(Direction),
@@ -92,6 +99,7 @@ impl Action {
         matches!(
             self,
             Self::FocusCycle(_)
+                | Self::Trail(_)
                 | Self::FocusDirection(_)
                 | Self::MoveNode(_)
                 | Self::ClusterTileFocus(_)
@@ -141,7 +149,23 @@ mod tests {
     fn default_matches_the_shipped_keybinds() {
         let kb = Keybinds::default();
         assert_eq!(kb.modifier, ModifierKey::Super);
-        assert_eq!(kb.binds.len(), 50);
+        assert_eq!(kb.binds.len(), 52);
+
+        let previous = kb
+            .binds
+            .iter()
+            .find(|bind| bind.action == Action::Trail(TrailDirection::Previous))
+            .expect("previous Trail bind present");
+        assert_eq!(previous.key, "comma");
+        assert!(previous.repeat);
+
+        let next = kb
+            .binds
+            .iter()
+            .find(|bind| bind.action == Action::Trail(TrailDirection::Next))
+            .expect("next Trail bind present");
+        assert_eq!(next.key, "period");
+        assert!(next.repeat);
 
         let lift = kb
             .binds

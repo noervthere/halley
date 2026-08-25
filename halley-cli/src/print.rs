@@ -4,11 +4,11 @@ use std::process::ExitCode;
 
 use halley_api::{
     ClusterInfo, ClusterLayout, ClusterSummary, ModeInfo, NodeInfo, NodeProtocolFamily, NodeRole,
-    NodeState, OutputInfo, ServerInfo,
+    NodeState, OutputInfo, ServerInfo, TrailInfo,
 };
 use serde::Serialize;
 
-use crate::cmd::{ClusterOutput, NodeOutput};
+use crate::cmd::{ClusterOutput, NodeOutput, TrailOutput};
 
 pub fn node_list(nodes: Vec<NodeInfo>, output: NodeOutput) -> ExitCode {
     let NodeOutput::List { json } = output else {
@@ -56,6 +56,17 @@ pub fn cluster_info(info: ClusterInfo, output: ClusterOutput) -> ExitCode {
 
 pub fn bearings(visible: bool) -> ExitCode {
     println!("{}", if visible { "visible" } else { "hidden" });
+    ExitCode::SUCCESS
+}
+
+pub fn trail(info: TrailInfo, output: TrailOutput) -> ExitCode {
+    let TrailOutput::List { json } = output else {
+        return invalid_output("trail list");
+    };
+    if json {
+        return print_json(&info, "trail list");
+    }
+    print!("{}", format_trail(&info));
     ExitCode::SUCCESS
 }
 
@@ -165,6 +176,24 @@ fn format_node_list(nodes: &[NodeInfo]) -> String {
             writeln!(formatted, "    {marker} {}  {}", node.id, node.title).unwrap();
             format_node_fields(&mut formatted, node, 6);
         }
+    }
+    formatted
+}
+
+fn format_trail(info: &TrailInfo) -> String {
+    if info.entries.is_empty() {
+        return format!("{}\n  No trail entries.\n", info.output);
+    }
+    let mut formatted = String::new();
+    writeln!(formatted, "{}", info.output).unwrap();
+    for entry in &info.entries {
+        let marker = if entry.cursor { "*" } else { "-" };
+        writeln!(
+            formatted,
+            "  {marker} {}: {}  {}",
+            entry.index, entry.node.id, entry.node.title
+        )
+        .unwrap();
     }
     formatted
 }

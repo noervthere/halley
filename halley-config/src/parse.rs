@@ -162,6 +162,10 @@ fn parse_action(s: &str) -> Action {
         "cycle-focus-backward" | "cycle_focus_backward" => {
             Action::FocusCycle(crate::FocusCycleDirection::Backward)
         }
+        "trail-prev" | "trail_prev" | "trail-previous" | "trail_previous" => {
+            Action::Trail(crate::TrailDirection::Previous)
+        }
+        "trail-next" | "trail_next" => Action::Trail(crate::TrailDirection::Next),
         "center-last-focused" | "center_last_focused" => Action::CenterLastFocused,
         "cluster-mode" | "cluster_mode" => Action::ClusterMode,
         "cluster-layout cycle" | "cluster-layout-cycle" | "cluster_layout_cycle" => {

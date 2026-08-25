@@ -541,6 +541,7 @@ impl<D: SessionDriver> XdgShellHandler for Session<D> {
             super::forget_destroyed_cluster_member(self, id);
         }
         if let Some(record) = self.nodes.remove_surface(surface.wl_surface()) {
+            self.forget_trail_node(record.id);
             self.render.overlay_previews.remove(record.id);
         }
         super::sync_keyboard_focus(self, SERIAL_COUNTER.next_serial());

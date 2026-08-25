@@ -676,6 +676,7 @@ pub fn handle_request<D: crate::session::SessionDriver>(
                         "commands-v1".into(),
                         "subscriptions-v1".into(),
                         "cluster-drafts-v1".into(),
+                        "trail-v1".into(),
                     ],
                 })
             }
@@ -691,6 +692,9 @@ pub fn handle_request<D: crate::session::SessionDriver>(
                 "no configuration file is being watched",
             )),
         },
+        halley_ipc::Request::Trail(request) => {
+            typed_api_response(crate::trail::handle_request(app, request))
+        }
     };
     let _ = reply.send(response, Vec::new());
 }

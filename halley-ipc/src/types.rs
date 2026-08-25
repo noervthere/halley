@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 /// the end of `Request`/`Response` silently breaks wire-compatibility with
 /// a differently-versioned build - worth remembering as this grows, not
 /// solved here (this first pass has nothing to negotiate against yet).
-pub const HALLEY_IPC_VERSION: u32 = 17;
+pub const HALLEY_IPC_VERSION: u32 = 18;
 pub const HALLEY_API_VERSION: u32 = 1;
 
 /// A request from `halleyctl`, the portal backend, or another local client.
@@ -43,6 +43,7 @@ pub enum Request {
     /// Turn this connection into a dedicated event stream.
     Subscribe(SubscribeRequest),
     ConfigReload,
+    Trail(TrailRequest),
 }
 
 /// The compositor's reply to a `Request`.
@@ -67,6 +68,7 @@ pub enum Response {
     Event(ApiEvent),
     ApiError(ServerError),
     ClusterDraftStarted { id: u64 },
+    TrailList(TrailListResponse),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -465,6 +467,43 @@ pub struct NodeOutputGroup {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct NodeListResponse {
     pub outputs: Vec<NodeOutputGroup>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TrailRequest {
+    Previous {
+        output: Option<String>,
+    },
+    Next {
+        output: Option<String>,
+    },
+    List {
+        output: Option<String>,
+    },
+    Goto {
+        target: TrailTarget,
+        output: Option<String>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TrailTarget {
+    Index(usize),
+    Selector(NodeSelector),
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TrailEntryInfo {
+    pub index: usize,
+    pub cursor: bool,
+    pub node: NodeInfo,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TrailListResponse {
+    pub output: String,
+    pub cursor_index: Option<usize>,
+    pub entries: Vec<TrailEntryInfo>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

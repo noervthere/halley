@@ -23,6 +23,7 @@ pub mod rules;
 pub mod runtime;
 pub mod screenshot;
 pub mod terminal;
+pub mod trail;
 pub mod view;
 pub mod zoom;
 
@@ -66,7 +67,7 @@ pub use input::{
 };
 pub use keybinds::{
     Action, ClusterDirection, Direction, FocusCycleDirection, Keybind, Keybinds, ModifierKey,
-    Modifiers,
+    Modifiers, TrailDirection,
 };
 pub use launch::{Autostart, LaunchConfigError, parse_autostart, parse_env};
 pub use nodes::{
@@ -94,5 +95,6 @@ pub use terminal::{
     TERMINAL_PRIORITY, resolve_default_terminal, resolve_default_terminal_from_path,
     resolve_default_terminal_in_path,
 };
+pub use trail::{Trail, parse_trail};
 pub use view::{ViewConfig, ViewParseError, parse_view, parse_view_checked};
 pub use zoom::{Zoom, load_zoom, parse_zoom};

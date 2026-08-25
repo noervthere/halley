@@ -5,7 +5,8 @@ use std::time::Duration;
 use crate::{
     BearingsCommand, ClusterDraft, ClusterInfo, ClusterSummary, ClusterTarget, DpmsCommand, Error,
     ErrorKind, EventStream, EventTopic, HALLEY_API_VERSION, NodeInfo, NodeMoveDirection,
-    NodeSelector, OutputInfo, Result, ServerInfo, Subscription,
+    NodeSelector, OutputInfo, Result, ServerInfo, Subscription, TrailDirection, TrailInfo,
+    TrailTarget,
 };
 
 #[derive(Clone, Debug, Default)]
@@ -172,6 +173,36 @@ impl Client {
     pub fn toggle_node(&self, selector: Option<NodeSelector>, output: Option<&str>) -> Result<()> {
         self.ack(halley_ipc::Request::Node(halley_ipc::NodeRequest::Toggle {
             selector: selector.map(selector_wire),
+            output: output.map(str::to_owned),
+        }))
+    }
+
+    pub fn navigate_trail(&self, direction: TrailDirection, output: Option<&str>) -> Result<()> {
+        let output = output.map(str::to_owned);
+        self.ack(halley_ipc::Request::Trail(match direction {
+            TrailDirection::Previous => halley_ipc::TrailRequest::Previous { output },
+            TrailDirection::Next => halley_ipc::TrailRequest::Next { output },
+        }))
+    }
+
+    pub fn trail(&self, output: Option<&str>) -> Result<TrailInfo> {
+        match self.request(halley_ipc::Request::Trail(halley_ipc::TrailRequest::List {
+            output: output.map(str::to_owned),
+        }))? {
+            halley_ipc::Response::TrailList(info) => Ok(info.into()),
+            other => Err(unexpected("trail list", other)),
+        }
+    }
+
+    pub fn goto_trail(&self, target: TrailTarget, output: Option<&str>) -> Result<()> {
+        let target = match target {
+            TrailTarget::Index(index) => halley_ipc::TrailTarget::Index(index),
+            TrailTarget::Selector(selector) => {
+                halley_ipc::TrailTarget::Selector(selector_wire(selector))
+            }
+        };
+        self.ack(halley_ipc::Request::Trail(halley_ipc::TrailRequest::Goto {
+            target,
             output: output.map(str::to_owned),
         }))
     }

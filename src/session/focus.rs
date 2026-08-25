@@ -90,10 +90,13 @@ fn focus_window_with_raise<D: SessionDriver>(
     }
     crate::window::focus(&mut session.wayland, &window, raise);
     if let Some(surface) = window.wl_surface() {
-        session.nodes.focus_surface(
+        let changed = session.nodes.focus_surface(
             surface.as_ref(),
             session.start_time.elapsed().as_millis() as u64,
         );
+        if changed && let Some(id) = session.nodes.id_for_surface(surface.as_ref()) {
+            session.record_trail_focus(id);
+        }
     }
     if raise {
         session.xwayland.raise_window(&window);

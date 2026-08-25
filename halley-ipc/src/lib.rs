@@ -24,7 +24,8 @@ pub use types::{
     NodeRequest, NodeRole, NodeSelector, NodeState, OutputInfo, OutputsResponse,
     RegisterDmabufRequest, Request, Response, SOURCE_MONITOR, SOURCE_WINDOW, ScreenshotRequest,
     ScreenshotResponse, ScreenshotTarget, ServerError, ServerErrorKind, ServerInfo,
-    SourceChooserRequest, SourceChooserResponse, StateSnapshot, SubscribeRequest, VersionInfo,
+    SourceChooserRequest, SourceChooserResponse, StateSnapshot, SubscribeRequest, TrailEntryInfo,
+    TrailListResponse, TrailRequest, TrailTarget, VersionInfo,
 };
 
 fn runtime_dir_from(base: impl AsRef<Path>) -> PathBuf {

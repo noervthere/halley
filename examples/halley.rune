@@ -586,6 +586,15 @@ apogee:
   background-dim 0.85
 end
 
+# Browser-like per-monitor window focus history. Navigating the trail restores
+# collapsed nodes and minimally reveals live windows without disturbing the
+# forward history. Cluster workspaces keep their own navigation and are not
+# recorded here.
+trail:
+  history-length 32
+  wrap true
+end
+
 # Animation settings are reloaded for future motion. Existing window-open and
 # window-close animations keep the parameters with which they started.
 animations:
@@ -772,6 +781,10 @@ keybinds:
   "$var.mod+right" "focus-right"
   "$var.mod+up" "focus-up"
   "$var.mod+down" "focus-down"
+
+  # Walk backward and forward through this monitor's Field focus history.
+  "$var.mod+comma" "trail-prev"
+  "$var.mod+period" "trail-next"
 
   # Move the focused or most-recent Field window/node by one placement step.
   # Alt keeps this distinct from directional focus and cluster tile swapping.

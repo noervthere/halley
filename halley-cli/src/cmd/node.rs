@@ -140,7 +140,7 @@ fn parse_flags(
     Ok((selector, output, json))
 }
 
-fn parse_selector(value: &str) -> Result<NodeSelector, String> {
+pub(super) fn parse_selector(value: &str) -> Result<NodeSelector, String> {
     match value {
         _ if value.eq_ignore_ascii_case("focused") => Ok(NodeSelector::Focused),
         _ if value.eq_ignore_ascii_case("latest") => Ok(NodeSelector::Latest),

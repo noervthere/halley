@@ -249,6 +249,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
         shell: crate::shell::state::ShellState::new(&runtime_config),
         settings: super::RuntimeSettings::new(&runtime_config, applied_input),
         nodes: crate::nodes::NodesState::new(&runtime_config),
+        trail: crate::trail::TrailState::new(runtime_config.trail),
         clusters: crate::clusters::ClusterSystem::new(
             runtime_config.clusters,
             runtime_config.animations.cluster,
