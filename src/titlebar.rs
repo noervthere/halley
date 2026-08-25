@@ -239,6 +239,17 @@ impl<K> DecorationLayout<K> {
         }
     }
 
+    /// Reserve one titlebar-height slot opposite the window controls. Pinned
+    /// windows use this for their chrome badge so title text and app icons can
+    /// never render underneath it.
+    pub fn reserve_opposite_controls(&mut self, button_position: TitlebarButtonPosition) {
+        let reserved = self.titlebar_height.min(self.identity_area.size.w).max(0);
+        if button_position == TitlebarButtonPosition::Right {
+            self.identity_area.loc.x += reserved;
+        }
+        self.identity_area.size.w -= reserved;
+    }
+
     pub fn max_title_width_scaled(&self, has_icon: bool, scale: f32) -> i32 {
         let available = self.max_title_width_with_metrics(
             has_icon,
@@ -777,6 +788,27 @@ mod tests {
                     <= layout.identity_area.loc.x + layout.identity_area.size.w
             );
         }
+    }
+
+    #[test]
+    fn opposite_badge_reservation_tracks_the_control_side() {
+        let content = Rectangle::new((0, 32).into(), (400, 200).into());
+        let left_config = Titlebars::default();
+        let mut left = DecorationLayout::<Logical>::new(content, 0, 32, &left_config);
+        let left_before = left.identity_area;
+        left.reserve_opposite_controls(TitlebarButtonPosition::Left);
+        assert_eq!(left.identity_area.loc.x, left_before.loc.x);
+        assert_eq!(left.identity_area.size.w, left_before.size.w - 32);
+
+        let right_config = Titlebars {
+            button_position: TitlebarButtonPosition::Right,
+            ..Titlebars::default()
+        };
+        let mut right = DecorationLayout::<Logical>::new(content, 0, 32, &right_config);
+        let right_before = right.identity_area;
+        right.reserve_opposite_controls(TitlebarButtonPosition::Right);
+        assert_eq!(right.identity_area.loc.x, right_before.loc.x + 32);
+        assert_eq!(right.identity_area.size.w, right_before.size.w - 32);
     }
 
     #[test]

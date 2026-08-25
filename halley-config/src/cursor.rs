@@ -12,6 +12,7 @@ pub struct Cursor {
     pub theme: String,
     pub size: u8,
     pub hide_when_typing: bool,
+    pub hide_on_keyboard_nav: bool,
     pub hide_on_touch: bool,
     pub hide_after_ms: Option<u32>,
 }
@@ -22,6 +23,7 @@ impl Default for Cursor {
             theme: "default".to_string(),
             size: DEFAULT_SIZE,
             hide_when_typing: false,
+            hide_on_keyboard_nav: true,
             hide_on_touch: true,
             hide_after_ms: Some(DEFAULT_HIDE_AFTER_MS),
         }
@@ -54,6 +56,8 @@ pub fn parse_cursor(config: &RuneConfig) -> Cursor {
         theme,
         size,
         hide_when_typing: config.get_or("cursor.hide-when-typing", defaults.hide_when_typing),
+        hide_on_keyboard_nav: config
+            .get_or("cursor.hide-on-keyboard-nav", defaults.hide_on_keyboard_nav),
         hide_on_touch: config.get_or("cursor.hide-on-touch", defaults.hide_on_touch),
         hide_after_ms,
     }
@@ -71,6 +75,7 @@ cursor:
   theme "Breeze"
   size 32
   hide-when-typing true
+  hide-on-keyboard-nav false
   hide-on-touch false
   hide-after-ms 750
 end
@@ -84,6 +89,7 @@ end
                 theme: "Breeze".to_string(),
                 size: 32,
                 hide_when_typing: true,
+                hide_on_keyboard_nav: false,
                 hide_on_touch: false,
                 hide_after_ms: Some(750),
             }
@@ -106,6 +112,18 @@ end
         .expect("valid Rune config");
 
         assert_eq!(parse_cursor(&config).hide_after_ms, None);
+    }
+
+    #[test]
+    fn keyboard_navigation_hiding_defaults_on_and_is_configurable() {
+        let missing = RuneConfig::from_str("keybinds:\n  mod \"super\"\nend\n").unwrap();
+        assert!(parse_cursor(&missing).hide_on_keyboard_nav);
+
+        let disabled = RuneConfig::from_str(
+            "cursor:\n  hide-on-keyboard-nav false\nend\nkeybinds:\n  mod \"super\"\nend\n",
+        )
+        .unwrap();
+        assert!(!parse_cursor(&disabled).hide_on_keyboard_nav);
     }
 
     #[test]

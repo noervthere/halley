@@ -184,6 +184,7 @@ fn repeat_tick<D: SessionDriver>(session: &mut Session<D>, generation: u64) -> T
         &socket_name,
         pointer_output.as_deref(),
         None,
+        super::actions::DispatchOrigin::Keyboard,
     );
     TimeoutAction::ToDuration(interval)
 }

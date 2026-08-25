@@ -148,6 +148,7 @@ mod tests {
             "stiffness 800.0",
             "bloom-direction \"clockwise\"",
             "resize-using-border true",
+            "hide-on-keyboard-nav true",
             "pins:",
             "corner \"top-right\"",
             "colour \"#d65d26\"",

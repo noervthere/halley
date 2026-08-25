@@ -296,6 +296,7 @@ pub(super) fn handle<D, B>(
                 socket_name,
                 pointer_output.as_deref(),
                 Some(keycode.raw()),
+                actions::DispatchOrigin::Keyboard,
             );
             session.key_repeat.start(
                 keycode,
@@ -439,6 +440,9 @@ pub(super) fn handle<D, B>(
         Some(KeyboardOutcome::ApogeeMove(direction)) => {
             session.interactions.suppressed_keys.suppress(keycode);
             crate::shell::apogee::move_selection(session, direction);
+            if session.cursor_policy.keyboard_navigation() {
+                session.request_redraw();
+            }
         }
         Some(KeyboardOutcome::ApogeeIntercept) => {
             if state == KeyState::Pressed {

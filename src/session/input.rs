@@ -187,6 +187,9 @@ fn dispatch_pointer_grab_action<D: SessionDriver>(
             let Some(route) = route else {
                 return false;
             };
+            if pointer_move_falls_back_to_field_pan(&route.target) {
+                return begin_field_pan(session, route, serial);
+            }
             let window = match &route.target {
                 crate::input::pointer::PointerTarget::Window(window)
                 | crate::input::pointer::PointerTarget::Decoration { window, .. } => window,
@@ -251,26 +254,38 @@ fn dispatch_pointer_grab_action<D: SessionDriver>(
             let Some(route) = route else {
                 return false;
             };
-            if !matches!(
-                &route.target,
-                crate::input::pointer::PointerTarget::Background
-            ) || node_at_pointer(session).is_some()
-            {
-                return false;
-            }
-            wayland::focus::select_output(&mut session.wayland, &route.output);
-            super::focus::focus_layer(session, None, serial);
-            session.interactions.grab = crate::input::grab::Grab::Pan {
-                output: route.output.name(),
-            };
-            session.cursor.set_override(
-                crate::cursor::OverrideSource::Grab,
-                Some(smithay::input::pointer::CursorIcon::Grabbing),
-            );
-            true
+            begin_field_pan(session, route, serial)
         }
         _ => false,
     }
+}
+
+fn pointer_move_falls_back_to_field_pan(target: &crate::input::pointer::PointerTarget) -> bool {
+    matches!(target, crate::input::pointer::PointerTarget::Background)
+}
+
+fn begin_field_pan<D: SessionDriver>(
+    session: &mut Session<D>,
+    route: &crate::input::pointer::PointerRoute,
+    serial: smithay::utils::Serial,
+) -> bool {
+    if !matches!(
+        &route.target,
+        crate::input::pointer::PointerTarget::Background
+    ) || node_at_pointer(session).is_some()
+    {
+        return false;
+    }
+    wayland::focus::select_output(&mut session.wayland, &route.output);
+    super::focus::focus_layer(session, None, serial);
+    session.interactions.grab = crate::input::grab::Grab::Pan {
+        output: route.output.name(),
+    };
+    session.cursor.set_override(
+        crate::cursor::OverrideSource::Grab,
+        Some(smithay::input::pointer::CursorIcon::Grabbing),
+    );
+    true
 }
 
 fn output_at_pointer(
@@ -2527,6 +2542,7 @@ where
                             socket_name,
                             output_name.as_deref(),
                             None,
+                            actions::DispatchOrigin::Other,
                         );
                         true
                     };
@@ -2930,7 +2946,14 @@ where
         let bound_action = !result.actions.is_empty();
         for (direction, action) in result.actions {
             eventline::debug!("keybinds: wheel {direction:?} + {modifiers:?} -> {action:?}");
-            actions::dispatch(session, action, socket_name, output_name.as_deref(), None);
+            actions::dispatch(
+                session,
+                action,
+                socket_name,
+                output_name.as_deref(),
+                None,
+                actions::DispatchOrigin::Other,
+            );
         }
 
         if !bound_action
@@ -3062,8 +3085,9 @@ mod tests {
     use super::{
         bloom_drag_handoff, drag_threshold_reached, forward_pointer_button,
         pending_window_move_motion, plain_background_press_dismisses_bloom,
-        preferred_cluster_navigation_focus, releases_pending_window_move, sampled_drag_velocity,
-        shortcut_policy_allows_bindings, stacking_cycle_direction, typing_abandons_bloom,
+        pointer_move_falls_back_to_field_pan, preferred_cluster_navigation_focus,
+        releases_pending_window_move, sampled_drag_velocity, shortcut_policy_allows_bindings,
+        stacking_cycle_direction, typing_abandons_bloom,
     };
     fn sample_constant_motion(report_hz: u32) -> Vec2 {
         let step = Duration::from_secs_f64(1.0 / f64::from(report_hz));
@@ -3111,6 +3135,13 @@ mod tests {
 
         assert!(!drag_threshold_reached(press, (403.0, 254.0)));
         assert!(drag_threshold_reached(press, (408.0, 250.0)));
+    }
+
+    #[test]
+    fn move_window_grab_becomes_field_pan_on_background() {
+        assert!(pointer_move_falls_back_to_field_pan(
+            &crate::input::pointer::PointerTarget::Background
+        ));
     }
 
     #[test]

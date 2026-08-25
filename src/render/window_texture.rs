@@ -217,6 +217,7 @@ fn capture_decorated_inner(
             decorations,
             None,
             None,
+            false,
             titlebar_renderer,
             window_decoration_renderer,
             node_renderer,

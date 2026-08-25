@@ -50,6 +50,12 @@ impl<D: SessionDriver> Policy<D> {
         redraw
     }
 
+    pub fn keyboard_navigation(&mut self) -> bool {
+        let (redraw, directive) = self.visibility.keyboard_navigation();
+        self.apply_timer(directive);
+        redraw
+    }
+
     pub fn touch_down(&mut self) -> bool {
         let (redraw, directive) = self.visibility.touch_down();
         self.apply_timer(directive);

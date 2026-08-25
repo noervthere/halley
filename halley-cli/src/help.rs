@@ -15,7 +15,7 @@ Commands:
   tile           Focus or swap cluster tiles
   portal         Inspect the desktop portal backend
   gamescope      Wrap a game launch using per-game profiles
-  config         Edit or verify the configuration selected by the compositor
+  config         Edit, migrate, or verify the selected configuration
   quit           Open Halley's exit confirmation
 
 Options:
@@ -51,8 +51,13 @@ Usage:
   halleyctl config verify
   halleyctl config verify -c PATH
   halleyctl config verify --config PATH
+  halleyctl config migrate [--dry-run]
+  halleyctl config migrate [--dry-run] -c PATH
+  halleyctl config migrate [--dry-run] --config PATH
 
 `edit` uses $VISUAL, then $EDITOR, and falls back to vi.
+`migrate` applies versioned compatibility entries, validates the complete
+result, and keeps a timestamped backup. Use --dry-run to inspect it first.
 ";
 
 pub const NODE_HELP: &str = "\

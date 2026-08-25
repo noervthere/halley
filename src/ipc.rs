@@ -814,6 +814,7 @@ fn handle_control_request<D: crate::session::SessionDriver>(
         &socket_name,
         output.as_deref(),
         None,
+        crate::session::input::actions::DispatchOrigin::Other,
     );
     halley_ipc::Response::Ack
 }

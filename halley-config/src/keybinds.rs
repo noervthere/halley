@@ -103,7 +103,8 @@ pub enum Action {
     /// Resize the focused Field window by one placement step. Left and up
     /// shrink; right and down grow.
     ResizeWindow(Direction),
-    /// Begin an interactive compositor move for the window under the pointer.
+    /// Begin an interactive compositor move for the window under the pointer,
+    /// falling back to Field panning when the grab starts on empty background.
     PointerMoveWindow,
     /// Begin an interactive compositor resize for the window under the pointer.
     PointerResizeWindow,
@@ -247,6 +248,22 @@ mod tests {
             .expect("manual reload bind present");
         assert_eq!(reload.scope, BindingScope::Global);
         assert!(!reload.repeat);
+
+        let move_or_pan = kb
+            .binds
+            .iter()
+            .find(|bind| bind.action == Action::PointerMoveWindow)
+            .expect("contextual pointer move bind present");
+        assert!(move_or_pan.modifiers.super_key);
+        assert_eq!(move_or_pan.key, "click-left");
+
+        let bare_pan = kb
+            .binds
+            .iter()
+            .find(|bind| bind.action == Action::PointerPanField)
+            .expect("bare Field pan bind present");
+        assert_eq!(bare_pan.modifiers, Modifiers::default());
+        assert_eq!(bare_pan.key, "click-left");
 
         let lift = kb
             .binds

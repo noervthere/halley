@@ -258,7 +258,10 @@ On first launch Halley creates
 `$XDG_CONFIG_HOME/halley/halley.rune`, falling back to
 `~/.config/halley/halley.rune`, from the canonical
 [`examples/halley.rune`](examples/halley.rune) template. Existing files are
-never overwritten automatically.
+updated only by guarded, versioned compatibility migrations. Migrations add a
+finite set of missing bindings, skip conflicting custom chords, validate the
+complete candidate, write atomically, and retain a timestamped backup. Split
+configs using `gather` are not changed automatically.
 
 Pass `-c PATH` or `--config PATH` to select another file. Valid edits reload as
 one atomic snapshot; invalid edits leave the last valid runtime state active.
@@ -270,6 +273,7 @@ Useful controls:
 ```sh
 halleyctl config verify
 halleyctl config edit
+halleyctl config migrate --dry-run
 halleyctl reload
 ```
 

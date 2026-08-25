@@ -44,9 +44,11 @@ cluster object that can be pinned, anchoring that collapsed cluster in place.
 
 The badge uses the original Halley pin artwork. `corner` accepts `top-left`
 or `top-right`; `colour` and `background-colour` accept `auto`, `light`,
-`dark`, or a hex colour; and `size` is clamped from 0.5 through 3.0. The same
-badge appears on active windows, collapsed landmarks and cluster cores, and
-pinned Bearings chips.
+`dark`, or a hex colour; and `size` is clamped from 0.5 through 3.0. A
+server-decorated window moves the badge into its titlebar opposite the window
+controls, reserving that space from the title and app icon. Fullscreen hides
+the window badge with the rest of the compositor chrome. The same artwork also
+appears on collapsed landmarks and cluster cores and pinned Bearings chips.
 
 Camera zoom is always smooth and never magnifies beyond native scale 1.0.
 `min` is clamped from 0.05 through 1.0, `step` from 1.001 through 8.0, and

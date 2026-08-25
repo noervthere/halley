@@ -1,3 +1,4 @@
+# halley-config-version: 1
 # Halley compositor configuration.
 #
 # The default location is:
@@ -5,10 +6,12 @@
 # or, when XDG_CONFIG_HOME is unset:
 #   $HOME/.config/halley/halley.rune
 #
-# Halley creates this file only when it does not already exist. While Halley
-# is running, valid saves are applied automatically. A syntactically invalid
-# or incomplete save is rejected as one unit and the last valid configuration
-# remains active.
+# Halley creates this file when it does not already exist. Existing default
+# configs receive only guarded, versioned compatibility migrations; split
+# configs are migrated explicitly with `halleyctl config migrate`. While
+# Halley is running, valid saves are applied automatically. A syntactically
+# invalid or incomplete save is rejected as one unit and the last valid
+# configuration remains active.
 #
 # Sections and fields may be omitted unless noted otherwise; omitted values
 # use their built-in defaults. `keybinds:` is required because it defines the
@@ -281,6 +284,11 @@ cursor:
   # grabs, or constraints. Pointer motion, buttons, and scrolling reveal it.
   hide-when-typing false
 
+  # Hide only the rendered cursor while navigating Halley with the keyboard.
+  # The pointer position and hover/focus routing are not changed. Physical
+  # pointer motion, buttons, and scrolling reveal it immediately.
+  hide-on-keyboard-nav true
+
   # Hide on touch-down so a stale mouse cursor does not sit over touch UI.
   # Physical pointer activity reveals it again.
   hide-on-touch true
@@ -491,7 +499,9 @@ field:
   # The same value is the clearance between landmarks and active windows.
   gap 20.0
 
-  # Pinned windows, nodes, and cluster cores stay locked in place. The same
+  # Pinned windows, nodes, and cluster cores stay locked in place. A window
+  # with a server titlebar shows its badge opposite the control buttons;
+  # fullscreen hides it with the rest of the compositor chrome. The same
   # badge is shown on the entity and on its offscreen Bearings chip.
   pins:
     corner "top-right"
@@ -884,6 +894,7 @@ keybinds:
 
   # Compositor pointer grabs are ordinary remappable actions. Remove a line
   # to disable that grab, or put the action on a different button/chord.
+  # The move action pans instead when the same grab starts on empty Field.
   "$var.mod+click-left" "move-window"
   "$var.mod+click-right" "resize-window"
   "click-left" "pan-field"

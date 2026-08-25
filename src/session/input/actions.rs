@@ -9,6 +9,25 @@ use super::{
     sync_cluster_activation_focus, toggle_cluster_or_focused_node, work_area_for_output,
 };
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DispatchOrigin {
+    Keyboard,
+    Other,
+}
+
+fn action_hides_cursor_for_keyboard_navigation(action: &halley_config::Action) -> bool {
+    matches!(
+        action,
+        halley_config::Action::FocusCycle(_)
+            | halley_config::Action::Trail(_)
+            | halley_config::Action::FocusDirection(_)
+            | halley_config::Action::CenterLastFocused
+            | halley_config::Action::ClusterSlot(_)
+            | halley_config::Action::ClusterTileFocus(_)
+            | halley_config::Action::MonitorFocus(_)
+    )
+}
+
 pub(super) fn window_action_output(
     focus_mode: halley_config::FocusMode,
     pointer_output: Option<&str>,
@@ -139,7 +158,14 @@ pub(crate) fn dispatch<D: SessionDriver>(
     socket_name: &OsStr,
     output_name: Option<&str>,
     held_keycode: Option<u32>,
+    origin: DispatchOrigin,
 ) {
+    if origin == DispatchOrigin::Keyboard
+        && action_hides_cursor_for_keyboard_navigation(&action)
+        && session.cursor_policy.keyboard_navigation()
+    {
+        session.request_redraw();
+    }
     let zoom_action = matches!(
         &action,
         halley_config::Action::ZoomIn
@@ -371,5 +397,28 @@ pub(crate) fn dispatch<D: SessionDriver>(
         if let Some(scale) = scale {
             crate::nodes::reconcile_landmarks_at_scale(session, output_name, scale);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_navigation_actions_hide_the_cursor() {
+        assert!(action_hides_cursor_for_keyboard_navigation(
+            &halley_config::Action::Trail(halley_config::TrailDirection::Previous)
+        ));
+        assert!(action_hides_cursor_for_keyboard_navigation(
+            &halley_config::Action::MonitorFocus(halley_config::MonitorTarget::Direction(
+                halley_config::Direction::Left,
+            ))
+        ));
+        assert!(!action_hides_cursor_for_keyboard_navigation(
+            &halley_config::Action::ResizeWindow(halley_config::Direction::Left)
+        ));
+        assert!(!action_hides_cursor_for_keyboard_navigation(
+            &halley_config::Action::ZoomOut
+        ));
     }
 }

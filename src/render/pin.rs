@@ -143,6 +143,34 @@ pub fn window_badge_rect(
     )
 }
 
+/// Place a window pin inside its server titlebar, opposite the configured
+/// control side. Titlebar ownership takes precedence over the Field corner
+/// preference because the badge is part of that window's chrome here.
+pub fn window_titlebar_badge_rect(
+    pins: &halley_config::Pins,
+    titlebar: Rectangle<i32, Physical>,
+    button_position: halley_config::TitlebarButtonPosition,
+    render_scale: f32,
+) -> Rectangle<i32, Physical> {
+    let preferred = scaled_radius(
+        pins,
+        ((14.0 * render_scale.sqrt().clamp(0.85, 1.25)).round() as i32).clamp(10, 18),
+    );
+    let radius = preferred.min((titlebar.size.h.saturating_sub(4) / 2).max(1));
+    let inset = radius + 2;
+    let cx = match button_position {
+        halley_config::TitlebarButtonPosition::Left => {
+            titlebar.loc.x + titlebar.size.w.max(1) - inset
+        }
+        halley_config::TitlebarButtonPosition::Right => titlebar.loc.x + inset,
+    };
+    let cy = titlebar.loc.y + titlebar.size.h / 2;
+    Rectangle::new(
+        (cx - radius, cy - radius).into(),
+        (radius * 2, radius * 2).into(),
+    )
+}
+
 fn pin_palette(
     pins: &halley_config::Pins,
     overlays: &halley_config::Overlays,
@@ -281,5 +309,29 @@ mod tests {
         };
         let rect = landmark_badge_rect(&pins, (100, 80), 60);
         assert_eq!(rect, Rectangle::new((62, 42).into(), (30, 30).into()));
+    }
+
+    #[test]
+    fn titlebar_badge_uses_the_side_opposite_window_controls() {
+        let pins = halley_config::Pins::default();
+        let titlebar = Rectangle::new((100, 40).into(), (500, 32).into());
+
+        let opposite_left = window_titlebar_badge_rect(
+            &pins,
+            titlebar,
+            halley_config::TitlebarButtonPosition::Left,
+            1.0,
+        );
+        let opposite_right = window_titlebar_badge_rect(
+            &pins,
+            titlebar,
+            halley_config::TitlebarButtonPosition::Right,
+            1.0,
+        );
+
+        assert!(opposite_left.loc.x > titlebar.loc.x + titlebar.size.w / 2);
+        assert!(opposite_right.loc.x < titlebar.loc.x + titlebar.size.w / 2);
+        assert!(titlebar.contains_rect(opposite_left));
+        assert!(titlebar.contains_rect(opposite_right));
     }
 }

@@ -250,7 +250,14 @@ fn dispatch_gesture_action<D: SessionDriver>(
                 eventline::warn!("gestures: cannot dispatch action before Wayland is ready");
                 return;
             };
-            super::input::actions::dispatch(session, action, &socket_name, Some(output), None);
+            super::input::actions::dispatch(
+                session,
+                action,
+                &socket_name,
+                Some(output),
+                None,
+                super::input::actions::DispatchOrigin::Other,
+            );
         }
     }
 }

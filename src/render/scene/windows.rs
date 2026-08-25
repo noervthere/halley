@@ -184,6 +184,11 @@ pub(super) fn live_window_elements(
     );
     let chrome_alpha = if chrome_visible { alpha } else { 0.0 };
     let server_titlebar = chrome_visible && chrome.has_server_titlebar();
+    let node_id = context.nodes.id_for_surface(window_surface.as_ref());
+    let user_pinned = node_id.is_some_and(|id| {
+        context.clusters.cluster_for_member(id).is_none()
+            && context.nodes.field.node(id).is_some_and(|node| node.pinned)
+    });
     let opening_scale_y = if visual.presentation_rect.size.h > 0 {
         visual.animated_rect.size.h as f32 / visual.presentation_rect.size.h as f32
     } else {
@@ -294,6 +299,7 @@ pub(super) fn live_window_elements(
             context.decorations,
             context.titlebar_hovered,
             context.titlebar_pressed,
+            user_pinned,
             titlebar_renderer,
             window_decoration_renderer,
             node_renderer,
@@ -599,23 +605,35 @@ pub(super) fn live_window_elements(
             elements.push(SceneElement::Shadow(shadow));
         }
     }
-    let node_id = context.nodes.id_for_surface(window_surface.as_ref());
-    let user_pinned = node_id.is_some_and(|id| {
-        context.clusters.cluster_for_member(id).is_none()
-            && context.nodes.field.node(id).is_some_and(|node| node.pinned)
-    });
     if user_pinned
+        && chrome_visible
         && let Some(pin) = pin_renderer.element(
             renderer,
             &context.output.name(),
             crate::render::pin::PinSlot::Window(
                 node_id.expect("pinned window has a node").as_u64(),
             ),
-            crate::render::pin::window_badge_rect(
-                context.pins,
-                visual.animated_rect,
-                visual.zoom_scale,
-            ),
+            if server_titlebar {
+                let titlebar = crate::titlebar::DecorationLayout::new(
+                    visual.animated_rect,
+                    border_width,
+                    titlebar_height,
+                    &context.decorations.titlebars,
+                )
+                .titlebar;
+                crate::render::pin::window_titlebar_badge_rect(
+                    context.pins,
+                    titlebar,
+                    context.decorations.titlebars.button_position,
+                    visual.zoom_scale,
+                )
+            } else {
+                crate::render::pin::window_badge_rect(
+                    context.pins,
+                    visual.animated_rect,
+                    visual.zoom_scale,
+                )
+            },
             alpha,
             context.pins,
             context.overlays,
@@ -673,6 +691,7 @@ pub(crate) fn append_titlebar_elements(
     decorations: &halley_config::Decorations,
     hovered: Option<&crate::titlebar::ButtonTarget>,
     pressed: Option<&crate::titlebar::ButtonTarget>,
+    reserve_pin_badge: bool,
     titlebar_renderer: &mut crate::render::titlebar::TitlebarRenderer,
     window_decoration_renderer: &mut crate::render::window_decoration::WindowDecorationRenderer,
     node_renderer: &mut crate::render::node::NodeRenderer,
@@ -680,7 +699,10 @@ pub(crate) fn append_titlebar_elements(
     elements: &mut Vec<SceneElement>,
 ) -> Result<(), Box<dyn Error>> {
     let config = &decorations.titlebars;
-    let layout = crate::titlebar::DecorationLayout::new(content, border_width, height, config);
+    let mut layout = crate::titlebar::DecorationLayout::new(content, border_width, height, config);
+    if reserve_pin_badge {
+        layout.reserve_opposite_controls(config.button_position);
+    }
     let background = if focused {
         config.color_focused
     } else {
