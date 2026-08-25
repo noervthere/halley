@@ -40,6 +40,7 @@ struct FullscreenWindow {
     external_pending: Option<ExternalPending>,
     snapshot_serials: Vec<Serial>,
     origin: FullscreenOrigin,
+    native: Option<NativeFullscreenState>,
     preserve_stack: bool,
 }
 
@@ -48,6 +49,70 @@ pub(crate) enum FullscreenOrigin {
     Client,
     Compositor,
     Maximize,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct NativeFullscreenState {
+    client_requested: bool,
+    compositor_requested: bool,
+    protocol_desired: bool,
+    protocol_active: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FullscreenCommitAction {
+    Ignore,
+    ProtocolOnly,
+    Visual(bool),
+}
+
+impl NativeFullscreenState {
+    fn request(&mut self, origin: FullscreenOrigin) {
+        match origin {
+            FullscreenOrigin::Client => self.client_requested = true,
+            FullscreenOrigin::Compositor => self.compositor_requested = true,
+            FullscreenOrigin::Maximize => return,
+        }
+        self.protocol_desired = true;
+    }
+
+    fn release(&mut self, origin: FullscreenOrigin) {
+        match origin {
+            FullscreenOrigin::Client => {
+                self.client_requested = false;
+                // Honor the client's logical fullscreen edge even while Mod+F
+                // retains the output presentation. Firefox uses this edge to
+                // reflow HTML fullscreen content when the toplevel was already
+                // fullscreen before the video entered fullscreen.
+                self.protocol_desired = false;
+            }
+            FullscreenOrigin::Compositor => {
+                self.compositor_requested = false;
+                self.protocol_desired = self.client_requested;
+            }
+            FullscreenOrigin::Maximize => {}
+        }
+    }
+
+    fn release_all(&mut self) {
+        self.client_requested = false;
+        self.compositor_requested = false;
+        self.protocol_desired = false;
+    }
+
+    fn visual_desired(self) -> bool {
+        self.client_requested || self.compositor_requested
+    }
+
+    fn presentation_origin(self) -> Option<FullscreenOrigin> {
+        if self.compositor_requested {
+            Some(FullscreenOrigin::Compositor)
+        } else if self.client_requested {
+            Some(FullscreenOrigin::Client)
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -160,21 +225,19 @@ impl FullscreenManager {
     ) {
         let window = find_window(wayland, toplevel.wl_surface()).cloned();
         // A client can enter its own fullscreen mode while the compositor is
-        // already presenting the same toplevel through Mod+F. Firefox does
-        // this for HTML video fullscreen. Keep the compositor's output and
-        // ownership in that case: the nested client request must not resize a
-        // Mod+F presentation for a different wl_output or gain authority to
-        // release it again with unset_fullscreen.
+        // already presenting the same toplevel through Mod+F. Keep the
+        // compositor's output target in that case; client protocol ownership
+        // is tracked independently below.
         let retained_compositor_target = self
             .windows
             .get(toplevel.wl_surface())
-            .filter(|entry| retains_compositor_fullscreen(entry, origin))
+            .filter(|entry| {
+                origin == FullscreenOrigin::Client
+                    && entry
+                        .native
+                        .is_some_and(|native| native.compositor_requested)
+            })
             .map(|entry| entry.target_output.clone());
-        let origin = if retained_compositor_target.is_some() {
-            FullscreenOrigin::Compositor
-        } else {
-            origin
-        };
         let requested = requested.filter(|resource| {
             Output::from_resource(resource)
                 .is_some_and(|output| wayland.space.outputs().any(|known| known == &output))
@@ -223,24 +286,25 @@ impl FullscreenManager {
                 external_pending: None,
                 snapshot_serials: Vec::new(),
                 origin,
+                native: Some(NativeFullscreenState::default()),
                 preserve_stack: false,
             });
         let transition_requested = !entry.active;
-        entry.desired = true;
+        request_native_owner(entry, origin);
         entry.target_output = target.name();
-        entry.origin = origin;
         // The destination is the size we are about to configure, decided once
         // here, exactly like field maximize decides its target rect at toggle
         // time. `handle_commit` only re-reads the client's committed size once
         // the transition has settled, to letterbox a client that stays smaller.
         entry.fullscreen_size = output_geometry.size;
+        let protocol_origin = entry.origin;
 
         toplevel.with_pending_state(|state| {
-            apply_protocol_presentation_state(state, origin, true);
+            apply_protocol_presentation_state(state, protocol_origin, true);
             super::decoration::clear_tiled_hint(state);
             state.size = Some(output_geometry.size);
             state.bounds = Some(output_geometry.size);
-            state.fullscreen_output = (origin != FullscreenOrigin::Maximize)
+            state.fullscreen_output = (protocol_origin != FullscreenOrigin::Maximize)
                 .then_some(requested)
                 .flatten();
         });
@@ -252,17 +316,70 @@ impl FullscreenManager {
         }
     }
 
-    /// Applies an xdg_toplevel `unset_fullscreen` request without allowing a
-    /// client to cancel fullscreen which was explicitly selected by Mod+F.
+    /// Applies an xdg_toplevel `unset_fullscreen` request without allowing it
+    /// to release a presentation which was explicitly selected by Mod+F.
     pub fn unrequest_client(&mut self, wayland: &WaylandState, toplevel: &ToplevelSurface) {
-        if self
+        let nested = self
             .windows
-            .get(toplevel.wl_surface())
-            .is_some_and(client_unfullscreen_is_nested)
-        {
-            // Reaffirm the unchanged compositor-owned state. This also gives
-            // clients which pair unset/set during an HTML fullscreen handoff a
-            // configure serial for the state they must continue to honor.
+            .get_mut(toplevel.wl_surface())
+            .and_then(|entry| {
+                release_native_owner(entry, FullscreenOrigin::Client);
+                entry.native?.compositor_requested.then_some((
+                    entry.target_output.clone(),
+                    entry.fullscreen_size,
+                    entry.origin,
+                ))
+            });
+        if let Some((target_output, fullscreen_size, origin)) = nested {
+            let bounds = output_by_name(wayland, &target_output)
+                .and_then(|output| wayland.space.output_geometry(&output))
+                .map_or(fullscreen_size, |geometry| geometry.size);
+            toplevel.with_pending_state(|state| {
+                apply_protocol_presentation_state(state, origin, false);
+                // The protocol state is windowed for this configure edge, but
+                // Mod+F still owns the visual output presentation. Keep the
+                // configured size pinned so the edge cannot expose or restore
+                // the field-sized window underneath it.
+                state.size = Some(bounds);
+                state.bounds = Some(bounds);
+                state.fullscreen_output = None;
+                super::decoration::clear_tiled_hint(state);
+            });
+            send_required_configure(toplevel);
+            return;
+        }
+        self.unrequest(wayland, toplevel);
+    }
+
+    /// Releases only Mod+F ownership. A client which is independently
+    /// fullscreen remains fullscreen and becomes the presentation owner.
+    pub(crate) fn unrequest_compositor(
+        &mut self,
+        wayland: &WaylandState,
+        toplevel: &ToplevelSurface,
+    ) {
+        let retained_client = self
+            .windows
+            .get_mut(toplevel.wl_surface())
+            .and_then(|entry| {
+                let had_compositor = entry.native?.compositor_requested;
+                release_native_owner(entry, FullscreenOrigin::Compositor);
+                (had_compositor && entry.native?.client_requested).then_some((
+                    entry.target_output.clone(),
+                    entry.fullscreen_size,
+                    entry.origin,
+                ))
+            });
+        if let Some((target_output, fullscreen_size, origin)) = retained_client {
+            let bounds = output_by_name(wayland, &target_output)
+                .and_then(|output| wayland.space.output_geometry(&output))
+                .map_or(fullscreen_size, |geometry| geometry.size);
+            toplevel.with_pending_state(|state| {
+                apply_protocol_presentation_state(state, origin, true);
+                state.size = Some(bounds);
+                state.bounds = Some(bounds);
+                super::decoration::clear_tiled_hint(state);
+            });
             send_required_configure(toplevel);
             return;
         }
@@ -274,7 +391,7 @@ impl FullscreenManager {
             .windows
             .get_mut(toplevel.wl_surface())
             .map(|entry| {
-                entry.desired = false;
+                release_all_native_owners(entry);
                 if let Some(window) = find_window(wayland, toplevel.wl_surface()) {
                     entry.fullscreen_size = window.geometry().size;
                 }
@@ -377,6 +494,7 @@ impl FullscreenManager {
                 external_pending: None,
                 snapshot_serials: Vec::new(),
                 origin,
+                native: None,
                 preserve_stack: false,
             });
         super::set_window_output(&window, &target);
@@ -492,6 +610,7 @@ impl FullscreenManager {
                 external_pending: None,
                 snapshot_serials: Vec::new(),
                 origin,
+                native: None,
                 preserve_stack: false,
             });
         entry.origin = origin;
@@ -646,17 +765,28 @@ impl FullscreenManager {
             return false;
         };
         let origin = entry.origin;
+        let visual_desired = entry.desired;
+        let target_output = entry.target_output.clone();
+        let restore = entry.restore.clone();
+        let preserve_stack = entry.preserve_stack;
         let committed = toplevel.with_committed_state(|state| {
             state.is_some_and(|state| state.states.contains(protocol_presentation_state(origin)))
         });
-        if committed != entry.desired {
+        let commit_action = fullscreen_commit_action(entry, committed);
+        if commit_action == FullscreenCommitAction::Ignore {
             return false;
         }
-        if committed == entry.active {
-            if !committed {
+        if let Some(native) = self
+            .windows
+            .get_mut(surface)
+            .and_then(|entry| entry.native.as_mut())
+        {
+            native.protocol_active = committed;
+        }
+        if commit_action == FullscreenCommitAction::ProtocolOnly {
+            if !visual_desired {
                 return false;
             }
-            let target_output = entry.target_output.clone();
             let Some(output) = output_by_name(wayland, &target_output) else {
                 return false;
             };
@@ -675,8 +805,6 @@ impl FullscreenManager {
             return false;
         }
 
-        let target_output = entry.target_output.clone();
-        let restore = entry.restore.clone();
         let Some(output) = output_by_name(wayland, &target_output) else {
             return false;
         };
@@ -684,8 +812,7 @@ impl FullscreenManager {
             return false;
         };
 
-        let preserve_stack = entry.preserve_stack;
-        if committed {
+        if visual_desired {
             super::set_window_output(&window, &output);
             let location = center_in_rect(
                 window.geometry().size,
@@ -718,7 +845,7 @@ impl FullscreenManager {
         }
 
         let entry = self.windows.get_mut(surface).expect("entry checked above");
-        if !committed
+        if !visual_desired
             && let (Some(location), Some(geometry)) = (
                 wayland.space.element_location(&window),
                 wayland.space.element_geometry(&window),
@@ -734,8 +861,8 @@ impl FullscreenManager {
                 entry.presentation_output = None;
             }
         }
-        retarget_visual(entry, self.animations, now, committed);
-        entry.active = committed;
+        retarget_visual(entry, self.animations, now, visual_desired);
+        entry.active = visual_desired;
         true
     }
 
@@ -1039,8 +1166,12 @@ impl FullscreenManager {
             };
             if let Some(toplevel) = window.toplevel() {
                 let origin = entry.origin;
+                let protocol_desired = entry
+                    .native
+                    .map_or(entry.desired, |native| native.protocol_desired);
+                entry.fullscreen_size = geometry.size;
                 toplevel.with_pending_state(|state| {
-                    apply_protocol_presentation_state(state, origin, true);
+                    apply_protocol_presentation_state(state, origin, protocol_desired);
                     state.size = Some(geometry.size);
                     state.bounds = Some(geometry.size);
                     super::decoration::clear_tiled_hint(state);
@@ -1134,14 +1265,45 @@ fn fullscreen_entry_suppresses_chrome(entry: &FullscreenWindow) -> bool {
     entry.desired && entry.origin != FullscreenOrigin::Maximize
 }
 
-fn retains_compositor_fullscreen(entry: &FullscreenWindow, request: FullscreenOrigin) -> bool {
-    entry.desired
-        && entry.origin == FullscreenOrigin::Compositor
-        && request == FullscreenOrigin::Client
+fn request_native_owner(entry: &mut FullscreenWindow, origin: FullscreenOrigin) {
+    let native = entry
+        .native
+        .get_or_insert_with(NativeFullscreenState::default);
+    native.request(origin);
+    entry.desired = native.visual_desired();
+    entry.origin = native.presentation_origin().unwrap_or(origin);
 }
 
-fn client_unfullscreen_is_nested(entry: &FullscreenWindow) -> bool {
-    entry.desired && entry.origin == FullscreenOrigin::Compositor
+fn release_native_owner(entry: &mut FullscreenWindow, origin: FullscreenOrigin) {
+    let Some(native) = entry.native.as_mut() else {
+        return;
+    };
+    native.release(origin);
+    entry.desired = native.visual_desired();
+    entry.origin = native.presentation_origin().unwrap_or(entry.origin);
+}
+
+fn release_all_native_owners(entry: &mut FullscreenWindow) {
+    if let Some(native) = entry.native.as_mut() {
+        native.release_all();
+    }
+    entry.desired = false;
+}
+
+fn fullscreen_commit_action(
+    entry: &FullscreenWindow,
+    protocol_committed: bool,
+) -> FullscreenCommitAction {
+    let protocol_desired = entry
+        .native
+        .map_or(entry.desired, |native| native.protocol_desired);
+    if protocol_committed != protocol_desired {
+        FullscreenCommitAction::Ignore
+    } else if entry.desired == entry.active {
+        FullscreenCommitAction::ProtocolOnly
+    } else {
+        FullscreenCommitAction::Visual(entry.desired)
+    }
 }
 
 /// Whether a commit may retarget the fullscreen rect to the client's own size.
@@ -1395,6 +1557,12 @@ mod tests {
             external_pending: None,
             snapshot_serials: Vec::new(),
             origin: FullscreenOrigin::Client,
+            native: Some(NativeFullscreenState {
+                client_requested: active,
+                compositor_requested: false,
+                protocol_desired: active,
+                protocol_active: active,
+            }),
             preserve_stack: false,
         }
     }
@@ -1468,33 +1636,97 @@ mod tests {
     }
 
     #[test]
-    fn nested_client_fullscreen_keeps_compositor_ownership() {
-        let mut entry = test_entry(true);
-        entry.origin = FullscreenOrigin::Compositor;
+    fn nested_client_protocol_cycle_keeps_compositor_presentation() {
+        let mut entry = test_entry(false);
+        let target = entry.target_output.clone();
+        let fullscreen_size = entry.fullscreen_size;
 
-        assert!(retains_compositor_fullscreen(
-            &entry,
-            FullscreenOrigin::Client
-        ));
-        assert!(client_unfullscreen_is_nested(&entry));
+        request_native_owner(&mut entry, FullscreenOrigin::Compositor);
+        entry.active = true;
+        entry.presented = true;
+        entry.native.as_mut().expect("native state").protocol_active = true;
 
-        entry.desired = false;
-        assert!(!retains_compositor_fullscreen(
-            &entry,
-            FullscreenOrigin::Client
-        ));
-        assert!(!client_unfullscreen_is_nested(&entry));
+        release_native_owner(&mut entry, FullscreenOrigin::Client);
+        let nested_unset = entry.native.expect("native state");
+        assert!(nested_unset.compositor_requested);
+        assert!(!nested_unset.client_requested);
+        assert!(!nested_unset.protocol_desired);
+        assert!(entry.desired);
+        assert!(entry.active);
+        assert!(entry.presented);
+        assert_eq!(entry.origin, FullscreenOrigin::Compositor);
+        assert_eq!(entry.target_output, target);
+        assert_eq!(entry.fullscreen_size, fullscreen_size);
+        assert_eq!(
+            fullscreen_commit_action(&entry, false),
+            FullscreenCommitAction::ProtocolOnly
+        );
+
+        request_native_owner(&mut entry, FullscreenOrigin::Client);
+        let nested_set = entry.native.expect("native state");
+        assert!(nested_set.compositor_requested);
+        assert!(nested_set.client_requested);
+        assert!(nested_set.protocol_desired);
+        assert!(entry.desired);
+        assert_eq!(entry.origin, FullscreenOrigin::Compositor);
+        assert_eq!(
+            fullscreen_commit_action(&entry, true),
+            FullscreenCommitAction::ProtocolOnly
+        );
+    }
+
+    #[test]
+    fn nested_owners_can_be_released_in_either_order() {
+        let mut compositor_first = test_entry(false);
+        request_native_owner(&mut compositor_first, FullscreenOrigin::Compositor);
+        request_native_owner(&mut compositor_first, FullscreenOrigin::Client);
+        compositor_first.active = true;
+
+        release_native_owner(&mut compositor_first, FullscreenOrigin::Compositor);
+        let retained_client = compositor_first.native.expect("native state");
+        assert!(!retained_client.compositor_requested);
+        assert!(retained_client.client_requested);
+        assert!(retained_client.protocol_desired);
+        assert!(compositor_first.desired);
+        assert_eq!(compositor_first.origin, FullscreenOrigin::Client);
+        assert_eq!(
+            fullscreen_commit_action(&compositor_first, true),
+            FullscreenCommitAction::ProtocolOnly
+        );
+
+        release_native_owner(&mut compositor_first, FullscreenOrigin::Client);
+        assert!(!compositor_first.desired);
+        assert_eq!(
+            fullscreen_commit_action(&compositor_first, false),
+            FullscreenCommitAction::Visual(false)
+        );
+
+        let mut client_first = test_entry(false);
+        request_native_owner(&mut client_first, FullscreenOrigin::Compositor);
+        request_native_owner(&mut client_first, FullscreenOrigin::Client);
+        client_first.active = true;
+
+        release_native_owner(&mut client_first, FullscreenOrigin::Client);
+        assert!(client_first.desired);
+        assert_eq!(client_first.origin, FullscreenOrigin::Compositor);
+        release_native_owner(&mut client_first, FullscreenOrigin::Compositor);
+        assert!(!client_first.desired);
+        assert_eq!(
+            fullscreen_commit_action(&client_first, false),
+            FullscreenCommitAction::Visual(false)
+        );
     }
 
     #[test]
     fn client_owned_fullscreen_can_still_be_released_by_the_client() {
-        let entry = test_entry(true);
+        let mut entry = test_entry(true);
 
-        assert!(!retains_compositor_fullscreen(
-            &entry,
-            FullscreenOrigin::Client
-        ));
-        assert!(!client_unfullscreen_is_nested(&entry));
+        release_native_owner(&mut entry, FullscreenOrigin::Client);
+        assert!(!entry.desired);
+        assert_eq!(
+            fullscreen_commit_action(&entry, false),
+            FullscreenCommitAction::Visual(false)
+        );
     }
 
     #[test]

@@ -764,7 +764,9 @@ fn toggle_focused_fullscreen<D: SessionDriver>(session: &mut Session<D>, output:
                 .fullscreen
                 .request_compositor(&mut session.wayland, toplevel);
         } else {
-            session.fullscreen.unrequest(&session.wayland, toplevel);
+            session
+                .fullscreen
+                .unrequest_compositor(&session.wayland, toplevel);
         }
     } else {
         crate::xwayland::set_window_fullscreen(session, &window, entering);
