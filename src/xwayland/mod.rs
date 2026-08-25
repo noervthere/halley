@@ -185,7 +185,7 @@ impl<D: SessionDriver> State<D> {
             .filter(|surface| !surface.is_override_redirect())
             .cloned()
             .collect::<Vec<_>>();
-        // `update_stacking_order_downwards` grabs the X server for the whole
+        // `update_stacking_order_upwards` grabs the X server for the whole
         // walk, so a settled desktop must not reach it. This mirrors the
         // compare-before-configure guard in `sync_position`.
         let published = order
@@ -198,7 +198,13 @@ impl<D: SessionDriver> State<D> {
         let Some(xwm) = self.xwm.as_mut() else {
             return;
         };
-        if let Err(err) = xwm.update_stacking_order_downwards(order.iter()) {
+        // Space and `_NET_CLIENT_LIST_STACKING` are both bottom-to-top. Walk
+        // upwards from the bottom anchor so each later element is placed above
+        // its predecessor. The downward walk expects a top-to-bottom input;
+        // feeding it Space order reverses overlapping X11 windows, leaving a
+        // newly focused Steam dialog visually above the main window but below
+        // it in XWayland's input stack until the first click raises it.
+        if let Err(err) = xwm.update_stacking_order_upwards(order.iter()) {
             eventline::warn!("xwayland: failed to publish stacking order: {err}");
             return;
         }
