@@ -52,8 +52,11 @@ the client body's bottom corners. The requested titlebar `height` is clamped to
 icon, or the global font need more room.
 
 The titlebar's outer top edge and corners participate in border resizing.
-Button hitboxes take priority; the rest of the titlebar retains its existing
-move and double-click behavior.
+On resizable floating windows, the outermost eight screen pixels take priority
+over an overlapping titlebar button, leaving the button interior clickable.
+When border resizing is disabled or unavailable, buttons retain their full
+hitboxes. The rest of the titlebar keeps its existing move and double-click
+behavior.
 
 Title text is ellipsized at 240 pixels, scaled with the window, or sooner when
 buttons and the application icon leave less room.

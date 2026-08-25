@@ -560,6 +560,8 @@ fn window_under(
     None
 }
 
+const TITLEBAR_CONTROL_RESIZE_BAND: f64 = 8.0;
+
 fn decoration_hit_at(
     titlebar: Option<&crate::titlebar::DecorationLayout<Logical>>,
     outer: Rectangle<i32, Logical>,
@@ -567,11 +569,21 @@ fn decoration_hit_at(
     resize_allowed: bool,
     resize_band: f64,
 ) -> Option<crate::titlebar::Hit> {
-    // Controls keep their full hitboxes even when they overlap the minimum
-    // resize band at the titlebar's outer edge.
-    if let Some(crate::titlebar::Hit::Control(control)) =
-        titlebar.and_then(|layout| layout.hit(point))
-    {
+    let titlebar_hit = titlebar.and_then(|layout| layout.hit(point));
+    if let Some(crate::titlebar::Hit::Control(control)) = titlebar_hit {
+        // Match conventional desktop frames: the outermost perimeter remains
+        // available for resizing while the interior of the button stays easy
+        // to click. Cap only this overlap so an unusually wide rendered border
+        // cannot consume the whole control.
+        if resize_allowed
+            && let Some(handle) = crate::input::grab::border_resize_handle(
+                outer,
+                point,
+                resize_band.min(TITLEBAR_CONTROL_RESIZE_BAND),
+            )
+        {
+            return Some(crate::titlebar::Hit::Resize(handle));
+        }
         return Some(crate::titlebar::Hit::Control(control));
     }
     if resize_allowed
@@ -579,7 +591,7 @@ fn decoration_hit_at(
     {
         return Some(crate::titlebar::Hit::Resize(handle));
     }
-    titlebar.and_then(|layout| layout.hit(point))
+    titlebar_hit
 }
 
 /// Resolves the client surface under a window-local point.
@@ -762,8 +774,11 @@ mod tests {
     use crate::input::keybinds::WheelDirection;
 
     #[test]
-    fn titlebar_controls_win_over_resize_and_drag_fills_the_remainder() {
-        let config = halley_config::Titlebars::default();
+    fn titlebar_perimeter_resizes_while_control_interior_remains_clickable() {
+        let config = halley_config::Titlebars {
+            button_position: halley_config::TitlebarButtonPosition::Right,
+            ..halley_config::Titlebars::default()
+        };
         let client = Rectangle::new((0, 32).into(), (300, 200).into());
         let layout = crate::titlebar::DecorationLayout::new(client, 0, 32, &config);
 
@@ -771,19 +786,19 @@ mod tests {
             decoration_hit_at(
                 Some(&layout),
                 layout.outer,
-                smithay::utils::Point::from((10.0, 2.0)),
+                smithay::utils::Point::from((298.0, 2.0)),
                 true,
                 8.0,
             ),
-            Some(crate::titlebar::Hit::Control(
-                crate::titlebar::Control::Close
+            Some(crate::titlebar::Hit::Resize(
+                crate::input::grab::ResizeHandle::TopRight
             ))
         );
         assert_eq!(
             decoration_hit_at(
                 Some(&layout),
                 layout.outer,
-                smithay::utils::Point::from((200.0, 2.0)),
+                smithay::utils::Point::from((280.0, 2.0)),
                 true,
                 8.0,
             ),
@@ -795,20 +810,103 @@ mod tests {
             decoration_hit_at(
                 Some(&layout),
                 layout.outer,
-                smithay::utils::Point::from((200.0, 16.0)),
+                smithay::utils::Point::from((298.0, 16.0)),
                 true,
                 8.0,
             ),
-            Some(crate::titlebar::Hit::Drag)
+            Some(crate::titlebar::Hit::Resize(
+                crate::input::grab::ResizeHandle::Right
+            ))
+        );
+        assert_eq!(
+            decoration_hit_at(
+                Some(&layout),
+                layout.outer,
+                smithay::utils::Point::from((280.0, 16.0)),
+                true,
+                8.0,
+            ),
+            Some(crate::titlebar::Hit::Control(
+                crate::titlebar::Control::Close
+            ))
+        );
+
+        let left_layout = crate::titlebar::DecorationLayout::new(
+            client,
+            0,
+            32,
+            &halley_config::Titlebars::default(),
+        );
+        assert_eq!(
+            decoration_hit_at(
+                Some(&left_layout),
+                left_layout.outer,
+                smithay::utils::Point::from((2.0, 2.0)),
+                true,
+                8.0,
+            ),
+            Some(crate::titlebar::Hit::Resize(
+                crate::input::grab::ResizeHandle::TopLeft
+            ))
+        );
+        assert_eq!(
+            decoration_hit_at(
+                Some(&left_layout),
+                left_layout.outer,
+                smithay::utils::Point::from((16.0, 16.0)),
+                true,
+                8.0,
+            ),
+            Some(crate::titlebar::Hit::Control(
+                crate::titlebar::Control::Close
+            ))
         );
     }
 
     #[test]
-    fn disabled_border_resize_leaves_the_titlebar_behavior_intact() {
-        let config = halley_config::Titlebars::default();
+    fn wide_resize_band_does_not_consume_titlebar_control_interior() {
+        let config = halley_config::Titlebars {
+            button_position: halley_config::TitlebarButtonPosition::Right,
+            ..halley_config::Titlebars::default()
+        };
         let client = Rectangle::new((0, 32).into(), (300, 200).into());
         let layout = crate::titlebar::DecorationLayout::new(client, 0, 32, &config);
 
+        assert_eq!(
+            decoration_hit_at(
+                Some(&layout),
+                layout.outer,
+                smithay::utils::Point::from((288.0, 16.0)),
+                true,
+                16.0,
+            ),
+            Some(crate::titlebar::Hit::Control(
+                crate::titlebar::Control::Close
+            ))
+        );
+    }
+
+    #[test]
+    fn disabled_border_resize_leaves_the_full_titlebar_behavior_intact() {
+        let config = halley_config::Titlebars {
+            button_position: halley_config::TitlebarButtonPosition::Right,
+            ..halley_config::Titlebars::default()
+        };
+        let client = Rectangle::new((0, 32).into(), (300, 200).into());
+        let layout = crate::titlebar::DecorationLayout::new(client, 0, 32, &config);
+
+        assert_eq!(
+            decoration_hit_at(
+                Some(&layout),
+                layout.outer,
+                smithay::utils::Point::from((298.0, 2.0)),
+                false,
+                8.0,
+            ),
+            Some(crate::titlebar::Hit::Control(
+                crate::titlebar::Control::Close
+            ))
+        );
         assert_eq!(
             decoration_hit_at(
                 Some(&layout),
