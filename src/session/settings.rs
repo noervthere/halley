@@ -8,6 +8,7 @@ pub struct RuntimeSettings {
     pub overlays: halley_config::Overlays,
     pub apogee: halley_config::Apogee,
     pub input: halley_config::Input,
+    pub animations: halley_config::Animations,
     pub decorations: halley_config::Decorations,
     pub font: halley_config::Font,
     pub effects: halley_config::Effects,
@@ -25,6 +26,7 @@ impl RuntimeSettings {
             overlays: config.overlays,
             apogee: config.apogee,
             input: applied_input,
+            animations: config.animations,
             decorations: config.decorations,
             font: config.font.clone(),
             effects: config.effects,
@@ -39,6 +41,7 @@ impl RuntimeSettings {
 
     pub fn visuals_changed(&self, config: &halley_config::RuntimeConfig) -> bool {
         self.decorations != config.decorations
+            || self.animations != config.animations
             || self.font != config.font
             || self.effects != config.effects
             || self.background != config.background
@@ -54,6 +57,7 @@ impl RuntimeSettings {
     /// working keyboard configuration.
     pub fn reload_non_input(&mut self, config: &halley_config::RuntimeConfig) {
         self.apogee = config.apogee;
+        self.animations = config.animations;
         self.decorations = config.decorations;
         self.font = config.font.clone();
         self.effects = config.effects;

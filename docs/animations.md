@@ -4,6 +4,12 @@
 `enabled` field, so an individual effect can be disabled without changing the
 others.
 
+Interactive pointer resize has its own `animations.smooth-resize` block. It is
+enabled by default with a 90 ms response duration: lower values track the
+pointer more tightly, while higher values soften rapid changes. Halley advances
+the filtered size on its interaction timer for both Wayland and XWayland and
+stops at the currently presented size as soon as the button is released.
+
 Fullscreen defaults to a critically damped spring:
 
 ```rune

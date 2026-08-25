@@ -800,6 +800,91 @@ pub(crate) fn wakeup_cluster_interactions<D: SessionDriver>(
     true
 }
 
+fn apply_active_resize<D: SessionDriver>(session: &mut Session<D>) -> bool {
+    let crate::input::grab::Grab::ResizeWindow(state) = &session.interactions.grab else {
+        return false;
+    };
+    let state = state.clone();
+    let size = crate::input::grab::resize_preview_size(&state);
+    let primary = session.driver.primary_output();
+    let output = session
+        .wayland
+        .space
+        .outputs()
+        .find(|output| wayland::window_is_on_output(&state.window, output, primary))
+        .cloned()
+        .unwrap_or_else(|| primary.clone());
+    let Some(output_geometry) = session.wayland.space.output_geometry(&output) else {
+        return false;
+    };
+    let member = state
+        .window
+        .wl_surface()
+        .and_then(|surface| session.nodes.id_for_surface(surface.as_ref()))
+        .filter(|member| session.clusters.is_member_floating(*member));
+    let floating_target = member.and_then(|member| {
+        let location = crate::input::grab::resize_location_after_commit(
+            state.handle,
+            state.start_rect.loc,
+            state.start_rect.size,
+            size,
+        );
+        let work_area = smithay::desktop::layer_map_for_output(&output).non_exclusive_zone();
+        let local = Rectangle::new(location - output_geometry.loc, size);
+        session
+            .clusters
+            .update_member_floating_rect(&output.name(), member, local, work_area);
+        let local = session.clusters.member_floating_rect(member)?;
+        let global = Rectangle::new(output_geometry.loc + local.loc, local.size);
+        let current = session
+            .wayland
+            .space
+            .element_geometry(&state.window)
+            .unwrap_or(state.start_rect);
+        let _ = session
+            .clusters
+            .prepare_surface_target(member, current, global);
+        Some(global)
+    });
+    if let Some(toplevel) = state.window.toplevel() {
+        let size = floating_target.map_or(size, |target| target.size);
+        toplevel.with_pending_state(|pending| pending.size = Some(size));
+        let serial = toplevel.send_pending_configure();
+        crate::input::grab::note_resize_configure(&mut session.interactions.resize_anchor, serial);
+    } else {
+        let target = floating_target.unwrap_or_else(|| {
+            let location = crate::input::grab::resize_location_after_commit(
+                state.handle,
+                state.start_rect.loc,
+                state.start_rect.size,
+                size,
+            );
+            Rectangle::new(location, size)
+        });
+        crate::xwayland::configure_window(session, &state.window, target);
+    }
+    true
+}
+
+pub(crate) fn wakeup_smooth_resize<D: SessionDriver>(
+    session: &mut Session<D>,
+    now: std::time::Duration,
+) -> bool {
+    let animations = session.settings.animations;
+    let changed = match &mut session.interactions.grab {
+        crate::input::grab::Grab::ResizeWindow(state) => {
+            crate::input::grab::advance_resize_preview(
+                state,
+                now,
+                animations.enabled && animations.smooth_resize.enabled,
+                animations.smooth_resize.duration_ms,
+            )
+        }
+        _ => false,
+    };
+    changed && apply_active_resize(session)
+}
+
 fn navigate_cluster<D: SessionDriver>(
     session: &mut Session<D>,
     output_name: &str,
@@ -1367,7 +1452,30 @@ where
         }
     }
 
-    let mut x11_configure = None;
+    let mut resize_preview_changed = false;
+    if motion.is_some()
+        && let crate::input::grab::Grab::ResizeWindow(state) = &mut session.interactions.grab
+    {
+        let world = crate::input::grab::resize_cursor_from_screen(state, position_after);
+        let requested_size = crate::input::grab::resize_target_size(
+            state.handle,
+            state.start_rect,
+            state.start_cursor,
+            world,
+        );
+        state.target_size = if crate::xwayland::is_x11(&state.window) {
+            crate::xwayland::constrain_window_size(&state.window, requested_size)
+        } else {
+            requested_size
+        };
+        let animations = session.settings.animations;
+        resize_preview_changed = crate::input::grab::advance_resize_preview(
+            state,
+            crate::frame_clock::monotonic_now(),
+            animations.enabled && animations.smooth_resize.enabled,
+            animations.smooth_resize.duration_ms,
+        );
+    }
     match &session.interactions.grab {
         crate::input::grab::Grab::MoveWindow {
             id,
@@ -1654,92 +1762,15 @@ where
                 });
             }
         }
-        crate::input::grab::Grab::ResizeWindow(state) => {
-            let primary = session.driver.primary_output();
-            let output = session
-                .wayland
-                .space
-                .outputs()
-                .find(|output| wayland::window_is_on_output(&state.window, output, primary))
-                .cloned()
-                .unwrap_or_else(|| primary.clone());
-            let Some(output_geometry) = session.wayland.space.output_geometry(&output) else {
-                return;
-            };
-            let world = crate::input::grab::resize_cursor_from_screen(state, position_after);
-            let requested_size = crate::input::grab::resize_target_size(
-                state.handle,
-                state.start_rect,
-                state.start_cursor,
-                world,
-            );
-            let size = if crate::xwayland::is_x11(&state.window) {
-                crate::xwayland::constrain_window_size(&state.window, requested_size)
-            } else {
-                requested_size
-            };
-            let member = state
-                .window
-                .wl_surface()
-                .and_then(|surface| session.nodes.id_for_surface(surface.as_ref()))
-                .filter(|member| session.clusters.is_member_floating(*member));
-            let floating_target = member.and_then(|member| {
-                let location = crate::input::grab::resize_location_after_commit(
-                    state.handle,
-                    state.start_rect.loc,
-                    state.start_rect.size,
-                    size,
-                );
-                let work_area =
-                    smithay::desktop::layer_map_for_output(&output).non_exclusive_zone();
-                let local = Rectangle::new(location - output_geometry.loc, size);
-                session.clusters.update_member_floating_rect(
-                    &output.name(),
-                    member,
-                    local,
-                    work_area,
-                );
-                let local = session.clusters.member_floating_rect(member)?;
-                let global = Rectangle::new(output_geometry.loc + local.loc, local.size);
-                let current = session
-                    .wayland
-                    .space
-                    .element_geometry(&state.window)
-                    .unwrap_or(state.start_rect);
-                let _ = session
-                    .clusters
-                    .prepare_surface_target(member, current, global);
-                Some(global)
-            });
-            if let Some(toplevel) = state.window.toplevel() {
-                let size = floating_target.map_or(size, |target| target.size);
-                toplevel.with_pending_state(|pending| pending.size = Some(size));
-                let serial = toplevel.send_pending_configure();
-                crate::input::grab::note_resize_configure(
-                    &mut session.interactions.resize_anchor,
-                    serial,
-                );
-            } else {
-                let target = floating_target.unwrap_or_else(|| {
-                    let location = crate::input::grab::resize_location_after_commit(
-                        state.handle,
-                        state.start_rect.loc,
-                        state.start_rect.size,
-                        size,
-                    );
-                    Rectangle::new(location, size)
-                });
-                x11_configure = Some((state.window.clone(), target));
-            }
-        }
+        crate::input::grab::Grab::ResizeWindow(_) => {}
         crate::input::grab::Grab::None
         | crate::input::grab::Grab::PendingWindowMove(_)
         | crate::input::grab::Grab::PendingNode { .. }
         | crate::input::grab::Grab::PendingClusterCore { .. } => {}
     }
 
-    if let Some((window, geometry)) = x11_configure {
-        crate::xwayland::configure_window(session, &window, geometry);
+    if resize_preview_changed {
+        apply_active_resize(session);
     }
 
     if let Some((delta, delta_unaccel, time, time_msec)) = motion

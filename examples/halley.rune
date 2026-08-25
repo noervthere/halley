@@ -605,8 +605,17 @@ end
 # Animation settings are reloaded for future motion. Existing window-open and
 # window-close animations keep the parameters with which they started.
 animations:
-  # Master switch for window-open, window-close, fullscreen, maximize, and node animations.
+  # Master switch for window-open, window-close, fullscreen, maximize, smooth
+  # resize, node, and cluster animations.
   enabled true
+
+  # Low-pass filtering for pointer-driven window resize. Lower durations hug
+  # the pointer more tightly; higher values feel softer. Release stops at the
+  # currently presented size instead of continuing after the pointer lets go.
+  smooth-resize:
+    enabled true
+    duration-ms 90
+  end
 
   window-open:
     # Independent switch for newly mapped windows.

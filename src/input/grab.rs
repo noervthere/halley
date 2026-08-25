@@ -302,6 +302,7 @@ pub fn border_resize_handle(
 /// Everything a resize drag needs, captured once at grab-start. Both the
 /// rect and the cursor are in world coordinates, so the math below stays
 /// independent of pan and zoom.
+#[derive(Clone)]
 pub struct ResizeState {
     pub window: Window,
     pub handle: ResizeHandle,
@@ -310,6 +311,66 @@ pub struct ResizeState {
     pub start_cursor: Vec2,
     pub start_screen: (f64, f64),
     pub screen_to_source_scale: Vec2,
+    pub target_size: Size<i32, Logical>,
+    pub preview_size: Vec2,
+    pub last_smooth_tick: Duration,
+}
+
+fn smooth_resize_value(
+    preview: f32,
+    target: f32,
+    dt: Duration,
+    enabled: bool,
+    duration_ms: u32,
+) -> f32 {
+    if !enabled {
+        return target;
+    }
+    let dt_secs = dt.as_secs_f32().clamp(0.0, 0.25);
+    if dt_secs <= f32::EPSILON {
+        return preview;
+    }
+    let duration_secs = duration_ms.max(1) as f32 / 1_000.0;
+    let alpha = (1.0 - 0.1f32.powf(dt_secs / duration_secs)).clamp(0.0, 1.0);
+    let next = preview + (target - preview) * alpha;
+    if (target - next).abs() < 0.5 {
+        target
+    } else {
+        next
+    }
+}
+
+pub fn advance_resize_preview(
+    state: &mut ResizeState,
+    now: Duration,
+    enabled: bool,
+    duration_ms: u32,
+) -> bool {
+    let before = resize_preview_size(state);
+    let dt = now.saturating_sub(state.last_smooth_tick);
+    state.last_smooth_tick = now;
+    state.preview_size.x = smooth_resize_value(
+        state.preview_size.x,
+        state.target_size.w as f32,
+        dt,
+        enabled,
+        duration_ms,
+    );
+    state.preview_size.y = smooth_resize_value(
+        state.preview_size.y,
+        state.target_size.h as f32,
+        dt,
+        enabled,
+        duration_ms,
+    );
+    resize_preview_size(state) != before
+}
+
+pub fn resize_preview_size(state: &ResizeState) -> Size<i32, Logical> {
+    Size::from((
+        state.preview_size.x.round().max(1.0) as i32,
+        state.preview_size.y.round().max(1.0) as i32,
+    ))
 }
 
 pub fn resize_cursor_from_screen(state: &ResizeState, screen: (f64, f64)) -> Vec2 {
@@ -678,6 +739,18 @@ mod tests {
         assert_eq!(
             ResizeHandle::BottomRight.cursor_icon(),
             CursorIcon::SeResize
+        );
+    }
+
+    #[test]
+    fn smooth_resize_low_pass_advances_without_overshooting() {
+        let first = smooth_resize_value(800.0, 1200.0, Duration::from_millis(16), true, 90);
+        let second = smooth_resize_value(first, 1200.0, Duration::from_millis(16), true, 90);
+        assert!(first > 800.0 && first < 1200.0);
+        assert!(second > first && second < 1200.0);
+        assert_eq!(
+            smooth_resize_value(first, 1200.0, Duration::ZERO, false, 90),
+            1200.0
         );
     }
 

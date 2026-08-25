@@ -421,7 +421,8 @@ fn install_overlay_timer<D: SessionDriver>(
                     }
                 }
                 let interactions_changed = input::wakeup_cluster_interactions(session, now);
-                if overlays_changed || bloom_changed || interactions_changed {
+                let resize_changed = input::wakeup_smooth_resize(session, now);
+                if overlays_changed || bloom_changed || interactions_changed || resize_changed {
                     session.request_redraw();
                 }
                 TimeoutAction::ToDuration(Duration::from_millis(8))
@@ -1514,6 +1515,12 @@ pub(crate) fn begin_window_resize<D: SessionDriver>(
                 start_rect,
                 visual_geometry,
             ),
+            target_size: start_rect.size,
+            preview_size: halley_core::field::Vec2 {
+                x: start_rect.size.w as f32,
+                y: start_rect.size.h as f32,
+            },
+            last_smooth_tick: crate::frame_clock::monotonic_now(),
         });
     session.interactions.resize_anchor =
         window.toplevel().map(|_| crate::input::grab::ResizeAnchor {

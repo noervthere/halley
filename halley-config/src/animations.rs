@@ -200,6 +200,21 @@ pub struct NodeAnimation {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SmoothResizeAnimation {
+    pub enabled: bool,
+    pub duration_ms: u32,
+}
+
+impl Default for SmoothResizeAnimation {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            duration_ms: 90,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ClusterTilingAnimation {
     pub open_duration_ms: u32,
     pub close_duration_ms: u32,
@@ -295,6 +310,7 @@ pub struct Animations {
     pub window_close: WindowCloseAnimation,
     pub fullscreen: FullscreenAnimation,
     pub maximize: MaximizeAnimation,
+    pub smooth_resize: SmoothResizeAnimation,
     pub node: NodeAnimation,
     pub cluster: ClusterAnimation,
 }
@@ -307,6 +323,7 @@ impl Default for Animations {
             window_close: WindowCloseAnimation::default(),
             fullscreen: FullscreenAnimation::default(),
             maximize: MaximizeAnimation::default(),
+            smooth_resize: SmoothResizeAnimation::default(),
             node: NodeAnimation::default(),
             cluster: ClusterAnimation::default(),
         }
@@ -396,6 +413,18 @@ pub fn parse_animations(config: &RuneConfig) -> Animations {
                 enabled: config.get_or("animations.maximize.enabled", defaults.maximize.enabled),
                 motion: AnimationMotion::parse(config, "animations.maximize", configured_easing),
             }
+        },
+        smooth_resize: SmoothResizeAnimation {
+            enabled: config.get_or(
+                "animations.smooth-resize.enabled",
+                defaults.smooth_resize.enabled,
+            ),
+            duration_ms: config
+                .get_or(
+                    "animations.smooth-resize.duration-ms",
+                    defaults.smooth_resize.duration_ms,
+                )
+                .clamp(1, 2_000),
         },
         node: NodeAnimation {
             enabled: config.get_or("animations.node.enabled", defaults.node.enabled),
@@ -494,6 +523,7 @@ end
                 window_close: WindowCloseAnimation::default(),
                 fullscreen: FullscreenAnimation::default(),
                 maximize: MaximizeAnimation::default(),
+                smooth_resize: SmoothResizeAnimation::default(),
                 node: NodeAnimation::default(),
                 cluster: ClusterAnimation::default(),
             }
@@ -521,6 +551,29 @@ end
                 enabled: false,
                 animation_type: WindowCloseAnimationType::Fade,
                 duration_ms: 410,
+            }
+        );
+    }
+
+    #[test]
+    fn parses_smooth_resize_animation_and_clamps_duration() {
+        let config = RuneConfig::from_str(
+            r#"
+animations:
+  smooth-resize:
+    enabled false
+    duration-ms 5000
+  end
+end
+"#,
+        )
+        .expect("valid rune-cfg source");
+
+        assert_eq!(
+            parse_animations(&config).smooth_resize,
+            SmoothResizeAnimation {
+                enabled: false,
+                duration_ms: 2_000,
             }
         );
     }
