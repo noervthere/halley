@@ -490,8 +490,11 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                     }
                 };
                 if submitted {
-                    app.xwayland
-                        .promote_presented_frames(presented_x11_frames, &app.wayland.space);
+                    app.xwayland.promote_presented_frames(
+                        presented_x11_frames,
+                        &app.wayland.space,
+                        crate::frame_clock::monotonic_now(),
+                    );
                 }
                 if let Some(element_states) = element_states {
                     app.update_idle_inhibit_visibility(&output, &element_states);

@@ -56,7 +56,12 @@ pub(crate) fn capture_native_toplevel_before_unmap<D: SessionDriver>(
 }
 
 pub(crate) fn capture_window<D: SessionDriver>(session: &mut Session<D>, window: &Window) -> bool {
-    capture_window_inner(session, window, false)
+    capture_window_inner(
+        session,
+        window,
+        false,
+        crate::render::presented_x11::PresentedX11FramePolicy::Latest,
+    )
 }
 
 fn captures_before_client_decision(is_x11: bool) -> bool {
@@ -96,13 +101,19 @@ pub(crate) fn capture_close_control<D: SessionDriver>(
     if !captures_before_client_decision(crate::xwayland::is_x11(window)) {
         return false;
     }
-    capture_window_inner(session, window, true)
+    capture_window_inner(
+        session,
+        window,
+        true,
+        crate::render::presented_x11::PresentedX11FramePolicy::Latest,
+    )
 }
 
 fn capture_window_inner<D: SessionDriver>(
     session: &mut Session<D>,
     window: &Window,
     provisional: bool,
+    x11_frame_policy: crate::render::presented_x11::PresentedX11FramePolicy,
 ) -> bool {
     if crate::xwayland::is_override_redirect(window) {
         return false;
@@ -192,6 +203,28 @@ fn capture_window_inner<D: SessionDriver>(
     let decorations = session.settings.decorations;
     let font = session.settings.font.clone();
     let is_x11 = crate::xwayland::is_x11(window);
+    let presented_diagnostics = is_x11.then(|| {
+        session
+            .xwayland
+            .presented_frame(&surface, now, x11_frame_policy)
+            .map(|selection| (selection.kind, selection.age, selection.sample_count))
+    });
+    match presented_diagnostics.flatten() {
+        Some((kind, age, sample_count)) => crate::xwayland::trace_close_frame_selection(
+            session,
+            window,
+            format_args!(
+                "policy={x11_frame_policy:?} kind={kind:?} age_ms={} samples={sample_count}",
+                age.as_millis()
+            ),
+        ),
+        None if is_x11 => crate::xwayland::trace_close_frame_selection(
+            session,
+            window,
+            format_args!("policy={x11_frame_policy:?} available=false"),
+        ),
+        None => {}
+    }
     let presented_x11_frames = &session.xwayland;
     let render = &mut session.render;
     let titlebar_renderer = &mut render.titlebar_renderer;
@@ -200,13 +233,15 @@ fn capture_window_inner<D: SessionDriver>(
     let ui_text = &mut render.ui_text;
     let window_close_animations = &mut render.window_close_animations;
     let capture = session.driver.with_renderer(|renderer| {
-        let presented = presented_x11_frames.presented_frame(&surface);
+        let presented = presented_x11_frames.presented_frame(&surface, now, x11_frame_policy);
         let texture = match close_capture_source(is_x11, presented.is_some()) {
             CloseCaptureSource::PresentedX11 => {
                 crate::render::window_texture::capture_decorated_presented(
                     renderer,
                     window,
-                    presented.expect("capture source checked presented frame"),
+                    presented
+                        .expect("capture source checked presented frame")
+                        .frame,
                     None,
                     &decorations,
                     &font,
@@ -326,8 +361,8 @@ pub(crate) fn start<D: SessionDriver>(session: &mut Session<D>, surface: &WlSurf
 /// X11 client-owned controls do not expose close intent to the compositor, so
 /// their first authoritative close boundary is `UnmapNotify`. The client's
 /// current buffer may already contain teardown pixels at that point, so the
-/// capture uses the last frame promoted at the backend's presentation
-/// boundary and activates it before the live window leaves `Space`.
+/// capture uses the newest sufficiently old frame from the backend-confirmed
+/// presentation history and activates it before the live window leaves `Space`.
 pub(crate) fn capture_and_activate_before_unmap<D: SessionDriver>(
     session: &mut Session<D>,
     window: &Window,
@@ -339,7 +374,12 @@ pub(crate) fn capture_and_activate_before_unmap<D: SessionDriver>(
         session.xwayland.forget_presented_frame(&surface);
         return true;
     }
-    let captured = capture_window(session, window);
+    let captured = capture_window_inner(
+        session,
+        window,
+        false,
+        crate::render::presented_x11::PresentedX11FramePolicy::PreTeardown,
+    );
     session.xwayland.forget_presented_frame(&surface);
     if !captured {
         return false;

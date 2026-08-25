@@ -29,19 +29,22 @@ impl<D: SessionDriver> State<D> {
         }
     }
 
-    pub fn presented_frame(
+    pub(crate) fn presented_frame(
         &self,
         surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
-    ) -> Option<&crate::render::presented_x11::PresentedX11Frame> {
-        self.presented_frames.get(surface)
+        now: std::time::Duration,
+        policy: crate::render::presented_x11::PresentedX11FramePolicy,
+    ) -> Option<crate::render::presented_x11::PresentedX11FrameSelection<'_>> {
+        self.presented_frames.select(surface, now, policy)
     }
 
     pub fn promote_presented_frames(
         &mut self,
         frames: Vec<crate::render::presented_x11::PresentedX11Frame>,
         space: &Space<Window>,
+        presented_at: std::time::Duration,
     ) {
-        self.presented_frames.promote(frames, space);
+        self.presented_frames.promote(frames, space, presented_at);
     }
 
     pub fn forget_presented_frame(
@@ -92,6 +95,13 @@ impl<D: SessionDriver> State<D> {
     ) -> bool {
         false
     }
+}
+
+pub(crate) fn trace_close_frame_selection<D: SessionDriver>(
+    _session: &mut Session<D>,
+    _window: &Window,
+    _details: std::fmt::Arguments<'_>,
+) {
 }
 
 pub fn start<D>(
