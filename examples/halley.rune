@@ -14,6 +14,8 @@
 # use their built-in defaults. `keybinds:` is required because it defines the
 # compositor's input map. Strings are quoted, booleans are `true` or `false`,
 # and each nested block ends with `end`.
+# Nested Rune `gather` dependencies are watched with the root file, and the
+# watched dependency set is refreshed after every accepted reload.
 
 # Optional environment variables for applications launched by Halley.
 # Additions and changes apply to future launches after a valid live reload;
@@ -770,9 +772,10 @@ end
 
 # A keybind entry is `"chord" "action"`. Continuous built-in actions repeat
 # automatically. Override any keyboard bind on one line with
-# `"chord" "action" with repeat true|false`. Modifiers are matched exactly:
-# extra held modifiers prevent a chord from matching unless they are written
-# into that chord. Trigger names are case-insensitive.
+# `"chord" "action" with repeat true|false`. A binding may also use
+# `with scope "global|field|cluster|tile|stack"`. Modifiers are matched
+# exactly: extra held modifiers prevent a chord from matching unless they are
+# written into that chord. Trigger names are case-insensitive.
 keybinds:
   # `$var.mod` in chord names expands to this modifier. Accepted values are
   # "super", "alt", "ctrl", and "shift", or an exact side such as
@@ -803,6 +806,7 @@ keybinds:
   "$var.mod+shift+right" "monitor-focus right"
   "$var.mod+shift+up" "monitor-focus up"
   "$var.mod+shift+down" "monitor-focus down"
+  # Example exact connector target: "monitor-focus DP-1".
 
   # Create a cluster, switch the active cluster's layout, or open a numbered
   # cluster slot on the currently selected monitor. Press an open slot again
@@ -842,18 +846,16 @@ keybinds:
   "$var.mod+alt+up" "node-move up"
   "$var.mod+alt+down" "node-move down"
 
-  # Reorder the focused tile with its nearest neighbour in that direction.
-  "$var.mod+ctrl+left" "cluster-tile-swap-left"
-  "$var.mod+ctrl+right" "cluster-tile-swap-right"
-  "$var.mod+ctrl+up" "cluster-tile-swap-up"
-  "$var.mod+ctrl+down" "cluster-tile-swap-down"
-
-  # The same chords resize the focused window in the Field. Binding scopes
-  # select these there and the tile-swap actions inside a tiling cluster.
-  "$var.mod+ctrl+left" "resize-window-left"
-  "$var.mod+ctrl+right" "resize-window-right"
-  "$var.mod+ctrl+up" "resize-window-up"
-  "$var.mod+ctrl+down" "resize-window-down"
+  # The same Mod+Ctrl+Arrow chords resize in the Field and reorder tiles in a
+  # tiling cluster. Explicit non-overlapping scopes retain both bindings.
+  "$var.mod+ctrl+left" "cluster-tile-swap-left" with scope "tile"
+  "$var.mod+ctrl+right" "cluster-tile-swap-right" with scope "tile"
+  "$var.mod+ctrl+up" "cluster-tile-swap-up" with scope "tile"
+  "$var.mod+ctrl+down" "cluster-tile-swap-down" with scope "tile"
+  "$var.mod+ctrl+left" "resize-window-left" with scope "field"
+  "$var.mod+ctrl+right" "resize-window-right" with scope "field"
+  "$var.mod+ctrl+up" "resize-window-up" with scope "field"
+  "$var.mod+ctrl+down" "resize-window-down" with scope "field"
 
   # Re-read this file immediately. Valid saves are still watched automatically.
   "$var.mod+shift+r" "reload"
