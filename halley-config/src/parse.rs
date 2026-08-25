@@ -68,7 +68,7 @@ fn parse_direction(value: &str) -> Option<crate::Direction> {
     }
 }
 
-fn parse_action(s: &str) -> Action {
+pub(crate) fn parse_action(s: &str) -> Action {
     let words = s.split_whitespace().collect::<Vec<_>>();
     if let ["cluster", "slot", slot] = words.as_slice()
         && let Ok(slot) = slot.parse::<u8>()

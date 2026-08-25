@@ -172,8 +172,12 @@ works as expected. Other held modifiers still have to appear in the chord.
 | Wi-Fi, Bluetooth | `XF86WLAN`, `XF86Bluetooth` |
 | Touchpad toggle/on/off buttons | `XF86TouchpadToggle`, `XF86TouchpadOn`, `XF86TouchpadOff` |
 
-These are keyboard buttons. Touchpad scroll gestures are not configurable
-triggers yet.
+These are keyboard buttons. Touchpad gestures use the action maps under
+`input.gestures`: `swipe-DIRECTION-FINGERS`,
+`apogee-swipe-DIRECTION-FINGERS`, and `hold-FINGERS`. Their values accept the
+same built-in compositor actions as keybinds; arbitrary shell commands and
+pointer-grab actions are rejected. `pan-fingers` remains reserved for
+continuous camera panning.
 
 ## Mouse buttons and wheel
 

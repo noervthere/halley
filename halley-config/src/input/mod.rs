@@ -11,7 +11,10 @@ pub use devices::{
     AccelProfile, ClickMethod, DeviceKind, DeviceOverride, DeviceSettings, MouseSettings,
     ScrollMethod, TapButtonMap,
 };
-pub use gestures::{GestureModifier, GestureScope, GestureSettings, ScrollPanMode};
+pub use gestures::{
+    GestureAction, GestureBinding, GestureHoldBinding, GestureModifier, GestureScope,
+    GestureSettings, GestureSwipeDirection, ScrollPanMode,
+};
 
 const DEFAULT_REPEAT_RATE: i32 = 30;
 const DEFAULT_REPEAT_DELAY: i32 = 500;
@@ -222,27 +225,7 @@ fn parse_keyboard(fields: &[ObjectItem]) -> Result<KeyboardConfig, InputParseErr
 
 fn parse_gestures(fields: &[ObjectItem]) -> Result<GestureSettings, InputParseError> {
     let path = "input.gestures";
-    validate_fields(
-        fields,
-        &[
-            "enabled",
-            "client-passthrough",
-            "touch-passthrough",
-            "pinch-to-zoom",
-            "pinch-scope",
-            "compositor-scope",
-            "modifier",
-            "scroll-pan",
-            "pan-fingers",
-            "pan-momentum",
-            "pan-decay-rate",
-            "flick-min-px-per-s",
-            "swipe-threshold-px",
-            "swipe-up-4",
-            "apogee-swipe-down-4",
-        ],
-        path,
-    )?;
+    validate_gesture_fields(fields, path)?;
     let defaults = GestureSettings::default();
     let pan_fingers = optional_u32(fields, "pan-fingers", path)?.unwrap_or(defaults.pan_fingers);
     if pan_fingers > 32 {
@@ -271,18 +254,8 @@ fn parse_gestures(fields: &[ObjectItem]) -> Result<GestureSettings, InputParseEr
             "input.gestures.swipe-threshold-px must be between 8 and 10000".to_string(),
         ));
     }
-    for (key, expected) in [
-        ("swipe-up-4", "apogee-open"),
-        ("apogee-swipe-down-4", "apogee-close"),
-    ] {
-        if let Some(value) = optional_string(fields, key, path)?
-            && value != expected
-        {
-            return Err(InputParseError(format!(
-                "{path}.{key} must be {expected:?}, got {value:?}"
-            )));
-        }
-    }
+    let (swipe_bindings, apogee_swipe_bindings, hold_bindings) =
+        parse_gesture_bindings(fields, path)?;
 
     Ok(GestureSettings {
         enabled: optional_bool(fields, "enabled", path)?.unwrap_or(defaults.enabled),
@@ -311,9 +284,157 @@ fn parse_gestures(fields: &[ObjectItem]) -> Result<GestureSettings, InputParseEr
         pan_decay_rate: pan_decay_rate as f32,
         flick_min_px_per_s: flick_min_px_per_s as f32,
         swipe_threshold_px: swipe_threshold_px as f32,
-        apogee_open_fingers: defaults.apogee_open_fingers,
-        apogee_close_fingers: defaults.apogee_close_fingers,
+        swipe_bindings: if swipe_bindings.is_empty() {
+            defaults.swipe_bindings
+        } else {
+            swipe_bindings
+        },
+        apogee_swipe_bindings: if apogee_swipe_bindings.is_empty() {
+            defaults.apogee_swipe_bindings
+        } else {
+            apogee_swipe_bindings
+        },
+        hold_bindings,
     })
+}
+
+enum GestureBindingKey {
+    Swipe {
+        apogee: bool,
+        direction: GestureSwipeDirection,
+        fingers: u32,
+    },
+    Hold {
+        fingers: u32,
+    },
+}
+
+fn parse_gesture_binding_key(key: &str) -> Option<GestureBindingKey> {
+    if let Some(fingers) = key.strip_prefix("hold-") {
+        let fingers = fingers.parse::<u32>().ok()?;
+        return (1..=32)
+            .contains(&fingers)
+            .then_some(GestureBindingKey::Hold { fingers });
+    }
+    let (apogee, suffix) = if let Some(suffix) = key.strip_prefix("apogee-swipe-") {
+        (true, suffix)
+    } else {
+        (false, key.strip_prefix("swipe-")?)
+    };
+    let (direction, fingers) = suffix.rsplit_once('-')?;
+    let direction = match direction {
+        "up" => GestureSwipeDirection::Up,
+        "down" => GestureSwipeDirection::Down,
+        "left" => GestureSwipeDirection::Left,
+        "right" => GestureSwipeDirection::Right,
+        _ => return None,
+    };
+    let fingers = fingers.parse::<u32>().ok()?;
+    (1..=32)
+        .contains(&fingers)
+        .then_some(GestureBindingKey::Swipe {
+            apogee,
+            direction,
+            fingers,
+        })
+}
+
+fn validate_gesture_fields(fields: &[ObjectItem], path: &str) -> Result<(), InputParseError> {
+    const FIXED: &[&str] = &[
+        "enabled",
+        "client-passthrough",
+        "touch-passthrough",
+        "pinch-to-zoom",
+        "pinch-scope",
+        "compositor-scope",
+        "modifier",
+        "scroll-pan",
+        "pan-fingers",
+        "pan-momentum",
+        "pan-decay-rate",
+        "flick-min-px-per-s",
+        "swipe-threshold-px",
+    ];
+    let mut seen = HashSet::new();
+    for item in fields {
+        let ObjectItem::Assign(key, _) = item else {
+            continue;
+        };
+        if !FIXED.contains(&key.as_str()) && parse_gesture_binding_key(key).is_none() {
+            return Err(InputParseError(format!(
+                "{path}: unsupported field {key:?}"
+            )));
+        }
+        if !seen.insert(key) {
+            return Err(InputParseError(format!("{path}: duplicate field {key:?}")));
+        }
+    }
+    Ok(())
+}
+
+fn parse_gesture_action(value: &Value, path: &str) -> Result<GestureAction, InputParseError> {
+    let Value::String(value) = value else {
+        return Err(InputParseError(format!("{path} must be a string")));
+    };
+    match value.as_str() {
+        "apogee-open" | "overview-open" => Ok(GestureAction::ApogeeOpen),
+        "apogee-close" | "overview-close" => Ok(GestureAction::ApogeeClose),
+        _ => match crate::parse::parse_action(value) {
+            crate::Action::Spawn(_)
+            | crate::Action::PointerMoveWindow
+            | crate::Action::PointerResizeWindow
+            | crate::Action::PointerPanField => Err(InputParseError(format!(
+                "{path}: unsupported gesture action {value:?}"
+            ))),
+            action => Ok(GestureAction::Compositor(action)),
+        },
+    }
+}
+
+type ParsedGestureBindings = (
+    Vec<GestureBinding>,
+    Vec<GestureBinding>,
+    Vec<GestureHoldBinding>,
+);
+
+fn parse_gesture_bindings(
+    fields: &[ObjectItem],
+    path: &str,
+) -> Result<ParsedGestureBindings, InputParseError> {
+    let mut swipe = Vec::new();
+    let mut apogee_swipe = Vec::new();
+    let mut hold = Vec::new();
+    for item in fields {
+        let ObjectItem::Assign(key, value) = item else {
+            continue;
+        };
+        let Some(binding) = parse_gesture_binding_key(key) else {
+            continue;
+        };
+        let action = parse_gesture_action(value, &format!("{path}.{key}"))?;
+        match binding {
+            GestureBindingKey::Swipe {
+                apogee,
+                direction,
+                fingers,
+            } => {
+                let binding = GestureBinding {
+                    direction,
+                    fingers,
+                    action,
+                };
+                if apogee {
+                    apogee_swipe.push(binding);
+                } else {
+                    swipe.push(binding);
+                }
+            }
+            GestureBindingKey::Hold { fingers } => {
+                hold.push(GestureHoldBinding { fingers, action });
+            }
+        }
+    }
+    Ok((swipe, apogee_swipe, hold))
 }
 
 fn parse_scope(
@@ -827,6 +948,60 @@ end
             input.touchscreen.calibration_matrix,
             Some([1.0, 0.0, 0.0, 0.0, 1.0, 0.0])
         );
+    }
+
+    #[test]
+    fn parses_arbitrary_swipe_apogee_swipe_and_hold_bindings() {
+        let input = parse(
+            r#"
+input:
+  gestures:
+    swipe-left-5 "trail-prev"
+    swipe-right-5 "monitor focus DP-1"
+    apogee-swipe-up-3 "toggle-state"
+    hold-2 "zoom-reset"
+  end
+end
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(input.gestures.swipe_bindings.len(), 2);
+        assert!(input.gestures.swipe_bindings.iter().any(|binding| {
+            binding.direction == GestureSwipeDirection::Left
+                && binding.fingers == 5
+                && binding.action
+                    == GestureAction::Compositor(crate::Action::Trail(
+                        crate::TrailDirection::Previous,
+                    ))
+        }));
+        assert!(input.gestures.swipe_bindings.iter().any(|binding| {
+            binding.direction == GestureSwipeDirection::Right
+                && binding.action
+                    == GestureAction::Compositor(crate::Action::MonitorFocus(
+                        crate::MonitorTarget::Output("DP-1".into()),
+                    ))
+        }));
+        assert_eq!(input.gestures.apogee_swipe_bindings.len(), 1);
+        assert_eq!(input.gestures.hold_bindings.len(), 1);
+        assert_eq!(
+            input.gestures.hold_bindings[0].action,
+            GestureAction::Compositor(crate::Action::ZoomReset)
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_gesture_bindings_and_non_compositor_actions() {
+        for (binding, expected) in [
+            ("swipe-sideways-3 \"zoom-reset\"", "unsupported field"),
+            ("hold-0 \"zoom-reset\"", "unsupported field"),
+            ("hold-3 \"notify-send hi\"", "unsupported gesture action"),
+            ("hold-3 \"move-window\"", "unsupported gesture action"),
+        ] {
+            let error =
+                parse(&format!("input:\n  gestures:\n    {binding}\n  end\nend\n")).unwrap_err();
+            assert!(error.to_string().contains(expected), "{error}");
+        }
     }
 
     #[test]

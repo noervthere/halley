@@ -21,7 +21,7 @@ use crate::input::{
 };
 use crate::wayland;
 
-mod actions;
+pub(crate) mod actions;
 mod keyboard;
 pub(crate) mod repeat;
 

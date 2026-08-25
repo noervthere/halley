@@ -131,7 +131,7 @@ input:
     # client grab always remains client-owned.
     pinch-to-zoom true
     pinch-scope "empty-field"      # "empty-field" or "global"
-    compositor-scope "empty-field" # three-finger pan scope
+    compositor-scope "empty-field" # camera pan and ordinary action gestures
     modifier "mod"                 # keybind Mod; also "off" or an exact modifier
 
     # Two-finger touchpad scrolling pans only when it begins on empty field.
@@ -145,11 +145,18 @@ input:
     pan-decay-rate 6.0
     flick-min-px-per-s 200.0
 
-    # Four-finger Apogee gestures are global unless a pointer constraint or
+    # Discrete swipes use `swipe-DIRECTION-FINGERS`; while Apogee is open they
+    # use the separate `apogee-swipe-DIRECTION-FINGERS` map. Holds use
+    # `hold-FINGERS`. Values may be any built-in compositor keybind action.
+    # A configured binding replaces the defaults in its normal/Apogee map.
+    # Apogee open/close actions are global unless a pointer constraint or
     # client grab owns the sequence. Opening is interactive and reversible.
     swipe-threshold-px 120.0
     swipe-up-4 "apogee-open"
     apogee-swipe-down-4 "apogee-close"
+    # swipe-left-4 "trail-prev"
+    # swipe-right-4 "trail-next"
+    # hold-3 "toggle-state"
   end
 
   touchpad:

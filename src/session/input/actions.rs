@@ -133,7 +133,7 @@ fn toggle_focused_cluster_float<D: SessionDriver>(
     session.request_redraw();
 }
 
-pub(super) fn dispatch<D: SessionDriver>(
+pub(crate) fn dispatch<D: SessionDriver>(
     session: &mut Session<D>,
     action: halley_config::Action,
     socket_name: &OsStr,

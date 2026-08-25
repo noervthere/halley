@@ -1,4 +1,4 @@
-use crate::ModifierKey;
+use crate::{Action, ModifierKey};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum GestureScope {
@@ -22,6 +22,34 @@ pub enum GestureModifier {
     Explicit(ModifierKey),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GestureSwipeDirection {
+    Up,
+    Down,
+    Left,
+    Right,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GestureAction {
+    ApogeeOpen,
+    ApogeeClose,
+    Compositor(Action),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GestureBinding {
+    pub direction: GestureSwipeDirection,
+    pub fingers: u32,
+    pub action: GestureAction,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GestureHoldBinding {
+    pub fingers: u32,
+    pub action: GestureAction,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct GestureSettings {
     pub enabled: bool,
@@ -37,8 +65,9 @@ pub struct GestureSettings {
     pub pan_decay_rate: f32,
     pub flick_min_px_per_s: f32,
     pub swipe_threshold_px: f32,
-    pub apogee_open_fingers: u32,
-    pub apogee_close_fingers: u32,
+    pub swipe_bindings: Vec<GestureBinding>,
+    pub apogee_swipe_bindings: Vec<GestureBinding>,
+    pub hold_bindings: Vec<GestureHoldBinding>,
 }
 
 impl Default for GestureSettings {
@@ -57,8 +86,17 @@ impl Default for GestureSettings {
             pan_decay_rate: 6.0,
             flick_min_px_per_s: 200.0,
             swipe_threshold_px: 120.0,
-            apogee_open_fingers: 4,
-            apogee_close_fingers: 4,
+            swipe_bindings: vec![GestureBinding {
+                direction: GestureSwipeDirection::Up,
+                fingers: 4,
+                action: GestureAction::ApogeeOpen,
+            }],
+            apogee_swipe_bindings: vec![GestureBinding {
+                direction: GestureSwipeDirection::Down,
+                fingers: 4,
+                action: GestureAction::ApogeeClose,
+            }],
+            hold_bindings: Vec::new(),
         }
     }
 }

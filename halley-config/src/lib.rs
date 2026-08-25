@@ -62,8 +62,9 @@ pub use field::{
 pub use font::{Font, parse_font};
 pub use input::{
     AccelProfile, ClickMethod, DeviceKind, DeviceOverride, DeviceSettings, FocusMode,
-    GestureModifier, GestureScope, GestureSettings, Input, InputParseError, KeyboardConfig,
-    MouseSettings, ScrollMethod, ScrollPanMode, TapButtonMap, parse_input,
+    GestureAction, GestureBinding, GestureHoldBinding, GestureModifier, GestureScope,
+    GestureSettings, GestureSwipeDirection, Input, InputParseError, KeyboardConfig, MouseSettings,
+    ScrollMethod, ScrollPanMode, TapButtonMap, parse_input,
 };
 pub use keybinds::{
     Action, BindingScope, ClusterDirection, Direction, FocusCycleDirection, Keybind, Keybinds,
