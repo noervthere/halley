@@ -68,16 +68,22 @@ impl Tracker {
         &mut self,
         generation: u64,
         modifiers: &ModifiersState,
+        sides: crate::input::SideModifiers,
+        context: crate::input::BindingContext,
     ) -> Option<(halley_config::Action, Duration)> {
         let active = self
             .active
             .as_ref()
             .filter(|active| active.generation == generation)?;
-        if !crate::input::keyboard_modifiers_match(
-            modifiers,
-            active.bind.modifiers,
-            active.bind.trigger,
-        ) {
+        if !context.allows(active.bind.scope)
+            || !crate::input::keyboard_modifiers_match(
+                modifiers,
+                sides,
+                active.bind.modifiers,
+                active.bind.trigger,
+                active.keycode,
+            )
+        {
             self.cancel();
             return None;
         }
@@ -146,7 +152,13 @@ fn repeat_tick<D: SessionDriver>(session: &mut Session<D>, generation: u64) -> T
         .get_keyboard()
         .expect("keyboard capability added at seat setup")
         .modifier_state();
-    let Some((action, interval)) = session.key_repeat.tracker.tick(generation, &modifiers) else {
+    let sides = session.keyboard.side_modifiers;
+    let context = super::keyboard_binding_context(session);
+    let Some((action, interval)) = session
+        .key_repeat
+        .tracker
+        .tick(generation, &modifiers, sides, context)
+    else {
         session.key_repeat.timer = None;
         return TimeoutAction::Drop;
     };
@@ -198,6 +210,7 @@ mod tests {
 
     fn bind(repeat: bool) -> ResolvedBind {
         ResolvedBind {
+            scope: halley_config::BindingScope::Field,
             modifiers: Modifiers {
                 super_key: true,
                 ..Modifiers::default()
@@ -219,7 +232,17 @@ mod tests {
             logo: true,
             ..ModifiersState::default()
         };
-        let (_, interval) = tracker.tick(generation, &modifiers).unwrap();
+        let (_, interval) = tracker
+            .tick(
+                generation,
+                &modifiers,
+                crate::input::SideModifiers {
+                    left_super: true,
+                    ..Default::default()
+                },
+                crate::input::BindingContext::field(),
+            )
+            .unwrap();
         assert_eq!(interval, Duration::from_millis(50));
     }
 
@@ -245,14 +268,32 @@ mod tests {
             .start(Keycode::new(113), bind(true), 500, 30)
             .unwrap();
         let no_modifiers = ModifiersState::default();
-        assert!(tracker.tick(first, &no_modifiers).is_none());
+        assert!(
+            tracker
+                .tick(
+                    first,
+                    &no_modifiers,
+                    Default::default(),
+                    crate::input::BindingContext::field(),
+                )
+                .is_none()
+        );
 
         let (second, _) = tracker
             .start(Keycode::new(113), bind(true), 500, 30)
             .unwrap();
         assert!(!tracker.release(Keycode::new(114)));
         assert!(tracker.release(Keycode::new(113)));
-        assert!(tracker.tick(second, &no_modifiers).is_none());
+        assert!(
+            tracker
+                .tick(
+                    second,
+                    &no_modifiers,
+                    Default::default(),
+                    crate::input::BindingContext::field(),
+                )
+                .is_none()
+        );
 
         let (third, _) = tracker
             .start(Keycode::new(113), bind(true), 500, 30)
@@ -264,7 +305,25 @@ mod tests {
             logo: true,
             ..ModifiersState::default()
         };
-        assert!(tracker.tick(third, &modifiers).is_none());
-        assert!(tracker.tick(fourth, &modifiers).is_some());
+        assert!(
+            tracker
+                .tick(
+                    third,
+                    &modifiers,
+                    Default::default(),
+                    crate::input::BindingContext::field(),
+                )
+                .is_none()
+        );
+        assert!(
+            tracker
+                .tick(
+                    fourth,
+                    &modifiers,
+                    Default::default(),
+                    crate::input::BindingContext::field(),
+                )
+                .is_some()
+        );
     }
 }

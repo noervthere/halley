@@ -66,8 +66,8 @@ pub use input::{
     MouseSettings, ScrollMethod, ScrollPanMode, TapButtonMap, parse_input,
 };
 pub use keybinds::{
-    Action, ClusterDirection, Direction, FocusCycleDirection, Keybind, Keybinds, ModifierKey,
-    Modifiers, TrailDirection,
+    Action, BindingScope, ClusterDirection, Direction, FocusCycleDirection, Keybind, Keybinds,
+    ModifierKey, Modifiers, MonitorTarget, TrailDirection,
 };
 pub use launch::{Autostart, LaunchConfigError, parse_autostart, parse_env};
 pub use nodes::{

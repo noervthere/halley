@@ -1,5 +1,32 @@
 use super::*;
 
+const KEYBOARD_RESIZE_STEP: i32 = 80;
+const KEYBOARD_RESIZE_MIN_WIDTH: i32 = 96;
+const KEYBOARD_RESIZE_MIN_HEIGHT: i32 = 72;
+
+fn keyboard_resize_dimensions(
+    width: i32,
+    height: i32,
+    direction: halley_config::Direction,
+) -> (i32, i32) {
+    match direction {
+        halley_config::Direction::Left => (
+            width
+                .saturating_sub(KEYBOARD_RESIZE_STEP)
+                .max(KEYBOARD_RESIZE_MIN_WIDTH),
+            height,
+        ),
+        halley_config::Direction::Right => (width.saturating_add(KEYBOARD_RESIZE_STEP), height),
+        halley_config::Direction::Up => (
+            width,
+            height
+                .saturating_sub(KEYBOARD_RESIZE_STEP)
+                .max(KEYBOARD_RESIZE_MIN_HEIGHT),
+        ),
+        halley_config::Direction::Down => (width, height.saturating_add(KEYBOARD_RESIZE_STEP)),
+    }
+}
+
 pub fn handle_request<D: crate::session::SessionDriver>(
     session: &mut crate::session::Session<D>,
     request: halley_ipc::NodeRequest,
@@ -254,6 +281,52 @@ pub(crate) fn move_selected_direction<D: crate::session::SessionDriver>(
     move_node(session, id, direction)
 }
 
+pub(crate) fn resize_selected_direction<D: crate::session::SessionDriver>(
+    session: &mut crate::session::Session<D>,
+    direction: halley_config::Direction,
+    output: Option<&str>,
+) -> bool {
+    session.nodes.sync_from_space(&session.wayland.space);
+    let Ok(id) = resolve(session, None, output) else {
+        return false;
+    };
+    let Some(record) = session.nodes.record(id).cloned() else {
+        return false;
+    };
+    if record.collapsed
+        || crate::session::node_user_pinned(session, id)
+        || session.clusters.is_member(id)
+        || session.fullscreen.is_fullscreen_or_pending(&record.surface)
+        || session.maximize.contains(&record.surface)
+    {
+        return false;
+    }
+    let Some(current) = session.wayland.space.element_geometry(&record.window) else {
+        return false;
+    };
+    let requested = keyboard_resize_dimensions(current.size.w, current.size.h, direction).into();
+    let size = if crate::xwayland::is_x11(&record.window) {
+        crate::xwayland::constrain_window_size(&record.window, requested)
+    } else {
+        requested
+    };
+    if size == current.size {
+        return false;
+    }
+    if let Some(toplevel) = record.window.toplevel() {
+        toplevel.with_pending_state(|pending| pending.size = Some(size));
+        toplevel.send_pending_configure();
+    } else {
+        crate::xwayland::configure_window(
+            session,
+            &record.window,
+            Rectangle::new(current.loc, size),
+        );
+    }
+    session.request_redraw();
+    true
+}
+
 fn move_node<D: crate::session::SessionDriver>(
     session: &mut crate::session::Session<D>,
     id: NodeId,
@@ -440,4 +513,37 @@ fn relation_metadata<D: crate::session::SessionDriver>(
         modal,
         relation,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keyboard_resize_uses_directional_axes_and_safe_minima() {
+        assert_eq!(
+            keyboard_resize_dimensions(800, 600, halley_config::Direction::Left),
+            (720, 600)
+        );
+        assert_eq!(
+            keyboard_resize_dimensions(800, 600, halley_config::Direction::Right),
+            (880, 600)
+        );
+        assert_eq!(
+            keyboard_resize_dimensions(800, 600, halley_config::Direction::Up),
+            (800, 520)
+        );
+        assert_eq!(
+            keyboard_resize_dimensions(800, 600, halley_config::Direction::Down),
+            (800, 680)
+        );
+        assert_eq!(
+            keyboard_resize_dimensions(100, 80, halley_config::Direction::Left),
+            (KEYBOARD_RESIZE_MIN_WIDTH, 80)
+        );
+        assert_eq!(
+            keyboard_resize_dimensions(100, 80, halley_config::Direction::Up),
+            (100, KEYBOARD_RESIZE_MIN_HEIGHT)
+        );
+    }
 }

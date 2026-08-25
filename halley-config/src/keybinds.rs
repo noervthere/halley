@@ -1,29 +1,50 @@
-/// The base "mod" key a keybind chord is built on. Just the four keys that
-/// matter for a compositor keybind (not evdev/xkb keycodes - those don't
-/// exist anywhere in this crate, and won't until `halley-wl` does real
-/// input handling).
+/// The base `mod` key a keybind chord is built on. Generic and physical-side
+/// variants are retained so `mod "lsuper"` remains distinct from `super`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModifierKey {
     Super,
+    LeftSuper,
+    RightSuper,
     Alt,
+    LeftAlt,
+    RightAlt,
     Ctrl,
+    LeftCtrl,
+    RightCtrl,
     Shift,
+    LeftShift,
+    RightShift,
 }
 
 /// A resolved modifier combination for a single keybind (the base `mod` plus
 /// any extra modifiers in the chord, e.g. `mod+shift+e`).
 ///
-/// Deliberately flat, unlike old halley's `KeyModifiers` (which split every
-/// modifier into generic/left/right bools to match real evdev key-press
-/// tracking) - that granularity doesn't apply here yet, since no input
-/// handling exists in this crate or `halley-wl` at all. Add it back exactly
-/// when real per-side key tracking is built, not before.
+/// Generic flags match either physical side. Side flags require that exact
+/// key, using the compositor's raw evdev/XKB keycode tracking.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Modifiers {
     pub shift: bool,
+    pub left_shift: bool,
+    pub right_shift: bool,
     pub ctrl: bool,
+    pub left_ctrl: bool,
+    pub right_ctrl: bool,
     pub alt: bool,
+    pub left_alt: bool,
+    pub right_alt: bool,
     pub super_key: bool,
+    pub left_super: bool,
+    pub right_super: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BindingScope {
+    #[default]
+    Global,
+    Field,
+    Cluster,
+    Tile,
+    Stack,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,6 +65,12 @@ pub enum Direction {
 pub enum TrailDirection {
     Previous,
     Next,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MonitorTarget {
+    Direction(Direction),
+    Output(String),
 }
 
 /// Compatibility name retained for callers written before directional
@@ -73,6 +100,9 @@ pub enum Action {
     FocusDirection(Direction),
     /// Move the focused or most-recent Field node by one placement step.
     MoveNode(Direction),
+    /// Resize the focused Field window by one placement step. Left and up
+    /// shrink; right and down grow.
+    ResizeWindow(Direction),
     CenterLastFocused,
     ClusterMode,
     ClusterLayoutCycle,
@@ -80,7 +110,8 @@ pub enum Action {
     ClusterSlot(u8),
     ClusterTileFocus(Direction),
     ClusterTileSwap(Direction),
-    MonitorFocus(Direction),
+    MonitorFocus(MonitorTarget),
+    Reload,
     OpenTerminal,
     ZoomIn,
     ZoomOut,
@@ -102,6 +133,7 @@ impl Action {
                 | Self::Trail(_)
                 | Self::FocusDirection(_)
                 | Self::MoveNode(_)
+                | Self::ResizeWindow(_)
                 | Self::ClusterTileFocus(_)
                 | Self::ClusterTileSwap(_)
                 | Self::MonitorFocus(_)
@@ -109,13 +141,24 @@ impl Action {
                 | Self::ZoomOut
         )
     }
+
+    pub fn default_scope(&self) -> BindingScope {
+        match self {
+            Self::MoveNode(_) | Self::ResizeWindow(_) | Self::ToggleFocusedPin => {
+                BindingScope::Field
+            }
+            Self::ClusterLayoutCycle | Self::ClusterToggleFloat => BindingScope::Cluster,
+            Self::ClusterTileFocus(_) | Self::ClusterTileSwap(_) => BindingScope::Tile,
+            _ => BindingScope::Global,
+        }
+    }
 }
 
-/// A single parsed keybind: the modifier combination, the key name (as
-/// written in config - e.g. `"e"`, `"return"` - not a resolved keycode),
-/// and the action it triggers.
+/// A single parsed keybind, including the presentation context in which it is
+/// active. Duplicate chords are valid when their scopes do not overlap.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Keybind {
+    pub scope: BindingScope,
     pub modifiers: Modifiers,
     pub key: String,
     pub action: Action,
@@ -149,7 +192,7 @@ mod tests {
     fn default_matches_the_shipped_keybinds() {
         let kb = Keybinds::default();
         assert_eq!(kb.modifier, ModifierKey::Super);
-        assert_eq!(kb.binds.len(), 52);
+        assert_eq!(kb.binds.len(), 57);
 
         let previous = kb
             .binds
@@ -166,6 +209,37 @@ mod tests {
             .expect("next Trail bind present");
         assert_eq!(next.key, "period");
         assert!(next.repeat);
+
+        for direction in [
+            Direction::Left,
+            Direction::Right,
+            Direction::Up,
+            Direction::Down,
+        ] {
+            let resize = kb
+                .binds
+                .iter()
+                .find(|bind| bind.action == Action::ResizeWindow(direction))
+                .expect("Field resize bind present");
+            assert_eq!(resize.scope, BindingScope::Field);
+            assert!(resize.modifiers.ctrl);
+            assert!(resize.repeat);
+
+            let swap = kb
+                .binds
+                .iter()
+                .find(|bind| bind.action == Action::ClusterTileSwap(direction))
+                .expect("tile swap bind present");
+            assert_eq!(swap.scope, BindingScope::Tile);
+        }
+
+        let reload = kb
+            .binds
+            .iter()
+            .find(|bind| bind.action == Action::Reload)
+            .expect("manual reload bind present");
+        assert_eq!(reload.scope, BindingScope::Global);
+        assert!(!reload.repeat);
 
         let lift = kb
             .binds
@@ -321,7 +395,9 @@ mod tests {
             let monitor = kb
                 .binds
                 .iter()
-                .find(|bind| bind.action == Action::MonitorFocus(direction))
+                .find(|bind| {
+                    bind.action == Action::MonitorFocus(MonitorTarget::Direction(direction))
+                })
                 .unwrap();
             assert!(monitor.modifiers.super_key);
             assert!(!monitor.modifiers.ctrl);
@@ -386,7 +462,7 @@ mod tests {
             Action::MoveNode(Direction::Right),
             Action::ClusterTileFocus(Direction::Up),
             Action::ClusterTileSwap(Direction::Down),
-            Action::MonitorFocus(Direction::Left),
+            Action::MonitorFocus(MonitorTarget::Direction(Direction::Left)),
             Action::ZoomIn,
             Action::ZoomOut,
         ] {

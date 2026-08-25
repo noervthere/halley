@@ -139,6 +139,40 @@ pub(super) fn bindings_enabled<D: SessionDriver>(session: &Session<D>) -> bool {
     shortcut_policy_allows_bindings(bypasses_shortcuts, inhibitor_active)
 }
 
+pub(super) fn binding_context_for_output<D: SessionDriver>(
+    session: &Session<D>,
+    output_name: Option<&str>,
+) -> crate::input::BindingContext {
+    let Some(output_name) = output_name else {
+        return crate::input::BindingContext::default();
+    };
+    let Some(cluster) = session.clusters.active_on(output_name) else {
+        return crate::input::BindingContext::field();
+    };
+    let tiling = session.clusters.metadata(cluster).is_some_and(|metadata| {
+        metadata.layout == halley_core::cluster::layout::ClusterWorkspaceLayoutKind::Tiling
+    });
+    crate::input::BindingContext::cluster(tiling)
+}
+
+pub(super) fn keyboard_binding_context<D: SessionDriver>(
+    session: &Session<D>,
+) -> crate::input::BindingContext {
+    let selected =
+        crate::wayland::focus::selected_output(&session.wayland).map(|output| output.name());
+    let pointer = session
+        .wayland
+        .space
+        .output_under(session.pointer.position())
+        .next()
+        .map(|output| output.name());
+    let output = match session.settings.input.focus_mode {
+        halley_config::FocusMode::Click => selected,
+        halley_config::FocusMode::Hover => pointer.or(selected),
+    };
+    binding_context_for_output(session, output.as_deref())
+}
+
 fn output_at_pointer(
     space: &Space<Window>,
     position: (f64, f64),
@@ -754,17 +788,36 @@ fn stacking_cycle_direction(
     }
 }
 
-fn focus_adjacent_output<D: SessionDriver>(
+fn focus_output_target<D: SessionDriver>(
     session: &mut Session<D>,
-    direction: halley_config::Direction,
+    target: halley_config::MonitorTarget,
 ) {
-    let Some(current) = crate::wayland::focus::selected_output(&session.wayland).cloned() else {
-        return;
-    };
-    let Some(target) =
-        crate::wayland::focus::adjacent_output(&session.wayland.space, &current, direction)
-    else {
-        return;
+    let target = match target {
+        halley_config::MonitorTarget::Direction(direction) => {
+            let Some(current) = crate::wayland::focus::selected_output(&session.wayland).cloned()
+            else {
+                return;
+            };
+            let Some(target) =
+                crate::wayland::focus::adjacent_output(&session.wayland.space, &current, direction)
+            else {
+                return;
+            };
+            target
+        }
+        halley_config::MonitorTarget::Output(name) => {
+            let Some(target) = session
+                .wayland
+                .space
+                .outputs()
+                .find(|output| output.name() == name)
+                .cloned()
+            else {
+                eventline::warn!("monitor focus: unknown output {name:?}");
+                return;
+            };
+            target
+        }
     };
     crate::wayland::focus::select_output(&mut session.wayland, &target);
 
@@ -2015,6 +2068,7 @@ where
                                     .modifier_state();
                                 let mod_held = crate::input::mod_key_held(
                                     &modifiers,
+                                    session.keyboard.side_modifiers,
                                     session.keyboard.effective_mod,
                                 );
                                 if mod_held {
@@ -2211,7 +2265,11 @@ where
                 .get_keyboard()
                 .expect("keyboard capability added at seat setup")
                 .modifier_state();
-            if crate::input::mod_key_held(&modifiers, session.keyboard.effective_mod) {
+            if crate::input::mod_key_held(
+                &modifiers,
+                session.keyboard.side_modifiers,
+                session.keyboard.effective_mod,
+            ) {
                 if session
                     .clusters
                     .core_node(id)
@@ -2274,10 +2332,16 @@ where
                 crate::input::pointer::PointerTarget::Background
             )
         });
+        let binding_context = binding_context_for_output(
+            session,
+            route.as_ref().map(|route| route.output.name()).as_deref(),
+        );
         if !intercepted {
             match process_pointer_binding(
                 &session.keyboard.binds,
                 &modifiers,
+                session.keyboard.side_modifiers,
+                binding_context,
                 button,
                 state,
                 on_background,
@@ -2313,7 +2377,11 @@ where
                 .nodes
                 .clear_hover(crate::frame_clock::monotonic_now());
             super::focus::focus_node_from_pointer(session, id, &output, serial);
-            let mod_held = crate::input::mod_key_held(&modifiers, session.keyboard.effective_mod);
+            let mod_held = crate::input::mod_key_held(
+                &modifiers,
+                session.keyboard.side_modifiers,
+                session.keyboard.effective_mod,
+            );
             if mod_held {
                 if !crate::session::node_user_pinned(session, id) {
                     session.nodes.clear_direct_motion(id);
@@ -2361,8 +2429,11 @@ where
         if !intercepted && button == BTN_RIGHT {
             match state {
                 ButtonState::Pressed => {
-                    if crate::input::mod_key_held(&modifiers, session.keyboard.effective_mod)
-                        && let Some(route) = route.as_ref()
+                    if crate::input::mod_key_held(
+                        &modifiers,
+                        session.keyboard.side_modifiers,
+                        session.keyboard.effective_mod,
+                    ) && let Some(route) = route.as_ref()
                     {
                         let (window, border_handle) = match &route.target {
                             crate::input::pointer::PointerTarget::Window(window) => {
@@ -2411,8 +2482,11 @@ where
         } else if !intercepted && button == BTN_LEFT {
             match state {
                 ButtonState::Pressed => {
-                    let mod_held =
-                        crate::input::mod_key_held(&modifiers, session.keyboard.effective_mod);
+                    let mod_held = crate::input::mod_key_held(
+                        &modifiers,
+                        session.keyboard.side_modifiers,
+                        session.keyboard.effective_mod,
+                    );
                     match route.as_ref().map(|route| &route.target) {
                         Some(crate::input::pointer::PointerTarget::Window(window))
                             if mod_held
@@ -2732,11 +2806,21 @@ where
             .get_keyboard()
             .expect("keyboard capability added at seat setup")
             .modifier_state();
+        let sides = session.keyboard.side_modifiers;
+        let binding_context = binding_context_for_output(session, output_name.as_deref());
         let result = process_wheel_bindings(
             axis_event,
             &mut session.interactions.wheel_accumulator,
             bindings_enabled,
-            |direction| match_wheel_bind(&session.keyboard.binds, &modifiers, direction),
+            |direction| {
+                match_wheel_bind(
+                    &session.keyboard.binds,
+                    &modifiers,
+                    sides,
+                    binding_context,
+                    direction,
+                )
+            },
         );
         let bound_action = !result.actions.is_empty();
         for (direction, action) in result.actions {

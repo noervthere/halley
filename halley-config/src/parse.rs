@@ -1,10 +1,11 @@
 use std::collections::HashMap;
 use std::fmt;
 
+use rune_cfg::ast::ObjectItem;
 use rune_cfg::{RuneConfig, Value};
 
 use crate::chord::parse_chord;
-use crate::keybinds::{Action, Keybind, Keybinds, ModifierKey};
+use crate::keybinds::{Action, BindingScope, Keybind, Keybinds, ModifierKey, MonitorTarget};
 
 const KEY_MOD: &str = "mod";
 const KEY_DEFAULT_TERMINAL_KEBAB: &str = "default-terminal";
@@ -42,9 +43,17 @@ impl From<rune_cfg::RuneError> for ParseError {
 fn parse_modifier_key(s: &str) -> Option<ModifierKey> {
     match s.to_lowercase().as_str() {
         "super" | "logo" | "mod4" => Some(ModifierKey::Super),
+        "lsuper" | "left-super" | "lwin" | "left-logo" => Some(ModifierKey::LeftSuper),
+        "rsuper" | "right-super" | "rwin" | "right-logo" => Some(ModifierKey::RightSuper),
         "alt" => Some(ModifierKey::Alt),
+        "lalt" | "left-alt" => Some(ModifierKey::LeftAlt),
+        "ralt" | "right-alt" => Some(ModifierKey::RightAlt),
         "ctrl" | "control" => Some(ModifierKey::Ctrl),
+        "lctrl" | "left-ctrl" | "left-control" => Some(ModifierKey::LeftCtrl),
+        "rctrl" | "right-ctrl" | "right-control" => Some(ModifierKey::RightCtrl),
         "shift" => Some(ModifierKey::Shift),
+        "lshift" | "left-shift" => Some(ModifierKey::LeftShift),
+        "rshift" | "right-shift" => Some(ModifierKey::RightShift),
         _ => None,
     }
 }
@@ -110,6 +119,18 @@ fn parse_action(s: &str) -> Action {
     {
         return Action::MoveNode(direction);
     }
+    if let ["resize", direction] | ["resize-window", direction] = words.as_slice()
+        && let Some(direction) = parse_direction(direction)
+    {
+        return Action::ResizeWindow(direction);
+    }
+    if let Some(direction) = s
+        .strip_prefix("resize-window-")
+        .or_else(|| s.strip_prefix("resize_window_"))
+        .and_then(parse_direction)
+    {
+        return Action::ResizeWindow(direction);
+    }
     if let Some(direction) = s
         .strip_prefix("node-move-")
         .or_else(|| s.strip_prefix("node_move_"))
@@ -124,17 +145,19 @@ fn parse_action(s: &str) -> Action {
     {
         return Action::ClusterTileSwap(direction);
     }
-    if let ["monitor", "focus", direction] | ["monitor-focus", direction] = words.as_slice()
-        && let Some(direction) = parse_direction(direction)
-    {
-        return Action::MonitorFocus(direction);
+    if let ["monitor", "focus", target] | ["monitor-focus", target] = words.as_slice() {
+        return Action::MonitorFocus(
+            parse_direction(target)
+                .map(MonitorTarget::Direction)
+                .unwrap_or_else(|| MonitorTarget::Output((*target).to_string())),
+        );
     }
     if let Some(direction) = s
         .strip_prefix("monitor-focus-")
         .or_else(|| s.strip_prefix("monitor_focus_"))
         .and_then(parse_direction)
     {
-        return Action::MonitorFocus(direction);
+        return Action::MonitorFocus(MonitorTarget::Direction(direction));
     }
     if let Some(direction) = s
         .strip_prefix("cluster-tile-swap-")
@@ -172,6 +195,7 @@ fn parse_action(s: &str) -> Action {
             Action::ClusterLayoutCycle
         }
         "cluster-toggle-float" | "cluster_toggle_float" => Action::ClusterToggleFloat,
+        "reload" | "reload-config" | "reload_config" => Action::Reload,
         "open-terminal" | "open_terminal" | "default-terminal" | "default_terminal" => {
             Action::OpenTerminal
         }
@@ -197,36 +221,58 @@ fn parse_action(s: &str) -> Action {
 /// `$var.mod` with the already-parsed modifier string itself before
 /// chord-parsing, rather than relying on rune-cfg to do it.
 pub fn parse_keybinds(config: &RuneConfig) -> Result<Keybinds, ParseError> {
-    let map: HashMap<String, Value> = config.get("keybinds")?;
+    let root = config.get_value("")?;
+    let Value::Object(root) = root else {
+        return Err(ParseError::InvalidBinding {
+            chord: "keybinds".to_string(),
+            message: "configuration root must be an object".to_string(),
+        });
+    };
+    let section = root.into_iter().find_map(|item| match item {
+        ObjectItem::Assign(key, Value::Object(fields)) if key == "keybinds" => Some(fields),
+        _ => None,
+    });
+    let fields = section.ok_or_else(|| ParseError::InvalidBinding {
+        chord: "keybinds".to_string(),
+        message: "missing required keybinds section".to_string(),
+    })?;
 
-    let modifier_str = map
-        .get(KEY_MOD)
+    let modifier_str = fields
+        .iter()
+        .filter_map(|item| match item {
+            ObjectItem::Assign(key, value) if key == KEY_MOD => Some(value),
+            _ => None,
+        })
+        .next_back()
         .map(|value| binding_string(KEY_MOD, value))
         .transpose()?
         .map(str::to_owned)
         .unwrap_or_else(|| "super".to_string());
     let modifier = parse_modifier_key(&modifier_str)
         .ok_or_else(|| ParseError::UnknownModifier(modifier_str.clone()))?;
-    if map.contains_key(KEY_DEFAULT_TERMINAL_KEBAB) || map.contains_key(KEY_DEFAULT_TERMINAL_SNAKE)
-    {
+    if fields.iter().any(|item| {
+        matches!(
+            item,
+            ObjectItem::Assign(key, _)
+                if key == KEY_DEFAULT_TERMINAL_KEBAB || key == KEY_DEFAULT_TERMINAL_SNAKE
+        )
+    }) {
         return Err(ParseError::InvalidBinding {
             chord: KEY_DEFAULT_TERMINAL_KEBAB.to_string(),
             message: "default-terminal is now an action, not a setting; bind it to a chord or replace that chord with the command you want to run".to_string(),
         });
     }
 
-    let mut entries: Vec<(&String, &Value)> =
-        map.iter().filter(|(k, _)| k.as_str() != KEY_MOD).collect();
-    // HashMap iteration order isn't stable - sort so parsing the same file
-    // always produces binds in the same order.
-    entries.sort_by_key(|(k, _)| *k);
-
-    let mut binds = Vec::with_capacity(entries.len());
+    let entries = fields.iter().filter_map(|item| match item {
+        ObjectItem::Assign(key, value) if key != KEY_MOD => Some((key, value)),
+        _ => None,
+    });
+    let mut binds = Vec::new();
     for (chord_key, value) in entries {
         let resolved_chord = chord_key.replace("$var.mod", &modifier_str);
         let (modifiers, key) = parse_chord(&resolved_chord)
             .ok_or_else(|| ParseError::InvalidChord(chord_key.clone()))?;
-        let (action, repeat_override) = parse_binding(chord_key, value)?;
+        let (action, repeat_override, scope_override) = parse_binding(chord_key, value)?;
         if repeat_override == Some(true) && is_pointer_trigger(&key) {
             return Err(ParseError::InvalidBinding {
                 chord: chord_key.clone(),
@@ -235,6 +281,7 @@ pub fn parse_keybinds(config: &RuneConfig) -> Result<Keybinds, ParseError> {
         }
         let repeat = repeat_override.unwrap_or_else(|| action.repeats_by_default());
         binds.push(Keybind {
+            scope: scope_override.unwrap_or_else(|| action.default_scope()),
             modifiers,
             key,
             action,
@@ -255,16 +302,19 @@ fn binding_string<'a>(field: &str, value: &'a Value) -> Result<&'a str, ParseErr
     Ok(value)
 }
 
-fn parse_binding(chord: &str, value: &Value) -> Result<(Action, Option<bool>), ParseError> {
+fn parse_binding(
+    chord: &str,
+    value: &Value,
+) -> Result<(Action, Option<bool>, Option<BindingScope>), ParseError> {
     if let Value::String(action) = value {
-        return Ok((parse_action(action), None));
+        return Ok((parse_action(action), None, None));
     }
     if let Value::Annotated(binding) = value {
         let action = binding_string(chord, &binding.value)?;
         if let Some((field, _)) = binding
             .attributes
             .iter()
-            .find(|(field, _)| field != "repeat")
+            .find(|(field, _)| field != "repeat" && field != "scope")
         {
             return Err(ParseError::InvalidBinding {
                 chord: chord.to_string(),
@@ -292,7 +342,8 @@ fn parse_binding(chord: &str, value: &Value) -> Result<(Action, Option<bool>), P
                 });
             }
         };
-        return Ok((parse_action(action), repeat));
+        let scope = parse_inline_scope(chord, &binding.attributes)?;
+        return Ok((parse_action(action), repeat, scope));
     }
     let Value::Object(items) = value else {
         return Err(ParseError::InvalidBinding {
@@ -304,7 +355,7 @@ fn parse_binding(chord: &str, value: &Value) -> Result<(Action, Option<bool>), P
     let fields: HashMap<String, Value> = Value::Object(items.clone()).try_into()?;
     if let Some(field) = fields
         .keys()
-        .find(|field| !matches!(field.as_str(), "action" | "repeat"))
+        .find(|field| !matches!(field.as_str(), "action" | "repeat" | "scope"))
     {
         return Err(ParseError::InvalidBinding {
             chord: chord.to_string(),
@@ -328,7 +379,45 @@ fn parse_binding(chord: &str, value: &Value) -> Result<(Action, Option<bool>), P
             });
         }
     };
-    Ok((parse_action(action), repeat))
+    let scope = fields
+        .get("scope")
+        .map(|value| binding_string(chord, value).and_then(|scope| parse_scope(chord, scope)))
+        .transpose()?;
+    Ok((parse_action(action), repeat, scope))
+}
+
+fn parse_inline_scope(
+    chord: &str,
+    attributes: &[(String, Value)],
+) -> Result<Option<BindingScope>, ParseError> {
+    let scopes = attributes
+        .iter()
+        .filter(|(field, _)| field == "scope")
+        .collect::<Vec<_>>();
+    if scopes.len() > 1 {
+        return Err(ParseError::InvalidBinding {
+            chord: chord.to_string(),
+            message: "duplicate inline attribute \"scope\"".to_string(),
+        });
+    }
+    scopes
+        .first()
+        .map(|(_, value)| binding_string(chord, value).and_then(|scope| parse_scope(chord, scope)))
+        .transpose()
+}
+
+fn parse_scope(chord: &str, scope: &str) -> Result<BindingScope, ParseError> {
+    match scope {
+        "global" => Ok(BindingScope::Global),
+        "field" => Ok(BindingScope::Field),
+        "cluster" => Ok(BindingScope::Cluster),
+        "tile" | "tiling" => Ok(BindingScope::Tile),
+        "stack" | "stacking" => Ok(BindingScope::Stack),
+        _ => Err(ParseError::InvalidBinding {
+            chord: chord.to_string(),
+            message: format!("scope must be global, field, cluster, tile, or stack, got {scope:?}"),
+        }),
+    }
 }
 
 fn is_pointer_trigger(key: &str) -> bool {
@@ -599,7 +688,7 @@ end
             Action::ClusterSlot(1),
             Action::ClusterTileFocus(crate::ClusterDirection::Left),
             Action::ClusterTileSwap(crate::ClusterDirection::Right),
-            Action::MonitorFocus(crate::Direction::Up),
+            Action::MonitorFocus(crate::MonitorTarget::Direction(crate::Direction::Up)),
         ] {
             assert!(kb.binds.iter().any(|bind| bind.action == expected));
         }
@@ -625,6 +714,51 @@ end
         ] {
             assert!(kb.binds.iter().any(|bind| bind.action == expected));
         }
+    }
+
+    #[test]
+    fn duplicate_chords_are_retained_for_context_scopes() {
+        let kb = parse(
+            r#"
+keybinds:
+  mod "lsuper"
+  "$var.mod+ctrl+left" "resize-window-left"
+  "$var.mod+ctrl+left" "cluster-tile-swap-left"
+  "$var.mod+x" "quit" with scope "stack"
+end
+"#,
+        );
+        assert_eq!(kb.modifier, ModifierKey::LeftSuper);
+        assert_eq!(kb.binds.len(), 3);
+        assert_eq!(kb.binds[0].scope, BindingScope::Field);
+        assert_eq!(
+            kb.binds[0].action,
+            Action::ResizeWindow(crate::Direction::Left)
+        );
+        assert!(kb.binds[0].modifiers.left_super);
+        assert_eq!(kb.binds[1].scope, BindingScope::Tile);
+        assert_eq!(
+            kb.binds[1].action,
+            Action::ClusterTileSwap(crate::Direction::Left)
+        );
+        assert_eq!(kb.binds[2].scope, BindingScope::Stack);
+    }
+
+    #[test]
+    fn parses_named_monitor_focus_and_reload() {
+        let kb = parse(
+            r#"
+keybinds:
+  mod "super"
+  "$var.mod+1" "monitor focus DP-1"
+  "$var.mod+shift+r" "reload"
+end
+"#,
+        );
+        assert!(kb.binds.iter().any(|bind| {
+            bind.action == Action::MonitorFocus(MonitorTarget::Output("DP-1".into()))
+        }));
+        assert!(kb.binds.iter().any(|bind| bind.action == Action::Reload));
     }
 
     #[test]

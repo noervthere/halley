@@ -60,6 +60,7 @@ pub(super) fn handle<D, B>(
     session.interactions.wheel_accumulator.reset_all();
     let keycode = key_event.key_code();
     let state = key_event.state();
+    session.keyboard.side_modifiers.update(keycode, state);
     let time = key_event.time_msec();
     if state == KeyState::Released {
         session.key_repeat.release(keycode);
@@ -161,15 +162,19 @@ pub(super) fn handle<D, B>(
                         KeyboardOutcome::ApogeeMove(crate::shell::apogee::Direction::Down)
                     }
                     _ => {
-                        if let Some(bind) =
-                            match_keyboard_binding(&data.keyboard.binds, modifiers, sym, keycode)
-                            && matches!(
-                                bind.action,
-                                halley_config::Action::Apogee
-                                    | halley_config::Action::Quit
-                                    | halley_config::Action::OpenTerminal
-                            )
-                        {
+                        if let Some(bind) = match_keyboard_binding(
+                            &data.keyboard.binds,
+                            modifiers,
+                            data.keyboard.side_modifiers,
+                            crate::input::BindingContext::default(),
+                            sym,
+                            keycode,
+                        ) && matches!(
+                            bind.action,
+                            halley_config::Action::Apogee
+                                | halley_config::Action::Quit
+                                | halley_config::Action::OpenTerminal
+                        ) {
                             KeyboardOutcome::Action(bind.clone())
                         } else {
                             KeyboardOutcome::ApogeeIntercept
@@ -188,8 +193,14 @@ pub(super) fn handle<D, B>(
                     return FilterResult::Intercept(KeyboardOutcome::FocusCycleCancel);
                 }
                 if state == KeyState::Pressed
-                    && let Some(bind) =
-                        match_keyboard_binding(&data.keyboard.binds, modifiers, sym, keycode)
+                    && let Some(bind) = match_keyboard_binding(
+                        &data.keyboard.binds,
+                        modifiers,
+                        data.keyboard.side_modifiers,
+                        crate::input::BindingContext::default(),
+                        sym,
+                        keycode,
+                    )
                     && matches!(bind.action, halley_config::Action::FocusCycle(_))
                 {
                     return FilterResult::Intercept(KeyboardOutcome::Action(bind.clone()));
@@ -235,7 +246,15 @@ pub(super) fn handle<D, B>(
                 forwarded_non_modifier_press = non_modifier;
                 return FilterResult::Forward;
             }
-            match match_keyboard_binding(&data.keyboard.binds, modifiers, sym, keycode) {
+            let context = super::keyboard_binding_context(data);
+            match match_keyboard_binding(
+                &data.keyboard.binds,
+                modifiers,
+                data.keyboard.side_modifiers,
+                context,
+                sym,
+                keycode,
+            ) {
                 Some(bind) => FilterResult::Intercept(KeyboardOutcome::Action(bind.clone())),
                 None => {
                     forwarded_non_modifier_press = non_modifier;

@@ -342,9 +342,25 @@ fn parse_gesture_modifier(
         "$var.mod" | "$mod" | "mod" => GestureModifier::Keybind,
         "off" => GestureModifier::Disabled,
         "super" | "logo" | "mod4" => GestureModifier::Explicit(crate::ModifierKey::Super),
+        "lsuper" | "left-super" | "lwin" | "left-logo" => {
+            GestureModifier::Explicit(crate::ModifierKey::LeftSuper)
+        }
+        "rsuper" | "right-super" | "rwin" | "right-logo" => {
+            GestureModifier::Explicit(crate::ModifierKey::RightSuper)
+        }
         "alt" => GestureModifier::Explicit(crate::ModifierKey::Alt),
+        "lalt" | "left-alt" => GestureModifier::Explicit(crate::ModifierKey::LeftAlt),
+        "ralt" | "right-alt" => GestureModifier::Explicit(crate::ModifierKey::RightAlt),
         "ctrl" | "control" => GestureModifier::Explicit(crate::ModifierKey::Ctrl),
+        "lctrl" | "left-ctrl" | "left-control" => {
+            GestureModifier::Explicit(crate::ModifierKey::LeftCtrl)
+        }
+        "rctrl" | "right-ctrl" | "right-control" => {
+            GestureModifier::Explicit(crate::ModifierKey::RightCtrl)
+        }
         "shift" => GestureModifier::Explicit(crate::ModifierKey::Shift),
+        "lshift" | "left-shift" => GestureModifier::Explicit(crate::ModifierKey::LeftShift),
+        "rshift" | "right-shift" => GestureModifier::Explicit(crate::ModifierKey::RightShift),
         _ => {
             return Err(InputParseError(format!(
                 "{path}.modifier must be \"mod\", \"off\", \"super\", \"alt\", \"ctrl\", or \

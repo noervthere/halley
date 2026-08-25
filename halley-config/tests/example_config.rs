@@ -1,4 +1,4 @@
-use halley_config::{Action, Direction, ModifierKey, parse_keybinds};
+use halley_config::{Action, Direction, ModifierKey, MonitorTarget, parse_keybinds};
 use rune_cfg::RuneConfig;
 
 const EXAMPLE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../examples/halley.rune");
@@ -12,7 +12,7 @@ fn example_config_parses_end_to_end() {
     let keybinds = parse_keybinds(&config).expect("example keybinds section parses");
 
     assert_eq!(keybinds.modifier, ModifierKey::Super);
-    assert_eq!(keybinds.binds.len(), 52);
+    assert_eq!(keybinds.binds.len(), 57);
 
     let lift = keybinds
         .binds
@@ -128,7 +128,9 @@ fn example_config_parses_end_to_end() {
     let monitor_right = keybinds
         .binds
         .iter()
-        .find(|bind| bind.action == Action::MonitorFocus(Direction::Right))
+        .find(|bind| {
+            bind.action == Action::MonitorFocus(MonitorTarget::Direction(Direction::Right))
+        })
         .expect("right monitor-focus bind present");
     assert_eq!(monitor_right.key, "right");
     assert!(monitor_right.modifiers.super_key);

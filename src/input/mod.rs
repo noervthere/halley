@@ -8,23 +8,149 @@ pub mod zoom;
 use std::collections::HashSet;
 use std::hash::Hash;
 
-use halley_config::{Action, ModifierKey, Modifiers};
-use smithay::backend::input::{ButtonState, Keycode};
+use halley_config::{Action, BindingScope, ModifierKey, Modifiers};
+use smithay::backend::input::{ButtonState, KeyState, Keycode};
 use smithay::input::keyboard::{Keysym, ModifiersState};
 
 use keybinds::{BackendKind, ResolvedBind, ResolvedTrigger, WheelDirection};
 
-pub fn modifiers_match(state: &ModifiersState, expected: Modifiers) -> bool {
-    state.ctrl == expected.ctrl
-        && state.alt == expected.alt
-        && state.shift == expected.shift
-        && state.logo == expected.super_key
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SideModifiers {
+    pub left_shift: bool,
+    pub right_shift: bool,
+    pub left_ctrl: bool,
+    pub right_ctrl: bool,
+    pub left_alt: bool,
+    pub right_alt: bool,
+    pub left_super: bool,
+    pub right_super: bool,
+}
+
+impl SideModifiers {
+    pub fn update(&mut self, keycode: Keycode, state: KeyState) {
+        let pressed = state == KeyState::Pressed;
+        match keycode.raw() {
+            50 => self.left_shift = pressed,
+            62 => self.right_shift = pressed,
+            37 => self.left_ctrl = pressed,
+            105 => self.right_ctrl = pressed,
+            64 => self.left_alt = pressed,
+            108 => self.right_alt = pressed,
+            133 => self.left_super = pressed,
+            134 => self.right_super = pressed,
+            _ => {}
+        }
+    }
+
+    fn without_trigger(mut self, keycode: Keycode) -> Self {
+        match keycode.raw() {
+            50 => self.left_shift = false,
+            62 => self.right_shift = false,
+            37 => self.left_ctrl = false,
+            105 => self.right_ctrl = false,
+            64 => self.left_alt = false,
+            108 => self.right_alt = false,
+            133 => self.left_super = false,
+            134 => self.right_super = false,
+            _ => {}
+        }
+        self
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BindingContext {
+    pub field: bool,
+    pub cluster: bool,
+    pub tile: bool,
+    pub stack: bool,
+}
+
+impl BindingContext {
+    pub const fn field() -> Self {
+        Self {
+            field: true,
+            cluster: false,
+            tile: false,
+            stack: false,
+        }
+    }
+
+    pub const fn cluster(tile: bool) -> Self {
+        Self {
+            field: false,
+            cluster: true,
+            tile,
+            stack: !tile,
+        }
+    }
+
+    pub(crate) fn allows(self, scope: BindingScope) -> bool {
+        match scope {
+            BindingScope::Global => true,
+            BindingScope::Field => self.field,
+            BindingScope::Cluster => self.cluster,
+            BindingScope::Tile => self.tile,
+            BindingScope::Stack => self.stack,
+        }
+    }
+}
+
+fn modifier_family_matches(
+    active: bool,
+    left: bool,
+    right: bool,
+    generic_expected: bool,
+    left_expected: bool,
+    right_expected: bool,
+) -> bool {
+    if generic_expected {
+        active
+    } else if left_expected || right_expected {
+        active && left == left_expected && right == right_expected
+    } else {
+        !active
+    }
+}
+
+pub fn modifiers_match(state: &ModifiersState, sides: SideModifiers, expected: Modifiers) -> bool {
+    modifier_family_matches(
+        state.ctrl,
+        sides.left_ctrl,
+        sides.right_ctrl,
+        expected.ctrl,
+        expected.left_ctrl,
+        expected.right_ctrl,
+    ) && modifier_family_matches(
+        state.alt,
+        sides.left_alt,
+        sides.right_alt,
+        expected.alt,
+        expected.left_alt,
+        expected.right_alt,
+    ) && modifier_family_matches(
+        state.shift,
+        sides.left_shift,
+        sides.right_shift,
+        expected.shift,
+        expected.left_shift,
+        expected.right_shift,
+    ) && modifier_family_matches(
+        state.logo,
+        sides.left_super,
+        sides.right_super,
+        expected.super_key,
+        expected.left_super,
+        expected.right_super,
+    )
 }
 
 pub(crate) fn keyboard_modifiers_match(
     state: &ModifiersState,
+    sides: SideModifiers,
     expected: Modifiers,
     trigger: ResolvedTrigger,
+    keycode: Keycode,
 ) -> bool {
     let mut without_trigger = *state;
     if let ResolvedTrigger::Keysym(keysym) = trigger {
@@ -38,7 +164,14 @@ pub(crate) fn keyboard_modifiers_match(
             without_trigger.logo = false;
         }
     }
-    modifiers_match(&without_trigger, expected)
+    match keycode.raw() {
+        50 | 62 => without_trigger.shift = false,
+        37 | 105 => without_trigger.ctrl = false,
+        64 | 108 => without_trigger.alt = false,
+        133 | 134 => without_trigger.logo = false,
+        _ => {}
+    }
+    modifiers_match(&without_trigger, sides.without_trigger(keycode), expected)
 }
 
 /// Whether the given modifier key is currently held, per a live
@@ -46,12 +179,20 @@ pub(crate) fn keyboard_modifiers_match(
 /// which (unlike keyboard binds) has no filter closure to read modifiers
 /// from and instead queries `KeyboardHandle::modifier_state()` directly at
 /// button-press time.
-pub fn mod_key_held(state: &ModifiersState, key: ModifierKey) -> bool {
+pub fn mod_key_held(state: &ModifiersState, sides: SideModifiers, key: ModifierKey) -> bool {
     match key {
         ModifierKey::Super => state.logo,
+        ModifierKey::LeftSuper => sides.left_super,
+        ModifierKey::RightSuper => sides.right_super,
         ModifierKey::Alt => state.alt,
+        ModifierKey::LeftAlt => sides.left_alt,
+        ModifierKey::RightAlt => sides.right_alt,
         ModifierKey::Ctrl => state.ctrl,
+        ModifierKey::LeftCtrl => sides.left_ctrl,
+        ModifierKey::RightCtrl => sides.right_ctrl,
         ModifierKey::Shift => state.shift,
+        ModifierKey::LeftShift => sides.left_shift,
+        ModifierKey::RightShift => sides.right_shift,
     }
 }
 
@@ -62,10 +203,13 @@ pub fn mod_key_held(state: &ModifiersState, key: ModifierKey) -> bool {
 pub fn match_keyboard_bind(
     binds: &[ResolvedBind],
     mods: &ModifiersState,
+    sides: SideModifiers,
+    context: BindingContext,
     keysym: Option<Keysym>,
     keycode: Keycode,
 ) -> Option<Action> {
-    match_keyboard_binding(binds, mods, keysym, keycode).map(|bind| bind.action.clone())
+    match_keyboard_binding(binds, mods, sides, context, keysym, keycode)
+        .map(|bind| bind.action.clone())
 }
 
 /// Returns the complete resolved binding for input paths that also need
@@ -73,6 +217,8 @@ pub fn match_keyboard_bind(
 pub fn match_keyboard_binding<'a>(
     binds: &'a [ResolvedBind],
     mods: &ModifiersState,
+    sides: SideModifiers,
+    context: BindingContext,
     keysym: Option<Keysym>,
     keycode: Keycode,
 ) -> Option<&'a ResolvedBind> {
@@ -82,7 +228,9 @@ pub fn match_keyboard_binding<'a>(
             ResolvedTrigger::Keycode(expected) => expected == keycode,
             ResolvedTrigger::PointerButton(_) | ResolvedTrigger::Wheel(_) => false,
         };
-        trigger_matches && keyboard_modifiers_match(mods, bind.modifiers, bind.trigger)
+        context.allows(bind.scope)
+            && trigger_matches
+            && keyboard_modifiers_match(mods, sides, bind.modifiers, bind.trigger, keycode)
     })?;
     eventline::debug!(
         "keybinds: {:?} + {mods:?} -> {:?}",
@@ -95,13 +243,16 @@ pub fn match_keyboard_binding<'a>(
 pub fn match_pointer_bind(
     binds: &[ResolvedBind],
     mods: &ModifiersState,
+    sides: SideModifiers,
+    context: BindingContext,
     button: u32,
 ) -> Option<Action> {
     let bind = binds.iter().find(|bind| {
         matches!(
             bind.trigger,
             ResolvedTrigger::PointerButton(trigger) if trigger.matches(button)
-        ) && modifiers_match(mods, bind.modifiers)
+        ) && context.allows(bind.scope)
+            && modifiers_match(mods, sides, bind.modifiers)
     })?;
     eventline::debug!(
         "keybinds: {:?} + {mods:?} -> {:?}",
@@ -114,10 +265,14 @@ pub fn match_pointer_bind(
 pub fn match_wheel_bind(
     binds: &[ResolvedBind],
     mods: &ModifiersState,
+    sides: SideModifiers,
+    context: BindingContext,
     direction: WheelDirection,
 ) -> Option<Action> {
     let bind = binds.iter().find(|bind| {
-        bind.trigger == ResolvedTrigger::Wheel(direction) && modifiers_match(mods, bind.modifiers)
+        bind.trigger == ResolvedTrigger::Wheel(direction)
+            && context.allows(bind.scope)
+            && modifiers_match(mods, sides, bind.modifiers)
     })?;
     Some(bind.action.clone())
 }
@@ -168,6 +323,8 @@ pub enum PointerBindingResult {
 pub fn process_pointer_binding(
     binds: &[ResolvedBind],
     mods: &ModifiersState,
+    sides: SideModifiers,
+    context: BindingContext,
     button: u32,
     state: ButtonState,
     on_background: bool,
@@ -185,7 +342,7 @@ pub fn process_pointer_binding(
     if !bindings_enabled || (is_left && on_background && no_modifiers_held(mods)) {
         return PointerBindingResult::Unhandled;
     }
-    let Some(action) = match_pointer_bind(binds, mods, button) else {
+    let Some(action) = match_pointer_bind(binds, mods, sides, context, button) else {
         return PointerBindingResult::Unhandled;
     };
     suppressed.suppress(button);
@@ -205,6 +362,7 @@ pub struct Keyboard {
     /// use, just via a live `modifier_state()` query instead of a filter
     /// closure (pointer events don't carry modifier state directly).
     pub effective_mod: ModifierKey,
+    pub side_modifiers: SideModifiers,
     /// Resolved once at startup from Halley's built-in terminal priority list.
     terminal_command: Option<String>,
 }
@@ -222,6 +380,7 @@ impl Keyboard {
         Self {
             binds,
             effective_mod,
+            side_modifiers: SideModifiers::default(),
             terminal_command,
         }
     }
@@ -232,7 +391,9 @@ impl Keyboard {
         backend: BackendKind,
         path: Option<&std::ffi::OsStr>,
     ) {
+        let side_modifiers = self.side_modifiers;
         *self = Self::from_config(keybinds, backend, path);
+        self.side_modifiers = side_modifiers;
     }
 
     /// The command `Action::OpenTerminal` should launch, if one of Halley's
@@ -249,6 +410,7 @@ mod tests {
 
     fn bind(trigger: ResolvedTrigger, modifiers: Modifiers) -> ResolvedBind {
         ResolvedBind {
+            scope: BindingScope::Global,
             modifiers,
             trigger,
             action: Action::Quit,
@@ -266,14 +428,29 @@ mod tests {
             },
         )];
         assert_eq!(
-            match_pointer_bind(&binds, &ModifiersState::default(), 0x110),
+            match_pointer_bind(
+                &binds,
+                &ModifiersState::default(),
+                SideModifiers::default(),
+                BindingContext::field(),
+                0x110,
+            ),
             None
         );
         let mods = ModifiersState {
             logo: true,
             ..ModifiersState::default()
         };
-        assert_eq!(match_pointer_bind(&binds, &mods, 0x110), Some(Action::Quit));
+        assert_eq!(
+            match_pointer_bind(
+                &binds,
+                &mods,
+                SideModifiers::default(),
+                BindingContext::field(),
+                0x110,
+            ),
+            Some(Action::Quit)
+        );
     }
 
     #[test]
@@ -283,11 +460,23 @@ mod tests {
             Modifiers::default(),
         )];
         assert_eq!(
-            match_pointer_bind(&binds, &ModifiersState::default(), 278),
+            match_pointer_bind(
+                &binds,
+                &ModifiersState::default(),
+                SideModifiers::default(),
+                BindingContext::field(),
+                278,
+            ),
             None
         );
         assert_eq!(
-            match_pointer_bind(&binds, &ModifiersState::default(), 279),
+            match_pointer_bind(
+                &binds,
+                &ModifiersState::default(),
+                SideModifiers::default(),
+                BindingContext::field(),
+                279,
+            ),
             Some(Action::Quit)
         );
     }
@@ -299,11 +488,23 @@ mod tests {
             Modifiers::default(),
         )];
         assert_eq!(
-            match_wheel_bind(&binds, &ModifiersState::default(), WheelDirection::Down),
+            match_wheel_bind(
+                &binds,
+                &ModifiersState::default(),
+                SideModifiers::default(),
+                BindingContext::field(),
+                WheelDirection::Down,
+            ),
             None
         );
         assert_eq!(
-            match_wheel_bind(&binds, &ModifiersState::default(), WheelDirection::Up),
+            match_wheel_bind(
+                &binds,
+                &ModifiersState::default(),
+                SideModifiers::default(),
+                BindingContext::field(),
+                WheelDirection::Up,
+            ),
             Some(Action::Quit)
         );
     }
@@ -315,7 +516,14 @@ mod tests {
             Modifiers::default(),
         )];
         assert_eq!(
-            match_keyboard_bind(&binds, &ModifiersState::default(), None, Keycode::new(255)),
+            match_keyboard_bind(
+                &binds,
+                &ModifiersState::default(),
+                SideModifiers::default(),
+                BindingContext::field(),
+                None,
+                Keycode::new(255),
+            ),
             Some(Action::Quit)
         );
     }
@@ -335,7 +543,14 @@ mod tests {
         };
 
         assert_eq!(
-            match_keyboard_bind(&binds, &ctrl, Some(Keysym::space), Keycode::new(65)),
+            match_keyboard_bind(
+                &binds,
+                &ctrl,
+                SideModifiers::default(),
+                BindingContext::field(),
+                Some(Keysym::space),
+                Keycode::new(65),
+            ),
             None
         );
     }
@@ -357,7 +572,17 @@ mod tests {
             ..ModifiersState::default()
         };
         assert_eq!(
-            match_keyboard_bind(&binds, &shift, Some(Keysym::Shift_L), Keycode::new(50)),
+            match_keyboard_bind(
+                &binds,
+                &shift,
+                SideModifiers {
+                    left_shift: true,
+                    ..Default::default()
+                },
+                BindingContext::field(),
+                Some(Keysym::Shift_L),
+                Keycode::new(50),
+            ),
             Some(Action::Quit)
         );
         let logo = ModifiersState {
@@ -365,8 +590,106 @@ mod tests {
             ..ModifiersState::default()
         };
         assert_eq!(
-            match_keyboard_bind(&binds, &logo, Some(Keysym::Super_R), Keycode::new(134)),
+            match_keyboard_bind(
+                &binds,
+                &logo,
+                SideModifiers {
+                    right_super: true,
+                    ..Default::default()
+                },
+                BindingContext::field(),
+                Some(Keysym::Super_R),
+                Keycode::new(134),
+            ),
             Some(Action::Quit)
+        );
+    }
+
+    #[test]
+    fn per_side_modifier_matches_only_the_requested_side() {
+        let binds = [bind(
+            ResolvedTrigger::Keysym(Keysym::x),
+            Modifiers {
+                left_super: true,
+                ..Modifiers::default()
+            },
+        )];
+        let logo = ModifiersState {
+            logo: true,
+            ..ModifiersState::default()
+        };
+        assert_eq!(
+            match_keyboard_bind(
+                &binds,
+                &logo,
+                SideModifiers {
+                    right_super: true,
+                    ..Default::default()
+                },
+                BindingContext::field(),
+                Some(Keysym::x),
+                Keycode::new(53),
+            ),
+            None
+        );
+        assert_eq!(
+            match_keyboard_bind(
+                &binds,
+                &logo,
+                SideModifiers {
+                    left_super: true,
+                    ..Default::default()
+                },
+                BindingContext::field(),
+                Some(Keysym::x),
+                Keycode::new(53),
+            ),
+            Some(Action::Quit)
+        );
+    }
+
+    #[test]
+    fn duplicate_chord_selects_the_active_scope() {
+        let mut field = bind(ResolvedTrigger::Keysym(Keysym::Left), Modifiers::default());
+        field.scope = BindingScope::Field;
+        field.action = Action::ResizeWindow(halley_config::Direction::Left);
+        let mut tile = field.clone();
+        tile.scope = BindingScope::Tile;
+        tile.action = Action::ClusterTileSwap(halley_config::Direction::Left);
+        let binds = [field, tile];
+
+        assert_eq!(
+            match_keyboard_bind(
+                &binds,
+                &ModifiersState::default(),
+                SideModifiers::default(),
+                BindingContext::field(),
+                Some(Keysym::Left),
+                Keycode::new(113),
+            ),
+            Some(Action::ResizeWindow(halley_config::Direction::Left))
+        );
+        assert_eq!(
+            match_keyboard_bind(
+                &binds,
+                &ModifiersState::default(),
+                SideModifiers::default(),
+                BindingContext::cluster(true),
+                Some(Keysym::Left),
+                Keycode::new(113),
+            ),
+            Some(Action::ClusterTileSwap(halley_config::Direction::Left))
+        );
+        assert_eq!(
+            match_keyboard_bind(
+                &binds,
+                &ModifiersState::default(),
+                SideModifiers::default(),
+                BindingContext::cluster(false),
+                Some(Keysym::Left),
+                Keycode::new(113),
+            ),
+            None
         );
     }
 
@@ -390,6 +713,8 @@ mod tests {
             process_pointer_binding(
                 &binds,
                 &ModifiersState::default(),
+                SideModifiers::default(),
+                BindingContext::field(),
                 0x110,
                 ButtonState::Pressed,
                 true,
@@ -411,6 +736,8 @@ mod tests {
             process_pointer_binding(
                 &binds,
                 &ModifiersState::default(),
+                SideModifiers::default(),
+                BindingContext::field(),
                 0x110,
                 ButtonState::Pressed,
                 false,
@@ -423,6 +750,8 @@ mod tests {
             process_pointer_binding(
                 &binds,
                 &ModifiersState::default(),
+                SideModifiers::default(),
+                BindingContext::field(),
                 0x110,
                 ButtonState::Released,
                 false,

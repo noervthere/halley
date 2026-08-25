@@ -22,14 +22,36 @@ a bind without `shift`, for example, will not fire while Shift is held.
 
 | Rune name | Meaning |
 |---|---|
-| `$var.mod` | The key selected by `mod "super"`, `"alt"`, `"ctrl"`, or `"shift"` |
+| `$var.mod` | The key selected by `mod`, including generic and left/right forms |
 | `super`, `logo`, `mod4` | Super/Windows/Command-style logo modifier |
+| `lsuper`, `rsuper` | Left or right Super only |
 | `alt` | Alt |
+| `lalt`, `ralt` | Left or right Alt only |
 | `ctrl`, `control` | Control |
+| `lctrl`, `rctrl` | Left or right Control only |
 | `shift` | Shift |
+| `lshift`, `rshift` | Left or right Shift only |
 
 The configured `$var.mod` is remapped to Alt while running nested under
 Winit, so development keybinds do not steal the host compositor's Super key.
+Its physical side is preserved: `lsuper` becomes `lalt`, for example.
+
+## Context scopes
+
+Bindings are global unless their compositor action has a natural presentation
+scope. Field movement and resize actions are Field-scoped, cluster layout
+actions are Cluster-scoped, and tile focus/swap actions are Tile-scoped. This
+allows the same chord to be declared more than once:
+
+```rune
+"$var.mod+ctrl+left" "resize-window-left"
+"$var.mod+ctrl+left" "cluster-tile-swap-left"
+```
+
+Use `with scope "global|field|cluster|tile|stack"` to override an action's
+default scope for a custom layout. Global bindings remain available in every
+context; Field bindings are inactive while a cluster workspace owns that
+monitor.
 
 ## Keyboard triggers
 
@@ -183,7 +205,7 @@ continues to the focused client and is not treated as a keybind.
 ## Key repeat
 
 Keyboard bindings for continuous built-in actions repeat by default: focus
-cycling and directional focus, Field node movement, cluster tile focus and
+cycling and directional focus, Field node movement and resize, cluster tile focus and
 swapping, monitor focus, and zoom in/out. Destructive, modal, toggle, reset,
 screenshot, terminal, and arbitrary command actions are one-shot by default.
 
@@ -216,13 +238,15 @@ resolving `keycode-N`.
 The built-in action strings are `quit`, `close-focused`, `toggle-fullscreen`,
 `maximize-focused`, `toggle-state`, `apogee`, `bearings-show`,
 `bearings-toggle`, `cycle-focus`, `cycle-focus-backward`, `open-terminal`,
-`center-last-focused`, `zoom-in`, `zoom-out`, `zoom-reset`, `screenshot`, and
+`center-last-focused`, `reload`, `zoom-in`, `zoom-out`, `zoom-reset`, `screenshot`, and
 `cluster-toggle-float`. Parameterized actions also include
 `focus-DIRECTION`, `cluster-focus-DIRECTION`, `cluster-tile-swap-DIRECTION`,
-`node-move DIRECTION`, and `monitor-focus DIRECTION`, where `DIRECTION` is
+`node-move DIRECTION`, `resize-window-DIRECTION`, and `monitor-focus DIRECTION`, where `DIRECTION` is
 `left`, `right`, `up`, or `down`. `node-move` shifts the focused or
 most-recent Field window/collapsed node by one legal placement step; the
-default binding is `Mod+Alt+Arrow`. `Alt+Tab` and
+default binding is `Mod+Alt+Arrow`. Field `resize-window` uses `left`/`up` to
+shrink and `right`/`down` to grow, sharing `Mod+Ctrl+Arrow` with scoped tile
+swapping. `monitor focus DP-1` targets an exact connector name. `Alt+Tab` and
 `Alt+Shift+Tab` open and navigate the focus carousel; releasing Alt commits,
 focuses and raises the selected window, and moves the pointer to its final
 presentation center. A collapsed target restores first and receives one

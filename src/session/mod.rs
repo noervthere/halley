@@ -65,7 +65,7 @@ macro_rules! popup_unconstrain_context {
 
 pub(crate) use popup_unconstrain_context;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum SessionControl {
     Continue,
     Quit,
@@ -80,6 +80,7 @@ enum SessionControl {
     Trail(halley_config::TrailDirection),
     FocusDirection(halley_config::Direction),
     MoveNode(halley_config::Direction),
+    ResizeWindow(halley_config::Direction),
     CenterLastFocused,
     BearingsShow,
     BearingsToggle,
@@ -89,7 +90,8 @@ enum SessionControl {
     ClusterSlot(u8),
     ClusterTileFocus(halley_config::Direction),
     ClusterTileSwap(halley_config::Direction),
-    MonitorFocus(halley_config::Direction),
+    MonitorFocus(halley_config::MonitorTarget),
+    Reload,
 }
 
 #[derive(Clone, Copy)]
@@ -122,6 +124,7 @@ fn dispatch_action(
         Action::Trail(direction) => return SessionControl::Trail(direction),
         Action::FocusDirection(direction) => return SessionControl::FocusDirection(direction),
         Action::MoveNode(direction) => return SessionControl::MoveNode(direction),
+        Action::ResizeWindow(direction) => return SessionControl::ResizeWindow(direction),
         Action::CenterLastFocused => return SessionControl::CenterLastFocused,
         Action::ClusterMode => return SessionControl::ClusterMode,
         Action::ClusterLayoutCycle => return SessionControl::ClusterLayoutCycle,
@@ -130,6 +133,7 @@ fn dispatch_action(
         Action::ClusterTileFocus(direction) => return SessionControl::ClusterTileFocus(direction),
         Action::ClusterTileSwap(direction) => return SessionControl::ClusterTileSwap(direction),
         Action::MonitorFocus(direction) => return SessionControl::MonitorFocus(direction),
+        Action::Reload => return SessionControl::Reload,
         Action::BearingsShow => return SessionControl::BearingsShow,
         Action::BearingsToggle => return SessionControl::BearingsToggle,
         Action::OpenTerminal => match terminal_command {

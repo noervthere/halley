@@ -178,7 +178,7 @@ fn modifier_forces<D: SessionDriver>(session: &Session<D>) -> bool {
         .get_keyboard()
         .expect("keyboard capability added at seat setup")
         .modifier_state();
-    crate::input::mod_key_held(&modifiers, modifier)
+    crate::input::mod_key_held(&modifiers, session.keyboard.side_modifiers, modifier)
 }
 
 fn owner_is_current<D: SessionDriver, T>(session: &Session<D>, sequence: &Sequence<T>) -> bool {

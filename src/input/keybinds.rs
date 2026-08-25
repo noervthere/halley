@@ -1,4 +1,4 @@
-use halley_config::{Action, Keybinds, ModifierKey, Modifiers};
+use halley_config::{Action, BindingScope, Keybinds, ModifierKey, Modifiers};
 use smithay::backend::input::Keycode;
 use smithay::input::keyboard::{Keysym, xkb};
 
@@ -64,13 +64,17 @@ pub enum BackendKind {
 /// the host desktop's Super key during nested development.
 pub fn effective_mod(configured: ModifierKey, backend: BackendKind) -> ModifierKey {
     match backend {
-        BackendKind::Winit => {
-            if configured == ModifierKey::Alt {
-                ModifierKey::Super
-            } else {
-                ModifierKey::Alt
-            }
-        }
+        BackendKind::Winit => match configured {
+            ModifierKey::Super => ModifierKey::Alt,
+            ModifierKey::LeftSuper => ModifierKey::LeftAlt,
+            ModifierKey::RightSuper => ModifierKey::RightAlt,
+            ModifierKey::Alt => ModifierKey::Super,
+            ModifierKey::LeftAlt => ModifierKey::LeftSuper,
+            ModifierKey::RightAlt => ModifierKey::RightSuper,
+            ModifierKey::Ctrl | ModifierKey::Shift => ModifierKey::Alt,
+            ModifierKey::LeftCtrl | ModifierKey::LeftShift => ModifierKey::LeftAlt,
+            ModifierKey::RightCtrl | ModifierKey::RightShift => ModifierKey::RightAlt,
+        },
         BackendKind::Tty => configured,
     }
 }
@@ -78,18 +82,34 @@ pub fn effective_mod(configured: ModifierKey, backend: BackendKind) -> ModifierK
 fn modifier_bit(modifiers: Modifiers, key: ModifierKey) -> bool {
     match key {
         ModifierKey::Super => modifiers.super_key,
+        ModifierKey::LeftSuper => modifiers.left_super,
+        ModifierKey::RightSuper => modifiers.right_super,
         ModifierKey::Alt => modifiers.alt,
+        ModifierKey::LeftAlt => modifiers.left_alt,
+        ModifierKey::RightAlt => modifiers.right_alt,
         ModifierKey::Ctrl => modifiers.ctrl,
+        ModifierKey::LeftCtrl => modifiers.left_ctrl,
+        ModifierKey::RightCtrl => modifiers.right_ctrl,
         ModifierKey::Shift => modifiers.shift,
+        ModifierKey::LeftShift => modifiers.left_shift,
+        ModifierKey::RightShift => modifiers.right_shift,
     }
 }
 
 fn set_modifier_bit(modifiers: &mut Modifiers, key: ModifierKey, value: bool) {
     match key {
         ModifierKey::Super => modifiers.super_key = value,
+        ModifierKey::LeftSuper => modifiers.left_super = value,
+        ModifierKey::RightSuper => modifiers.right_super = value,
         ModifierKey::Alt => modifiers.alt = value,
+        ModifierKey::LeftAlt => modifiers.left_alt = value,
+        ModifierKey::RightAlt => modifiers.right_alt = value,
         ModifierKey::Ctrl => modifiers.ctrl = value,
+        ModifierKey::LeftCtrl => modifiers.left_ctrl = value,
+        ModifierKey::RightCtrl => modifiers.right_ctrl = value,
         ModifierKey::Shift => modifiers.shift = value,
+        ModifierKey::LeftShift => modifiers.left_shift = value,
+        ModifierKey::RightShift => modifiers.right_shift = value,
     }
 }
 
@@ -112,6 +132,7 @@ pub fn remap_mod_bit(modifiers: Modifiers, from: ModifierKey, to: ModifierKey) -
 /// classified as a keyboard, pointer-button, or wheel trigger.
 #[derive(Clone, Debug)]
 pub struct ResolvedBind {
+    pub scope: BindingScope,
     pub modifiers: Modifiers,
     pub trigger: ResolvedTrigger,
     pub action: Action,
@@ -170,6 +191,7 @@ pub fn resolve_binds(keybinds: &Keybinds, backend: BackendKind) -> Vec<ResolvedB
                 }
             };
             Some(ResolvedBind {
+                scope: bind.scope,
                 modifiers: remap_mod_bit(bind.modifiers, keybinds.modifier, effective),
                 trigger,
                 action: bind.action.clone(),
@@ -196,6 +218,18 @@ mod tests {
         assert_eq!(
             effective_mod(ModifierKey::Alt, BackendKind::Winit),
             ModifierKey::Super
+        );
+    }
+
+    #[test]
+    fn winit_preserves_the_configured_modifier_side() {
+        assert_eq!(
+            effective_mod(ModifierKey::LeftSuper, BackendKind::Winit),
+            ModifierKey::LeftAlt
+        );
+        assert_eq!(
+            effective_mod(ModifierKey::RightAlt, BackendKind::Winit),
+            ModifierKey::RightSuper
         );
     }
 
@@ -347,6 +381,7 @@ mod tests {
     fn loose_command_is_preserved_during_backend_resolution() {
         let mut keybinds = Keybinds::default();
         keybinds.binds.push(halley_config::Keybind {
+            scope: halley_config::BindingScope::Global,
             modifiers: Modifiers {
                 super_key: true,
                 ..Modifiers::default()

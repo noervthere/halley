@@ -5,7 +5,7 @@ use smithay::utils::{Rectangle, SERIAL_COUNTER};
 use smithay::wayland::seat::WaylandFocus;
 
 use super::{
-    Session, SessionDriver, cluster_owns_focus, focus_adjacent_output, navigate_cluster,
+    Session, SessionDriver, cluster_owns_focus, focus_output_target, navigate_cluster,
     sync_cluster_activation_focus, toggle_cluster_or_focused_node, work_area_for_output,
 };
 
@@ -249,6 +249,13 @@ pub(super) fn dispatch<D: SessionDriver>(
                 crate::nodes::move_selected_direction(session, direction, Some(&output));
             }
         }
+        super::super::SessionControl::ResizeWindow(direction) => {
+            if let Some(output) = action_output
+                && session.clusters.active_on(&output).is_none()
+            {
+                crate::nodes::resize_selected_direction(session, direction, Some(&output));
+            }
+        }
         super::super::SessionControl::CenterLastFocused => {
             if let Some(output) = action_output {
                 super::super::navigation::center_last_focused(session, &output);
@@ -319,8 +326,13 @@ pub(super) fn dispatch<D: SessionDriver>(
                 navigate_cluster(session, &output, direction, true);
             }
         }
-        super::super::SessionControl::MonitorFocus(direction) => {
-            focus_adjacent_output(session, direction)
+        super::super::SessionControl::MonitorFocus(target) => focus_output_target(session, target),
+        super::super::SessionControl::Reload => {
+            if let Some(watcher) = session.config_watcher.as_ref() {
+                watcher.request_reload();
+            } else {
+                eventline::warn!("config: manual reload requested without a watched file");
+            }
         }
         super::super::SessionControl::BearingsShow => {
             let changed = match held_keycode {

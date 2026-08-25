@@ -3,7 +3,7 @@ use crate::keybinds::Modifiers;
 /// Parse a chord string like `"super+shift+e"` into its modifier flags and
 /// key name. The last `+`-separated segment is always the key; every
 /// segment before it must be a recognized modifier name
-/// (`super`/`logo`/`mod4`, `alt`, `ctrl`/`control`, `shift` - matched
+/// (`super`, `alt`, `ctrl`, `shift`, or their `l*`/`r*` variants - matched
 /// case-insensitively). Returns `None` if the key segment is empty or any
 /// modifier segment isn't recognized - a chord with a typo'd modifier
 /// should fail to parse, not silently drop the typo and bind something the
@@ -22,9 +22,17 @@ pub fn parse_chord(chord: &str) -> Option<(Modifiers, String)> {
     for part in parts {
         match part.trim().to_lowercase().as_str() {
             "super" | "logo" | "mod4" => modifiers.super_key = true,
+            "lsuper" | "left-super" | "lwin" | "left-logo" => modifiers.left_super = true,
+            "rsuper" | "right-super" | "rwin" | "right-logo" => modifiers.right_super = true,
             "alt" => modifiers.alt = true,
+            "lalt" | "left-alt" => modifiers.left_alt = true,
+            "ralt" | "right-alt" => modifiers.right_alt = true,
             "ctrl" | "control" => modifiers.ctrl = true,
+            "lctrl" | "left-ctrl" | "left-control" => modifiers.left_ctrl = true,
+            "rctrl" | "right-ctrl" | "right-control" => modifiers.right_ctrl = true,
             "shift" => modifiers.shift = true,
+            "lshift" | "left-shift" => modifiers.left_shift = true,
+            "rshift" | "right-shift" => modifiers.right_shift = true,
             _ => return None,
         }
     }
@@ -91,5 +99,15 @@ mod tests {
     fn rejects_empty_key() {
         assert!(parse_chord("super+shift+").is_none());
         assert!(parse_chord("").is_none());
+    }
+
+    #[test]
+    fn parses_per_side_modifiers() {
+        let (modifiers, key) = parse_chord("lsuper+rctrl+lshift+x").unwrap();
+        assert!(modifiers.left_super);
+        assert!(modifiers.right_ctrl);
+        assert!(modifiers.left_shift);
+        assert!(!modifiers.super_key);
+        assert_eq!(key, "x");
     }
 }

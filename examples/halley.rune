@@ -799,6 +799,16 @@ keybinds:
   "$var.mod+ctrl+up" "cluster-tile-swap-up"
   "$var.mod+ctrl+down" "cluster-tile-swap-down"
 
+  # The same chords resize the focused window in the Field. Binding scopes
+  # select these there and the tile-swap actions inside a tiling cluster.
+  "$var.mod+ctrl+left" "resize-window-left"
+  "$var.mod+ctrl+right" "resize-window-right"
+  "$var.mod+ctrl+up" "resize-window-up"
+  "$var.mod+ctrl+down" "resize-window-down"
+
+  # Re-read this file immediately. Valid saves are still watched automatically.
+  "$var.mod+shift+r" "reload"
+
   # `default-terminal` launches the first installed terminal from Halley's built-in
   # priority list. Replace this bind with e.g. `"$var.mod+t" "kitty"` to use
   # one command explicitly.
