@@ -1,73 +1,351 @@
-# Halley
+<h1 align="center">Halley</h1>
 
-Halley is a spatial Wayland compositor built around independent per-monitor
-cameras, overlapping active windows, and collapsed node landmarks.
+<p align="center"><em>Named after Halley's comet — periodic, precise, returning.</em></p>
 
-Current compositor-owned navigation includes:
+<p align="center">
+  <a href="https://saltnpepper97.github.io/halley-site/"><strong>Website</strong></a>
+</p>
 
-- nodes, decay, focus rings, landmarks, and old-Halley contact physics;
-- [Bearings](docs/bearings.md) for offscreen node navigation;
-- [Apogee and Alt+Tab](docs/apogee.md) with live compositor previews;
-- [field maximize and close succession](docs/field.md), independently per
-  monitor;
-- shared [compositor overlays](docs/overlays.md), including configuration
-  notices and exit confirmation;
-- output-local fullscreen, separate from ordinary decoration maximize;
-- native screenshots, screencasting, and an XDG desktop portal backend.
+[![Sponsor](https://img.shields.io/badge/%E2%9D%A4-Support_Halley-ff69b4?style=for-the-badge)](#support-halley)
+![License](https://img.shields.io/badge/license-GPL--3.0--only-blueviolet?style=for-the-badge)
+![Status](https://img.shields.io/badge/status-active-brightgreen?style=for-the-badge)
+![Wayland](https://img.shields.io/badge/display-Wayland-blue?style=for-the-badge)
+![Rust](https://img.shields.io/badge/language-Rust-orange?style=for-the-badge)
 
-The canonical configuration is [examples/halley.rune](examples/halley.rune).
-It is also the bootstrap template used when no user configuration exists.
-Configuration, keybind, node, animation, and font changes live-reload as one
-validated snapshot.
-The watcher follows every nested Rune `gather` dependency, including missing
-files that are created after startup, so split configurations reload from any
-participating file.
+---
 
-Build the workspace with:
+> **Windows as nodes. Windows as clusters. Windows as your command center.**
+
+Halley is a spatial Wayland compositor built for multi-monitor desktops. Each
+display has an independent infinite Field: a camera over freely overlapping
+windows, collapsed node landmarks, and clusters assembled around the work you
+actually want to keep together. Windows can decay when they leave your active
+area, return through history-aware navigation, or remain pinned as durable
+landmarks.
+
+Halley 0.6 is a ground-up compositor rewrite. It keeps the Field, nodes,
+clusters, decay, Trail, Bearings, Apogee, Lift, and native capture experience,
+but rebuilds their foundations around Smithay's GLES renderer, damage-aware
+presentation, native embedded XWayland, and a typed public API.
+
+---
+
+## Support Halley
+
+Halley will continue receiving updates, fixes, protocol work, and polish. The
+project is active, and its core direction is not being paused or held hostage.
+
+Sponsorship helps fund the unglamorous work that makes a compositor durable:
+documentation, testing, packaging, compatibility, triage, hardware debugging,
+tooling, and release work. It creates more time to work carefully instead of
+turning funding thresholds into product promises.
+
+Sponsorship does **not** buy roadmap control. Halley remains
+maintainer-directed.
+
+---
+
+## Concepts
+
+| Term | What it is |
+|---|---|
+| **Field** | An infinite, zoomable 2D canvas with an independent camera on each monitor. |
+| **Node** | A managed window's stable identity and its collapsed representation on the Field. |
+| **Focus Ring** | An elliptical active region used by decay and navigation policy. |
+| **Decay** | Configurable transitions that collapse inactive windows outside the focus ring. |
+| **Landmark** | A collapsed or pinned object that remains spatially meaningful while ordinary windows overlap freely. |
+| **Cluster** | A group of windows that opens into its own tiling or stacking workspace. |
+| **Core** | The collapsed Field representation of a cluster. |
+| **Trail** | Per-monitor focus history with backward, forward, list, and exact goto controls. |
+| **Bearings** | A directional overlay for finding and navigating offscreen nodes and cluster cores. |
+| **Apogee** | A multi-monitor overview with live compositor-owned previews. |
+
+---
+
+## The Field
+
+Multi-monitor behavior is not an extension of one shared workspace. Every
+output owns its own camera, focus history, active cluster, fullscreen state,
+maximize state, and focus-ring policy.
+
+- **Independent cameras** — pan and zoom one monitor without disturbing the
+  others.
+- **Free overlap** — normal active windows overlap by default instead of being
+  forced through a global no-overlap solver.
+- **Decay and landmarks** — inactive windows can collapse into durable nodes;
+  pinned nodes stay fixed until explicitly moved.
+- **Cross-output movement** — drag a window through monitor boundaries without
+  a separate Field Jump mode.
+- **Trail navigation** — walk backward and forward through each monitor's
+  recent Field focus history.
+- **Directional focus** — the same action vocabulary adapts to the Field,
+  tiling clusters, and stacking clusters.
+
+The focus ring is an invisible ellipse around the useful part of a monitor's
+camera. Its dimensions and offset are configurable per output. Windows outside
+that ring become candidates for timer-driven decay rather than disappearing
+because an arbitrary global window count was exceeded.
+
+---
+
+## Clusters
+
+Clusters are deliberate workspaces assembled from ordinary windows.
+
+Enter cluster mode, select the windows you want, and confirm the draft. The
+result becomes a core on the Field. Hovering a core can bloom member previews
+around it; opening it enters a monitor-local workspace while leaving the Field
+geometry intact behind it.
+
+Two layouts are available:
+
+- **Tiling** — a master-and-stack layout with directional focus, tile swaps,
+  overflow, and per-member floating.
+- **Stacking** — an overlapping deck with focused-card cycling and retained
+  order.
+
+Cluster slots are per monitor. Opening the active slot again returns to the
+unchanged Field.
+
+---
+
+## Systems
+
+| System | Description |
+|---|---|
+| **Field** | Per-monitor infinite canvases with independent pan, zoom, focus, and presentation state |
+| **Nodes** | Stable identities, collapse/restore, pinning, icons, labels, and landmark behavior |
+| **Clusters** | Draft creation, core nodes, tiling, stacking, slots, floating members, and animated transitions |
+| **Decay** | Focus-ring and timer-driven clutter reduction |
+| **Trail** | Per-output recent-focus navigation and remote inspection |
+| **Bearings** | Directional overlays and offscreen navigation |
+| **Apogee** | Multi-monitor overview and live previews |
+| **Lift** | Bundled search and action launcher |
+| **Capture** | Native menu, region, screen, and window screenshots plus portal screencasting |
+| **IPC/API** | Persistent typed clients, capability discovery, subscriptions, and `halleyctl` |
+| **XWayland** | Native embedded XWayland and compositor-owned X11 window management |
+| **Gamescope** | Optional profiled launch wrapper through `halleyctl gamescope` |
+
+### Rewrite boundaries
+
+The rewrite intentionally does not carry every old policy forward.
+
+- Native embedded XWayland replaces `xwayland-satellite`; game input and
+  pointer-lock bugs belong in the native path instead of a special game-mode
+  exception layer.
+- Gamescope integration wraps launches and resolves per-game profiles, output
+  dimensions, refresh, and fullscreen/borderless flags. It does not revive the
+  old compositor-side game classifier or its satellite-specific workarounds.
+- The supported `halley-api` is for external launchers, panels, automation,
+  tests, and desktop components. Halley currently promises no in-process
+  extension framework.
+- The former adaptive top-edge client is not being ported. Any future shell in
+  that space will be prototyped as a new design.
+- Zoom tops out at native scale. Active windows are governed by focus-ring and
+  timer policy rather than a maximum-window cap.
+
+---
+
+## Requirements
+
+Halley targets a native Linux Wayland session and expects:
+
+- A DRM/KMS graphics stack with GBM, EGL, and OpenGL ES support
+- A seat/session backend through `libseat`, such as `seatd` or logind
+- `libinput` and `udev` access for the native TTY backend
+- Rust and Cargo when building from source
+
+Optional desktop components:
+
+- The `Xwayland` executable for X11 applications; Halley manages it natively
+- `xdg-desktop-portal` and a settings/file-dialog backend such as
+  `xdg-desktop-portal-gtk`
+- Gamescope when using `halleyctl gamescope run`
+
+Halley does not require systemd. The default build supports systemd user
+sessions, while dinit and direct init-agnostic launch paths are also packaged.
+
+---
+
+## Build and Install
+
+Build the complete workspace:
 
 ```sh
+git clone https://github.com/saltnpepper97/halley
+cd halley
 cargo build --release --workspace
 ```
 
-The default compositor includes D-Bus accessibility, systemd session
-integration, native XWayland, and the nested winit backend. Distributions can
-select a different user manager or a smaller compositor with Cargo features;
-see [building and packaging](docs/packaging.md) for the supported combinations
-and resource install paths.
+The build produces:
 
-Run `target/release/halley --winit` for a nested development session or
-`target/release/halley --session` for a real TTY session. Pass `-c PATH` (or
-`--config PATH`) to select a configuration explicitly. `halleyctl` exposes
-output, DPMS, node, Bearings, configuration verification, and quit controls;
-`halleyctl --help` lists the current surface. `halley-lift` is the bundled
-search and action launcher; the default `Mod+D` binding toggles it.
+```text
+target/release/halley
+target/release/halleyctl
+target/release/halley-lift
+target/release/xdg-desktop-portal-halley
+```
 
-Third-party launchers, panels, and automation should use the supported
-[`halley-api` Rust SDK](docs/api.md). It exposes typed commands and queries,
-structured errors, capability negotiation, and sequenced state subscriptions;
-the internal postcard IPC codec is not the external compatibility boundary.
+For user-local testing:
 
-On the TTY backend, `halleyctl dpms off|on|toggle [-o OUTPUT]` controls
-connector power. Omitting `--output` applies the command to every active
-output. Keyboard and pointer input wake the selected sleeping output, or every
-output when the whole layout is asleep. The nested winit backend rejects DPMS
-commands.
+```sh
+install -Dm755 target/release/halley ~/.local/bin/halley
+install -Dm755 target/release/halleyctl ~/.local/bin/halleyctl
+install -Dm755 target/release/halley-lift ~/.local/bin/halley-lift
+install -Dm755 target/release/xdg-desktop-portal-halley \
+  ~/.local/bin/xdg-desktop-portal-halley
+```
 
-References:
+Run a nested development compositor with:
 
+```sh
+halley --winit
+```
+
+Use `halley-session` or `halley --session` for a native desktop session. See
+[the packaging guide](docs/packaging.md) for display-manager assets, portal
+metadata, systemd, dinit, runit, s6, OpenRC, and distribution paths.
+
+---
+
+## Default Keybinds
+
+The canonical defaults live in
+[`examples/halley.rune`](examples/halley.rune). Keybinds are configurable,
+context-scoped, side-aware, and shared by keyboard, pointer-button, wheel,
+swipe, and hold actions.
+
+| Category | Keybind | Action |
+|---|---|---|
+| Basic | `Super+Shift+E` | Open Halley's quit confirmation |
+| Basic | `Super+Q` | Close the focused window |
+| Basic | `Super+F` | Toggle fullscreen |
+| Basic | `Super+M` | Toggle Field maximize |
+| Basic | `Super+N` | Toggle live/collapsed state |
+| Basic | `Super+P` | Pin or unpin the focused window |
+| Overview | `Super+O` | Toggle Apogee |
+| Focus | `Alt+Tab` / `Alt+Shift+Tab` | Cycle focus forward/backward |
+| Focus | `Super+Arrow` | Directional focus in the active context |
+| Focus | `Super+H` | Center the last-focused Field window |
+| Trail | `Super+,` / `Super+.` | Previous/next Trail entry |
+| Monitor | `Super+Shift+Arrow` | Focus an adjacent monitor |
+| Move | `Super+Alt+Arrow` | Move the focused Field node |
+| Resize/Tile | `Super+Ctrl+Arrow` | Resize in the Field or swap in a tiling cluster |
+| Clusters | `Super+Shift+C` | Enter cluster creation mode |
+| Clusters | `Super+L` | Cycle cluster layout |
+| Clusters | `Super+V` | Toggle the focused cluster member floating |
+| Clusters | `Super+0..9` | Open a per-monitor cluster slot |
+| Bearings | `Super+Z` / `Super+Shift+Z` | Hold or toggle Bearings |
+| Launch | `Super+T` | Open the first supported terminal |
+| Launch | `Super+D` | Toggle Halley Lift |
+| Reload | `Super+Shift+R` | Reload the selected configuration |
+| Zoom | `Super+-` / `Super+=` / `Super+Shift+0` | Zoom out, in, or reset |
+| Pointer | `Super+Left Mouse` | Move a window |
+| Pointer | `Super+Right Mouse` | Smoothly resize a window |
+| Pointer | `Left Mouse` on empty Field | Pan the Field |
+| Screenshot | `Print` | Open native capture |
+
+The same chord may be assigned distinct actions in `field`, `cluster`, `tile`,
+and `stack` scopes. Left/right Super, Alt, Ctrl, and Shift can be matched
+independently. Compositor move, resize, and pan grabs are ordinary remappable
+bindings rather than hardcoded mouse policy.
+
+---
+
+## Configuration
+
+On first launch Halley creates
+`$XDG_CONFIG_HOME/halley/halley.rune`, falling back to
+`~/.config/halley/halley.rune`, from the canonical
+[`examples/halley.rune`](examples/halley.rune) template. Existing files are
+never overwritten automatically.
+
+Pass `-c PATH` or `--config PATH` to select another file. Valid edits reload as
+one atomic snapshot; invalid edits leave the last valid runtime state active.
+Nested Rune `gather` dependencies are watched recursively, including missing
+dependencies that are created after startup.
+
+Useful controls:
+
+```sh
+halleyctl config verify
+halleyctl config edit
+halleyctl reload
+```
+
+`halleyctl` also exposes output and DPMS state, capture modes, node and cluster
+control, Trail, named-monitor focus, stack/tile navigation, Bearings, portal
+diagnostics, and Gamescope launch resolution. Run `halleyctl --help` for the
+current command surface.
+
+---
+
+## API and External Tools
+
+[`halley-api`](docs/api.md) is the supported Rust boundary for launchers,
+panels, automation, tests, and desktop components. It provides typed commands
+and queries, structured errors, capability negotiation, persistent clients,
+and sequenced state subscriptions.
+
+The postcard-based `halley-ipc` crate is Halley's private transport codec, not
+an external compatibility contract. External programs should use
+`halley-api`; `halleyctl` and Halley Lift are reference consumers of that API.
+
+---
+
+## Community / Support
+
+Halley's Discord is for practical support, config help, bug triage, packaging,
+release updates, and focused contributor coordination. Halley remains
+maintainer-directed; Discord is not a roadmap vote.
+
+Join the Discord: https://discord.gg/cjutpDv6q
+
+---
+
+## Portals To Use
+
+- `xdg-desktop-portal-halley` for screenshots and ScreenCast sources
+- `xdg-desktop-portal-gtk` for common desktop dialogs Halley does not provide
+
+Check the installed backend and advertised capture support with:
+
+```sh
+halleyctl portal status
+```
+
+---
+
+## References
+
+- [Configuration template](examples/halley.rune)
 - [Keybind triggers and actions](docs/keybinds.md)
-- [Compositor API for external tools](docs/api.md)
+- [Compositor API](docs/api.md)
 - [Field behavior, maximize, zoom, and close succession](docs/field.md)
 - [Nodes, decay, focus rings, landmarks, and physics](docs/nodes.md)
 - [Bearings](docs/bearings.md)
 - [Apogee and Alt+Tab](docs/apogee.md)
-- [Compositor overlays and configuration notices](docs/overlays.md)
-- [Compositor backgrounds](docs/backgrounds.md)
-- [Managed-window rules](docs/window-rules.md)
-- [Screen sharing and the desktop portal](docs/portal.md)
-- [Wayland protocol support](docs/wayland-protocols.md)
-- [XWayland policy and conformance baseline](docs/xwayland.md)
-- [Fonts](docs/fonts.md)
 - [Animations](docs/animations.md)
 - [Window decorations](docs/decorations.md)
+- [Managed-window rules](docs/window-rules.md)
+- [Compositor backgrounds](docs/backgrounds.md)
+- [Screen sharing and the desktop portal](docs/portal.md)
+- [Wayland protocol support](docs/wayland-protocols.md)
+- [XWayland policy and conformance](docs/xwayland.md)
 - [Building, session managers, and packaging](docs/packaging.md)
+
+---
+
+## Inspirations
+
+- [niri](https://github.com/niri-wm/niri) — compositor architecture and careful Wayland behavior
+- [vxwm](https://codeberg.org/wh1tepearl/vxwm) — visual experimentation
+- [hevel](https://sr.ht/~dlm/hevel/) — spatial zooming
+- [Hyprland](https://github.com/hyprwm/Hyprland) — configuration and visual ideas
+- [newm](https://github.com/jbuchermn/newm) — spatial compositing
+
+---
+
+## License
+
+Halley is distributed under the GPL-3.0-only license.
