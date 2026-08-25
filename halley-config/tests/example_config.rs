@@ -1,7 +1,13 @@
-use halley_config::{Action, Direction, ModifierKey, MonitorTarget, parse_keybinds};
+use halley_config::{
+    Action, Direction, ModifierKey, MonitorTarget, OverlayColorMode, TrailDirection, parse_keybinds,
+};
 use rune_cfg::RuneConfig;
 
 const EXAMPLE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../examples/halley.rune");
+const SPLIT_EXAMPLE_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../examples/split-config/halley.rune"
+);
 
 /// Real end-to-end check: parse the actual shipped example file through
 /// real rune-cfg, not just hand-constructed strings like the unit tests
@@ -200,6 +206,49 @@ fn example_config_parses_end_to_end() {
         .expect("screenshot bind present");
     assert_eq!(screenshot.key, "Print");
     assert_eq!(screenshot.modifiers, halley_config::Modifiers::default());
+}
+
+#[test]
+fn split_example_config_parses_end_to_end() {
+    let runtime = halley_config::load_runtime_config_at(std::path::Path::new(SPLIT_EXAMPLE_PATH))
+        .expect("split example and its gathered files parse");
+
+    assert_eq!(runtime.keybinds.modifier, ModifierKey::Super);
+    assert_eq!(runtime.cursor.theme, "Adwaita");
+    assert!(runtime.cursor.hide_on_keyboard_nav);
+    assert_eq!(
+        runtime.field.pins.color,
+        OverlayColorMode::Fixed {
+            r: 0xd6 as f32 / 255.0,
+            g: 0x5d as f32 / 255.0,
+            b: 0x26 as f32 / 255.0,
+            a: 1.0,
+        }
+    );
+    assert_eq!(
+        runtime.field.pins.background_color,
+        OverlayColorMode::Fixed {
+            r: 0x1d as f32 / 255.0,
+            g: 0x20 as f32 / 255.0,
+            b: 0x21 as f32 / 255.0,
+            a: 1.0,
+        }
+    );
+    assert!(runtime.animations.smooth_resize.enabled);
+    assert!(
+        runtime
+            .keybinds
+            .binds
+            .iter()
+            .any(|binding| binding.action == Action::Trail(TrailDirection::Previous))
+    );
+    assert!(
+        runtime
+            .keybinds
+            .binds
+            .iter()
+            .any(|binding| binding.action == Action::Reload)
+    );
 }
 
 #[test]
