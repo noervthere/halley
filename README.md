@@ -19,6 +19,9 @@ The canonical configuration is [examples/halley.rune](examples/halley.rune).
 It is also the bootstrap template used when no user configuration exists.
 Configuration, keybind, node, animation, and font changes live-reload as one
 validated snapshot.
+The watcher follows every nested Rune `gather` dependency, including missing
+files that are created after startup, so split configurations reload from any
+participating file.
 
 Build the workspace with:
 

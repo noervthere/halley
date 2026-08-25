@@ -1,4 +1,6 @@
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::error::Error;
+use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -48,23 +50,82 @@ impl FileProps {
 
 struct ConfigFileState {
     path: PathBuf,
-    last_props: FileProps,
+    last_props: BTreeMap<PathBuf, FileProps>,
 }
 
 impl ConfigFileState {
     fn new(path: PathBuf) -> Self {
-        let last_props = FileProps::read(&path);
+        let last_props = config_tree_props(&path);
         Self { path, last_props }
     }
 
     fn changed(&mut self) -> bool {
-        let props = FileProps::read(&self.path);
+        let props = config_tree_props(&self.path);
         if self.last_props == props {
             return false;
         }
         self.last_props = props;
         true
     }
+}
+
+fn gather_path(line: &str) -> Option<&str> {
+    let rest = line.trim().strip_prefix("gather")?.trim();
+    let quote = rest.chars().next()?;
+    if !matches!(quote, '\'' | '"') {
+        return None;
+    }
+    let after_quote = &rest[quote.len_utf8()..];
+    let end = after_quote.find(quote)?;
+    Some(&after_quote[..end])
+}
+
+fn resolve_gather_path(raw: &str, base: &Path) -> Option<PathBuf> {
+    let path = if let Some(rest) = raw.strip_prefix("~/") {
+        PathBuf::from(std::env::var_os("HOME")?).join(rest)
+    } else {
+        PathBuf::from(raw)
+    };
+    Some(if path.is_absolute() {
+        path
+    } else {
+        base.join(path)
+    })
+}
+
+fn discover_config_tree(root: &Path) -> BTreeSet<PathBuf> {
+    fn visit(path: PathBuf, files: &mut BTreeSet<PathBuf>, visited: &mut HashSet<PathBuf>) {
+        let identity = path.canonicalize().unwrap_or_else(|_| path.clone());
+        if !visited.insert(identity) {
+            return;
+        }
+        files.insert(path.clone());
+        let Ok(source) = fs::read_to_string(&path) else {
+            return;
+        };
+        let base = path.parent().unwrap_or_else(|| Path::new("."));
+        for dependency in source
+            .lines()
+            .filter_map(gather_path)
+            .filter_map(|raw| resolve_gather_path(raw, base))
+        {
+            visit(dependency, files, visited);
+        }
+    }
+
+    let mut files = BTreeSet::new();
+    visit(root.to_path_buf(), &mut files, &mut HashSet::new());
+    files
+}
+
+fn config_tree_props(root: &Path) -> BTreeMap<PathBuf, FileProps> {
+    discover_config_tree(root)
+        .into_iter()
+        .map(|path| {
+            let props = FileProps::read(&path);
+            (path, props)
+        })
+        .collect()
 }
 
 #[derive(Clone, Debug)]
@@ -187,7 +248,8 @@ pub fn watch<App: 'static>(
             loop {
                 thread::sleep(POLLING_INTERVAL);
                 let forced = watcher_reload_requested.swap(false, Ordering::AcqRel);
-                if !forced && !state.changed() {
+                let changed = state.changed();
+                if !forced && !changed {
                     continue;
                 }
                 let loaded = halley_config::load_runtime_config_diagnostic_at(&state.path);
@@ -279,6 +341,42 @@ mod tests {
             .unwrap();
         fs::rename(&replacement, &scratch.path).unwrap();
         assert!(state.changed());
+    }
+
+    #[test]
+    fn file_state_follows_nested_gathers_and_refreshes_the_dependency_graph() {
+        let scratch = ScratchFile::new("gathers");
+        let directory = scratch.path.parent().unwrap();
+        let child = directory.join("input.rune");
+        let nested = directory.join("keys.rune");
+        let replacement = directory.join("replacement.rune");
+        fs::write(&scratch.path, "gather \"input.rune\"\n").unwrap();
+        fs::write(&child, "gather \"keys.rune\"\n").unwrap();
+        fs::write(&nested, "keybinds:\nend\n").unwrap();
+
+        let mut state = ConfigFileState::new(scratch.path.clone());
+        assert_eq!(state.last_props.len(), 3);
+        assert!(!state.changed());
+
+        fs::write(&nested, "keybinds:\n  mod \"super\"\nend\n").unwrap();
+        assert!(state.changed(), "nested gather changes must trigger reload");
+        assert!(!state.changed());
+
+        fs::write(&child, "gather \"replacement.rune\"\n").unwrap();
+        assert!(state.changed());
+        assert!(
+            state.last_props.contains_key(&replacement),
+            "missing dependencies remain watched for creation"
+        );
+        assert!(!state.last_props.contains_key(&nested));
+
+        fs::write(&replacement, "input:\nend\n").unwrap();
+        assert!(state.changed());
+        fs::write(&nested, "this dependency was removed").unwrap();
+        assert!(
+            !state.changed(),
+            "removed dependencies stop triggering reloads"
+        );
     }
 
     #[test]
