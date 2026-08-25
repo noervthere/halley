@@ -21,6 +21,9 @@ pub(super) struct ClusterElementContext<'a> {
     pub(super) nodes: &'a crate::nodes::NodesState,
     pub(super) cameras: &'a crate::presentation::camera::OutputCameras,
     pub(super) decorations: &'a halley_config::Decorations,
+    pub(super) pins: &'a halley_config::Pins,
+    pub(super) overlays: &'a halley_config::Overlays,
+    pub(super) pin_renderer: &'a mut crate::render::pin::PinRenderer,
     pub(super) shadow_config: halley_config::ShadowLayer,
     pub(super) shadow_renderer: &'a mut crate::render::effects::shadow::ShadowRenderer,
     pub(super) node_grab_active: bool,
@@ -41,6 +44,9 @@ pub(super) fn cluster_elements(
         nodes,
         cameras,
         decorations,
+        pins,
+        overlays,
+        pin_renderer,
         shadow_config,
         shadow_renderer,
         node_grab_active,
@@ -95,6 +101,23 @@ pub(super) fn cluster_elements(
         };
         let fill = node_fill_color(nodes.config, ring);
         let mut elements = Vec::new();
+        if clusters
+            .registry()
+            .cluster(id)
+            .is_some_and(|cluster| cluster.pinned)
+            && let Some(pin) = pin_renderer.element(
+                renderer,
+                &output.name(),
+                crate::render::pin::PinSlot::Cluster(id.as_u64()),
+                crate::render::pin::landmark_badge_rect(pins, (local.x, local.y), side),
+                1.0,
+                pins,
+                overlays,
+                decorations,
+            )
+        {
+            elements.push(SceneElement::Closing(pin));
+        }
         let hover_mix = if bloom_open {
             0.0
         } else {

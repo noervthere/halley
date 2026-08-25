@@ -92,11 +92,13 @@ pub fn build(
     output_geometry: Rectangle<i32, Logical>,
     request: RenderRequest<'_>,
 ) -> Result<Vec<SceneElement>, Box<dyn Error>> {
+    request.resources.node_renderer.poll_icons(renderer);
     request
         .resources
         .backdrop_blur_renderer
         .begin_scene(&output.name());
     request.resources.node_renderer.begin_scene(&output.name());
+    request.resources.pin_renderer.begin_scene(&output.name());
     request.resources.ui_text.begin_scene();
     if request.desktop.session_lock.active() {
         let scale = Scale::from(output.current_scale().fractional_scale());
@@ -248,6 +250,32 @@ pub fn build(
             &mut overlay_elements,
         )?;
         elements.splice(0..0, overlay_elements);
+        if request.visuals.debug.overlay_fps {
+            let mut fps_elements = super::overlays::fps::elements(
+                renderer,
+                &output.name(),
+                request.frame.target_presentation_time,
+                request.resources.debug_fps_overlay,
+                request.overlays.overlay_config,
+                request.visuals.decorations,
+                request.resources.node_renderer,
+                request.resources.ui_text,
+            )?;
+            append_compositor_overlay_blur(
+                renderer,
+                output,
+                OverlayEffectStyle {
+                    output_size: output_geometry.size,
+                    identity: "debug-fps",
+                    blur: request.visuals.blur,
+                    shadow: request.visuals.shadows.overlay,
+                },
+                request.resources.backdrop_blur_renderer,
+                request.resources.shadow_renderer,
+                &mut fps_elements,
+            )?;
+            elements.splice(0..0, fps_elements);
+        }
         if request.cursor.show_cursor {
             let cursor = crate::cursor::render::elements(
                 renderer,
@@ -287,6 +315,8 @@ pub fn build(
         request.resources.ui_text,
         request.overlays.overlay_config,
         request.visuals.decorations,
+        request.visuals.pins,
+        request.resources.pin_renderer,
     )?;
     append_overlay_shadows(
         renderer,
@@ -369,6 +399,10 @@ pub fn build(
         &mut focus_cycle,
     )?;
     elements.extend(focus_cycle);
+    // Native XDG and X11 override-redirect popups use a desktop popup plane.
+    // It sits in front of panels (`Layer::Top`) so menus are not clipped by a
+    // status bar, while overlay surfaces and compositor UI remain authoritative.
+    let popup_foreground_index = elements.len();
     if !request.desktop.fullscreen.covers_top(
         request.desktop.focused,
         output,
@@ -433,6 +467,10 @@ pub fn build(
             node_grab_active: request.desktop.node_grab_active,
             cameras: request.desktop.cameras,
             decorations: request.visuals.decorations,
+            pins: request.visuals.pins,
+            overlays: request.overlays.overlay_config,
+            pin_renderer: request.resources.pin_renderer,
+            debug: request.visuals.debug,
             shadow_config: request.visuals.shadows.node,
             shadow_renderer: request.resources.shadow_renderer,
             now: request.frame.target_presentation_time,
@@ -542,6 +580,9 @@ pub fn build(
             nodes: request.desktop.nodes,
             cameras: request.desktop.cameras,
             decorations: request.visuals.decorations,
+            pins: request.visuals.pins,
+            overlays: request.overlays.overlay_config,
+            pin_renderer: request.resources.pin_renderer,
             shadow_config: request.visuals.shadows.node,
             shadow_renderer: request.resources.shadow_renderer,
             node_grab_active: request.desktop.node_grab_active,
@@ -591,6 +632,8 @@ pub fn build(
         target_presentation_time: request.frame.target_presentation_time,
         focused: request.desktop.focused,
         decorations: request.visuals.decorations,
+        pins: request.visuals.pins,
+        overlays: request.overlays.overlay_config,
         font: request.visuals.font,
         blur: request.visuals.blur,
         shadow_config: request.visuals.shadows.window,
@@ -627,11 +670,12 @@ pub fn build(
                 titlebar: request.resources.titlebar_renderer,
                 node: request.resources.node_renderer,
                 text: request.resources.ui_text,
+                pin: request.resources.pin_renderer,
             },
         )?;
         if window_scene.cluster_exclusive {
             exclusive_windows.push((stack_index, window_scene));
-        } else if !window_scene.elements.is_empty() {
+        } else if !window_scene.elements.is_empty() || !window_scene.popup_elements.is_empty() {
             live_windows.push((stack_index, window_scene));
         }
         let extra_presentation = window
@@ -661,9 +705,10 @@ pub fn build(
                     titlebar: request.resources.titlebar_renderer,
                     node: request.resources.node_renderer,
                     text: request.resources.ui_text,
+                    pin: request.resources.pin_renderer,
                 },
             )?;
-            if !extra_scene.elements.is_empty() {
+            if !extra_scene.elements.is_empty() || !extra_scene.popup_elements.is_empty() {
                 live_windows.push((stack_index, extra_scene));
             }
         }
@@ -672,7 +717,7 @@ pub fn build(
         .iter()
         .map(|(stack_index, _)| *stack_index)
         .max();
-    let (floating_foreground, live_windows) = match exclusive_anchor {
+    let (mut floating_foreground, mut live_windows) = match exclusive_anchor {
         Some(exclusive_anchor) => live_windows.into_iter().partition(|(stack_index, scene)| {
             cluster_float_is_above_exclusive(scene.cluster_floating, *stack_index, exclusive_anchor)
         }),
@@ -685,8 +730,23 @@ pub fn build(
         .iter()
         .filter_map(|(stack_index, scene)| scene.cluster_depth.map(|_| *stack_index))
         .max();
-    stack.extend(live_windows.into_iter().map(|(stack_index, window_scene)| {
-        StackGroup {
+    let mut popup_stack = Vec::new();
+    for (stack_index, window_scene) in &mut live_windows {
+        if !window_scene.popup_elements.is_empty() {
+            popup_stack.push(StackGroup {
+                stack_index: window_scene
+                    .cluster_depth
+                    .and(cluster_anchor)
+                    .unwrap_or(*stack_index),
+                order: window_scene
+                    .cluster_depth
+                    .map_or(u64::MAX, |depth| depth as u64),
+                elements: std::mem::take(&mut window_scene.popup_elements),
+            });
+        }
+    }
+    for (stack_index, window_scene) in live_windows {
+        stack.push(StackGroup {
             stack_index: window_scene
                 .cluster_depth
                 .and(cluster_anchor)
@@ -695,14 +755,26 @@ pub fn build(
                 .cluster_depth
                 .map_or(u64::MAX, |depth| depth as u64),
             elements: window_scene.elements,
-        }
-    }));
+        });
+    }
     sort_stack_groups(&mut stack);
     elements.extend(stack.into_iter().rev().flat_map(|group| group.elements));
 
     if let Some(exclusive) = cluster_exclusive {
         // Popups owned by the selected X11 member inherit the exclusive flag.
         // Keep every such scene and retain normal front-to-back Space order.
+        for (stack_index, scene) in floating_foreground
+            .iter_mut()
+            .chain(exclusive_windows.iter_mut())
+        {
+            if !scene.popup_elements.is_empty() {
+                popup_stack.push(StackGroup {
+                    stack_index: *stack_index,
+                    order: scene.cluster_depth.map_or(u64::MAX, |depth| depth as u64),
+                    elements: std::mem::take(&mut scene.popup_elements),
+                });
+            }
+        }
         let mut foreground = floating_foreground
             .into_iter()
             .rev()
@@ -733,6 +805,15 @@ pub fn build(
             foreground,
         );
     }
+
+    sort_stack_groups(&mut popup_stack);
+    elements.splice(
+        popup_foreground_index..popup_foreground_index,
+        popup_stack
+            .into_iter()
+            .rev()
+            .flat_map(|group| group.elements),
+    );
 
     elements.extend(layer_surface_scene_elements(
         renderer,
@@ -789,6 +870,33 @@ pub fn build(
         &mut overlay_elements,
     )?;
     elements.splice(0..0, overlay_elements);
+
+    if request.visuals.debug.overlay_fps {
+        let mut fps_elements = super::overlays::fps::elements(
+            renderer,
+            &output.name(),
+            request.frame.target_presentation_time,
+            request.resources.debug_fps_overlay,
+            request.overlays.overlay_config,
+            request.visuals.decorations,
+            request.resources.node_renderer,
+            request.resources.ui_text,
+        )?;
+        append_compositor_overlay_blur(
+            renderer,
+            output,
+            OverlayEffectStyle {
+                output_size: output_geometry.size,
+                identity: "debug-fps",
+                blur: request.visuals.blur,
+                shadow: request.visuals.shadows.overlay,
+            },
+            request.resources.backdrop_blur_renderer,
+            request.resources.shadow_renderer,
+            &mut fps_elements,
+        )?;
+        elements.splice(0..0, fps_elements);
+    }
 
     if request.cursor.show_cursor {
         let cursor = crate::cursor::render::elements(

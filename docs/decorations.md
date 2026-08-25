@@ -12,6 +12,8 @@ decorations:
     colour-unfocused "#474d59"
   end
 
+  resize-using-border true
+
   titlebars:
     enabled true
     button-position "left"
@@ -37,12 +39,24 @@ the client-content corner; the outer border radius is increased by `size`.
 Setting `radius` to `0` restores square corners. Setting `size` to `0` hides the
 border while retaining rounded client content.
 
+`resize-using-border` lets a managed window be resized by left-dragging its
+outer edge or corner. The pointer uses an eight-pixel minimum on-screen grab
+band, so thin and hidden borders remain usable. Set it to `false` to keep only
+the compositor's modifier-based resize gesture.
+
 An enabled titlebar supplies the top edge of a server-decorated window. The
 border then paints only its left, right, and bottom edges. `titlebars.radius`
 rounds only the titlebar's top corners; `border.radius` continues to round only
 the client body's bottom corners. The requested titlebar `height` is clamped to
 1-96 pixels and is raised internally when enabled buttons, the application
 icon, or the global font need more room.
+
+The titlebar's outer top edge and corners participate in border resizing.
+Button hitboxes take priority; the rest of the titlebar retains its existing
+move and double-click behavior.
+
+Title text is ellipsized at 240 pixels, scaled with the window, or sooner when
+buttons and the application icon leave less room.
 
 Buttons are ordered close/maximize/minimize on the left and
 minimize/maximize/close on the right. Hover and pressed colors tint both the

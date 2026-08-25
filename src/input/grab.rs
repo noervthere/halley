@@ -260,6 +260,45 @@ impl ResizeHandle {
     }
 }
 
+/// Selects a resize edge or corner from a point inside a rendered window
+/// frame. The band is measured inward from the outer frame so it cannot steal
+/// input from a different window visible immediately behind this one.
+pub fn border_resize_handle(
+    frame: Rectangle<i32, Logical>,
+    point: Point<f64, Logical>,
+    band: f64,
+) -> Option<ResizeHandle> {
+    if !frame.to_f64().contains(point) {
+        return None;
+    }
+
+    let band = band.max(0.0);
+    let left = frame.loc.x as f64;
+    let top = frame.loc.y as f64;
+    let right = (frame.loc.x + frame.size.w) as f64;
+    let bottom = (frame.loc.y + frame.size.h) as f64;
+    let to_left = point.x - left;
+    let to_right = right - point.x;
+    let to_top = point.y - top;
+    let to_bottom = bottom - point.y;
+    let near_left = to_left <= band;
+    let near_right = to_right <= band;
+    let near_top = to_top <= band;
+    let near_bottom = to_bottom <= band;
+
+    match (near_left, near_right, near_top, near_bottom) {
+        (true, _, true, _) => Some(ResizeHandle::TopLeft),
+        (_, true, true, _) => Some(ResizeHandle::TopRight),
+        (true, _, _, true) => Some(ResizeHandle::BottomLeft),
+        (_, true, _, true) => Some(ResizeHandle::BottomRight),
+        (true, _, _, _) => Some(ResizeHandle::Left),
+        (_, true, _, _) => Some(ResizeHandle::Right),
+        (_, _, true, _) => Some(ResizeHandle::Top),
+        (_, _, _, true) => Some(ResizeHandle::Bottom),
+        _ => None,
+    }
+}
+
 /// Everything a resize drag needs, captured once at grab-start. Both the
 /// rect and the cursor are in world coordinates, so the math below stays
 /// independent of pan and zoom.
@@ -770,6 +809,50 @@ mod tests {
         assert_eq!(
             handle_from_press_position(rect, Vec2 { x: 250.0, y: 120.0 }),
             ResizeHandle::Top
+        );
+    }
+
+    #[test]
+    fn border_band_picks_edges_and_corners_but_not_the_center_or_outside() {
+        let rect = resize_rect();
+        let point = |x, y| Point::<f64, Logical>::from((x, y));
+
+        assert_eq!(
+            border_resize_handle(rect, point(102.0, 250.0), 8.0),
+            Some(ResizeHandle::Left)
+        );
+        assert_eq!(
+            border_resize_handle(rect, point(398.0, 250.0), 8.0),
+            Some(ResizeHandle::Right)
+        );
+        assert_eq!(
+            border_resize_handle(rect, point(250.0, 102.0), 8.0),
+            Some(ResizeHandle::Top)
+        );
+        assert_eq!(
+            border_resize_handle(rect, point(250.0, 398.0), 8.0),
+            Some(ResizeHandle::Bottom)
+        );
+        assert_eq!(
+            border_resize_handle(rect, point(103.0, 103.0), 8.0),
+            Some(ResizeHandle::TopLeft)
+        );
+        assert_eq!(
+            border_resize_handle(rect, point(397.0, 397.0), 8.0),
+            Some(ResizeHandle::BottomRight)
+        );
+        assert_eq!(border_resize_handle(rect, point(250.0, 250.0), 8.0), None);
+        assert_eq!(border_resize_handle(rect, point(99.0, 250.0), 8.0), None);
+    }
+
+    #[test]
+    fn border_band_expands_to_the_rendered_border_width() {
+        let rect = resize_rect();
+        let point = Point::<f64, Logical>::from((115.0, 250.0));
+        assert_eq!(border_resize_handle(rect, point, 8.0), None);
+        assert_eq!(
+            border_resize_handle(rect, point, 16.0),
+            Some(ResizeHandle::Left)
         );
     }
 

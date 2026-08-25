@@ -130,6 +130,7 @@ mod tests {
             "\"$var.mod+o\" \"apogee\"",
             "\"alt+tab\" \"cycle-focus\"",
             "\"$var.mod+h\" \"center-last-focused\"",
+            "\"$var.mod+p\" \"toggle-focused-pin\"",
             "\"$var.mod+left\" \"focus-left\"",
             "\"$var.mod+ctrl+right\" \"cluster-tile-swap-right\"",
             "\"$var.mod+shift+up\" \"monitor-focus up\"",
@@ -146,6 +147,12 @@ mod tests {
             "damping-ratio 1.0",
             "stiffness 800.0",
             "bloom-direction \"clockwise\"",
+            "resize-using-border true",
+            "pins:",
+            "corner \"top-right\"",
+            "colour \"#d65d26\"",
+            "background-colour \"auto\"",
+            "size 1.0",
             "titlebars:",
             "button-position \"left\"",
             "title-position \"center\"",
@@ -154,6 +161,7 @@ mod tests {
             "height 32",
             "XF86AudioRaiseVolume\" \"wpctl",
             "with repeat true",
+            "overlay-fps false",
         ] {
             assert!(
                 DEFAULT_CONFIG.contains(expected),

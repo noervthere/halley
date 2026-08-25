@@ -188,6 +188,9 @@ pub(super) fn dispatch<D: SessionDriver>(
             action_output.as_deref(),
             SERIAL_COUNTER.next_serial(),
         ),
+        super::super::SessionControl::ToggleFocusedPin => {
+            super::super::toggle_focused_pin(session, action_output.as_deref());
+        }
         super::super::SessionControl::Apogee => {
             crate::shell::apogee::toggle(session);
         }

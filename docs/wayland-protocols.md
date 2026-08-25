@@ -8,6 +8,26 @@ depth. Layer-shell roots and their popups use output-local coordinates;
 ordinary toplevel roots follow the same camera, opening, fullscreen, and field
 maximize presentation as their window.
 
+An ordinary toplevel's XDG popup tree, and the equivalent X11
+override-redirect menu window, is promoted to the desktop popup plane. It
+renders and receives input above top-layer panels, while overlay-layer surfaces
+and compositor-owned overlays remain above it. This lets context menus extend
+across a status bar without making the owning window itself cover the panel.
+xdg-positioner constraints inverse-map the output through that window's live
+presentation rather than the field camera viewport, so fullscreen and
+field-maximize menus stay on their anchor.
+
+When an independent native toplevel closes while fullscreen or field-maximized,
+Halley retains a normal client size for that app ID for the current session. A
+genuine smaller pre-presentation size is preserved; an already-poisoned
+output-sized restore is replaced with a bounded three-quarter-output fallback.
+The next ordinary toplevel with that ID receives the size in its initial
+configure, preventing clients that persist a fullscreen buffer size from
+reopening as an ordinary output-sized window. Explicit initial-size window
+rules take precedence, and surfaces already known when the hint is retained
+are never resized by it. The hint is cleared after a normal close and is never
+written to disk.
+
 All blur effects on one output share one persistent output-sized texture pool.
 Each stack depth still performs its own framebuffer capture, so an upper
 translucent surface includes lower windows and panels without including

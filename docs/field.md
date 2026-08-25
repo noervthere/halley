@@ -10,6 +10,13 @@ field:
   close-restore-nodes false
   close-restore-pan "if-offscreen"
 
+  pins:
+    corner "top-right"
+    colour "#d65d26"
+    background-colour "auto"
+    size 1.0
+  end
+
   zoom:
     enabled true
     step 1.10
@@ -23,6 +30,23 @@ end
 field-maximized window border and the usable monitor work area and the
 clearance reserved between collapsed landmarks and active windows. Active
 windows can still overlap each other.
+
+## Pinning
+
+The default `Mod+P` binding runs `toggle-focused-pin`. A pinned field window
+or collapsed node stays fixed in field space: pointer and IPC movement,
+interactive resize, and field maximize are rejected until it is unpinned.
+Focus, fullscreen, collapse, restore, and close continue to work. Pin state is
+runtime-only and is reported by `halleyctl node list` and `node info`.
+
+Cluster members cannot be pinned. A collapsed cluster's core is the one
+cluster object that can be pinned, anchoring that collapsed cluster in place.
+
+The badge uses the original Halley pin artwork. `corner` accepts `top-left`
+or `top-right`; `colour` and `background-colour` accept `auto`, `light`,
+`dark`, or a hex colour; and `size` is clamped from 0.5 through 3.0. The same
+badge appears on active windows, collapsed landmarks and cluster cores, and
+pinned Bearings chips.
 
 Camera zoom is always smooth and never magnifies beyond native scale 1.0.
 `min` is clamped from 0.05 through 1.0, `step` from 1.001 through 8.0, and
@@ -50,7 +74,8 @@ Field maximize is separate from fullscreen:
 - it sets the client's Wayland/X11 maximized state, so decoration buttons and
   titlebar double-clicks remain synchronized with the compositor;
 - its presentation transform is shared by rendering, hit testing, popups,
-  screenshots, and screencasts.
+  screenshots, and screencasts. xdg-popup constraints use that inverse, not
+  the parked field camera, so menus stay on the pointer.
 
 Each output has an independent maximize session. Selecting a different window
 on the same output retargets without restoring and reapplying the camera.

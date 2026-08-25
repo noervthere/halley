@@ -153,6 +153,8 @@ fn parse_action(s: &str) -> Action {
             Action::ToggleFieldMaximize
         }
         "toggle-state" | "toggle_state" => Action::ToggleState,
+        "toggle-pin" | "toggle_pin" | "pin-toggle" | "pin_toggle" | "toggle-focused-pin"
+        | "toggle_focused_pin" => Action::ToggleFocusedPin,
         "apogee" | "overview" => Action::Apogee,
         "bearings-show" | "bearings_show" => Action::BearingsShow,
         "bearings-toggle" | "bearings_toggle" => Action::BearingsToggle,
@@ -413,6 +415,29 @@ end
                     && bind.modifiers.super_key
                     && bind.action == Action::ToggleFieldMaximize
             }));
+        }
+    }
+
+    #[test]
+    fn accepts_old_halley_pin_action_aliases() {
+        for action in [
+            "toggle-pin",
+            "toggle_pin",
+            "pin-toggle",
+            "pin_toggle",
+            "toggle-focused-pin",
+            "toggle_focused_pin",
+        ] {
+            let kb = parse(&format!(
+                "keybinds:\n  mod \"super\"\n  \"$var.mod+p\" \"{action}\"\nend\n"
+            ));
+            let pin = kb
+                .binds
+                .iter()
+                .find(|bind| bind.action == Action::ToggleFocusedPin)
+                .expect("pin action parsed");
+            assert_eq!(pin.key, "p");
+            assert!(!pin.repeat);
         }
     }
 

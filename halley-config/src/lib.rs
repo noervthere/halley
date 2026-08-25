@@ -55,7 +55,9 @@ pub use effects::{
     Blur, BlurMethod, Effects, EffectsParseError, ShadowColor, ShadowLayer, Shadows, parse_effects,
     window_blur_enabled,
 };
-pub use field::{CloseRestorePan, Field, FieldParseError, parse_field, parse_field_checked};
+pub use field::{
+    CloseRestorePan, Field, FieldParseError, PinBadgeCorner, Pins, parse_field, parse_field_checked,
+};
 pub use font::{Font, parse_font};
 pub use input::{
     AccelProfile, ClickMethod, DeviceKind, DeviceOverride, DeviceSettings, FocusMode,

@@ -45,6 +45,26 @@ pub use interaction::InteractionState;
 pub use settings::RuntimeSettings;
 pub use state::{OutputDriver, RenderDriver, Session, SessionDriver};
 
+/// Builds popup unconstrain inputs from disjoint `Session` fields so a later
+/// `&mut session.wayland` borrow stays valid.
+macro_rules! popup_unconstrain_context {
+    ($session:expr) => {
+        $crate::wayland::popup::UnconstrainContext {
+            cameras: &$session.cameras,
+            clusters: &$session.clusters,
+            nodes: &$session.nodes,
+            window_open_animations: &$session.window_open_animations,
+            fullscreen: &$session.fullscreen,
+            maximize: &$session.maximize,
+            decorations: &$session.settings.decorations,
+            font: &$session.settings.font,
+            now: $crate::frame_clock::monotonic_now(),
+        }
+    };
+}
+
+pub(crate) use popup_unconstrain_context;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SessionControl {
     Continue,
@@ -54,6 +74,7 @@ enum SessionControl {
     ToggleFullscreen,
     ToggleFieldMaximize,
     ToggleState,
+    ToggleFocusedPin,
     Apogee,
     FocusCycle(halley_config::FocusCycleDirection),
     FocusDirection(halley_config::Direction),
@@ -94,6 +115,7 @@ fn dispatch_action(
         Action::ToggleFullscreen => return SessionControl::ToggleFullscreen,
         Action::ToggleFieldMaximize => return SessionControl::ToggleFieldMaximize,
         Action::ToggleState => return SessionControl::ToggleState,
+        Action::ToggleFocusedPin => return SessionControl::ToggleFocusedPin,
         Action::Apogee => return SessionControl::Apogee,
         Action::FocusCycle(direction) => return SessionControl::FocusCycle(direction),
         Action::FocusDirection(direction) => return SessionControl::FocusDirection(direction),
@@ -706,50 +728,24 @@ fn toggle_focused_fullscreen<D: SessionDriver>(session: &mut Session<D>, output:
     let output_name =
         crate::wayland::window_output_name(&window).unwrap_or_else(|| record.output.clone());
     let now = crate::frame_clock::monotonic_now();
-    let target_output = session
-        .wayland
-        .space
-        .outputs()
-        .find(|candidate| candidate.name() == output_name)
-        .cloned();
     cancel_grab_for_surface(session, &focused);
     let entering = !session.fullscreen.is_fullscreen_or_pending(&focused);
     let cluster_restore = cluster_presentation_restore(session, &focused, now, entering);
     if entering {
         displace_fullscreen_on_output(session, &output_name, &focused);
     }
-    let field_output_rect = (entering && session.maximize.contains(&focused))
+    let field_handoff = entering
         .then(|| {
-            target_output
-                .as_ref()
-                .and_then(|output| presented_window_rect(session, &window, output, now))
+            prepare_field_maximize_fullscreen_handoff(
+                session,
+                &window,
+                &focused,
+                &output_name,
+                &output_name,
+                now,
+            )
         })
         .flatten();
-    let field_restore = entering
-        .then(|| session.maximize.take_output_restore(&output_name))
-        .flatten();
-    let field_geometry = field_restore
-        .as_ref()
-        .filter(|restore| restore.surface == focused)
-        .and_then(|_| session.wayland.space.element_geometry(&window));
-    if let Some(restore) = field_restore.as_ref() {
-        session.render.fullscreen_textures.remove(&restore.surface);
-        let camera_handoff = restore.surface == focused
-            && session
-                .cameras
-                .handoff_field_maximize_to_fullscreen(&output_name);
-        if !camera_handoff {
-            let _ = session.cameras.apply_field_maximize(&output_name, None);
-        }
-        if restore.surface == focused {
-            session
-                .wayland
-                .space
-                .relocate_element(&window, restore.geometry.loc);
-        } else {
-            configure_field_geometry(session, restore);
-        }
-    }
     if !entering && let Some(restore) = cluster_restore.as_ref() {
         session.fullscreen.override_restore_from_cluster(
             &focused,
@@ -779,17 +775,89 @@ fn toggle_focused_fullscreen<D: SessionDriver>(session: &mut Session<D>, output:
             restore.presentation_output,
         );
     }
-    if let (Some(restore), Some(field_geometry)) = (field_restore, field_geometry) {
-        session.fullscreen.override_restore_from_field(
-            &focused,
-            restore.geometry,
-            restore.output,
-            field_geometry,
-            field_output_rect,
-        );
+    if let Some(handoff) = field_handoff {
+        handoff.apply(&mut session.fullscreen, &focused);
     }
     pointer::reconcile_state(session);
     session.request_redraw();
+}
+
+pub(crate) struct FieldMaximizeFullscreenHandoff {
+    restore: crate::presentation::maximize::FieldRestore,
+    geometry: Rectangle<i32, Logical>,
+    output_rect: Option<Rectangle<i32, smithay::utils::Physical>>,
+}
+
+impl FieldMaximizeFullscreenHandoff {
+    pub(crate) fn apply(
+        self,
+        fullscreen: &mut crate::wayland::fullscreen::FullscreenManager,
+        surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+    ) {
+        fullscreen.override_restore_from_field(
+            surface,
+            self.restore.geometry,
+            self.restore.output,
+            self.geometry,
+            self.output_rect,
+        );
+    }
+}
+
+/// Ends field maximize before fullscreen takes ownership of the same output.
+///
+/// Client-originated fullscreen requests must use this path too. Leaving the
+/// maximize manager alive underneath fullscreen makes camera ownership snap
+/// back and forth, which sends the window diagonally away from its anchored
+/// presentation on both entry and exit.
+pub(crate) fn prepare_field_maximize_fullscreen_handoff<D: SessionDriver>(
+    session: &mut Session<D>,
+    window: &smithay::desktop::Window,
+    surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+    maximize_output: &str,
+    fullscreen_output: &str,
+    now: std::time::Duration,
+) -> Option<FieldMaximizeFullscreenHandoff> {
+    let same_surface = session.maximize.contains(surface);
+    let output_rect = (same_surface && maximize_output == fullscreen_output)
+        .then(|| {
+            session
+                .wayland
+                .space
+                .outputs()
+                .find(|output| output.name() == maximize_output)
+                .cloned()
+                .and_then(|output| presented_window_rect(session, window, &output, now))
+        })
+        .flatten();
+    let restore = session.maximize.take_output_restore(maximize_output)?;
+    let geometry = (restore.surface == *surface)
+        .then(|| session.wayland.space.element_geometry(window))
+        .flatten();
+
+    session.render.fullscreen_textures.remove(&restore.surface);
+    let camera_handoff = restore.surface == *surface
+        && maximize_output == fullscreen_output
+        && session
+            .cameras
+            .handoff_field_maximize_to_fullscreen(maximize_output);
+    if !camera_handoff {
+        let _ = session.cameras.apply_field_maximize(maximize_output, None);
+    }
+    if restore.surface == *surface {
+        session
+            .wayland
+            .space
+            .relocate_element(window, restore.geometry.loc);
+    } else {
+        configure_field_geometry(session, &restore);
+    }
+
+    geometry.map(|geometry| FieldMaximizeFullscreenHandoff {
+        restore,
+        geometry,
+        output_rect,
+    })
 }
 
 fn displace_fullscreen_on_output<D: SessionDriver>(
@@ -918,6 +986,85 @@ fn focused_window_record<D: SessionDriver>(
         })
 }
 
+fn node_belongs_to_output<D: SessionDriver>(
+    session: &Session<D>,
+    id: halley_core::field::NodeId,
+    output: Option<&str>,
+) -> bool {
+    output.is_none_or(|output| {
+        session
+            .nodes
+            .record(id)
+            .is_some_and(|record| record.output == output)
+            || session
+                .clusters
+                .cluster_for_core(id)
+                .and_then(|cluster| session.clusters.metadata(cluster))
+                .is_some_and(|metadata| metadata.output == output)
+    })
+}
+
+pub(crate) fn node_user_pinned<D: SessionDriver>(
+    session: &Session<D>,
+    id: halley_core::field::NodeId,
+) -> bool {
+    if session.clusters.cluster_for_member(id).is_some() {
+        return false;
+    }
+    session
+        .clusters
+        .cluster_for_core(id)
+        .and_then(|cluster| session.clusters.registry().cluster(cluster))
+        .map_or_else(
+            || session.nodes.field.node(id).is_some_and(|node| node.pinned),
+            |cluster| cluster.pinned,
+        )
+}
+
+pub(crate) fn set_node_user_pinned<D: SessionDriver>(
+    session: &mut Session<D>,
+    id: halley_core::field::NodeId,
+    pinned: bool,
+) -> bool {
+    if session.clusters.cluster_for_member(id).is_some() {
+        return false;
+    }
+    if session.clusters.cluster_for_core(id).is_some() {
+        session
+            .clusters
+            .set_core_pinned(&mut session.nodes.field, id, pinned)
+    } else {
+        session.nodes.field.set_pinned(id, pinned)
+    }
+}
+
+fn toggle_focused_pin<D: SessionDriver>(session: &mut Session<D>, output: Option<&str>) -> bool {
+    let live_focus = session
+        .wayland
+        .focused_window
+        .as_ref()
+        .and_then(|surface| session.nodes.id_for_surface(surface))
+        .filter(|id| node_belongs_to_output(session, *id, output));
+    let logical_focus = session
+        .nodes
+        .focused()
+        .filter(|id| node_belongs_to_output(session, *id, output));
+    let output_focus = output.and_then(|name| session.nodes.focused_on_output(name));
+    let Some(id) = live_focus.or(logical_focus).or(output_focus) else {
+        return false;
+    };
+    if !session.nodes.field.is_visible(id) {
+        return false;
+    }
+    let pinned = !node_user_pinned(session, id);
+    if !set_node_user_pinned(session, id, pinned) {
+        return false;
+    }
+    session.nodes.clear_direct_motion(id);
+    session.request_redraw();
+    true
+}
+
 pub(crate) fn set_surface_field_maximized<D: SessionDriver>(
     session: &mut Session<D>,
     surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
@@ -946,6 +1093,9 @@ fn toggle_field_maximize<D: SessionDriver>(
     session: &mut Session<D>,
     record: crate::nodes::NodeRecord,
 ) -> bool {
+    if node_user_pinned(session, record.id) {
+        return false;
+    }
     let output_name =
         crate::wayland::window_output_name(&record.window).unwrap_or_else(|| record.output.clone());
     let Some(target_output) = session
@@ -1332,6 +1482,10 @@ pub(crate) fn begin_window_resize<D: SessionDriver>(
             .as_ref()
             .and_then(|surface| session.nodes.id_for_surface(surface.as_ref()))
             .is_some_and(|id| session.clusters.active_layout_for_member(id).is_some())
+        || surface
+            .as_ref()
+            .and_then(|surface| session.nodes.id_for_surface(surface.as_ref()))
+            .is_some_and(|id| node_user_pinned(session, id))
     {
         return false;
     }
@@ -1376,10 +1530,12 @@ pub(crate) fn begin_pointer_resize<D: SessionDriver>(
     let Some(route) = pointer::route_client(session) else {
         return false;
     };
-    if !matches!(
-        route.target,
-        crate::input::pointer::PointerTarget::Window(ref routed) if routed == window
-    ) {
+    let routed_window = match &route.target {
+        crate::input::pointer::PointerTarget::Window(routed)
+        | crate::input::pointer::PointerTarget::Decoration { window: routed, .. } => routed,
+        _ => return false,
+    };
+    if routed_window != window {
         return false;
     }
     let cursor = halley_core::field::Vec2 {
@@ -1434,6 +1590,10 @@ fn begin_pending_pointer_move<D: SessionDriver>(
 ) -> bool {
     if !matches!(session.interactions.grab, crate::input::grab::Grab::None)
         || !crate::window::accepts_compositor_grab(window)
+        || window
+            .wl_surface()
+            .and_then(|surface| session.nodes.id_for_surface(surface.as_ref()))
+            .is_some_and(|id| node_user_pinned(session, id))
         || window.wl_surface().is_some_and(|surface| {
             session
                 .fullscreen
@@ -1512,6 +1672,10 @@ fn begin_pointer_move_active<D: SessionDriver>(
     pending: Option<crate::input::grab::PendingWindowMove>,
 ) -> bool {
     if !crate::window::accepts_compositor_grab(window)
+        || window
+            .wl_surface()
+            .and_then(|surface| session.nodes.id_for_surface(surface.as_ref()))
+            .is_some_and(|id| node_user_pinned(session, id))
         || window.wl_surface().is_some_and(|surface| {
             session
                 .fullscreen
@@ -1532,10 +1696,12 @@ fn begin_pointer_move_active<D: SessionDriver>(
             let Some(route) = pointer::route_client(session) else {
                 return false;
             };
-            if !matches!(
-                route.target,
-                crate::input::pointer::PointerTarget::Window(ref routed) if routed == window
-            ) {
+            let routed_window = match &route.target {
+                crate::input::pointer::PointerTarget::Window(routed)
+                | crate::input::pointer::PointerTarget::Decoration { window: routed, .. } => routed,
+                _ => return false,
+            };
+            if routed_window != window {
                 return false;
             }
             let visual = route.visual_geometry.unwrap_or_else(|| {

@@ -29,8 +29,6 @@ pub enum NodeSlot {
     /// One of the four corner grips, indexed clockwise from the top left.
     PickerHandle(u8),
     PickerBackdrop,
-    /// The pinned marker on one bearing chip, keyed by its target.
-    BearingPin(u64),
 }
 
 /// Dash count and dot size, preserved from the original quad-per-dot ring so
@@ -294,6 +292,14 @@ impl RenderElement<GlesRenderer> for FocusRingElement {
 impl NodeRenderer {
     pub fn has_pending_icons(&self) -> bool {
         self.icons.has_pending()
+    }
+
+    /// Per-frame icon-cache maintenance, independent of whether any icon is
+    /// drawn this frame. See [`AppIconCache::poll`].
+    ///
+    /// [`AppIconCache::poll`]: super::app_icon::AppIconCache::poll
+    pub fn poll_icons(&mut self, renderer: &mut GlesRenderer) {
+        self.icons.poll(renderer);
     }
 
     pub fn element(

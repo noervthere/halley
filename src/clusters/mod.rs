@@ -485,6 +485,17 @@ impl ClusterSystem {
         self.registry.cluster(id)?.core_node()
     }
 
+    pub fn set_core_pinned(&mut self, field: &mut Field, core: NodeId, pinned: bool) -> bool {
+        let Some(cluster_id) = self.cluster_for_core(core) else {
+            return false;
+        };
+        let Some(cluster) = self.registry.cluster_mut(cluster_id) else {
+            return false;
+        };
+        cluster.pinned = pinned;
+        field.set_pinned(core, pinned)
+    }
+
     pub(crate) fn set_core_position(&mut self, id: ClusterId, position: Vec2) {
         if let Some(metadata) = self.metadata.get_mut(&id) {
             metadata.core_position = position;
@@ -1822,6 +1833,25 @@ mod tests {
         system.active.insert("DP-2".into(), id);
         assert!(!system.move_core(id, "DP-1", Vec2 { x: 0.0, y: 0.0 }));
         assert_eq!(system.metadata(id).unwrap().output, "DP-2");
+    }
+
+    #[test]
+    fn persistent_pin_belongs_to_the_cluster_core_not_a_member() {
+        let (mut field, mut system, cluster, members) =
+            active_test_cluster(2, ClusterWorkspaceLayoutKind::Tiling);
+        let core = system.core_node(cluster).expect("cluster core");
+
+        assert!(system.set_core_pinned(&mut field, core, true));
+        assert!(system.registry().cluster(cluster).unwrap().pinned);
+        assert!(field.node(core).unwrap().pinned);
+        assert!(
+            members
+                .iter()
+                .all(|member| !field.node(*member).unwrap().pinned)
+        );
+
+        assert!(!system.set_core_pinned(&mut field, members[0], true));
+        assert!(!field.node(members[0]).unwrap().pinned);
     }
 
     #[test]

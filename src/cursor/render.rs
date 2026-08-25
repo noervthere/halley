@@ -1,15 +1,15 @@
 use std::error::Error;
 
+use smithay::backend::renderer::element::Kind;
 use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
 use smithay::backend::renderer::element::surface::{
     WaylandSurfaceRenderElement, render_elements_from_surface_tree,
 };
-use smithay::backend::renderer::element::{Element, Id, Kind};
 use smithay::backend::renderer::gles::GlesRenderer;
-use smithay::backend::renderer::utils::with_renderer_surface_state;
+use smithay::backend::renderer::utils::{SurfaceView, with_renderer_surface_state};
 use smithay::input::pointer::CursorIcon;
 use smithay::output::Output;
-use smithay::utils::{Logical, Physical, Point, Rectangle, Scale};
+use smithay::utils::{Buffer, Logical, Physical, Point, Rectangle, Scale, Size, Transform};
 
 use super::{CursorFrame, CursorManager, CursorSurfaceSnapshot, RenderCursor};
 
@@ -108,40 +108,94 @@ pub(crate) fn surface_elements(
     scale: Scale<f64>,
     kind: Kind,
 ) -> Result<Vec<CursorRenderElement>, Box<dyn Error>> {
+    // SHM cursors are snapshotted before Smithay consumes the pending buffer.
+    // Importing the live tree afterward still walks that surface-scoped GLES
+    // cache: leftover damage from a 24x24 cursor is TexSubImage'd into the
+    // previous 10x16 texture (`GL_INVALID_VALUE`). Draw only the snapshot.
+    if let Some(snapshot) = snapshot {
+        let view = with_renderer_surface_state(surface, |state| state.view()).flatten();
+        return Ok(vec![snapshot_root(
+            renderer, snapshot, view, position, scale, kind,
+        )?]);
+    }
     let elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
         render_elements_from_surface_tree(renderer, surface, position, scale, 1.0, kind);
-    let Some(snapshot) = snapshot else {
-        return Ok(elements.into_iter().map(Into::into).collect());
-    };
-    let Some(view) = with_renderer_surface_state(surface, |state| state.view()).flatten() else {
-        return Ok(elements.into_iter().map(Into::into).collect());
-    };
+    Ok(elements.into_iter().map(Into::into).collect())
+}
 
-    let root_id = Id::from_wayland_resource(surface);
-    let root = MemoryRenderBufferRenderElement::from_buffer(
+struct SnapshotPlacement {
+    location: Point<f64, Physical>,
+    src: Option<Rectangle<f64, Logical>>,
+    dst: Option<Size<i32, Logical>>,
+}
+
+fn snapshot_root(
+    renderer: &mut GlesRenderer,
+    snapshot: &CursorSurfaceSnapshot,
+    view: Option<SurfaceView>,
+    position: Point<i32, Physical>,
+    scale: Scale<f64>,
+    kind: Kind,
+) -> Result<CursorRenderElement, Box<dyn Error>> {
+    let placement = snapshot_placement(snapshot, view, position, scale);
+    Ok(MemoryRenderBufferRenderElement::from_buffer(
         renderer,
-        position.to_f64() + view.offset.to_f64().to_physical(scale),
+        placement.location,
         &snapshot.buffer,
         None,
-        Some(view.src),
-        Some(view.dst),
+        placement.src,
+        placement.dst,
         kind,
-    )?;
-    let mut root = Some(root);
-    let mut rendered = Vec::with_capacity(elements.len().max(1));
-    for element in elements {
-        if element.id() == &root_id {
-            rendered.push(root.take().expect("cursor root appears once").into());
-        } else {
-            rendered.push(element.into());
-        }
+    )?
+    .into())
+}
+
+fn snapshot_logical_size(
+    width: u32,
+    height: u32,
+    scale: i32,
+    transform: Transform,
+) -> Size<i32, Logical> {
+    Size::<i32, Buffer>::from((width as i32, height as i32)).to_logical(scale.max(1), transform)
+}
+
+fn snapshot_placement(
+    snapshot: &CursorSurfaceSnapshot,
+    view: Option<SurfaceView>,
+    position: Point<i32, Physical>,
+    scale: Scale<f64>,
+) -> SnapshotPlacement {
+    snapshot_placement_from_size(
+        snapshot_logical_size(
+            snapshot.width,
+            snapshot.height,
+            snapshot.scale,
+            snapshot.transform,
+        ),
+        view,
+        position,
+        scale,
+    )
+}
+
+fn snapshot_placement_from_size(
+    logical: Size<i32, Logical>,
+    view: Option<SurfaceView>,
+    position: Point<i32, Physical>,
+    scale: Scale<f64>,
+) -> SnapshotPlacement {
+    match view.filter(|view| view.dst == logical) {
+        Some(view) => SnapshotPlacement {
+            location: position.to_f64() + view.offset.to_f64().to_physical(scale),
+            src: Some(view.src),
+            dst: Some(view.dst),
+        },
+        None => SnapshotPlacement {
+            location: position.to_f64(),
+            src: None,
+            dst: Some(logical),
+        },
     }
-    // A snapshot can outlive the renderer's texture for one commit. Keep the
-    // root visible and preserve any imported subsurfaces in that interval.
-    if let Some(root) = root {
-        rendered.push(root.into());
-    }
-    Ok(rendered)
 }
 
 fn named_cursor_origin(
@@ -300,5 +354,45 @@ mod tests {
             ),
             Some(Point::from((440.0, 500.0)))
         );
+    }
+
+    #[test]
+    fn matching_surface_view_keeps_offset_and_crop() {
+        let logical = Size::<i32, Logical>::from((10, 16));
+        let view = SurfaceView {
+            src: Rectangle::new((0.0, 0.0).into(), (10.0, 16.0).into()),
+            dst: logical,
+            offset: Point::from((2, -1)),
+        };
+        let placement = snapshot_placement_from_size(
+            logical,
+            Some(view),
+            Point::from((40, 80)),
+            Scale::from(1.0),
+        );
+
+        assert_eq!(placement.location, Point::from((42.0, 79.0)));
+        assert_eq!(placement.src, Some(view.src));
+        assert_eq!(placement.dst, Some(logical));
+    }
+
+    #[test]
+    fn stale_24x24_view_does_not_crop_a_10x16_snapshot() {
+        let logical = Size::<i32, Logical>::from((10, 16));
+        let view = SurfaceView {
+            src: Rectangle::new((0.0, 0.0).into(), (24.0, 24.0).into()),
+            dst: Size::from((24, 24)),
+            offset: Point::from((0, 0)),
+        };
+        let placement = snapshot_placement_from_size(
+            logical,
+            Some(view),
+            Point::from((40, 80)),
+            Scale::from(1.0),
+        );
+
+        assert_eq!(placement.location, Point::from((40.0, 80.0)));
+        assert_eq!(placement.src, None);
+        assert_eq!(placement.dst, Some(logical));
     }
 }

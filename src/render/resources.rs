@@ -7,7 +7,9 @@ use super::effects::shadow::ShadowRenderer;
 use super::fullscreen_texture::FullscreenTextureTransitions;
 use super::node::NodeRenderer;
 use super::overlays::cluster_creation::ClusterCreationOverlay;
+use super::overlays::fps::DebugFpsOverlay;
 use super::overlays::preview::OverlayPreviewCache;
+use super::pin::PinRenderer;
 use super::text::UiTextRenderer;
 use super::titlebar::TitlebarRenderer;
 use super::window_decoration::WindowDecorationRenderer;
@@ -24,7 +26,9 @@ pub struct RenderState {
     pub(crate) fullscreen_textures: FullscreenTextureTransitions,
     pub(crate) overlay_previews: OverlayPreviewCache,
     pub(crate) cluster_creation_overlay: ClusterCreationOverlay,
+    pub(crate) debug_fps_overlay: DebugFpsOverlay,
     pub(crate) node_renderer: NodeRenderer,
+    pub(crate) pin_renderer: PinRenderer,
     pub(crate) cluster_renderer: ClusterRenderer,
     pub(crate) window_decoration_renderer: WindowDecorationRenderer,
     pub(crate) backdrop_blur_renderer: BackdropBlurRenderer,
@@ -43,7 +47,9 @@ pub struct RenderResources<'a> {
     pub fullscreen_textures: &'a mut FullscreenTextureTransitions,
     pub overlay_previews: &'a mut OverlayPreviewCache,
     pub cluster_creation_overlay: &'a mut ClusterCreationOverlay,
+    pub debug_fps_overlay: &'a mut DebugFpsOverlay,
     pub node_renderer: &'a mut NodeRenderer,
+    pub pin_renderer: &'a mut PinRenderer,
     pub cluster_renderer: &'a mut ClusterRenderer,
     pub window_decoration_renderer: &'a mut WindowDecorationRenderer,
     pub backdrop_blur_renderer: &'a mut BackdropBlurRenderer,
@@ -60,7 +66,9 @@ impl<'a> From<&'a mut RenderState> for RenderResources<'a> {
             fullscreen_textures: &mut state.fullscreen_textures,
             overlay_previews: &mut state.overlay_previews,
             cluster_creation_overlay: &mut state.cluster_creation_overlay,
+            debug_fps_overlay: &mut state.debug_fps_overlay,
             node_renderer: &mut state.node_renderer,
+            pin_renderer: &mut state.pin_renderer,
             cluster_renderer: &mut state.cluster_renderer,
             window_decoration_renderer: &mut state.window_decoration_renderer,
             backdrop_blur_renderer: &mut state.backdrop_blur_renderer,
@@ -79,7 +87,9 @@ impl RenderState {
             fullscreen_textures: FullscreenTextureTransitions::default(),
             overlay_previews: OverlayPreviewCache::default(),
             cluster_creation_overlay: ClusterCreationOverlay::default(),
+            debug_fps_overlay: DebugFpsOverlay::default(),
             node_renderer: NodeRenderer::default(),
+            pin_renderer: PinRenderer::default(),
             cluster_renderer: ClusterRenderer::default(),
             window_decoration_renderer: WindowDecorationRenderer::default(),
             backdrop_blur_renderer: BackdropBlurRenderer::default(),

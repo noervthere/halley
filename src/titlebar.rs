@@ -10,6 +10,7 @@ pub const TITLE_VERTICAL_PADDING: i32 = 8;
 pub const TITLE_HORIZONTAL_PADDING: i32 = 8;
 pub const APP_ICON_SIZE: i32 = 16;
 pub const APP_ICON_GAP: i32 = 8;
+const TITLE_MAX_WIDTH: i32 = 240;
 pub const BUTTON_GLYPH_MAX: i32 = 16;
 pub const BUTTON_GLYPH_PADDING: i32 = 6;
 
@@ -125,6 +126,7 @@ pub enum Control {
 pub enum Hit {
     Drag,
     Control(Control),
+    Resize(crate::input::grab::ResizeHandle),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -222,11 +224,12 @@ impl<K> DecorationLayout<K> {
     }
 
     pub fn max_title_width_scaled(&self, has_icon: bool, scale: f32) -> i32 {
-        self.max_title_width_with_metrics(
+        let available = self.max_title_width_with_metrics(
             has_icon,
             scaled_identity_metric(APP_ICON_SIZE, scale),
             scaled_identity_metric(APP_ICON_GAP, scale),
-        )
+        );
+        available.min(scaled_identity_metric(TITLE_MAX_WIDTH, scale))
     }
 
     pub fn identity_layout_scaled(
@@ -648,6 +651,42 @@ mod tests {
         assert_eq!(icon.size, (8, 8).into());
         assert_eq!(title.loc.x - (icon.loc.x + icon.size.w), 4);
         assert_eq!(identity.group.size.w, 8 + 4 + 60);
+    }
+
+    #[test]
+    fn title_width_is_capped_and_scales_with_zoom() {
+        let config = Titlebars {
+            button_position: TitlebarButtonPosition::Right,
+            ..Titlebars::default()
+        };
+        let layout = DecorationLayout::<Logical>::new(
+            Rectangle::new((0, 32).into(), (1_000, 600).into()),
+            0,
+            32,
+            &config,
+        );
+
+        assert_eq!(layout.max_title_width_scaled(false, 1.0), 240);
+        assert_eq!(layout.max_title_width_scaled(false, 0.5), 120);
+        assert_eq!(layout.max_title_width_scaled(true, 1.0), 240);
+    }
+
+    #[test]
+    fn narrow_titlebar_available_width_wins_over_title_cap() {
+        let config = Titlebars {
+            button_position: TitlebarButtonPosition::Right,
+            ..Titlebars::default()
+        };
+        let layout = DecorationLayout::<Logical>::new(
+            Rectangle::new((0, 32).into(), (300, 200).into()),
+            0,
+            32,
+            &config,
+        );
+
+        assert_eq!(layout.identity_area.size.w, 188);
+        assert_eq!(layout.max_title_width_scaled(false, 1.0), 188);
+        assert_eq!(layout.max_title_width_scaled(true, 1.0), 164);
     }
 
     #[test]

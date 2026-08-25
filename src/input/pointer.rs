@@ -42,6 +42,15 @@ pub struct PointerRoute {
     pub focus: Option<SurfaceFocus>,
     pub target: PointerTarget,
     pub visual_geometry: Option<Rectangle<i32, Logical>>,
+    /// True when this route landed in a client popup promoted above the desktop
+    /// top layer. Desktop landmarks must not intercept that promoted surface.
+    pub is_desktop_popup: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WindowHitKind {
+    Popup,
+    Any,
 }
 
 #[derive(Clone, Copy)]
@@ -272,7 +281,14 @@ pub fn route_to_client(
             focus: Some(focus),
             target: PointerTarget::Layer(layer),
             visual_geometry: None,
+            is_desktop_popup: false,
         });
+    }
+
+    // Window popup trees occupy the plane immediately below overlay surfaces
+    // and above Layer::Top. Route them in the same order in which they render.
+    if let Some(route) = window_under(&context, output, output_local, WindowHitKind::Popup) {
+        return Some(route);
     }
 
     if !context
@@ -287,10 +303,11 @@ pub fn route_to_client(
             focus: Some(focus),
             target: PointerTarget::Layer(layer),
             visual_geometry: None,
+            is_desktop_popup: false,
         });
     }
 
-    if let Some(route) = window_under(&context, output, output_local) {
+    if let Some(route) = window_under(&context, output, output_local, WindowHitKind::Any) {
         return Some(route);
     }
 
@@ -311,6 +328,7 @@ pub fn route_to_client(
             focus: Some(focus),
             target: PointerTarget::Layer(layer),
             visual_geometry: None,
+            is_desktop_popup: false,
         });
     }
 
@@ -320,6 +338,7 @@ pub fn route_to_client(
         focus: None,
         target: PointerTarget::Background,
         visual_geometry: None,
+        is_desktop_popup: false,
     })
 }
 
@@ -356,6 +375,7 @@ fn window_under(
     context: &PointerRoutingContext<'_>,
     output: &Output,
     output_local: Point<f64, Logical>,
+    hit_kind: WindowHitKind,
 ) -> Option<PointerRoute> {
     let screen_position = (
         context.space.output_geometry(output)?.loc.x as f64 + output_local.x,
@@ -444,24 +464,58 @@ fn window_under(
             || crate::xwayland::is_fullscreen(window);
         let chrome =
             crate::titlebar::WindowChrome::for_window(window, context.decorations, context.font);
-        if !fullscreen && chrome.has_server_titlebar() {
+        if hit_kind == WindowHitKind::Any && !fullscreen {
             let source_height = presentation.source_geometry().size.h.max(1);
             let visual_scale = visual_geometry.size.h as f32 / source_height as f32;
-            let titlebar_height = crate::titlebar::rendered_metrics(
-                &context.decorations.titlebars,
-                context.font.size,
-                visual_scale,
-            )
-            .height;
             let border_width =
                 crate::render::window_decoration::scaled_metric(chrome.border_width, visual_scale);
-            let layout = crate::titlebar::DecorationLayout::new(
-                visual_geometry,
-                border_width,
-                titlebar_height,
-                &context.decorations.titlebars,
+            let titlebar_layout = chrome.has_server_titlebar().then(|| {
+                let titlebar_height = crate::titlebar::rendered_metrics(
+                    &context.decorations.titlebars,
+                    context.font.size,
+                    visual_scale,
+                )
+                .height;
+                crate::titlebar::DecorationLayout::new(
+                    visual_geometry,
+                    border_width,
+                    titlebar_height,
+                    &context.decorations.titlebars,
+                )
+            });
+
+            let node = surface
+                .as_ref()
+                .and_then(|surface| context.nodes.id_for_surface(surface.as_ref()));
+            let border_resize_allowed = context.decorations.resize_using_border
+                && chrome.mode != crate::titlebar::DecorationMode::Unmanaged
+                && crate::window::accepts_compositor_grab(window)
+                && surface.as_ref().is_none_or(|surface| {
+                    !context
+                        .fullscreen
+                        .is_fullscreen_or_pending(surface.as_ref())
+                        && !context.maximize.contains(surface.as_ref())
+                })
+                && node
+                    .is_none_or(|node| context.clusters.active_layout_for_member(node).is_none());
+            let outer = titlebar_layout.as_ref().map_or_else(
+                || {
+                    crate::titlebar::WindowChrome {
+                        mode: chrome.mode,
+                        border_width,
+                        titlebar_height: None,
+                    }
+                    .outer_rect(visual_geometry)
+                },
+                |layout| layout.outer,
             );
-            if let Some(hit) = layout.hit(screen_location) {
+            if let Some(hit) = decoration_hit_at(
+                titlebar_layout.as_ref(),
+                outer,
+                screen_location,
+                border_resize_allowed,
+                f64::from(border_width.max(8)),
+            ) {
                 return Some(PointerRoute {
                     output: output.clone(),
                     location: presentation.source_from_screen(screen_location),
@@ -471,10 +525,11 @@ fn window_under(
                         hit,
                     },
                     visual_geometry: Some(visual_geometry),
+                    is_desktop_popup: false,
                 });
             }
         }
-        if !presentation.contains_screen(screen_location) {
+        if hit_kind == WindowHitKind::Any && !presentation.contains_screen(screen_location) {
             continue;
         }
         let location = presentation.source_from_screen(screen_location);
@@ -483,7 +538,14 @@ fn window_under(
             continue;
         };
         let render_location = element_location - window.geometry().loc;
-        let Some(focus) = window_focus(window, location, render_location) else {
+        let surface_type = match hit_kind {
+            WindowHitKind::Popup if crate::xwayland::is_override_redirect(window) => {
+                WindowSurfaceType::ALL
+            }
+            WindowHitKind::Popup => WindowSurfaceType::POPUP | WindowSurfaceType::SUBSURFACE,
+            WindowHitKind::Any => WindowSurfaceType::ALL,
+        };
+        let Some(focus) = window_focus(window, location, render_location, surface_type) else {
             continue;
         };
         return Some(PointerRoute {
@@ -492,9 +554,32 @@ fn window_under(
             focus: Some(focus),
             target: PointerTarget::Window(window.clone()),
             visual_geometry: Some(presentation.visual_geometry()),
+            is_desktop_popup: hit_kind == WindowHitKind::Popup,
         });
     }
     None
+}
+
+fn decoration_hit_at(
+    titlebar: Option<&crate::titlebar::DecorationLayout<Logical>>,
+    outer: Rectangle<i32, Logical>,
+    point: Point<f64, Logical>,
+    resize_allowed: bool,
+    resize_band: f64,
+) -> Option<crate::titlebar::Hit> {
+    // Controls keep their full hitboxes even when they overlap the minimum
+    // resize band at the titlebar's outer edge.
+    if let Some(crate::titlebar::Hit::Control(control)) =
+        titlebar.and_then(|layout| layout.hit(point))
+    {
+        return Some(crate::titlebar::Hit::Control(control));
+    }
+    if resize_allowed
+        && let Some(handle) = crate::input::grab::border_resize_handle(outer, point, resize_band)
+    {
+        return Some(crate::titlebar::Hit::Resize(handle));
+    }
+    titlebar.and_then(|layout| layout.hit(point))
 }
 
 /// Resolves the client surface under a window-local point.
@@ -510,9 +595,13 @@ fn window_focus(
     window: &Window,
     location: Point<f64, Logical>,
     render_location: Point<i32, Logical>,
+    surface_type: WindowSurfaceType,
 ) -> Option<SurfaceFocus> {
     let local = location - render_location.to_f64();
     if crate::xwayland::is_x11(window) {
+        if !surface_type.contains(WindowSurfaceType::TOPLEVEL) {
+            return None;
+        }
         let surface = window.wl_surface()?.into_owned();
         return Some((surface, render_location.to_f64()));
     }
@@ -520,7 +609,7 @@ fn window_focus(
         return None;
     }
     window
-        .surface_under(local, WindowSurfaceType::ALL)
+        .surface_under(local, surface_type)
         .map(|(surface, surface_location)| (surface, (surface_location + render_location).to_f64()))
 }
 
@@ -666,11 +755,71 @@ mod tests {
     use smithay::utils::Rectangle;
 
     use super::{
-        WheelAccumulator, axis_frame, axis_frame_filtered, clamp_to_outputs, desktop_bounds,
-        exclusive_pointer_member_is_allowed, presentation_stack_key, process_wheel_bindings,
-        wheel_delta_v120, wheel_direction,
+        WheelAccumulator, axis_frame, axis_frame_filtered, clamp_to_outputs, decoration_hit_at,
+        desktop_bounds, exclusive_pointer_member_is_allowed, presentation_stack_key,
+        process_wheel_bindings, wheel_delta_v120, wheel_direction,
     };
     use crate::input::keybinds::WheelDirection;
+
+    #[test]
+    fn titlebar_controls_win_over_resize_and_drag_fills_the_remainder() {
+        let config = halley_config::Titlebars::default();
+        let client = Rectangle::new((0, 32).into(), (300, 200).into());
+        let layout = crate::titlebar::DecorationLayout::new(client, 0, 32, &config);
+
+        assert_eq!(
+            decoration_hit_at(
+                Some(&layout),
+                layout.outer,
+                smithay::utils::Point::from((10.0, 2.0)),
+                true,
+                8.0,
+            ),
+            Some(crate::titlebar::Hit::Control(
+                crate::titlebar::Control::Close
+            ))
+        );
+        assert_eq!(
+            decoration_hit_at(
+                Some(&layout),
+                layout.outer,
+                smithay::utils::Point::from((200.0, 2.0)),
+                true,
+                8.0,
+            ),
+            Some(crate::titlebar::Hit::Resize(
+                crate::input::grab::ResizeHandle::Top
+            ))
+        );
+        assert_eq!(
+            decoration_hit_at(
+                Some(&layout),
+                layout.outer,
+                smithay::utils::Point::from((200.0, 16.0)),
+                true,
+                8.0,
+            ),
+            Some(crate::titlebar::Hit::Drag)
+        );
+    }
+
+    #[test]
+    fn disabled_border_resize_leaves_the_titlebar_behavior_intact() {
+        let config = halley_config::Titlebars::default();
+        let client = Rectangle::new((0, 32).into(), (300, 200).into());
+        let layout = crate::titlebar::DecorationLayout::new(client, 0, 32, &config);
+
+        assert_eq!(
+            decoration_hit_at(
+                Some(&layout),
+                layout.outer,
+                smithay::utils::Point::from((200.0, 2.0)),
+                false,
+                8.0,
+            ),
+            Some(crate::titlebar::Hit::Drag)
+        );
+    }
 
     #[derive(Clone, Copy, PartialEq, Eq, Hash)]
     struct TestDevice;

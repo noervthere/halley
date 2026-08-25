@@ -258,6 +258,8 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
         window_rules: crate::window::rules::WindowRulesState::new(
             runtime_config.window_rules.clone(),
         ),
+        presentation_close_size_recovery:
+            crate::window::recovery::PresentationCloseSizeRecovery::default(),
         cameras,
         capture: crate::capture::CaptureState::default(),
         pending_captures: std::collections::HashMap::new(),
@@ -346,10 +348,11 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                 let view_before = app.cameras.view(&output_name);
                 let cluster_camera_changed =
                     super::sync_cluster_camera(app, &output_name, target_presentation_time);
-                let mut animating = cluster_camera_changed
-                    | app.sync_fullscreen_camera(&output, target_presentation_time);
+                let fullscreen_camera_changed =
+                    app.sync_fullscreen_camera(&output, target_presentation_time);
+                let mut camera_animating = cluster_camera_changed;
                 for camera in app.cameras.iter_mut() {
-                    animating |= crate::input::zoom::tick(
+                    camera_animating |= crate::input::zoom::tick(
                         camera,
                         &app.settings.zoom,
                         app.settings.input.gestures.pan_decay_rate,
@@ -462,7 +465,9 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                         },
                         visuals: VisualContext {
                             decorations: &app.settings.decorations,
+                            pins: &app.settings.field.pins,
                             font: &app.settings.font,
+                            debug: app.settings.debug,
                             blur: app.settings.effects.blur,
                             shadows: app.settings.effects.shadows,
                             background: &app.settings.background,
@@ -563,13 +568,13 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                 app.render
                     .window_close_animations
                     .cleanup(target_presentation_time);
-                if app.cleanup_fullscreen(target_presentation_time) {
+                let fullscreen_cleanup = app.cleanup_fullscreen(target_presentation_time);
+                if fullscreen_cleanup {
                     // Cleanup retires the transition and drops its crossfade
                     // textures, so the scene this frame rendered is the last
                     // one drawn from those textures. One more frame is owed to
                     // swap back to the live surfaces; without it the swap waits
                     // on unrelated damage and lands as a pop.
-                    animating = true;
                     super::sync_keyboard_focus(app, smithay::utils::SERIAL_COUNTER.next_serial());
                     super::pointer::update_client_state(
                         app,
@@ -577,20 +582,24 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                     );
                 }
 
-                if animating
-                    || physics_animating
+                let overlay_animating = app.shell.overlays.animating(target_presentation_time);
+                if camera_animating
+                    || fullscreen_camera_changed
                     || window_animating
                     || closing_animating
-                    || fullscreen_animating
-                    || maximize_animating
                     || node_animating
                     || bearings_animating
                     || focus_cycle_animating
                     || apogee_animating
                     || background_animating
+                    || overlay_animating
                     || cluster_animating
-                    || app.shell.overlays.animating(target_presentation_time)
+                    || fullscreen_animating
+                    || maximize_animating
+                    || physics_animating
                     || app.render.node_renderer.has_pending_icons()
+                    || app.settings.debug.overlay_fps && !app.session_lock.active()
+                    || fullscreen_cleanup
                 {
                     app.request_redraw();
                 }

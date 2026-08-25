@@ -233,7 +233,7 @@ fn apply_dynamics_positions<D: crate::session::SessionDriver>(
             // placement; its client-controlled size remains unchanged.
             crate::wayland::popup::update_reactive_for_window(
                 &session.wayland,
-                &session.cameras,
+                crate::session::popup_unconstrain_context!(session),
                 &window,
             );
         }

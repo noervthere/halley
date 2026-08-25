@@ -7,6 +7,10 @@ pub(super) struct NodeElementContext<'a> {
     pub(super) node_grab_active: bool,
     pub(super) cameras: &'a crate::presentation::camera::OutputCameras,
     pub(super) decorations: &'a halley_config::Decorations,
+    pub(super) pins: &'a halley_config::Pins,
+    pub(super) overlays: &'a halley_config::Overlays,
+    pub(super) pin_renderer: &'a mut crate::render::pin::PinRenderer,
+    pub(super) debug: halley_config::Debug,
     pub(super) shadow_config: halley_config::ShadowLayer,
     pub(super) shadow_renderer: &'a mut crate::render::effects::shadow::ShadowRenderer,
     pub(super) now: std::time::Duration,
@@ -25,6 +29,10 @@ pub(super) fn node_elements(
         node_grab_active,
         cameras,
         decorations,
+        pins,
+        overlays,
+        pin_renderer,
+        debug,
         shadow_config,
         shadow_renderer,
         now,
@@ -35,7 +43,7 @@ pub(super) fn node_elements(
     let focused = decorations.border_color_focused;
     let mut overlay = Vec::new();
 
-    if nodes.debug.show_focus_ring || nodes.ring_is_previewed(&output.name(), now) {
+    if debug.show_focus_ring || nodes.ring_is_previewed(&output.name(), now) {
         let focus_ring = nodes.focus_ring_for_output(&output.name());
         let scale = crate::presentation::camera::scale(camera);
         let center = (
@@ -176,6 +184,20 @@ pub(super) fn node_elements(
                 alpha: eased,
             },
         )?;
+        if node.pinned
+            && let Some(pin) = pin_renderer.element(
+                renderer,
+                &output.name(),
+                crate::render::pin::PinSlot::Node(record.id.as_u64()),
+                crate::render::pin::landmark_badge_rect(pins, (local.x, local.y), side),
+                eased,
+                pins,
+                overlays,
+                decorations,
+            )
+        {
+            elements.insert(0, SceneElement::Closing(pin));
+        }
         elements.extend(icons);
         elements.extend(markers);
         groups.push(StackGroup {

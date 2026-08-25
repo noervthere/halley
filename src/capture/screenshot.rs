@@ -151,7 +151,9 @@ fn save_region_inner<D: SessionDriver>(
                         },
                         visuals: VisualContext {
                             decorations,
+                            pins: &session.settings.field.pins,
                             font: &session.settings.font,
+                            debug: session.settings.debug,
                             blur,
                             shadows,
                             background: &session.settings.background,
@@ -396,7 +398,9 @@ where
                 },
                 visuals: VisualContext {
                     decorations,
+                    pins: &session.settings.field.pins,
                     font: &session.settings.font,
+                    debug: session.settings.debug,
                     blur,
                     shadows,
                     background: &session.settings.background,

@@ -136,6 +136,8 @@ pub struct Session<D: SessionDriver> {
     pub(crate) api_subscriptions: crate::ipc::ApiSubscriptions,
     pub pending_pointer_warp: Option<WlSurface>,
     pub window_rules: crate::window::rules::WindowRulesState,
+    pub(crate) presentation_close_size_recovery:
+        crate::window::recovery::PresentationCloseSizeRecovery,
     pub cameras: OutputCameras,
     pub capture: crate::capture::CaptureState,
     /// Screenshots waiting on the encoder worker, keyed by job id.
@@ -181,10 +183,6 @@ impl<D: SessionDriver> Session<D> {
             self.cursor.size(),
             &self.launch_environment,
         );
-    }
-
-    pub(crate) fn reap_autostart(&mut self) {
-        self.autostart.reap_finished();
     }
 
     pub fn create_wayland_state(display_handle: DisplayHandle, driver: &mut D) -> WaylandState {

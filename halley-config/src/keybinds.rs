@@ -58,6 +58,7 @@ pub enum Action {
     ToggleFullscreen,
     ToggleFieldMaximize,
     ToggleState,
+    ToggleFocusedPin,
     Apogee,
     BearingsShow,
     BearingsToggle,
@@ -140,7 +141,7 @@ mod tests {
     fn default_matches_the_shipped_keybinds() {
         let kb = Keybinds::default();
         assert_eq!(kb.modifier, ModifierKey::Super);
-        assert_eq!(kb.binds.len(), 49);
+        assert_eq!(kb.binds.len(), 50);
 
         let lift = kb
             .binds
@@ -205,6 +206,15 @@ mod tests {
             .unwrap();
         assert!(toggle_state.modifiers.super_key);
         assert_eq!(toggle_state.key, "n");
+
+        let toggle_pin = kb
+            .binds
+            .iter()
+            .find(|b| b.action == Action::ToggleFocusedPin)
+            .unwrap();
+        assert!(toggle_pin.modifiers.super_key);
+        assert_eq!(toggle_pin.key, "p");
+        assert!(!toggle_pin.repeat);
 
         let cluster_float = kb
             .binds

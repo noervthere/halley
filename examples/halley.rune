@@ -265,6 +265,10 @@ decorations:
     colour-unfocused "#474d59"
   end
 
+  # Resize managed windows by left-dragging their outer edge or corner. The
+  # hit band remains usable when the visible border is thin or hidden.
+  resize-using-border true
+
   # Compositor-owned titlebars are added only to windows using server-side
   # decorations. They replace the border's top edge, not the other 3 sides.
   titlebars:
@@ -446,6 +450,15 @@ field:
   # The same value is the clearance between landmarks and active windows.
   gap 20.0
 
+  # Pinned windows, nodes, and cluster cores stay locked in place. The same
+  # badge is shown on the entity and on its offscreen Bearings chip.
+  pins:
+    corner "top-right"
+    colour "#d65d26"
+    background-colour "auto"
+    size 1.0
+  end
+
   # After the focused window closes, prefer the active cluster's next layout
   # member. In tiling, this keeps focus in the vacated slot (and on the newly
   # promoted master); in stacking, it selects the first surviving card. Then
@@ -508,6 +521,9 @@ end
 debug:
   # The ring is still previewed briefly when its configuration changes.
   show-focus-ring false
+
+  # Show a live per-output FPS chip. This keeps each unlocked output repainting.
+  overlay-fps false
 end
 
 # Clusters group related windows behind one circular desktop icon. Press the
@@ -713,6 +729,7 @@ keybinds:
   "$var.mod+f" "toggle-fullscreen"
   "$var.mod+m" "maximize-focused"
   "$var.mod+n" "toggle-state"
+  "$var.mod+p" "toggle-focused-pin"
   "$var.mod+o" "apogee"
   "$var.mod+z" "bearings-show"
   "$var.mod+shift+z" "bearings-toggle"

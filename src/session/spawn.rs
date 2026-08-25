@@ -75,33 +75,6 @@ fn detached_process(
     process
 }
 
-pub(super) fn managed_process(
-    command_line: &str,
-    wayland_display: &OsStr,
-    x11_display: Option<&OsStr>,
-    cursor_size: u8,
-    environment: &LaunchEnvironment,
-) -> Command {
-    let mut process = configured_process(
-        command_line,
-        wayland_display,
-        x11_display,
-        cursor_size,
-        environment,
-    );
-    // Safety: setpgid is async-signal-safe and runs before the child execs.
-    unsafe {
-        process.pre_exec(|| {
-            if libc::setpgid(0, 0) == -1 {
-                Err(io::Error::last_os_error())
-            } else {
-                Ok(())
-            }
-        });
-    }
-    process
-}
-
 fn configured_process(
     command_line: &str,
     wayland_display: &OsStr,

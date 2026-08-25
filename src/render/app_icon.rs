@@ -4,6 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use image::{RgbaImage, imageops};
 use resvg::{tiny_skia, usvg};
@@ -18,6 +19,27 @@ use super::window_texture::WindowTexture;
 
 const RASTER_SIZE: u32 = 64;
 const WALK_DEPTH: usize = 6;
+
+/// How long a request may stay `Pending` before it stops holding the
+/// compositor awake.
+///
+/// A pending icon contributes to [`AppIconCache::has_pending`], which is
+/// OR-ed into the per-output animation flag, so a request that never resolves
+/// pins the redraw loop at full refresh rate forever. The loader normally
+/// answers within one or two frames; anything past this deadline is a wedged
+/// or dead loader thread, and a missing icon is a far better outcome than a
+/// compositor that never sleeps again.
+const ICON_PENDING_DEADLINE: Duration = Duration::from_secs(5);
+
+/// How long a resolved entry survives after the last frame that drew it.
+const ICON_CACHE_TTL: Duration = Duration::from_secs(300);
+
+/// Hard ceiling on resolved entries, independent of [`ICON_CACHE_TTL`].
+///
+/// `app_id` is client-controlled and a client may set a fresh one on every
+/// commit, so the TTL alone would still let a burst allocate an unbounded
+/// number of 64x64 textures before the first sweep reclaims any of them.
+const ICON_CACHE_CAPACITY: usize = 256;
 
 struct Raster {
     pixels: Vec<u8>,
@@ -58,10 +80,15 @@ impl Loader {
     }
 }
 
-enum Entry {
-    Pending,
+enum State {
+    Pending { requested_at: Instant },
     Missing,
     Ready(WindowTexture),
+}
+
+struct Entry {
+    state: State,
+    last_used: Instant,
 }
 
 #[derive(Default)]
@@ -72,20 +99,50 @@ pub(super) struct AppIconCache {
 }
 
 impl AppIconCache {
+    /// Whether any request is still waiting on the loader and is recent enough
+    /// to be worth animating for.
+    ///
+    /// Requests past [`ICON_PENDING_DEADLINE`] are deliberately excluded even
+    /// though they remain `Pending`: see that constant for why.
     pub(super) fn has_pending(&self) -> bool {
-        self.entries
-            .values()
-            .any(|entry| matches!(entry, Entry::Pending))
+        let now = Instant::now();
+        self.entries.values().any(|entry| match entry.state {
+            State::Pending { requested_at } => {
+                now.saturating_duration_since(requested_at) < ICON_PENDING_DEADLINE
+            }
+            State::Missing | State::Ready(_) => false,
+        })
+    }
+
+    /// Per-frame maintenance: collect finished loads and age out stale entries.
+    ///
+    /// This must run every frame regardless of whether any icon is drawn.
+    /// Draining only from [`Self::request`] meant a request whose node stopped
+    /// being drawn before its result arrived stayed `Pending` forever, and
+    /// [`Self::has_pending`] then held the whole compositor at full refresh
+    /// rate for the rest of the session.
+    pub(super) fn poll(&mut self, renderer: &mut GlesRenderer) {
+        self.refresh_context(renderer);
+        self.drain(renderer);
+        self.sweep();
     }
 
     pub(super) fn request(&mut self, renderer: &mut GlesRenderer, app_id: &str) {
         self.refresh_context(renderer);
-        self.drain(renderer);
-        if !self.entries.contains_key(app_id) {
-            self.entries.insert(app_id.to_string(), Entry::Pending);
-            let loader = self.loader.get_or_insert_with(Loader::spawn);
-            let _ = loader.jobs.send(app_id.to_string());
+        let now = Instant::now();
+        if let Some(entry) = self.entries.get_mut(app_id) {
+            entry.last_used = now;
+            return;
         }
+        self.entries.insert(
+            app_id.to_string(),
+            Entry {
+                state: State::Pending { requested_at: now },
+                last_used: now,
+            },
+        );
+        let loader = self.loader.get_or_insert_with(Loader::spawn);
+        let _ = loader.jobs.send(app_id.to_string());
     }
 
     pub(super) fn element(
@@ -96,9 +153,35 @@ impl AppIconCache {
         alpha: f32,
     ) -> Option<TextureRenderElement<GlesTexture>> {
         self.request(renderer, app_id);
-        match self.entries.get(app_id) {
-            Some(Entry::Ready(icon)) => Some(icon.render_element(Id::new(), destination, alpha)),
-            Some(Entry::Pending | Entry::Missing) | None => None,
+        match self.entries.get(app_id).map(|entry| &entry.state) {
+            Some(State::Ready(icon)) => Some(icon.render_element(Id::new(), destination, alpha)),
+            Some(State::Pending { .. } | State::Missing) | None => None,
+        }
+    }
+
+    /// Drops entries nothing has drawn recently, and enforces a hard ceiling.
+    ///
+    /// `Pending` entries are never evicted here: removing one would let the
+    /// next `request` re-issue the same job and start the deadline over, so a
+    /// permanently unresolvable icon could re-wedge the animation flag on a
+    /// loop.
+    fn sweep(&mut self) {
+        let now = Instant::now();
+        self.entries.retain(|_, entry| {
+            matches!(entry.state, State::Pending { .. })
+                || now.saturating_duration_since(entry.last_used) < ICON_CACHE_TTL
+        });
+        while self.entries.len() > ICON_CACHE_CAPACITY {
+            let Some(oldest) = self
+                .entries
+                .iter()
+                .filter(|(_, entry)| !matches!(entry.state, State::Pending { .. }))
+                .min_by_key(|(_, entry)| entry.last_used)
+                .map(|(app_id, _)| app_id.clone())
+            else {
+                break;
+            };
+            self.entries.remove(&oldest);
         }
     }
 
@@ -120,9 +203,9 @@ impl AppIconCache {
             return;
         };
         while let Ok(result) = loader.results.try_recv() {
-            let (app_id, entry) = match result {
+            let (app_id, state) = match result {
                 Result::Loaded { app_id, raster } => {
-                    let entry = renderer
+                    let state = renderer
                         .import_memory(
                             &raster.pixels,
                             Fourcc::Abgr8888,
@@ -131,17 +214,25 @@ impl AppIconCache {
                         )
                         .ok()
                         .map(|texture| {
-                            Entry::Ready(WindowTexture {
+                            State::Ready(WindowTexture {
                                 texture,
                                 context: renderer.context_id(),
                             })
                         })
-                        .unwrap_or(Entry::Missing);
-                    (app_id, entry)
+                        .unwrap_or(State::Missing);
+                    (app_id, state)
                 }
-                Result::Missing { app_id } => (app_id, Entry::Missing),
+                Result::Missing { app_id } => (app_id, State::Missing),
             };
-            self.entries.insert(app_id, entry);
+            // A result can outlive its request: the sweep drops entries nothing
+            // has drawn for a while, and the loader may still answer afterwards.
+            // Preserve the original `last_used` when the entry survives so a
+            // late answer cannot extend an unused icon's lifetime.
+            let last_used = self
+                .entries
+                .get(&app_id)
+                .map_or_else(Instant::now, |entry| entry.last_used);
+            self.entries.insert(app_id, Entry { state, last_used });
         }
     }
 }

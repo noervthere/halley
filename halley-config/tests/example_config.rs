@@ -12,7 +12,7 @@ fn example_config_parses_end_to_end() {
     let keybinds = parse_keybinds(&config).expect("example keybinds section parses");
 
     assert_eq!(keybinds.modifier, ModifierKey::Super);
-    assert_eq!(keybinds.binds.len(), 49);
+    assert_eq!(keybinds.binds.len(), 50);
 
     let lift = keybinds
         .binds
@@ -64,6 +64,15 @@ fn example_config_parses_end_to_end() {
         .expect("toggle-state bind present");
     assert_eq!(toggle_state.key, "n");
     assert!(toggle_state.modifiers.super_key);
+
+    let toggle_pin = keybinds
+        .binds
+        .iter()
+        .find(|b| b.action == Action::ToggleFocusedPin)
+        .expect("toggle-focused-pin bind present");
+    assert_eq!(toggle_pin.key, "p");
+    assert!(toggle_pin.modifiers.super_key);
+    assert!(!toggle_pin.repeat);
 
     let cluster_float = keybinds
         .binds
@@ -207,6 +216,7 @@ fn example_config_cluster_sections_parse() {
         runtime.decorations.titlebars.title_position,
         halley_config::TitlebarContentPosition::Center
     );
+    assert!(runtime.decorations.resize_using_border);
     assert_eq!(runtime.animations.cluster.tiling.open_duration_ms, 300);
     assert_eq!(runtime.animations.cluster.stacking.cycle_duration_ms, 220);
     assert!(
@@ -216,6 +226,14 @@ fn example_config_cluster_sections_parse() {
             .iter()
             .any(|binding| binding.action == Action::ClusterSlot(10))
     );
+}
+
+#[test]
+fn example_config_keeps_fps_overlay_disabled() {
+    let config = RuneConfig::from_file(EXAMPLE_PATH).expect("example config parses");
+    let runtime = halley_config::parse_runtime_config(&config).expect("runtime config parses");
+
+    assert!(!runtime.debug.overlay_fps);
 }
 
 #[test]

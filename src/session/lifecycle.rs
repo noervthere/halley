@@ -58,6 +58,59 @@ fn mapped_managed_window(wayland: &WaylandState, surface: &WlSurface) -> Option<
         .cloned()
 }
 
+fn remember_presentation_close_size<D: SessionDriver>(
+    session: &mut Session<D>,
+    surface: &WlSurface,
+) {
+    let Some(window) = mapped_managed_window(&session.wayland, surface) else {
+        return;
+    };
+    let Some(app_id) = crate::window::recovery::independent_toplevel_app_id(&window) else {
+        return;
+    };
+
+    let restore = session
+        .fullscreen
+        .restore_placement(surface)
+        .map(|(geometry, output)| (geometry.size, output))
+        .or_else(|| {
+            session
+                .maximize
+                .restore(surface)
+                .map(|restore| (restore.geometry.size, Some(restore.output)))
+        });
+
+    if let Some((restore, restore_output)) = restore {
+        let output_name = restore_output.or_else(|| crate::wayland::window_output_name(&window));
+        let output_size = output_name
+            .as_deref()
+            .and_then(|name| {
+                session
+                    .wayland
+                    .space
+                    .outputs()
+                    .find(|output| output.name() == name)
+            })
+            .and_then(|output| session.wayland.space.output_geometry(output))
+            .map(|geometry| geometry.size);
+        let size = crate::window::recovery::presentation_close_recovery_size(restore, output_size);
+        eventline::debug!(
+            "window-size recovery: remembered app_id={app_id:?} restore={}x{} next={}x{}",
+            restore.w,
+            restore.h,
+            size.w,
+            size.h
+        );
+        session
+            .presentation_close_size_recovery
+            .remember(app_id, size);
+    } else {
+        // A normal close lets a client update its own remembered size, so a
+        // previous presentation recovery is no longer needed.
+        session.presentation_close_size_recovery.clear(&app_id);
+    }
+}
+
 fn select_focus_successor(
     wayland: &WaylandState,
     nodes: &crate::nodes::NodesState,
@@ -188,6 +241,7 @@ pub(crate) fn prepare_window_unmap<D: SessionDriver>(
     super::touch::cancel_surface(session, surface);
     super::gesture::cancel_surface(session, surface);
     super::pointer::prepare_unmap(session, surface);
+    remember_presentation_close_size(session, surface);
     let focus = (session.wayland.focused_window.as_ref() == Some(surface)).then(|| {
         let output = mapped_managed_window(&session.wayland, surface)
             .and_then(|window| crate::wayland::window_output_name(&window));
@@ -224,6 +278,9 @@ pub(crate) fn finish_window_unmap<D: SessionDriver>(
 ) {
     let WindowUnmapPreparation { surface, focus } = preparation;
     session.wayland.managed_windows.remove(&surface);
+    session
+        .presentation_close_size_recovery
+        .forget_surface(&surface);
     session.opening_origins.forget(&surface);
     if session.pending_pointer_warp.as_ref() == Some(&surface) {
         session.pending_pointer_warp = None;

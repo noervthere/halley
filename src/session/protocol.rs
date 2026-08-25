@@ -16,7 +16,7 @@ use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
 use smithay::reexports::wayland_server::protocol::wl_seat::WlSeat;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{Client, Display, Resource};
-use smithay::utils::{Logical, Point, SERIAL_COUNTER, Serial};
+use smithay::utils::{Logical, Point, SERIAL_COUNTER, Serial, Size};
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::tablet_manager::TabletSeatHandler;
 use smithay::wayland::compositor::{
@@ -214,19 +214,48 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
             .as_ref()
             .map(|window| self.window_rules.track_window(window))
             .unwrap_or_default();
-        if let Some(size) = rule.initial_size
+        // Observe every independent toplevel before applying policy gates. An
+        // already-mapped surface must remain ineligible for any recovery hint
+        // remembered later, including while a size rule or fullscreen state
+        // currently owns its configure.
+        let recovery_candidate = rule_window
+            .as_ref()
+            .and_then(crate::window::recovery::independent_toplevel_app_id)
+            .and_then(|app_id| {
+                self.presentation_close_size_recovery
+                    .size_for_surface(&root, &app_id)
+                    .map(|size| (app_id, size))
+            });
+        let recovered_size = (rule.initial_size.is_none()
+            && !self.fullscreen.is_fullscreen_or_pending(&root))
+        .then_some(recovery_candidate)
+        .flatten();
+        let initial_size = rule.initial_size.map(|size| {
+            Size::from((
+                i32::try_from(size.0).unwrap_or(i32::MAX).max(96),
+                i32::try_from(size.1).unwrap_or(i32::MAX).max(72),
+            ))
+        });
+        if let Some((app_id, size)) = recovered_size
+            && let Some(toplevel) = rule_window.as_ref().and_then(|window| window.toplevel())
+        {
+            let initial_configure_sent = toplevel.is_initial_configure_sent();
+            toplevel.with_pending_state(|pending| {
+                pending.size = Some(size);
+            });
+            if initial_configure_sent {
+                toplevel.send_pending_configure();
+            }
+            eventline::debug!(
+                "window-size recovery: applied app_id={app_id:?} size={}x{} initial_configure_sent={initial_configure_sent}",
+                size.w,
+                size.h
+            );
+        } else if let Some(size) = initial_size
             && let Some(toplevel) = rule_window.as_ref().and_then(|window| window.toplevel())
             && !toplevel.is_initial_configure_sent()
         {
-            toplevel.with_pending_state(|pending| {
-                pending.size = Some(
-                    (
-                        i32::try_from(size.0).unwrap_or(i32::MAX).max(96),
-                        i32::try_from(size.1).unwrap_or(i32::MAX).max(72),
-                    )
-                        .into(),
-                );
-            });
+            toplevel.with_pending_state(|pending| pending.size = Some(size));
         }
         let unmap = wayland::xdg_shell::will_unmap(&self.wayland, &root)
             .then(|| super::prepare_window_unmap(self, &root));
@@ -529,12 +558,36 @@ impl<D: SessionDriver> XdgShellHandler for Session<D> {
             crate::nodes::restore(self, id, SERIAL_COUNTER.next_serial());
         }
         super::cancel_grab_for_surface(self, surface.wl_surface());
-        let cluster_restore = super::cluster_presentation_restore(
-            self,
-            surface.wl_surface(),
-            crate::frame_clock::monotonic_now(),
-            true,
-        );
+        let now = crate::frame_clock::monotonic_now();
+        let cluster_restore =
+            super::cluster_presentation_restore(self, surface.wl_surface(), now, true);
+        let window = self
+            .wayland
+            .space
+            .elements()
+            .find(|window| {
+                window
+                    .wl_surface()
+                    .is_some_and(|candidate| candidate.as_ref() == surface.wl_surface())
+            })
+            .cloned();
+        let maximize_output = window.as_ref().and_then(crate::wayland::window_output_name);
+        let fullscreen_output = output
+            .as_ref()
+            .and_then(Output::from_resource)
+            .filter(|requested| self.wayland.space.outputs().any(|known| known == requested))
+            .map(|output| output.name())
+            .or_else(|| maximize_output.clone());
+        let field_handoff = window.as_ref().and_then(|window| {
+            super::prepare_field_maximize_fullscreen_handoff(
+                self,
+                window,
+                surface.wl_surface(),
+                maximize_output.as_deref()?,
+                fullscreen_output.as_deref()?,
+                now,
+            )
+        });
         self.fullscreen.request(&mut self.wayland, &surface, output);
         if let Some(restore) = cluster_restore {
             self.fullscreen.override_restore_from_cluster(
@@ -543,6 +596,9 @@ impl<D: SessionDriver> XdgShellHandler for Session<D> {
                 restore.output,
                 restore.presentation_output,
             );
+        }
+        if let Some(handoff) = field_handoff {
+            handoff.apply(&mut self.fullscreen, surface.wl_surface());
         }
         super::pointer::reconcile_state(self);
         self.request_redraw();
@@ -644,7 +700,11 @@ impl<D: SessionDriver> XdgShellHandler for Session<D> {
     }
 
     fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
-        wayland::popup::track(&mut self.wayland, &self.cameras, surface);
+        wayland::popup::track(
+            &mut self.wayland,
+            super::popup_unconstrain_context!(self),
+            surface,
+        );
         self.request_redraw();
     }
 
@@ -654,7 +714,13 @@ impl<D: SessionDriver> XdgShellHandler for Session<D> {
         positioner: PositionerState,
         token: u32,
     ) {
-        wayland::popup::reposition(&self.wayland, &self.cameras, surface, positioner, token);
+        wayland::popup::reposition(
+            &self.wayland,
+            super::popup_unconstrain_context!(self),
+            surface,
+            positioner,
+            token,
+        );
         self.request_redraw();
     }
 
@@ -778,7 +844,11 @@ impl<D: SessionDriver> WlrLayerShellHandler for Session<D> {
     }
 
     fn new_popup(&mut self, _parent: WlrLayerSurface, popup: PopupSurface) {
-        wayland::popup::unconstrain_surface(&self.wayland, &self.cameras, popup);
+        wayland::popup::unconstrain_surface(
+            &self.wayland,
+            super::popup_unconstrain_context!(self),
+            popup,
+        );
         self.request_redraw();
     }
 }

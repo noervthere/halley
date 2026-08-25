@@ -262,6 +262,9 @@ fn move_node<D: crate::session::SessionDriver>(
     let Some(record) = session.nodes.record(id).cloned() else {
         return false;
     };
+    if crate::session::node_user_pinned(session, id) {
+        return false;
+    }
     let (dx, dy) = match direction {
         halley_ipc::NodeMoveDirection::Left => (-80, 0),
         halley_ipc::NodeMoveDirection::Right => (80, 0),
@@ -377,7 +380,7 @@ pub(crate) fn node_info<D: crate::session::SessionDriver>(
         visible: record.attached,
         focused: session.nodes.focused() == Some(id),
         latest,
-        pinned: false,
+        pinned: crate::session::node_user_pinned(session, id),
         role,
         protocol_family: family,
         modal,

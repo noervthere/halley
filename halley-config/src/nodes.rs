@@ -136,6 +136,7 @@ impl Default for LandmarkPlacement {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Debug {
     pub show_focus_ring: bool,
+    pub overlay_fps: bool,
 }
 
 pub fn parse_landmark_placement(config: &RuneConfig) -> LandmarkPlacement {
@@ -254,6 +255,7 @@ pub fn parse_nodes_checked(config: &RuneConfig) -> Result<Nodes, NodeParseError>
 pub fn parse_debug(config: &RuneConfig) -> Debug {
     Debug {
         show_focus_ring: config.get_or("debug.show-focus-ring", false),
+        overlay_fps: config.get_or("debug.overlay-fps", false),
     }
 }
 
@@ -438,6 +440,7 @@ node:
 end
 debug:
   show-focus-ring true
+  overlay-fps true
 end
 "#,
         )
@@ -451,6 +454,7 @@ end
             RestoreCentering::IfOffscreen
         );
         assert!(parse_debug(&config).show_focus_ring);
+        assert!(parse_debug(&config).overlay_fps);
     }
 
     #[test]

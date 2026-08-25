@@ -11,12 +11,26 @@ use smithay::wayland::seat::WaylandFocus;
 use smithay::wayland::shell::xdg::{PopupSurface, PositionerState};
 
 use crate::presentation::camera::OutputCameras;
+use crate::presentation::window::WindowPresentation;
 
 use super::WaylandState;
 
-pub fn track(wayland: &mut WaylandState, cameras: &OutputCameras, surface: PopupSurface) {
+#[derive(Clone, Copy)]
+pub struct UnconstrainContext<'a> {
+    pub cameras: &'a OutputCameras,
+    pub clusters: &'a crate::clusters::ClusterSystem,
+    pub nodes: &'a crate::nodes::NodesState,
+    pub window_open_animations: &'a crate::animation::WindowOpenAnimations,
+    pub fullscreen: &'a crate::wayland::fullscreen::FullscreenManager,
+    pub maximize: &'a crate::presentation::maximize::FieldMaximizeManager,
+    pub decorations: &'a halley_config::Decorations,
+    pub font: &'a halley_config::Font,
+    pub now: std::time::Duration,
+}
+
+pub fn track(wayland: &mut WaylandState, context: UnconstrainContext<'_>, surface: PopupSurface) {
     let popup = PopupKind::Xdg(surface);
-    unconstrain(wayland, cameras, &popup);
+    unconstrain(wayland, context, &popup);
     if let Err(err) = wayland.popup_manager.track_popup(popup) {
         eventline::warn!("xdg-shell: failed to track popup: {err}");
     }
@@ -36,13 +50,17 @@ pub fn handle_commit(manager: &mut PopupManager, surface: &WlSurface) {
     }
 }
 
-pub fn unconstrain_surface(wayland: &WaylandState, cameras: &OutputCameras, surface: PopupSurface) {
-    unconstrain(wayland, cameras, &PopupKind::Xdg(surface));
+pub fn unconstrain_surface(
+    wayland: &WaylandState,
+    context: UnconstrainContext<'_>,
+    surface: PopupSurface,
+) {
+    unconstrain(wayland, context, &PopupKind::Xdg(surface));
 }
 
 pub fn reposition(
     wayland: &WaylandState,
-    cameras: &OutputCameras,
+    context: UnconstrainContext<'_>,
     surface: PopupSurface,
     positioner: PositionerState,
     token: u32,
@@ -51,13 +69,13 @@ pub fn reposition(
         state.geometry = positioner.get_geometry();
         state.positioner = positioner;
     });
-    unconstrain(wayland, cameras, &PopupKind::Xdg(surface.clone()));
+    unconstrain(wayland, context, &PopupKind::Xdg(surface.clone()));
     surface.send_repositioned(token);
 }
 
 pub fn update_reactive_for_window(
     wayland: &WaylandState,
-    cameras: &OutputCameras,
+    context: UnconstrainContext<'_>,
     window: &smithay::desktop::Window,
 ) {
     let Some(toplevel) = window.toplevel() else {
@@ -70,18 +88,18 @@ pub fn update_reactive_for_window(
         if !surface.with_pending_state(|state| state.positioner.reactive) {
             continue;
         }
-        unconstrain(wayland, cameras, &popup);
+        unconstrain(wayland, context, &popup);
         if let Err(err) = surface.send_pending_configure() {
             eventline::warn!("xdg-shell: failed to reconfigure reactive popup: {err}");
         }
     }
 }
 
-/// Constrains a popup in the coordinate system of its root. Windows use
-/// their owning output camera's visible world rectangle; layer roots use
-/// their output-local `LayerMap` geometry because layers never pass through
-/// a workspace camera.
-fn unconstrain(wayland: &WaylandState, cameras: &OutputCameras, popup: &PopupKind) {
+/// Constrains a popup in the coordinate system of its root. Windows inverse-map
+/// the output through their live presentation; layer roots use their
+/// output-local `LayerMap` geometry because layers never pass through a
+/// workspace camera.
+fn unconstrain(wayland: &WaylandState, context: UnconstrainContext<'_>, popup: &PopupKind) {
     let Ok(root) = find_popup_root_surface(popup) else {
         return;
     };
@@ -107,12 +125,32 @@ fn unconstrain(wayland: &WaylandState, cameras: &OutputCameras, popup: &PopupKin
         let Some(output_geometry) = wayland.space.output_geometry(output) else {
             return;
         };
-        let Some(view) = cameras.view(&output.name()) else {
+        let popup_coords = get_popup_toplevel_coords(popup);
+        let target = WindowPresentation::for_window(
+            &wayland.space,
+            context.cameras,
+            Some(context.clusters),
+            Some(context.nodes),
+            context.window_open_animations,
+            context.fullscreen,
+            context.maximize,
+            context.decorations,
+            context.font,
+            window,
+            output,
+            context.now,
+        )
+        .map(|presentation| presentation.popup_constraint_target(output_geometry, popup_coords))
+        .or_else(|| {
+            let view = context.cameras.view(&output.name())?;
+            let mut target = crate::presentation::camera::world_viewport(view, output_geometry);
+            target.loc -= window_geometry.loc;
+            target.loc -= popup_coords;
+            Some(target)
+        });
+        let Some(target) = target else {
             return;
         };
-        let mut target = crate::presentation::camera::world_viewport(view, output_geometry);
-        target.loc -= window_geometry.loc;
-        target.loc -= get_popup_toplevel_coords(popup);
         set_unconstrained_geometry(popup, target);
         return;
     }

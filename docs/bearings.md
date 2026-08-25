@@ -39,8 +39,11 @@ end
 `show-distance` adds the distance beyond the current viewport edge.
 `show-icons` reserves a 16-pixel application-icon slot for nodes with an app
 ID. Icon lookup is asynchronous; the slot remains blank until the real icon is
-ready and never flashes a temporary letter. `show-pinned` preserves the old
-pin-aware candidate policy for the pinning runtime. `fade-distance` controls
+ready and never flashes a temporary letter. `show-pinned` keeps pinned field
+nodes and pinned collapsed-cluster cores at full overlay opacity instead of
+applying distance fade. Their chips reserve space for and display the same
+original-Halley pin badge used on the field. Cluster members are never
+pinnable. `fade-distance` controls
 the old distance fade and is clamped from 120 through 100000 field pixels.
 
 Labels and distance text use the shared Cosmic Text renderer and the global

@@ -32,6 +32,7 @@ impl RuntimeSettings {
             field: config.field,
             zoom: config.field.zoom,
             screenshot: config.screenshot.clone(),
+            debug: config.debug,
             layer_rules: config.layer_rules.clone(),
         }
     }
@@ -42,7 +43,9 @@ impl RuntimeSettings {
             || self.effects != config.effects
             || self.background != config.background
             || self.zoom != config.field.zoom
+            || self.field.pins != config.field.pins
             || self.overlays != config.overlays
+            || self.debug != config.debug
             || self.layer_rules != config.layer_rules
     }
 
@@ -59,6 +62,7 @@ impl RuntimeSettings {
         self.overlays = config.overlays;
         self.zoom = config.field.zoom;
         self.screenshot = config.screenshot.clone();
+        self.debug = config.debug;
         self.layer_rules.clone_from(&config.layer_rules);
     }
 }
@@ -75,6 +79,15 @@ mod tests {
         changed.screenshot.directory = "different".into();
 
         assert!(!settings.visuals_changed(&changed));
+
+        changed.debug.overlay_fps = true;
+        assert!(settings.visuals_changed(&changed));
+
+        settings.reload_non_input(&changed);
+        assert!(!settings.visuals_changed(&changed));
+
+        changed.field.pins.size = 1.5;
+        assert!(settings.visuals_changed(&changed));
 
         changed.decorations.border_width_px += 1;
         assert!(settings.visuals_changed(&changed));

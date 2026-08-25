@@ -103,6 +103,7 @@ pub struct Decorations {
     pub border_radius_px: i32,
     pub border_color_focused: BorderColor,
     pub border_color_unfocused: BorderColor,
+    pub resize_using_border: bool,
     pub titlebars: Titlebars,
 }
 
@@ -122,6 +123,7 @@ impl Default for Decorations {
                 g: 0.30,
                 b: 0.35,
             },
+            resize_using_border: true,
             titlebars: Titlebars::default(),
         }
     }
@@ -260,6 +262,10 @@ pub fn parse_decorations(config: &RuneConfig) -> Decorations {
         border_radius_px,
         border_color_focused,
         border_color_unfocused,
+        resize_using_border: config.get_or(
+            "decorations.resize-using-border",
+            defaults.resize_using_border,
+        ),
         titlebars,
     }
 }
@@ -364,6 +370,21 @@ end
                 b: 0x33 as f32 / 255.0,
             }
         );
+        assert!(decorations.resize_using_border);
+    }
+
+    #[test]
+    fn border_resize_defaults_on_and_can_be_disabled() {
+        let defaults = parse_decorations(
+            &RuneConfig::from_str("decorations:\nend\n").expect("valid default config"),
+        );
+        assert!(defaults.resize_using_border);
+
+        let disabled = parse_decorations(
+            &RuneConfig::from_str("decorations:\n  resize-using-border false\nend\n")
+                .expect("valid disabled config"),
+        );
+        assert!(!disabled.resize_using_border);
     }
 
     #[test]

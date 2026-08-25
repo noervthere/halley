@@ -6,6 +6,7 @@ pub mod fullscreen_texture;
 pub mod ids;
 pub mod node;
 pub mod overlays;
+pub mod pin;
 pub mod presented_x11;
 pub mod rescale;
 pub mod resources;
@@ -253,7 +254,9 @@ pub struct OverlayContext<'a> {
 /// Immutable visual configuration for one frame.
 pub struct VisualContext<'a> {
     pub decorations: &'a Decorations,
+    pub pins: &'a halley_config::Pins,
     pub font: &'a halley_config::Font,
+    pub debug: halley_config::Debug,
     pub blur: halley_config::Blur,
     pub shadows: halley_config::Shadows,
     pub background: &'a halley_config::Background,

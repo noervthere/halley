@@ -10,8 +10,9 @@ use smithay::wayland::shm::{shm_format_to_fourcc, with_buffer_contents};
 use super::{CursorManager, CursorSurfaceSnapshot};
 
 /// Snapshot client-provided SHM cursors before Smithay consumes the pending
-/// buffer. Its renderer damage history is surface-scoped, so a replacement
-/// buffer can otherwise inherit damage larger than its new texture.
+/// buffer. Smithay's renderer damage history is surface-scoped, so a
+/// replacement buffer can inherit damage larger than its new texture and
+/// `glTexSubImage2D` a 24×24 cursor into a leftover 10×16 GLES cache.
 pub fn prepare_commit(manager: &CursorManager, committed: &WlSurface) {
     if manager.client_surface() != Some(committed) {
         return;
@@ -59,6 +60,10 @@ pub fn prepare_commit(manager: &CursorManager, committed: &WlSurface) {
             && old.format == snapshot.format
             && old.scale == scale
             && old.transform == transform
+            && snapshot_storage_size_matches(
+                (old.width, old.height),
+                (snapshot.width, snapshot.height),
+            )
     });
     let mut render_buffer = reusable.map(|old| old.buffer.clone()).unwrap_or_else(|| {
         MemoryRenderBuffer::new(
@@ -99,6 +104,10 @@ pub fn prepare_commit(manager: &CursorManager, committed: &WlSurface) {
         format: snapshot.format,
         transform,
     }));
+}
+
+fn snapshot_storage_size_matches(old: (u32, u32), new: (u32, u32)) -> bool {
+    old == new
 }
 
 struct ShmCursorCopy {
@@ -162,4 +171,16 @@ fn copy_shm_cursor(buffer: &WlBuffer) -> Result<Option<ShmCursorCopy>, String> {
         }))
     })
     .map_err(|err| err.to_string())?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::snapshot_storage_size_matches;
+
+    #[test]
+    fn resized_cursor_gets_new_renderer_storage() {
+        assert!(snapshot_storage_size_matches((24, 24), (24, 24)));
+        assert!(!snapshot_storage_size_matches((10, 16), (24, 24)));
+        assert!(!snapshot_storage_size_matches((24, 24), (10, 16)));
+    }
 }

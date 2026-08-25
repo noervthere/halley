@@ -4,10 +4,7 @@ use std::error::Error;
 use halley_core::bearings::{Bearing, bearing_to_point};
 use halley_core::field::Vec2;
 use halley_core::viewport::Viewport;
-use smithay::backend::renderer::element::solid::SolidColorRenderElement;
 use smithay::backend::renderer::gles::GlesRenderer;
-use smithay::backend::renderer::utils::CommitCounter;
-use smithay::backend::renderer::{Color32F, element::Kind};
 use smithay::output::Output;
 use smithay::utils::{Logical, Physical, Rectangle};
 
@@ -19,6 +16,8 @@ const CHIP_PAD_Y: i32 = 7;
 const EDGE_PAD: i32 = 16;
 const ICON_SIZE: i32 = 16;
 const ICON_TEXT_GAP: i32 = 6;
+const PIN_BADGE_RADIUS: i32 = 7;
+const PIN_BADGE_GAP: i32 = 7;
 const DISTANCE_GAP: i32 = 4;
 const META_PAD_X: i32 = 7;
 const META_PAD_Y: i32 = 4;
@@ -160,6 +159,8 @@ pub fn elements(
     ui_text: &mut crate::render::text::UiTextRenderer,
     overlay_config: &halley_config::Overlays,
     decorations: &halley_config::Decorations,
+    pins: &halley_config::Pins,
+    pin_renderer: &mut crate::render::pin::PinRenderer,
 ) -> Result<Vec<SceneElement>, Box<dyn Error>> {
     let output_name = output.name();
     let mix = bearings.mix(&output_name);
@@ -266,24 +267,29 @@ pub fn elements(
         }
 
         if layout.pinned {
-            let pin_id = node_renderer.slot_id(
+            let slot = match layout.target {
+                BearingTarget::Node(id) => crate::render::pin::PinSlot::BearingNode(id.as_u64()),
+                BearingTarget::ClusterCore { cluster, .. } => {
+                    crate::render::pin::PinSlot::BearingCluster(cluster.as_u64())
+                }
+            };
+            let cx = layout.chip.loc.x + layout.chip.size.w - CHIP_PAD_X - PIN_BADGE_RADIUS;
+            let cy = layout.chip.loc.y + layout.chip.size.h / 2;
+            if let Some(pin) = pin_renderer.element(
+                renderer,
                 &output_name,
-                crate::render::node::NodeSlot::BearingPin(pin_key(layout.target)),
-            );
-            foreground.push(SceneElement::Border(SolidColorRenderElement::new(
-                pin_id,
+                slot,
                 Rectangle::new(
-                    (
-                        layout.chip.loc.x + layout.chip.size.w - 12,
-                        layout.chip.loc.y + 5,
-                    )
-                        .into(),
-                    (7, 7).into(),
+                    (cx - PIN_BADGE_RADIUS, cy - PIN_BADGE_RADIUS).into(),
+                    (PIN_BADGE_RADIUS * 2, PIN_BADGE_RADIUS * 2).into(),
                 ),
-                CommitCounter::default(),
-                Color32F::new(0.30, 0.86, 0.96, layout.alpha),
-                Kind::Unspecified,
-            )));
+                layout.alpha,
+                pins,
+                overlay_config,
+                decorations,
+            ) {
+                foreground.push(SceneElement::Closing(pin));
+            }
         }
 
         if let Some((distance, rect)) = layout.distance {
@@ -405,6 +411,7 @@ fn collect_layouts(
             show_icon,
             config.show_icons,
             distance_text.as_deref(),
+            pinned,
         )?;
         candidates.push(Candidate {
             target: BearingTarget::Node(record.id),
@@ -461,6 +468,7 @@ fn collect_layouts(
             show_icon,
             show_icon,
             distance_text.as_deref(),
+            pinned,
         )?;
         candidates.push(Candidate {
             target: BearingTarget::ClusterCore { cluster, core },
@@ -501,13 +509,6 @@ fn candidate_order(left: &Candidate, right: &Candidate) -> Ordering {
         .partial_cmp(&right.projected)
         .unwrap_or(Ordering::Equal)
         .then(stable_target_key(left.target).cmp(&stable_target_key(right.target)))
-}
-
-/// Packs a bearing target into one integer so the pinned marker keeps a
-/// stable render-element identity across frames.
-fn pin_key(target: BearingTarget) -> u64 {
-    let (kind, id) = stable_target_key(target);
-    (u64::from(kind) << 56) | (id & 0x00ff_ffff_ffff_ffff)
 }
 
 fn stable_target_key(target: BearingTarget) -> (u8, u64) {
@@ -585,6 +586,7 @@ fn finalize_group(
         show_icon,
         show_icon,
         distance_text.as_deref(),
+        pinned,
     )?;
     Ok(Group {
         target: nearest.target,
@@ -695,6 +697,7 @@ fn measure_size(
     show_icon: bool,
     reserve_icon_for_crowding: bool,
     distance: Option<&str>,
+    pinned: bool,
 ) -> Result<Size, Box<dyn Error>> {
     let label_size = ui_text
         .measure(renderer, label, TEXT_RGB)?
@@ -703,6 +706,11 @@ fn measure_size(
         + label_size.w
         + if show_icon {
             ICON_SIZE + ICON_TEXT_GAP
+        } else {
+            0
+        }
+        + if pinned {
+            PIN_BADGE_RADIUS * 2 + PIN_BADGE_GAP
         } else {
             0
         })

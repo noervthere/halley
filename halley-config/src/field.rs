@@ -2,7 +2,7 @@ use std::fmt;
 
 use rune_cfg::RuneConfig;
 
-use crate::Zoom;
+use crate::{OverlayColorMode, Zoom};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum CloseRestorePan {
@@ -23,9 +23,36 @@ impl CloseRestorePan {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PinBadgeCorner {
+    TopLeft,
+    #[default]
+    TopRight,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Pins {
+    pub corner: PinBadgeCorner,
+    pub color: OverlayColorMode,
+    pub background_color: OverlayColorMode,
+    pub size: f32,
+}
+
+impl Default for Pins {
+    fn default() -> Self {
+        Self {
+            corner: PinBadgeCorner::TopRight,
+            color: OverlayColorMode::Auto,
+            background_color: OverlayColorMode::Auto,
+            size: 1.0,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Field {
     pub gap: f32,
+    pub pins: Pins,
     pub close_restore_focus: bool,
     pub close_restore_nodes: bool,
     pub close_restore_pan: CloseRestorePan,
@@ -36,6 +63,7 @@ impl Default for Field {
     fn default() -> Self {
         Self {
             gap: 20.0,
+            pins: Pins::default(),
             close_restore_focus: true,
             close_restore_nodes: false,
             close_restore_pan: CloseRestorePan::IfOffscreen,
@@ -91,6 +119,101 @@ fn canonical_or_legacy_bool(
         .unwrap_or(fallback)
 }
 
+fn optional_string(config: &RuneConfig, paths: &[&str]) -> Result<Option<String>, FieldParseError> {
+    for path in paths {
+        if let Some(value) = config
+            .get_optional::<String>(path)
+            .map_err(|error| FieldParseError(format!("{path}: {error}")))?
+        {
+            return Ok(Some(value));
+        }
+    }
+    Ok(None)
+}
+
+fn parse_pin_corner(
+    config: &RuneConfig,
+    default: PinBadgeCorner,
+) -> Result<PinBadgeCorner, FieldParseError> {
+    let Some(raw) = optional_string(
+        config,
+        &[
+            "field.pins.corner",
+            "field.pins.badge-corner",
+            "field.pins.badge_corner",
+        ],
+    )?
+    else {
+        return Ok(default);
+    };
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "top-left" | "top_left" | "left" => Ok(PinBadgeCorner::TopLeft),
+        "top-right" | "top_right" | "right" => Ok(PinBadgeCorner::TopRight),
+        _ => Err(FieldParseError(format!(
+            "field.pins.corner must be \"top-left\" or \"top-right\", got {raw:?}"
+        ))),
+    }
+}
+
+fn parse_pin_color(
+    config: &RuneConfig,
+    paths: &[&str],
+    canonical: &str,
+    default: OverlayColorMode,
+) -> Result<OverlayColorMode, FieldParseError> {
+    let Some(raw) = optional_string(config, paths)? else {
+        return Ok(default);
+    };
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "auto" => Ok(OverlayColorMode::Auto),
+        "light" => Ok(OverlayColorMode::Light),
+        "dark" => Ok(OverlayColorMode::Dark),
+        value => parse_hex_color(value).ok_or_else(|| {
+            FieldParseError(format!(
+                "{canonical} must be \"auto\", \"light\", \"dark\", or a hex color, got {raw:?}"
+            ))
+        }),
+    }
+}
+
+fn parse_hex_color(value: &str) -> Option<OverlayColorMode> {
+    let hex = value.strip_prefix('#')?;
+    let expand = |value: &str| u8::from_str_radix(value, 16).ok().map(|value| value * 17);
+    let (r, g, b, a) = match hex.len() {
+        3 => (
+            expand(&hex[0..1])?,
+            expand(&hex[1..2])?,
+            expand(&hex[2..3])?,
+            255,
+        ),
+        4 => (
+            expand(&hex[0..1])?,
+            expand(&hex[1..2])?,
+            expand(&hex[2..3])?,
+            expand(&hex[3..4])?,
+        ),
+        6 => (
+            u8::from_str_radix(&hex[0..2], 16).ok()?,
+            u8::from_str_radix(&hex[2..4], 16).ok()?,
+            u8::from_str_radix(&hex[4..6], 16).ok()?,
+            255,
+        ),
+        8 => (
+            u8::from_str_radix(&hex[0..2], 16).ok()?,
+            u8::from_str_radix(&hex[2..4], 16).ok()?,
+            u8::from_str_radix(&hex[4..6], 16).ok()?,
+            u8::from_str_radix(&hex[6..8], 16).ok()?,
+        ),
+        _ => return None,
+    };
+    Some(OverlayColorMode::Fixed {
+        r: r as f32 / 255.0,
+        g: g as f32 / 255.0,
+        b: b as f32 / 255.0,
+        a: a as f32 / 255.0,
+    })
+}
+
 pub fn parse_field_checked(config: &RuneConfig) -> Result<Field, FieldParseError> {
     for unsupported in ["max", "smooth", "filter", "sharpen"] {
         let path = format!("field.zoom.{unsupported}");
@@ -122,6 +245,42 @@ pub fn parse_field_checked(config: &RuneConfig) -> Result<Field, FieldParseError
             256.0,
             defaults.gap,
         ),
+        pins: Pins {
+            corner: parse_pin_corner(config, defaults.pins.corner)?,
+            color: parse_pin_color(
+                config,
+                &[
+                    "field.pins.colour",
+                    "field.pins.color",
+                    "field.pins.pin-colour",
+                    "field.pins.pin_color",
+                    "field.pins.pin-color",
+                ],
+                "field.pins.colour",
+                defaults.pins.color,
+            )?,
+            background_color: parse_pin_color(
+                config,
+                &[
+                    "field.pins.background-colour",
+                    "field.pins.background_colour",
+                    "field.pins.background-color",
+                    "field.pins.background_color",
+                    "field.pins.bg-colour",
+                    "field.pins.bg_colour",
+                    "field.pins.bg-color",
+                    "field.pins.bg_color",
+                ],
+                "field.pins.background-colour",
+                defaults.pins.background_color,
+            )?,
+            size: finite_clamp(
+                config.get_or("field.pins.size", defaults.pins.size),
+                0.5,
+                3.0,
+                defaults.pins.size,
+            ),
+        },
         close_restore_focus: config
             .get_or("field.close-restore-focus", defaults.close_restore_focus),
         close_restore_nodes: config
@@ -198,6 +357,7 @@ end
             parse_field_checked(&config).unwrap(),
             Field {
                 gap: 24.0,
+                pins: Pins::default(),
                 close_restore_focus: false,
                 close_restore_nodes: true,
                 close_restore_pan: CloseRestorePan::Always,
@@ -241,5 +401,43 @@ end
         let error = parse_field_checked(&config).unwrap_err().to_string();
         assert!(error.contains("field.zoom.max"));
         assert!(error.contains("capped at native scale 1.0"));
+    }
+
+    #[test]
+    fn pin_style_matches_old_halley_names_and_bounds() {
+        let config = RuneConfig::from_str(
+            r##"
+field:
+  pins:
+    badge_corner "left"
+    pin-color "#d65d26"
+    bg_colour "dark"
+    size 9.0
+  end
+end
+"##,
+        )
+        .unwrap();
+        let pins = parse_field_checked(&config).unwrap().pins;
+        assert_eq!(pins.corner, PinBadgeCorner::TopLeft);
+        assert_eq!(pins.background_color, OverlayColorMode::Dark);
+        assert_eq!(pins.size, 3.0);
+        assert_eq!(
+            pins.color,
+            OverlayColorMode::Fixed {
+                r: 0xd6 as f32 / 255.0,
+                g: 0x5d as f32 / 255.0,
+                b: 0x26 as f32 / 255.0,
+                a: 1.0,
+            }
+        );
+    }
+
+    #[test]
+    fn invalid_pin_style_is_rejected_atomically() {
+        let config =
+            RuneConfig::from_str("field:\n  pins:\n    corner \"bottom-left\"\n  end\nend\n")
+                .unwrap();
+        assert!(parse_field_checked(&config).is_err());
     }
 }

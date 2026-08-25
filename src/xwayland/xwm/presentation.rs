@@ -134,6 +134,20 @@ pub(super) fn set_external_fullscreen<D: SessionDriver>(
         crate::session::reconcile_pointer_constraints(session);
         return;
     }
+    let field_handoff = (fullscreen && origin != FullscreenRequestOrigin::Maximize)
+        .then(|| {
+            let wl_surface = window.wl_surface()?;
+            let output = crate::wayland::window_output_name(&window)?;
+            crate::session::prepare_field_maximize_fullscreen_handoff(
+                session,
+                &window,
+                wl_surface.as_ref(),
+                &output,
+                &output,
+                now,
+            )
+        })
+        .flatten();
     let opening = client_geometry_guarded || opening_animation;
     let policy = ExternalPresentationPolicy::select(
         origin,
@@ -198,6 +212,11 @@ pub(super) fn set_external_fullscreen<D: SessionDriver>(
             restore.output,
             restore.presentation_output,
         );
+    }
+    if let Some(handoff) = field_handoff
+        && let Some(wl_surface) = window.wl_surface()
+    {
+        handoff.apply(&mut session.fullscreen, wl_surface.as_ref());
     }
     crate::session::reconcile_pointer_constraints(session);
 }

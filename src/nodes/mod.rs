@@ -133,7 +133,6 @@ pub struct NodesState {
     pub focus_rings: halley_config::FocusRings,
     pub landmarks: halley_config::LandmarkPlacement,
     pub physics: halley_config::Physics,
-    pub debug: halley_config::Debug,
     pub animation: halley_config::NodeAnimation,
     pub animations_enabled: bool,
     pub hovered: Option<NodeId>,
@@ -163,7 +162,6 @@ impl NodesState {
                 gap_px: config.field.gap,
             },
             physics: config.physics,
-            debug: config.debug,
             animation: config.animations.node,
             animations_enabled: config.animations.enabled,
             hovered: None,
@@ -197,7 +195,6 @@ impl NodesState {
             .collect::<HashSet<_>>();
         let redraw = ring_changed
             || self.config != config.nodes
-            || self.debug != config.debug
             || self.animation != config.animations.node
             || self.animations_enabled != config.animations.enabled;
         if ring_changed {
@@ -234,7 +231,6 @@ impl NodesState {
         self.focus_rings = config.focus_rings.clone();
         self.landmarks = next_landmarks;
         self.physics = config.physics;
-        self.debug = config.debug;
         self.animation = config.animations.node;
         self.animations_enabled = config.animations.enabled;
         redraw || landmarks_changed || physics_changed

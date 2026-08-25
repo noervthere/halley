@@ -13,6 +13,10 @@ pub(super) fn sort_stack_groups(groups: &mut [StackGroup]) {
 }
 
 pub(super) struct LiveWindowScene {
+    /// XDG popup trees are composed in the desktop popup plane, above the
+    /// top layer-shell plane but below overlays. Keeping them separate from
+    /// the root preserves that plane while the root remains in its stack.
+    pub(super) popup_elements: Vec<SceneElement>,
     pub(super) elements: Vec<SceneElement>,
     pub(super) cluster_depth: Option<usize>,
     pub(super) cluster_floating: bool,
@@ -28,6 +32,7 @@ pub(super) struct LiveWindowRenderers<'a> {
     pub titlebar: &'a mut crate::render::titlebar::TitlebarRenderer,
     pub node: &'a mut crate::render::node::NodeRenderer,
     pub text: &'a mut crate::render::text::UiTextRenderer,
+    pub pin: &'a mut crate::render::pin::PinRenderer,
 }
 
 #[derive(Clone, Copy)]
@@ -42,6 +47,8 @@ pub(super) struct LiveWindowContext<'a> {
     pub(super) focused:
         Option<&'a smithay::reexports::wayland_server::protocol::wl_surface::WlSurface>,
     pub(super) decorations: &'a halley_config::Decorations,
+    pub(super) pins: &'a halley_config::Pins,
+    pub(super) overlays: &'a halley_config::Overlays,
     pub(super) font: &'a halley_config::Font,
     pub(super) blur: halley_config::Blur,
     pub(super) shadow_config: halley_config::ShadowLayer,
@@ -93,9 +100,11 @@ pub(super) fn live_window_elements(
         titlebar: titlebar_renderer,
         node: node_renderer,
         text: ui_text,
+        pin: pin_renderer,
     } = renderers;
     let Some(location) = context.space.element_location(window) else {
         return Ok(LiveWindowScene {
+            popup_elements: Vec::new(),
             elements: Vec::new(),
             cluster_depth: None,
             cluster_floating: false,
@@ -104,6 +113,7 @@ pub(super) fn live_window_elements(
     };
     let Some(window_surface) = window.wl_surface() else {
         return Ok(LiveWindowScene {
+            popup_elements: Vec::new(),
             elements: Vec::new(),
             cluster_depth: None,
             cluster_floating: false,
@@ -134,6 +144,7 @@ pub(super) fn live_window_elements(
         context.cluster_presentation_override,
     ) else {
         return Ok(LiveWindowScene {
+            popup_elements: Vec::new(),
             elements: Vec::new(),
             cluster_depth: None,
             cluster_floating: false,
@@ -142,6 +153,7 @@ pub(super) fn live_window_elements(
     };
     if visual.animated_rect.size.w == 0 || visual.animated_rect.size.h == 0 {
         return Ok(LiveWindowScene {
+            popup_elements: Vec::new(),
             elements: Vec::new(),
             cluster_depth: visual.cluster_depth,
             cluster_floating: visual.cluster_floating,
@@ -149,6 +161,7 @@ pub(super) fn live_window_elements(
         });
     }
 
+    let mut popup_elements = Vec::new();
     let mut elements = Vec::new();
     let chrome =
         crate::titlebar::WindowChrome::for_window(window, context.decorations, context.font);
@@ -239,9 +252,9 @@ pub(super) fn live_window_elements(
         }
     }
     let surface_location = crate::render::window_surface_location(location, window.geometry());
-    let (popup_elements, surface_elements) =
+    let (popup_surfaces, surface_elements) =
         crate::render::window_surface_elements(renderer, window, surface_location, alpha);
-    elements.extend(popup_elements.into_iter().map(|surface_element| {
+    popup_elements.extend(popup_surfaces.into_iter().map(|surface_element| {
         let native_geometry = surface_element.geometry(Scale::from(1.0));
         let destination = if visual.maps_from_source() {
             let destination = crate::animation::map_rect(
@@ -586,7 +599,39 @@ pub(super) fn live_window_elements(
             elements.push(SceneElement::Shadow(shadow));
         }
     }
+    let node_id = context.nodes.id_for_surface(window_surface.as_ref());
+    let user_pinned = node_id.is_some_and(|id| {
+        context.clusters.cluster_for_member(id).is_none()
+            && context.nodes.field.node(id).is_some_and(|node| node.pinned)
+    });
+    if user_pinned
+        && let Some(pin) = pin_renderer.element(
+            renderer,
+            &context.output.name(),
+            crate::render::pin::PinSlot::Window(
+                node_id.expect("pinned window has a node").as_u64(),
+            ),
+            crate::render::pin::window_badge_rect(
+                context.pins,
+                visual.animated_rect,
+                visual.zoom_scale,
+            ),
+            alpha,
+            context.pins,
+            context.overlays,
+            context.decorations,
+        )
+    {
+        elements.insert(0, SceneElement::Closing(pin));
+    }
+    // X11 models menus as independent override-redirect windows rather than
+    // XDG popup roles. Put their complete unmanaged scene in the same desktop
+    // popup plane so native Wayland and XWayland applications agree.
+    if crate::xwayland::is_override_redirect(window) {
+        popup_elements.append(&mut elements);
+    }
     Ok(LiveWindowScene {
+        popup_elements,
         elements,
         cluster_depth: visual.cluster_depth,
         cluster_floating: visual.cluster_floating,

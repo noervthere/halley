@@ -115,6 +115,8 @@ it briefly; `debug.show-focus-ring true` keeps it visible:
 ```rune
 debug:
   show-focus-ring false
+  # Keeps unlocked outputs repainting continuously while enabled.
+  overlay-fps false
 end
 ```
 
@@ -274,7 +276,8 @@ leaving `--json` stable for scripts.
 
 `focus` restores a collapsed node or focuses an active one. `move` requests an
 80-field-unit shift and then resolves the nearest legal landmark/window
-destination. `collapse` and `restore` explicitly set the selected node state
+destination; pinned nodes reject that movement request. `collapse` and
+`restore` explicitly set the selected node state
 and are idempotent; `toggle` inverts it. `close` sends the appropriate XDG or
 X11 close request without restoring first. `--json` is available for `list`
 and `info`.
@@ -291,6 +294,9 @@ subscriptions without depending on postcard wire layout.
 Offscreen active windows and collapsed nodes are also available through
 [Bearings](bearings.md), including the old
 `halleyctl bearings show|hide|toggle|status` controls.
+
+Pinning is controlled by the default `Mod+P` binding and documented with its
+configuration and cluster-core boundary in [Field behavior](field.md#pinning).
 
 ## Lifecycle boundaries
 

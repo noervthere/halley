@@ -1123,7 +1123,8 @@ where
     {
         let dx = position_after.0 - press_screen.x;
         let dy = position_after.1 - press_screen.y;
-        if dx.hypot(dy) >= NODE_DRAG_THRESHOLD_PX {
+        if dx.hypot(dy) >= NODE_DRAG_THRESHOLD_PX && !crate::session::node_user_pinned(session, *id)
+        {
             let id = *id;
             let surface = surface.clone();
             let screen_offset = *screen_offset;
@@ -1169,7 +1170,12 @@ where
     {
         let dx = position_after.0 - press_screen.x;
         let dy = position_after.1 - press_screen.y;
-        if dx.hypot(dy) >= NODE_DRAG_THRESHOLD_PX {
+        if dx.hypot(dy) >= NODE_DRAG_THRESHOLD_PX
+            && session
+                .clusters
+                .core_node(*id)
+                .is_none_or(|core| !crate::session::node_user_pinned(session, core))
+        {
             session.interactions.grab = crate::input::grab::Grab::MoveClusterCore {
                 id: *id,
                 screen_offset: *screen_offset,
@@ -1381,7 +1387,7 @@ where
                 if output_changed {
                     wayland::popup::update_reactive_for_window(
                         &session.wayland,
-                        &session.cameras,
+                        crate::session::popup_unconstrain_context!(session),
                         &window,
                     );
                 }
@@ -1610,6 +1616,13 @@ where
             }),
             _ => None,
         });
+        let border_resize_hover = route.as_ref().and_then(|route| match &route.target {
+            crate::input::pointer::PointerTarget::Decoration {
+                hit: crate::titlebar::Hit::Resize(handle),
+                ..
+            } => Some(*handle),
+            _ => None,
+        });
         if session.interactions.titlebar_hovered != titlebar_hovered {
             session.interactions.titlebar_hovered = titlebar_hovered;
             session.request_redraw();
@@ -1669,6 +1682,11 @@ where
             session.cursor.set_override(
                 crate::cursor::OverrideSource::Hover,
                 Some(smithay::input::pointer::CursorIcon::Pointer),
+            );
+        } else if let Some(handle) = border_resize_hover {
+            session.cursor.set_override(
+                crate::cursor::OverrideSource::Hover,
+                Some(handle.cursor_icon()),
             );
         } else if !node_grab_active {
             session
@@ -1989,6 +2007,42 @@ where
                                     session, window, serial, button,
                                 );
                             }
+                            crate::titlebar::Hit::Resize(handle) => {
+                                let modifiers = session
+                                    .seat
+                                    .get_keyboard()
+                                    .expect("keyboard capability added at seat setup")
+                                    .modifier_state();
+                                let mod_held = crate::input::mod_key_held(
+                                    &modifiers,
+                                    session.keyboard.effective_mod,
+                                );
+                                if mod_held {
+                                    let _ =
+                                        super::begin_pointer_move(session, window, serial, button);
+                                } else {
+                                    let location =
+                                        route.as_ref().expect("matched decoration route").location;
+                                    let world = halley_core::field::Vec2 {
+                                        x: location.x as f32,
+                                        y: location.y as f32,
+                                    };
+                                    let visual_geometry = route
+                                        .as_ref()
+                                        .and_then(|route| route.visual_geometry)
+                                        .or_else(|| session.wayland.space.element_geometry(window))
+                                        .unwrap_or_else(|| window.geometry());
+                                    let _ = super::begin_window_resize(
+                                        session,
+                                        window,
+                                        *handle,
+                                        button,
+                                        world,
+                                        visual_geometry,
+                                        serial,
+                                    );
+                                }
+                            }
                         }
                         session.request_redraw();
                         super::pointer::finish_frame(session, &pointer_handle);
@@ -2158,12 +2212,18 @@ where
                 .expect("keyboard capability added at seat setup")
                 .modifier_state();
             if crate::input::mod_key_held(&modifiers, session.keyboard.effective_mod) {
-                session.interactions.grab =
-                    crate::input::grab::Grab::MoveClusterCore { id, screen_offset };
-                session.cursor.set_override(
-                    crate::cursor::OverrideSource::Grab,
-                    Some(smithay::input::pointer::CursorIcon::Grabbing),
-                );
+                if session
+                    .clusters
+                    .core_node(id)
+                    .is_none_or(|core| !crate::session::node_user_pinned(session, core))
+                {
+                    session.interactions.grab =
+                        crate::input::grab::Grab::MoveClusterCore { id, screen_offset };
+                    session.cursor.set_override(
+                        crate::cursor::OverrideSource::Grab,
+                        Some(smithay::input::pointer::CursorIcon::Grabbing),
+                    );
+                }
             } else {
                 session.interactions.grab = crate::input::grab::Grab::PendingClusterCore {
                     id,
@@ -2255,19 +2315,21 @@ where
             super::focus::focus_node_from_pointer(session, id, &output, serial);
             let mod_held = crate::input::mod_key_held(&modifiers, session.keyboard.effective_mod);
             if mod_held {
-                session.nodes.clear_direct_motion(id);
-                session.interactions.grab = crate::input::grab::Grab::MoveNode {
-                    id,
-                    surface: record.surface,
-                    screen_offset,
-                    last_world: node_position,
-                    last_update: crate::frame_clock::monotonic_now(),
-                    velocity: halley_core::field::Vec2 { x: 0.0, y: 0.0 },
-                };
-                session.cursor.set_override(
-                    crate::cursor::OverrideSource::Grab,
-                    Some(smithay::input::pointer::CursorIcon::Grabbing),
-                );
+                if !crate::session::node_user_pinned(session, id) {
+                    session.nodes.clear_direct_motion(id);
+                    session.interactions.grab = crate::input::grab::Grab::MoveNode {
+                        id,
+                        surface: record.surface,
+                        screen_offset,
+                        last_world: node_position,
+                        last_update: crate::frame_clock::monotonic_now(),
+                        velocity: halley_core::field::Vec2 { x: 0.0, y: 0.0 },
+                    };
+                    session.cursor.set_override(
+                        crate::cursor::OverrideSource::Grab,
+                        Some(smithay::input::pointer::CursorIcon::Grabbing),
+                    );
+                }
             } else {
                 session.interactions.grab = crate::input::grab::Grab::PendingNode {
                     id,
@@ -2300,35 +2362,47 @@ where
             match state {
                 ButtonState::Pressed => {
                     if crate::input::mod_key_held(&modifiers, session.keyboard.effective_mod)
-                        && let Some(crate::input::pointer::PointerRoute {
-                            target: crate::input::pointer::PointerTarget::Window(window),
-                            location,
-                            visual_geometry,
-                            ..
-                        }) = route.as_ref()
-                        && crate::window::accepts_compositor_grab(window)
-                        && !window.wl_surface().is_some_and(|surface| {
-                            session
-                                .fullscreen
-                                .is_fullscreen_or_pending(surface.as_ref())
-                        })
+                        && let Some(route) = route.as_ref()
                     {
-                        let world = halley_core::field::Vec2 {
-                            x: location.x as f32,
-                            y: location.y as f32,
-                        };
-                        if let Some(start_rect) = session.wayland.space.element_geometry(window) {
-                            let handle =
-                                crate::input::grab::handle_from_press_position(start_rect, world);
-                            intercepted = super::begin_window_resize(
-                                session,
+                        let (window, border_handle) = match &route.target {
+                            crate::input::pointer::PointerTarget::Window(window) => {
+                                (Some(window), None)
+                            }
+                            crate::input::pointer::PointerTarget::Decoration {
                                 window,
-                                handle,
-                                button,
-                                world,
-                                visual_geometry.unwrap_or(start_rect),
-                                serial,
-                            );
+                                hit: crate::titlebar::Hit::Resize(handle),
+                            } => (Some(window), Some(*handle)),
+                            _ => (None, None),
+                        };
+                        if let Some(window) = window
+                            && crate::window::accepts_compositor_grab(window)
+                            && !window.wl_surface().is_some_and(|surface| {
+                                session
+                                    .fullscreen
+                                    .is_fullscreen_or_pending(surface.as_ref())
+                            })
+                        {
+                            let world = halley_core::field::Vec2 {
+                                x: route.location.x as f32,
+                                y: route.location.y as f32,
+                            };
+                            if let Some(start_rect) = session.wayland.space.element_geometry(window)
+                            {
+                                let handle = border_handle.unwrap_or_else(|| {
+                                    crate::input::grab::handle_from_press_position(
+                                        start_rect, world,
+                                    )
+                                });
+                                intercepted = super::begin_window_resize(
+                                    session,
+                                    window,
+                                    handle,
+                                    button,
+                                    world,
+                                    route.visual_geometry.unwrap_or(start_rect),
+                                    serial,
+                                );
+                            }
                         }
                     }
                 }

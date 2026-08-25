@@ -412,6 +412,8 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
         window_rules: crate::window::rules::WindowRulesState::new(
             runtime_config.window_rules.clone(),
         ),
+        presentation_close_size_recovery:
+            crate::window::recovery::PresentationCloseSizeRecovery::default(),
         cameras: crate::presentation::camera::OutputCameras::default(),
         capture: crate::capture::CaptureState::default(),
         pending_captures: std::collections::HashMap::new(),
@@ -632,7 +634,6 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
     eventline::info!("session ready: outputs active; use the configured Quit chord to exit");
     event_loop
         .run(None, &mut app, |app| {
-            app.reap_autostart();
             if !app.driver.pause_reasons.any() {
                 redraw_queued_outputs(app, &loop_handle);
             }
@@ -1012,7 +1013,8 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
         || overlay_animating
         || cluster_animating
         || fullscreen_animating
-        || maximize_animating;
+        || maximize_animating
+        || app.settings.debug.overlay_fps && !app.session_lock.active();
     if pointer_is_on_output {
         let time = app.start_time.elapsed().as_millis() as u32;
         if cluster_camera_changed || fullscreen_animating || maximize_animating {
@@ -1071,7 +1073,9 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
             },
             visuals: VisualContext {
                 decorations: &app.settings.decorations,
+                pins: &app.settings.field.pins,
                 font: &app.settings.font,
+                debug: app.settings.debug,
                 blur: app.settings.effects.blur,
                 shadows: app.settings.effects.shadows,
                 background: &app.settings.background,
@@ -1140,6 +1144,7 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
 fn auto_vrr_eligible(app: &TtyApp, output: &Output, now: Duration) -> bool {
     if app.session_lock.active()
         || app.capture.is_active()
+        || app.settings.debug.overlay_fps
         || app.shell.apogee.is_active()
         || app.shell.focus_cycle.session().is_some()
         || app.shell.bearings.mix(&output.name()) > 0.002

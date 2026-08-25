@@ -520,6 +520,24 @@ impl WindowPresentation {
         )
     }
 
+    /// Output rectangle expressed in this window's parent-geometry coordinates.
+    ///
+    /// xdg-positioner constraint targets use this space. Inverse-mapping the
+    /// output through the live presentation keeps fullscreen and field-maximize
+    /// menus on screen instead of inside the field camera's world viewport.
+    pub fn popup_constraint_target(
+        &self,
+        output_geometry: Rectangle<i32, Logical>,
+        popup_toplevel_coords: Point<i32, Logical>,
+    ) -> Rectangle<i32, Logical> {
+        popup_constraint_in_parent(
+            output_geometry,
+            self.source_geometry,
+            self.visual_geometry,
+            popup_toplevel_coords,
+        )
+    }
+
     /// The root wl_surface origin expressed in X11 root-desktop coordinates.
     ///
     /// `Space` stores the root in Field coordinates, while an X11 client sees
@@ -604,6 +622,26 @@ fn map_point(
         destination.loc.y + (point.y - source.loc.y) * scale_y,
     )
         .into()
+}
+
+/// Inverse-maps `output_geometry` through a window's visual presentation into
+/// parent-geometry-relative coordinates for `xdg_positioner` constraints.
+pub(crate) fn popup_constraint_in_parent(
+    output_geometry: Rectangle<i32, Logical>,
+    source_geometry: Rectangle<i32, Logical>,
+    visual_geometry: Rectangle<i32, Logical>,
+    popup_toplevel_coords: Point<i32, Logical>,
+) -> Rectangle<i32, Logical> {
+    let output_in_source = crate::animation::map_rect(
+        output_geometry.to_physical(1),
+        visual_geometry.to_physical(1),
+        source_geometry.to_physical(1),
+    )
+    .to_logical(1);
+    Rectangle::new(
+        output_in_source.loc - source_geometry.loc - popup_toplevel_coords,
+        output_in_source.size,
+    )
 }
 
 #[cfg(test)]
@@ -782,5 +820,152 @@ mod tests {
 
         assert_eq!(screen, Point::from((170.0, 100.0)));
         assert_eq!(round_trip, local);
+    }
+
+    #[test]
+    fn settled_fullscreen_popup_constraint_covers_the_output() {
+        let output = Rectangle::<i32, Logical>::new((0, 0).into(), (1920, 1080).into());
+        let source = Rectangle::<i32, Logical>::new((0, 0).into(), (1920, 1080).into());
+        let visual = output;
+        let windowed_center = Point::<f32, Physical>::from((1040.0, 560.0));
+        let camera_viewport = crate::presentation::camera::world_viewport(
+            crate::presentation::camera::OutputView {
+                center: windowed_center,
+                scale: 1.0,
+            },
+            output,
+        );
+
+        let target = popup_constraint_in_parent(output, source, visual, Point::from((0, 0)));
+
+        assert_eq!(target, Rectangle::new((0, 0).into(), (1920, 1080).into()));
+        assert_ne!(
+            {
+                let mut camera_target = camera_viewport;
+                camera_target.loc -= source.loc;
+                camera_target
+            },
+            target,
+            "the field camera stays on the old windowed center and must not own the constraint"
+        );
+    }
+
+    #[test]
+    fn settled_maximize_popup_constraint_includes_the_gap() {
+        let output = Rectangle::<i32, Logical>::new((0, 0).into(), (1920, 1080).into());
+        let source = Rectangle::<i32, Logical>::new((20, 20).into(), (1880, 1040).into());
+        let visual = source;
+
+        assert_eq!(
+            popup_constraint_in_parent(output, source, visual, Point::from((0, 0))),
+            Rectangle::new((-20, -20).into(), (1920, 1080).into())
+        );
+    }
+
+    #[test]
+    fn panned_maximize_camera_does_not_steal_the_popup_constraint() {
+        let output = Rectangle::<i32, Logical>::new((0, 0).into(), (1920, 1080).into());
+        let source = Rectangle::<i32, Logical>::new((20, 20).into(), (1880, 1040).into());
+        let visual = source;
+        let camera_viewport = crate::presentation::camera::world_viewport(
+            crate::presentation::camera::OutputView {
+                center: Point::from((3000.0, 540.0)),
+                scale: 1.0,
+            },
+            output,
+        );
+        let mut camera_target = camera_viewport;
+        camera_target.loc -= source.loc;
+        let target = popup_constraint_in_parent(output, source, visual, Point::from((0, 0)));
+
+        assert_eq!(
+            target,
+            Rectangle::new((-20, -20).into(), (1920, 1080).into())
+        );
+        assert!(
+            camera_target.loc.x > source.size.w,
+            "today's camera formula would place the box beside the client"
+        );
+        assert!(!camera_target.overlaps(Rectangle::from_size(source.size)));
+        assert!(target.overlaps(Rectangle::from_size(source.size)));
+    }
+
+    #[test]
+    fn field_popup_constraint_matches_the_camera_world_viewport() {
+        let output = Rectangle::<i32, Logical>::new((2560, 0).into(), (1920, 1200).into());
+        let world_viewport = crate::presentation::camera::world_viewport(
+            crate::presentation::camera::OutputView {
+                center: Point::from((1060.0, 550.0)),
+                scale: 0.5,
+            },
+            output,
+        );
+        assert_eq!(
+            world_viewport,
+            Rectangle::new((1700, -650).into(), (3840, 2400).into())
+        );
+        let source = Rectangle::<i32, Logical>::new((1800, -570).into(), (800, 600).into());
+        let visual = Rectangle::<i32, Logical>::new((2610, 40).into(), (400, 300).into());
+        let popup_coords = Point::<i32, Logical>::from((12, 8));
+        let mut expected = world_viewport;
+        expected.loc -= source.loc;
+        expected.loc -= popup_coords;
+
+        let target = popup_constraint_in_parent(output, source, visual, popup_coords);
+        assert!(target.loc.x.abs_diff(expected.loc.x) <= 1);
+        assert!(target.loc.y.abs_diff(expected.loc.y) <= 1);
+        assert!(target.size.w.abs_diff(expected.size.w) <= 1);
+        assert!(target.size.h.abs_diff(expected.size.h) <= 1);
+    }
+
+    #[test]
+    fn nested_popup_constraint_subtracts_toplevel_coords_once() {
+        let output = Rectangle::<i32, Logical>::new((0, 0).into(), (1920, 1080).into());
+        let source = Rectangle::<i32, Logical>::new((0, 0).into(), (1920, 1080).into());
+        let nested = popup_constraint_in_parent(output, source, output, Point::from((80, 40)));
+        let root = popup_constraint_in_parent(output, source, output, Point::from((0, 0)));
+
+        assert_eq!(nested.loc, root.loc - Point::from((80, 40)));
+        assert_eq!(nested.size, root.size);
+    }
+
+    #[test]
+    fn positioner_slide_keeps_a_corner_menu_on_the_new_fullscreen_target() {
+        use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_positioner::{
+            Anchor, ConstraintAdjustment, Gravity,
+        };
+        use smithay::wayland::shell::xdg::PositionerState;
+
+        let mut positioner = PositionerState::default();
+        positioner.rect_size = (200, 300).into();
+        positioner.anchor_rect = Rectangle::new((50, 50).into(), (1, 1).into());
+        positioner.anchor_edges = Anchor::TopLeft;
+        positioner.gravity = Gravity::BottomRight;
+        positioner.constraint_adjustment = ConstraintAdjustment::SlideX;
+        positioner.offset = (0, 0).into();
+
+        let output = Rectangle::<i32, Logical>::new((0, 0).into(), (1920, 1080).into());
+        let source = output;
+        let visual = output;
+        let correct = popup_constraint_in_parent(output, source, visual, Point::from((0, 0)));
+        let mut camera_target = crate::presentation::camera::world_viewport(
+            crate::presentation::camera::OutputView {
+                center: Point::from((1040.0, 560.0)),
+                scale: 1.0,
+            },
+            output,
+        );
+        camera_target.loc -= source.loc;
+
+        let requested = positioner.get_geometry();
+        let slid = positioner.get_unconstrained_geometry(camera_target);
+        let kept = positioner.get_unconstrained_geometry(correct);
+
+        assert_eq!(requested.loc, Point::from((50, 50)));
+        assert_ne!(
+            slid.loc.x, requested.loc.x,
+            "the old camera box must actually slide a corner menu"
+        );
+        assert_eq!(kept.loc, requested.loc);
     }
 }

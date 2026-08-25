@@ -1010,6 +1010,23 @@ mod tests {
     }
 
     #[test]
+    fn creating_a_cluster_transfers_member_pin_to_the_core() {
+        let mut f = Field::new();
+        let mut r = ClusterRegistry::new();
+        let a = f.spawn_surface("A", Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 10.0, y: 10.0 });
+        let b = f.spawn_surface("B", Vec2 { x: 10.0, y: 0.0 }, Vec2 { x: 10.0, y: 10.0 });
+        assert!(f.set_pinned(a, true));
+
+        let cluster = r.create_cluster(&mut f, vec![a, b]).unwrap();
+        let core = r.collapse_cluster(&mut f, cluster).unwrap();
+
+        assert!(!f.node(a).unwrap().pinned);
+        assert!(!f.node(b).unwrap().pinned);
+        assert!(r.cluster(cluster).unwrap().pinned);
+        assert!(f.node(core).unwrap().pinned);
+    }
+
+    #[test]
     fn remove_member_allows_two_member_cluster_to_become_singleton() {
         let mut f = Field::new();
         let mut r = ClusterRegistry::new();
