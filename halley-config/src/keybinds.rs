@@ -103,6 +103,12 @@ pub enum Action {
     /// Resize the focused Field window by one placement step. Left and up
     /// shrink; right and down grow.
     ResizeWindow(Direction),
+    /// Begin an interactive compositor move for the window under the pointer.
+    PointerMoveWindow,
+    /// Begin an interactive compositor resize for the window under the pointer.
+    PointerResizeWindow,
+    /// Pan the Field from an empty-background pointer drag.
+    PointerPanField,
     CenterLastFocused,
     ClusterMode,
     ClusterLayoutCycle,
@@ -147,6 +153,7 @@ impl Action {
             Self::MoveNode(_) | Self::ResizeWindow(_) | Self::ToggleFocusedPin => {
                 BindingScope::Field
             }
+            Self::PointerPanField => BindingScope::Field,
             Self::ClusterLayoutCycle | Self::ClusterToggleFloat => BindingScope::Cluster,
             Self::ClusterTileFocus(_) | Self::ClusterTileSwap(_) => BindingScope::Tile,
             _ => BindingScope::Global,
@@ -192,7 +199,7 @@ mod tests {
     fn default_matches_the_shipped_keybinds() {
         let kb = Keybinds::default();
         assert_eq!(kb.modifier, ModifierKey::Super);
-        assert_eq!(kb.binds.len(), 57);
+        assert_eq!(kb.binds.len(), 60);
 
         let previous = kb
             .binds

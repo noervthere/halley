@@ -16,7 +16,8 @@ use smithay::wayland::seat::WaylandFocus;
 use super::{Session, SessionDriver};
 use crate::input::pointer::{axis_frame_filtered, process_wheel_bindings};
 use crate::input::{
-    PointerBindingResult, match_keyboard_binding, match_wheel_bind, process_pointer_binding,
+    PointerBindingResult, match_keyboard_binding, match_pointer_bind, match_wheel_bind,
+    process_pointer_binding,
 };
 use crate::wayland;
 
@@ -25,6 +26,7 @@ mod keyboard;
 pub(crate) mod repeat;
 
 const BTN_LEFT: u32 = 0x110;
+#[cfg(test)]
 const BTN_RIGHT: u32 = 0x111;
 const NODE_DRAG_THRESHOLD_PX: f64 = 8.0;
 
@@ -171,6 +173,104 @@ pub(super) fn keyboard_binding_context<D: SessionDriver>(
         halley_config::FocusMode::Hover => pointer.or(selected),
     };
     binding_context_for_output(session, output.as_deref())
+}
+
+fn dispatch_pointer_grab_action<D: SessionDriver>(
+    session: &mut Session<D>,
+    action: &halley_config::Action,
+    route: Option<&crate::input::pointer::PointerRoute>,
+    button: u32,
+    serial: smithay::utils::Serial,
+) -> bool {
+    match action {
+        halley_config::Action::PointerMoveWindow => {
+            let Some(route) = route else {
+                return false;
+            };
+            let window = match &route.target {
+                crate::input::pointer::PointerTarget::Window(window)
+                | crate::input::pointer::PointerTarget::Decoration { window, .. } => window,
+                _ => return false,
+            };
+            if !crate::window::accepts_compositor_grab(window)
+                || window.wl_surface().is_some_and(|surface| {
+                    session
+                        .fullscreen
+                        .is_fullscreen_or_pending(surface.as_ref())
+                })
+            {
+                return false;
+            }
+            wayland::focus::select_output(&mut session.wayland, &route.output);
+            super::begin_pointer_move(session, window, serial, button)
+        }
+        halley_config::Action::PointerResizeWindow => {
+            let Some(route) = route else {
+                return false;
+            };
+            let (window, border_handle) = match &route.target {
+                crate::input::pointer::PointerTarget::Window(window) => (window, None),
+                crate::input::pointer::PointerTarget::Decoration {
+                    window,
+                    hit: crate::titlebar::Hit::Resize(handle),
+                } => (window, Some(*handle)),
+                crate::input::pointer::PointerTarget::Decoration { window, .. } => (window, None),
+                _ => return false,
+            };
+            if !crate::window::accepts_compositor_grab(window)
+                || window.wl_surface().is_some_and(|surface| {
+                    session
+                        .fullscreen
+                        .is_fullscreen_or_pending(surface.as_ref())
+                })
+            {
+                return false;
+            }
+            let Some(start_rect) = session.wayland.space.element_geometry(window) else {
+                return false;
+            };
+            let world = halley_core::field::Vec2 {
+                x: route.location.x as f32,
+                y: route.location.y as f32,
+            };
+            let handle = border_handle.unwrap_or_else(|| {
+                crate::input::grab::handle_from_press_position(start_rect, world)
+            });
+            wayland::focus::select_output(&mut session.wayland, &route.output);
+            super::begin_window_resize(
+                session,
+                window,
+                handle,
+                button,
+                world,
+                route.visual_geometry.unwrap_or(start_rect),
+                serial,
+            )
+        }
+        halley_config::Action::PointerPanField => {
+            let Some(route) = route else {
+                return false;
+            };
+            if !matches!(
+                &route.target,
+                crate::input::pointer::PointerTarget::Background
+            ) || node_at_pointer(session).is_some()
+            {
+                return false;
+            }
+            wayland::focus::select_output(&mut session.wayland, &route.output);
+            super::focus::focus_layer(session, None, serial);
+            session.interactions.grab = crate::input::grab::Grab::Pan {
+                output: route.output.name(),
+            };
+            session.cursor.set_override(
+                crate::cursor::OverrideSource::Grab,
+                Some(smithay::input::pointer::CursorIcon::Grabbing),
+            );
+            true
+        }
+        _ => false,
+    }
 }
 
 fn output_at_pointer(
@@ -2029,6 +2129,46 @@ where
             super::pointer::finish_frame(session, &pointer_handle);
             return;
         }
+        if state == ButtonState::Pressed
+            && matches!(
+                route.as_ref().map(|route| &route.target),
+                Some(crate::input::pointer::PointerTarget::Decoration { .. })
+            )
+            && bindings_enabled(session)
+        {
+            let modifiers = session
+                .seat
+                .get_keyboard()
+                .expect("keyboard capability added at seat setup")
+                .modifier_state();
+            let context = binding_context_for_output(
+                session,
+                route.as_ref().map(|route| route.output.name()).as_deref(),
+            );
+            let action = match_pointer_bind(
+                &session.keyboard.binds,
+                &modifiers,
+                session.keyboard.side_modifiers,
+                context,
+                button,
+            );
+            if action.as_ref().is_some_and(|action| {
+                matches!(
+                    action,
+                    halley_config::Action::PointerMoveWindow
+                        | halley_config::Action::PointerResizeWindow
+                )
+            }) && dispatch_pointer_grab_action(
+                session,
+                action.as_ref().expect("checked above"),
+                route.as_ref(),
+                button,
+                serial,
+            ) {
+                super::pointer::finish_frame(session, &pointer_handle);
+                return;
+            }
+        }
         if button == BTN_LEFT {
             match state {
                 ButtonState::Pressed => {
@@ -2061,41 +2201,26 @@ where
                                 );
                             }
                             crate::titlebar::Hit::Resize(handle) => {
-                                let modifiers = session
-                                    .seat
-                                    .get_keyboard()
-                                    .expect("keyboard capability added at seat setup")
-                                    .modifier_state();
-                                let mod_held = crate::input::mod_key_held(
-                                    &modifiers,
-                                    session.keyboard.side_modifiers,
-                                    session.keyboard.effective_mod,
+                                let location =
+                                    route.as_ref().expect("matched decoration route").location;
+                                let world = halley_core::field::Vec2 {
+                                    x: location.x as f32,
+                                    y: location.y as f32,
+                                };
+                                let visual_geometry = route
+                                    .as_ref()
+                                    .and_then(|route| route.visual_geometry)
+                                    .or_else(|| session.wayland.space.element_geometry(window))
+                                    .unwrap_or_else(|| window.geometry());
+                                let _ = super::begin_window_resize(
+                                    session,
+                                    window,
+                                    *handle,
+                                    button,
+                                    world,
+                                    visual_geometry,
+                                    serial,
                                 );
-                                if mod_held {
-                                    let _ =
-                                        super::begin_pointer_move(session, window, serial, button);
-                                } else {
-                                    let location =
-                                        route.as_ref().expect("matched decoration route").location;
-                                    let world = halley_core::field::Vec2 {
-                                        x: location.x as f32,
-                                        y: location.y as f32,
-                                    };
-                                    let visual_geometry = route
-                                        .as_ref()
-                                        .and_then(|route| route.visual_geometry)
-                                        .or_else(|| session.wayland.space.element_geometry(window))
-                                        .unwrap_or_else(|| window.geometry());
-                                    let _ = super::begin_window_resize(
-                                        session,
-                                        window,
-                                        *handle,
-                                        button,
-                                        world,
-                                        visual_geometry,
-                                        serial,
-                                    );
-                                }
                             }
                         }
                         session.request_redraw();
@@ -2344,14 +2469,43 @@ where
                 binding_context,
                 button,
                 state,
-                on_background,
                 bindings_enabled,
                 &mut session.interactions.suppressed_buttons,
             ) {
                 PointerBindingResult::Action(action) => {
-                    let output_name = route.as_ref().map(|route| route.output.name().to_string());
-                    actions::dispatch(session, action, socket_name, output_name.as_deref(), None);
-                    intercepted = true;
+                    let pointer_grab = matches!(
+                        action,
+                        halley_config::Action::PointerMoveWindow
+                            | halley_config::Action::PointerResizeWindow
+                            | halley_config::Action::PointerPanField
+                    );
+                    let handled = if pointer_grab {
+                        dispatch_pointer_grab_action(
+                            session,
+                            &action,
+                            route.as_ref(),
+                            button,
+                            serial,
+                        )
+                    } else {
+                        let output_name =
+                            route.as_ref().map(|route| route.output.name().to_string());
+                        actions::dispatch(
+                            session,
+                            action,
+                            socket_name,
+                            output_name.as_deref(),
+                            None,
+                        );
+                        true
+                    };
+                    if pointer_grab || !handled {
+                        session
+                            .interactions
+                            .suppressed_buttons
+                            .release_is_suppressed(button);
+                    }
+                    intercepted = handled;
                 }
                 PointerBindingResult::SuppressedRelease => intercepted = true,
                 PointerBindingResult::Unhandled => {}
@@ -2426,103 +2580,23 @@ where
             }
         }
 
-        if !intercepted && button == BTN_RIGHT {
+        if !intercepted && button == BTN_LEFT {
             match state {
-                ButtonState::Pressed => {
-                    if crate::input::mod_key_held(
-                        &modifiers,
-                        session.keyboard.side_modifiers,
-                        session.keyboard.effective_mod,
-                    ) && let Some(route) = route.as_ref()
-                    {
-                        let (window, border_handle) = match &route.target {
-                            crate::input::pointer::PointerTarget::Window(window) => {
-                                (Some(window), None)
-                            }
-                            crate::input::pointer::PointerTarget::Decoration {
-                                window,
-                                hit: crate::titlebar::Hit::Resize(handle),
-                            } => (Some(window), Some(*handle)),
-                            _ => (None, None),
-                        };
-                        if let Some(window) = window
-                            && crate::window::accepts_compositor_grab(window)
-                            && !window.wl_surface().is_some_and(|surface| {
-                                session
-                                    .fullscreen
-                                    .is_fullscreen_or_pending(surface.as_ref())
-                            })
-                        {
-                            let world = halley_core::field::Vec2 {
-                                x: route.location.x as f32,
-                                y: route.location.y as f32,
-                            };
-                            if let Some(start_rect) = session.wayland.space.element_geometry(window)
-                            {
-                                let handle = border_handle.unwrap_or_else(|| {
-                                    crate::input::grab::handle_from_press_position(
-                                        start_rect, world,
-                                    )
-                                });
-                                intercepted = super::begin_window_resize(
-                                    session,
-                                    window,
-                                    handle,
-                                    button,
-                                    world,
-                                    route.visual_geometry.unwrap_or(start_rect),
-                                    serial,
-                                );
-                            }
-                        }
+                ButtonState::Pressed => match route.as_ref().map(|route| &route.target) {
+                    Some(crate::input::pointer::PointerTarget::Window(window)) => {
+                        super::focus::focus_window_from_pointer(session, window, serial);
                     }
-                }
-                ButtonState::Released => {}
-            }
-        } else if !intercepted && button == BTN_LEFT {
-            match state {
-                ButtonState::Pressed => {
-                    let mod_held = crate::input::mod_key_held(
-                        &modifiers,
-                        session.keyboard.side_modifiers,
-                        session.keyboard.effective_mod,
-                    );
-                    match route.as_ref().map(|route| &route.target) {
-                        Some(crate::input::pointer::PointerTarget::Window(window))
-                            if mod_held
-                                && crate::window::accepts_compositor_grab(window)
-                                && !window.wl_surface().is_some_and(|surface| {
-                                    session
-                                        .fullscreen
-                                        .is_fullscreen_or_pending(surface.as_ref())
-                                }) =>
-                        {
-                            intercepted =
-                                super::begin_pointer_move(session, window, serial, button);
-                        }
-                        Some(crate::input::pointer::PointerTarget::Window(window)) => {
-                            super::focus::focus_window_from_pointer(session, window, serial);
-                        }
-                        Some(crate::input::pointer::PointerTarget::Layer(layer)) => {
-                            super::focus::focus_layer(session, Some(layer.clone()), serial);
-                        }
-                        Some(crate::input::pointer::PointerTarget::Decoration { .. }) => {
-                            intercepted = true;
-                        }
-                        Some(crate::input::pointer::PointerTarget::Background) => {
-                            super::focus::focus_layer(session, None, serial);
-                            session.interactions.grab = crate::input::grab::Grab::Pan {
-                                output: route.as_ref().expect("matched above").output.name(),
-                            };
-                            session.cursor.set_override(
-                                crate::cursor::OverrideSource::Grab,
-                                Some(smithay::input::pointer::CursorIcon::Grabbing),
-                            );
-                            intercepted = true;
-                        }
-                        None => {}
+                    Some(crate::input::pointer::PointerTarget::Layer(layer)) => {
+                        super::focus::focus_layer(session, Some(layer.clone()), serial);
                     }
-                }
+                    Some(crate::input::pointer::PointerTarget::Decoration { .. }) => {
+                        intercepted = true;
+                    }
+                    Some(crate::input::pointer::PointerTarget::Background) => {
+                        super::focus::focus_layer(session, None, serial);
+                    }
+                    None => {}
+                },
                 ButtonState::Released => {
                     let released_window = match &session.interactions.grab {
                         crate::input::grab::Grab::MoveWindow {

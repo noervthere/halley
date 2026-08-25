@@ -189,14 +189,14 @@ triggers yet.
 | Wheel left | `scroll-left` | Physical wheel horizontal negative |
 | Wheel right | `scroll-right` | Physical wheel horizontal positive |
 
-Mouse-button bindings run before Halley's built-in Mod+left move and Mod+right
-resize behavior. Mod+left moves active windows and collapsed nodes; collapsed
-nodes can also be grabbed without Mod after crossing the 8 px click/drag
-threshold. Those built-ins remain the fallback when no exact configured chord
-matches. A bare left drag on the desktop background is always reserved for
-panning. In an active tiling cluster, Mod+left temporarily lifts the held tile,
-reorders it live as the pointer crosses another tile, and smoothly returns it to
-the selected slot on release.
+Window movement, window resizing, and Field panning are remappable compositor
+actions. The defaults are `"$var.mod+click-left" "move-window"`,
+`"$var.mod+click-right" "resize-window"`, and
+`"click-left" "pan-field"`. Remove a binding to disable that grab or assign
+the action to another pointer chord. An unbound click keeps its ordinary client,
+focus, decoration, and collapsed-node behavior. In an active tiling cluster,
+dragging a tile temporarily lifts it, reorders it live as the pointer crosses
+another tile, and smoothly returns it to the selected slot on release.
 
 Wheel binds apply only to a physical mouse wheel. High-resolution wheel input
 is accumulated to one action per complete notch. Touchpad/finger scrolling

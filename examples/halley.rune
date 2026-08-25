@@ -831,6 +831,12 @@ keybinds:
   # Open the Region, Screen, and Window screenshot menu.
   "Print" "screenshot"
 
+  # Compositor pointer grabs are ordinary remappable actions. Remove a line
+  # to disable that grab, or put the action on a different button/chord.
+  "$var.mod+click-left" "move-window"
+  "$var.mod+click-right" "resize-window"
+  "click-left" "pan-field"
+
   # Keyboard, pointer-button, and physical-wheel triggers all use the same
   # chord syntax. Pointer and wheel bindings may also include `$var.mod`.
   # These are examples only; uncomment only the bindings you want.

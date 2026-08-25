@@ -195,6 +195,9 @@ fn parse_action(s: &str) -> Action {
             Action::ClusterLayoutCycle
         }
         "cluster-toggle-float" | "cluster_toggle_float" => Action::ClusterToggleFloat,
+        "move-window" | "move_window" => Action::PointerMoveWindow,
+        "resize-window" | "resize_window" => Action::PointerResizeWindow,
+        "pan-field" | "pan_field" => Action::PointerPanField,
         "reload" | "reload-config" | "reload_config" => Action::Reload,
         "open-terminal" | "open_terminal" | "default-terminal" | "default_terminal" => {
             Action::OpenTerminal
@@ -759,6 +762,24 @@ end
             bind.action == Action::MonitorFocus(MonitorTarget::Output("DP-1".into()))
         }));
         assert!(kb.binds.iter().any(|bind| bind.action == Action::Reload));
+    }
+
+    #[test]
+    fn parses_remappable_compositor_pointer_actions() {
+        let kb = parse(
+            r#"
+keybinds:
+  mod "super"
+  "$var.mod+click-left" "move-window"
+  "$var.mod+click-right" "resize-window"
+  "click-left" "pan-field"
+end
+"#,
+        );
+        assert_eq!(kb.binds[0].action, Action::PointerMoveWindow);
+        assert_eq!(kb.binds[1].action, Action::PointerResizeWindow);
+        assert_eq!(kb.binds[2].action, Action::PointerPanField);
+        assert_eq!(kb.binds[2].scope, BindingScope::Field);
     }
 
     #[test]

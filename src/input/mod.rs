@@ -277,10 +277,6 @@ pub fn match_wheel_bind(
     Some(bind.action.clone())
 }
 
-fn no_modifiers_held(state: &ModifiersState) -> bool {
-    !state.ctrl && !state.alt && !state.shift && !state.logo
-}
-
 pub struct SuppressedReleases<T> {
     inputs: HashSet<T>,
 }
@@ -318,8 +314,7 @@ pub enum PointerBindingResult {
 }
 
 /// Applies the backend-independent pointer-bind policy: consume the release
-/// paired with an intercepted press, reserve bare background left-drag for
-/// panning, and let an exact configured chord win everywhere else.
+/// paired with an intercepted press and let an exact configured chord win.
 pub fn process_pointer_binding(
     binds: &[ResolvedBind],
     mods: &ModifiersState,
@@ -327,7 +322,6 @@ pub fn process_pointer_binding(
     context: BindingContext,
     button: u32,
     state: ButtonState,
-    on_background: bool,
     bindings_enabled: bool,
     suppressed: &mut SuppressedButtons,
 ) -> PointerBindingResult {
@@ -338,8 +332,7 @@ pub fn process_pointer_binding(
         return PointerBindingResult::Unhandled;
     }
 
-    let is_left = keybinds::PointerButtonTrigger::Left.matches(button);
-    if !bindings_enabled || (is_left && on_background && no_modifiers_held(mods)) {
+    if !bindings_enabled {
         return PointerBindingResult::Unhandled;
     }
     let Some(action) = match_pointer_bind(binds, mods, sides, context, button) else {
@@ -703,7 +696,7 @@ mod tests {
     }
 
     #[test]
-    fn pointer_binding_policy_reserves_bare_background_pan() {
+    fn bare_pointer_binding_can_drive_background_pan_action() {
         let binds = [bind(
             ResolvedTrigger::PointerButton(PointerButtonTrigger::Left),
             Modifiers::default(),
@@ -718,10 +711,9 @@ mod tests {
                 0x110,
                 ButtonState::Pressed,
                 true,
-                true,
                 &mut suppressed,
             ),
-            PointerBindingResult::Unhandled
+            PointerBindingResult::Action(Action::Quit)
         );
     }
 
@@ -740,7 +732,6 @@ mod tests {
                 BindingContext::field(),
                 0x110,
                 ButtonState::Pressed,
-                false,
                 true,
                 &mut suppressed,
             ),
@@ -754,7 +745,6 @@ mod tests {
                 BindingContext::field(),
                 0x110,
                 ButtonState::Released,
-                false,
                 true,
                 &mut suppressed,
             ),

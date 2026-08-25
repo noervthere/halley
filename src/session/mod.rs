@@ -125,6 +125,9 @@ fn dispatch_action(
         Action::FocusDirection(direction) => return SessionControl::FocusDirection(direction),
         Action::MoveNode(direction) => return SessionControl::MoveNode(direction),
         Action::ResizeWindow(direction) => return SessionControl::ResizeWindow(direction),
+        Action::PointerMoveWindow | Action::PointerResizeWindow | Action::PointerPanField => {
+            eventline::warn!("keybinds: pointer grab action used outside a pointer-button binding")
+        }
         Action::CenterLastFocused => return SessionControl::CenterLastFocused,
         Action::ClusterMode => return SessionControl::ClusterMode,
         Action::ClusterLayoutCycle => return SessionControl::ClusterLayoutCycle,
