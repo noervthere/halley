@@ -69,11 +69,20 @@ enum FullscreenCommitAction {
 impl NativeFullscreenState {
     fn request(&mut self, origin: FullscreenOrigin) {
         match origin {
-            FullscreenOrigin::Client => self.client_requested = true,
-            FullscreenOrigin::Compositor => self.compositor_requested = true,
+            FullscreenOrigin::Client => {
+                self.client_requested = true;
+                self.protocol_desired = true;
+            }
+            FullscreenOrigin::Compositor => {
+                self.compositor_requested = true;
+                // Mod+F is a compositor presentation, not a client fullscreen
+                // request. Keep the toplevel protocol-windowed so applications
+                // such as Firefox still receive a real fullscreen state edge
+                // when their own content later asks to enter fullscreen.
+                self.protocol_desired = self.client_requested;
+            }
             FullscreenOrigin::Maximize => return,
         }
-        self.protocol_desired = true;
     }
 
     fn release(&mut self, origin: FullscreenOrigin) {
@@ -298,13 +307,15 @@ impl FullscreenManager {
         // the transition has settled, to letterbox a client that stays smaller.
         entry.fullscreen_size = output_geometry.size;
         let protocol_origin = entry.origin;
+        let protocol_desired = entry.native.map_or(true, |native| native.protocol_desired);
 
         toplevel.with_pending_state(|state| {
-            apply_protocol_presentation_state(state, protocol_origin, true);
+            apply_protocol_presentation_state(state, protocol_origin, protocol_desired);
             super::decoration::clear_tiled_hint(state);
             state.size = Some(output_geometry.size);
             state.bounds = Some(output_geometry.size);
-            state.fullscreen_output = (protocol_origin != FullscreenOrigin::Maximize)
+            state.fullscreen_output = (protocol_origin != FullscreenOrigin::Maximize
+                && protocol_desired)
                 .then_some(requested)
                 .flatten();
         });
@@ -1636,14 +1647,49 @@ mod tests {
     }
 
     #[test]
-    fn nested_client_protocol_cycle_keeps_compositor_presentation() {
+    fn compositor_fullscreen_is_visual_only_until_the_client_requests_fullscreen() {
         let mut entry = test_entry(false);
         let target = entry.target_output.clone();
         let fullscreen_size = entry.fullscreen_size;
 
         request_native_owner(&mut entry, FullscreenOrigin::Compositor);
+        let compositor_only = entry.native.expect("native state");
+        assert!(compositor_only.compositor_requested);
+        assert!(!compositor_only.client_requested);
+        assert!(!compositor_only.protocol_desired);
+        assert!(entry.desired);
+        assert_eq!(entry.origin, FullscreenOrigin::Compositor);
+        assert_eq!(
+            fullscreen_commit_action(&entry, false),
+            FullscreenCommitAction::Visual(true)
+        );
+        let mut pending = ToplevelState::default();
+        apply_protocol_presentation_state(
+            &mut pending,
+            entry.origin,
+            compositor_only.protocol_desired,
+        );
+        assert!(!pending.states.contains(State::Fullscreen));
+        assert!(!pending.states.contains(State::Maximized));
+
         entry.active = true;
         entry.presented = true;
+
+        request_native_owner(&mut entry, FullscreenOrigin::Client);
+        let nested_set = entry.native.expect("native state");
+        assert!(nested_set.compositor_requested);
+        assert!(nested_set.client_requested);
+        assert!(nested_set.protocol_desired);
+        assert!(entry.desired);
+        assert_eq!(entry.origin, FullscreenOrigin::Compositor);
+        assert_eq!(
+            fullscreen_commit_action(&entry, true),
+            FullscreenCommitAction::ProtocolOnly
+        );
+        apply_protocol_presentation_state(&mut pending, entry.origin, nested_set.protocol_desired);
+        assert!(pending.states.contains(State::Fullscreen));
+        assert!(!pending.states.contains(State::Maximized));
+
         entry.native.as_mut().expect("native state").protocol_active = true;
 
         release_native_owner(&mut entry, FullscreenOrigin::Client);
@@ -1659,18 +1705,6 @@ mod tests {
         assert_eq!(entry.fullscreen_size, fullscreen_size);
         assert_eq!(
             fullscreen_commit_action(&entry, false),
-            FullscreenCommitAction::ProtocolOnly
-        );
-
-        request_native_owner(&mut entry, FullscreenOrigin::Client);
-        let nested_set = entry.native.expect("native state");
-        assert!(nested_set.compositor_requested);
-        assert!(nested_set.client_requested);
-        assert!(nested_set.protocol_desired);
-        assert!(entry.desired);
-        assert_eq!(entry.origin, FullscreenOrigin::Compositor);
-        assert_eq!(
-            fullscreen_commit_action(&entry, true),
             FullscreenCommitAction::ProtocolOnly
         );
     }
