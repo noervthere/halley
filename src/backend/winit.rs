@@ -170,7 +170,6 @@ impl Renderable for WinitBackend {
         // `self.backend`) are dropped before `submit()` needs its own
         // mutable borrow.
         let mut element_states = RenderElementStates::default();
-        let presented_x11_frames;
         {
             let (renderer, mut framebuffer) = self.backend.bind()?;
             let elements = crate::render::scene::build(
@@ -226,13 +225,6 @@ impl Renderable for WinitBackend {
                 );
             }
             let _ = frame.finish()?;
-            presented_x11_frames = crate::render::presented_x11::candidates_for_output(
-                renderer,
-                space,
-                output,
-                &self.output,
-                &element_states,
-            );
         }
 
         self.backend.submit(Some(&[damage]))?;
@@ -259,9 +251,9 @@ impl Renderable for WinitBackend {
             smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind::Vsync,
         );
 
-        Ok(
-            RenderOutcome::new(RenderStatus::Submitted, Some(element_states))
-                .with_presented_x11_frames(presented_x11_frames),
-        )
+        Ok(RenderOutcome::new(
+            RenderStatus::Submitted,
+            Some(element_states),
+        ))
     }
 }

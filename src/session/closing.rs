@@ -56,31 +56,11 @@ pub(crate) fn capture_native_toplevel_before_unmap<D: SessionDriver>(
 }
 
 pub(crate) fn capture_window<D: SessionDriver>(session: &mut Session<D>, window: &Window) -> bool {
-    capture_window_inner(
-        session,
-        window,
-        false,
-        crate::render::presented_x11::PresentedX11FramePolicy::Latest,
-    )
+    capture_window_inner(session, window, false)
 }
 
 fn captures_before_client_decision(is_x11: bool) -> bool {
     is_x11
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum CloseCaptureSource {
-    Live,
-    PresentedX11,
-    Unavailable,
-}
-
-fn close_capture_source(is_x11: bool, has_presented_x11: bool) -> CloseCaptureSource {
-    match (is_x11, has_presented_x11) {
-        (false, _) => CloseCaptureSource::Live,
-        (true, true) => CloseCaptureSource::PresentedX11,
-        (true, false) => CloseCaptureSource::Unavailable,
-    }
 }
 
 pub(crate) fn capture_before_close_request<D: SessionDriver>(
@@ -101,12 +81,7 @@ pub(crate) fn capture_close_control<D: SessionDriver>(
     if !captures_before_client_decision(crate::xwayland::is_x11(window)) {
         return false;
     }
-    capture_window_inner(
-        session,
-        window,
-        true,
-        crate::render::presented_x11::PresentedX11FramePolicy::Latest,
-    )
+    capture_window_inner(session, window, true)
 }
 
 /// Starts the visual close immediately for Steam's client-owned X11 control.
@@ -121,12 +96,11 @@ pub(crate) fn start_steam_client_close_control<D: SessionDriver>(
     let Some(surface) = window.wl_surface().map(|surface| surface.into_owned()) else {
         return false;
     };
-    if !capture_window_inner(
-        session,
-        window,
-        false,
-        crate::render::presented_x11::PresentedX11FramePolicy::Latest,
-    ) {
+    // This runs before the release is forwarded to Steam, while its good
+    // client buffer is still attached. The capture copies those pixels into
+    // a compositor-owned texture and drops every client buffer guard before
+    // Steam can begin teardown.
+    if !capture_window_inner(session, window, false) {
         return false;
     }
     if !session
@@ -145,7 +119,6 @@ fn capture_window_inner<D: SessionDriver>(
     session: &mut Session<D>,
     window: &Window,
     provisional: bool,
-    x11_frame_policy: crate::render::presented_x11::PresentedX11FramePolicy,
 ) -> bool {
     if crate::xwayland::is_override_redirect(window) {
         return false;
@@ -234,30 +207,6 @@ fn capture_window_inner<D: SessionDriver>(
     };
     let decorations = session.settings.decorations;
     let font = session.settings.font.clone();
-    let is_x11 = crate::xwayland::is_x11(window);
-    let presented_diagnostics = is_x11.then(|| {
-        session
-            .xwayland
-            .presented_frame(&surface, now, x11_frame_policy)
-            .map(|selection| (selection.kind, selection.age, selection.sample_count))
-    });
-    match presented_diagnostics.flatten() {
-        Some((kind, age, sample_count)) => crate::xwayland::trace_close_frame_selection(
-            session,
-            window,
-            format_args!(
-                "policy={x11_frame_policy:?} kind={kind:?} age_ms={} samples={sample_count}",
-                age.as_millis()
-            ),
-        ),
-        None if is_x11 => crate::xwayland::trace_close_frame_selection(
-            session,
-            window,
-            format_args!("policy={x11_frame_policy:?} available=false"),
-        ),
-        None => {}
-    }
-    let presented_x11_frames = &session.xwayland;
     let render = &mut session.render;
     let titlebar_renderer = &mut render.titlebar_renderer;
     let window_decoration_renderer = &mut render.window_decoration_renderer;
@@ -265,45 +214,20 @@ fn capture_window_inner<D: SessionDriver>(
     let ui_text = &mut render.ui_text;
     let window_close_animations = &mut render.window_close_animations;
     let capture = session.driver.with_renderer(|renderer| {
-        let presented = presented_x11_frames.presented_frame(&surface, now, x11_frame_policy);
-        let texture = match close_capture_source(is_x11, presented.is_some()) {
-            CloseCaptureSource::PresentedX11 => {
-                crate::render::window_texture::capture_decorated_presented(
-                    renderer,
-                    window,
-                    presented
-                        .expect("capture source checked presented frame")
-                        .frame,
-                    None,
-                    &decorations,
-                    &font,
-                    focused,
-                    chrome_visible,
-                    maximized,
-                    titlebar_renderer,
-                    window_decoration_renderer,
-                    node_renderer,
-                    ui_text,
-                )?
-            }
-            CloseCaptureSource::Live => crate::render::window_texture::capture_decorated(
-                renderer,
-                window,
-                None,
-                &decorations,
-                &font,
-                focused,
-                chrome_visible,
-                maximized,
-                titlebar_renderer,
-                window_decoration_renderer,
-                node_renderer,
-                ui_text,
-            )?,
-            CloseCaptureSource::Unavailable => {
-                return Err("X11 window has no presented frame to capture".into());
-            }
-        };
+        let texture = crate::render::window_texture::capture_decorated(
+            renderer,
+            window,
+            None,
+            &decorations,
+            &font,
+            focused,
+            chrome_visible,
+            maximized,
+            titlebar_renderer,
+            window_decoration_renderer,
+            node_renderer,
+            ui_text,
+        )?;
         window_close_animations.capture(window, texture, metadata)
     });
     match capture {
@@ -390,11 +314,11 @@ pub(crate) fn start<D: SessionDriver>(session: &mut Session<D>, surface: &WlSurf
 
 /// Captures and activates the close texture while the window is still mapped.
 ///
-/// X11 client-owned controls do not expose close intent to the compositor, so
-/// their first authoritative close boundary is `UnmapNotify`. The client's
-/// current buffer may already contain teardown pixels at that point, so the
-/// capture uses the newest sufficiently old frame from the backend-confirmed
-/// presentation history and activates it before the live window leaves `Space`.
+/// X11 clients without an intercepted close control expose their first
+/// authoritative close boundary at `UnmapNotify`. Capture the currently
+/// attached buffer as a best effort before the live window leaves `Space`.
+/// Known client-owned controls such as Steam are captured earlier, before the
+/// click is forwarded, so they never reach this fallback with teardown pixels.
 pub(crate) fn capture_and_activate_before_unmap<D: SessionDriver>(
     session: &mut Session<D>,
     window: &Window,
@@ -407,16 +331,9 @@ pub(crate) fn capture_and_activate_before_unmap<D: SessionDriver>(
             .render
             .window_close_animations
             .confirm_unmapped(&surface);
-        session.xwayland.forget_presented_frame(&surface);
         return true;
     }
-    let captured = capture_window_inner(
-        session,
-        window,
-        false,
-        crate::render::presented_x11::PresentedX11FramePolicy::PreTeardown,
-    );
-    session.xwayland.forget_presented_frame(&surface);
+    let captured = capture_window_inner(session, window, false);
     if !captured {
         return false;
     }
@@ -459,7 +376,6 @@ pub(crate) fn x11_buffer_removed<D: SessionDriver>(
         false
     };
     if changed {
-        session.xwayland.forget_presented_frame(surface);
         session.request_redraw();
     }
     true
@@ -467,7 +383,6 @@ pub(crate) fn x11_buffer_removed<D: SessionDriver>(
 
 pub(crate) fn mapped<D: SessionDriver>(session: &mut Session<D>, surface: &WlSurface) {
     session.render.window_close_animations.cancel(surface);
-    session.xwayland.forget_presented_frame(surface);
 }
 
 fn output_for_window(
@@ -484,24 +399,11 @@ fn output_for_window(
 
 #[cfg(test)]
 mod tests {
-    use super::{CloseCaptureSource, captures_before_client_decision, close_capture_source};
+    use super::captures_before_client_decision;
 
     #[test]
     fn only_x11_captures_before_an_advisory_close_can_be_rejected() {
         assert!(captures_before_client_decision(true));
         assert!(!captures_before_client_decision(false));
-    }
-
-    #[test]
-    fn x11_close_never_samples_an_unpresented_live_commit() {
-        assert_eq!(
-            close_capture_source(true, true),
-            CloseCaptureSource::PresentedX11
-        );
-        assert_eq!(
-            close_capture_source(true, false),
-            CloseCaptureSource::Unavailable
-        );
-        assert_eq!(close_capture_source(false, false), CloseCaptureSource::Live);
     }
 }

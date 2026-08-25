@@ -479,28 +479,20 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                         resources: crate::render::resources::RenderResources::from(&mut app.render),
                     },
                 );
-                let (submitted, element_states, presented_x11_frames) = match outcome {
-                    Ok(mut outcome) if outcome.status() == backend::RenderStatus::Submitted => {
+                let (submitted, element_states) = match outcome {
+                    Ok(outcome) if outcome.status() == backend::RenderStatus::Submitted => {
                         if let Some(generation) = app.session_lock.frame_generation() {
                             app.session_lock.presented(&output, generation);
                         }
                         let element_states = outcome.element_states().cloned();
-                        let presented_x11_frames = outcome.take_presented_x11_frames();
-                        (true, element_states, presented_x11_frames)
+                        (true, element_states)
                     }
-                    Ok(outcome) => (false, outcome.element_states().cloned(), Vec::new()),
+                    Ok(outcome) => (false, outcome.element_states().cloned()),
                     Err(err) => {
                         eventline::error!("render failed: {err}");
-                        (false, None, Vec::new())
+                        (false, None)
                     }
                 };
-                if submitted {
-                    app.xwayland.promote_presented_frames(
-                        presented_x11_frames,
-                        &app.wayland.space,
-                        crate::frame_clock::monotonic_now(),
-                    );
-                }
                 if let Some(element_states) = element_states {
                     app.update_idle_inhibit_visibility(&output, &element_states);
                 }

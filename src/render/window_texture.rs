@@ -74,14 +74,6 @@ pub fn capture(
     capture_surface_elements(renderer, geometry, &elements, reusable)
 }
 
-pub fn capture_presented(
-    renderer: &mut GlesRenderer,
-    frame: &crate::render::presented_x11::PresentedX11Frame,
-    reusable: Option<GlesTexture>,
-) -> Result<WindowTexture, Box<dyn Error>> {
-    capture_surface_elements(renderer, frame.geometry, &frame.elements, reusable)
-}
-
 fn capture_surface_elements(
     renderer: &mut GlesRenderer,
     geometry: Rectangle<i32, Logical>,
@@ -149,39 +141,6 @@ pub fn capture_decorated(
         node_renderer,
         ui_text,
         |renderer, reusable| capture(renderer, window, reusable),
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn capture_decorated_presented(
-    renderer: &mut GlesRenderer,
-    window: &Window,
-    frame: &crate::render::presented_x11::PresentedX11Frame,
-    reusable: Option<GlesTexture>,
-    decorations: &halley_config::Decorations,
-    font: &halley_config::Font,
-    focused: bool,
-    chrome_visible: bool,
-    maximized: bool,
-    titlebar_renderer: &mut crate::render::titlebar::TitlebarRenderer,
-    window_decoration_renderer: &mut crate::render::window_decoration::WindowDecorationRenderer,
-    node_renderer: &mut crate::render::node::NodeRenderer,
-    ui_text: &mut crate::render::text::UiTextRenderer,
-) -> Result<WindowTexture, Box<dyn Error>> {
-    capture_decorated_inner(
-        renderer,
-        window,
-        reusable,
-        decorations,
-        font,
-        focused,
-        chrome_visible,
-        maximized,
-        titlebar_renderer,
-        window_decoration_renderer,
-        node_renderer,
-        ui_text,
-        |renderer, reusable| capture_presented(renderer, frame, reusable),
     )
 }
 

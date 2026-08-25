@@ -78,7 +78,6 @@ pub struct State<D: SessionDriver> {
     normal_sizes: HashMap<WindowIdentity, SavedNormalSize>,
     managed_states: xwm::ManagedStateRegistry,
     published_stacking: Vec<u32>,
-    presented_frames: crate::render::presented_x11::PresentedX11Frames,
 }
 
 impl<D: SessionDriver> State<D> {
@@ -108,33 +107,7 @@ impl<D: SessionDriver> State<D> {
             normal_sizes: HashMap::new(),
             managed_states: xwm::ManagedStateRegistry::default(),
             published_stacking: Vec::new(),
-            presented_frames: crate::render::presented_x11::PresentedX11Frames::default(),
         }
-    }
-
-    pub(crate) fn presented_frame(
-        &self,
-        surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
-        now: std::time::Duration,
-        policy: crate::render::presented_x11::PresentedX11FramePolicy,
-    ) -> Option<crate::render::presented_x11::PresentedX11FrameSelection<'_>> {
-        self.presented_frames.select(surface, now, policy)
-    }
-
-    pub fn promote_presented_frames(
-        &mut self,
-        frames: Vec<crate::render::presented_x11::PresentedX11Frame>,
-        space: &Space<Window>,
-        presented_at: std::time::Duration,
-    ) {
-        self.presented_frames.promote(frames, space, presented_at);
-    }
-
-    pub fn forget_presented_frame(
-        &mut self,
-        surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
-    ) -> bool {
-        self.presented_frames.remove(surface)
     }
 
     pub(crate) fn arm_speculative_close_timeout(
@@ -396,16 +369,6 @@ impl<D: SessionDriver> State<D> {
         self.normal_sizes.clear();
         self.managed_states.clear();
         self.published_stacking.clear();
-    }
-}
-
-pub(crate) fn trace_close_frame_selection<D: SessionDriver>(
-    session: &mut Session<D>,
-    window: &Window,
-    details: std::fmt::Arguments<'_>,
-) {
-    if let Some(surface) = window.x11_surface().cloned() {
-        crate::session::trace::x11_event(session, &surface, "close-frame-selection", details);
     }
 }
 
