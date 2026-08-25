@@ -37,6 +37,38 @@ autostart:
   # on-reload "notify-send 'Halley configuration reloaded'"
 end
 
+# Optional gamescope launch integration. Halley does not wrap games
+# automatically: put `halleyctl gamescope run -- %command%` in a Steam game's
+# launch options (or use the same wrapper from another launcher). `print`
+# resolves the command without starting it.
+gaming:
+  gamescope:
+    enabled true
+
+    # "focused", "cursor", "primary", or an exact output connector. Values
+    # set to "auto" are read live from that output when the game launches.
+    monitor "focused"
+    output-width "auto"
+    output-height "auto"
+    game-width "auto"
+    game-height "auto"
+    refresh "auto"
+
+    # Fullscreen wins, with a diagnostic, if both modes are enabled.
+    fullscreen true
+    borderless false
+
+    # Repeat game blocks for exact app-id overrides. SteamAppId and
+    # SteamGameId are normalized to `steam_app_ID`; `enabled false` opts out.
+    # game:
+    #   name "Example game"
+    #   app-id "steam_app_12345"
+    #   game-width 1920
+    #   game-height 1080
+    # end
+  end
+end
+
 # `view` groups settings by physical output. Repeat `output:` inside this one
 # section for each connector (find connector names and modes with
 # `halleyctl outputs`). A ring-only entry is safe on any machine: it changes

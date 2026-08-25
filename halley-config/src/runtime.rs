@@ -7,13 +7,13 @@ use rune_cfg::RuneConfig;
 use crate::{
     Animations, Apogee, Autostart, Background, BackgroundParseError, Bearings, Clusters, Cursor,
     Debug, Decay, Decorations, Effects, EffectsParseError, Field, FieldParseError, FocusRings,
-    Font, Input, InputParseError, Keybinds, LaunchConfigError, LayerRule, NodeParseError, Nodes,
-    OutputConfig, OverlayParseError, Overlays, Physics, Screenshot, Trail, WindowRule,
-    WindowRuleParseError, parse_animations, parse_apogee, parse_autostart, parse_background,
-    parse_bearings, parse_clusters, parse_cursor, parse_debug, parse_decay, parse_decorations,
-    parse_effects, parse_env, parse_field_checked, parse_font, parse_input, parse_keybinds,
-    parse_nodes_checked, parse_overlays_checked, parse_physics, parse_rules, parse_screenshot,
-    parse_trail, parse_view_checked,
+    Font, GamescopeParseError, Gaming, Input, InputParseError, Keybinds, LaunchConfigError,
+    LayerRule, NodeParseError, Nodes, OutputConfig, OverlayParseError, Overlays, Physics,
+    Screenshot, Trail, WindowRule, WindowRuleParseError, parse_animations, parse_apogee,
+    parse_autostart, parse_background, parse_bearings, parse_clusters, parse_cursor, parse_debug,
+    parse_decay, parse_decorations, parse_effects, parse_env, parse_field_checked, parse_font,
+    parse_gaming, parse_input, parse_keybinds, parse_nodes_checked, parse_overlays_checked,
+    parse_physics, parse_rules, parse_screenshot, parse_trail, parse_view_checked,
 };
 use crate::{ViewConfig, ViewParseError};
 
@@ -37,6 +37,7 @@ pub struct RuntimeConfig {
     pub apogee: Apogee,
     pub bearings: Bearings,
     pub trail: Trail,
+    pub gaming: Gaming,
     pub clusters: Clusters,
     pub focus_rings: FocusRings,
     pub font: Font,
@@ -61,6 +62,7 @@ pub enum RuntimeConfigError {
     Effects(EffectsParseError),
     Field(FieldParseError),
     Background(BackgroundParseError),
+    Gamescope(GamescopeParseError),
     Rule(WindowRuleParseError),
 }
 
@@ -77,6 +79,7 @@ impl fmt::Display for RuntimeConfigError {
             Self::Effects(err) => write!(f, "{err}"),
             Self::Field(err) => write!(f, "{err}"),
             Self::Background(err) => write!(f, "{err}"),
+            Self::Gamescope(err) => write!(f, "{err}"),
             Self::Rule(err) => write!(f, "{err}"),
         }
     }
@@ -144,6 +147,12 @@ impl From<BackgroundParseError> for RuntimeConfigError {
     }
 }
 
+impl From<GamescopeParseError> for RuntimeConfigError {
+    fn from(value: GamescopeParseError) -> Self {
+        Self::Gamescope(value)
+    }
+}
+
 impl From<WindowRuleParseError> for RuntimeConfigError {
     fn from(value: WindowRuleParseError) -> Self {
         Self::Rule(value)
@@ -172,6 +181,7 @@ pub fn parse_runtime_config(config: &RuneConfig) -> Result<RuntimeConfig, Runtim
         apogee: parse_apogee(config),
         bearings: parse_bearings(config),
         trail: parse_trail(config),
+        gaming: parse_gaming(config)?,
         clusters: parse_clusters(config),
         focus_rings,
         font: parse_font(config),

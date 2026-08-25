@@ -203,6 +203,16 @@ fn example_config_parses_end_to_end() {
 }
 
 #[test]
+fn example_config_has_gamescope_launch_defaults() {
+    let runtime =
+        halley_config::load_runtime_config_at(std::path::Path::new(EXAMPLE_PATH)).unwrap();
+    assert!(runtime.gaming.gamescope.enabled);
+    assert_eq!(runtime.gaming.gamescope.monitor, "focused");
+    assert_eq!(runtime.gaming.gamescope.output_width, "auto");
+    assert!(runtime.gaming.gamescope.fullscreen);
+}
+
+#[test]
 fn example_config_cluster_sections_parse() {
     let config = RuneConfig::from_file(EXAMPLE_PATH).expect("example config parses");
     let runtime = halley_config::parse_runtime_config(&config).expect("runtime config parses");

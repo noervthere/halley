@@ -11,6 +11,7 @@ pub mod diagnostic;
 pub mod effects;
 pub mod field;
 pub mod font;
+pub mod gamescope;
 pub mod input;
 pub mod keybinds;
 pub mod launch;
@@ -60,6 +61,11 @@ pub use field::{
     CloseRestorePan, Field, FieldParseError, PinBadgeCorner, Pins, parse_field, parse_field_checked,
 };
 pub use font::{Font, parse_font};
+pub use gamescope::{
+    DimSpec, GamescopeConfig, GamescopeDecision, GamescopeGameProfile, GamescopeParseError, Gaming,
+    ResolvedGamescopeProfile, TargetDims, build_gamescope_argv, glob_match, parse_gaming,
+    resolve_profile,
+};
 pub use input::{
     AccelProfile, ClickMethod, DeviceKind, DeviceOverride, DeviceSettings, FocusMode,
     GestureAction, GestureBinding, GestureHoldBinding, GestureModifier, GestureScope,

@@ -162,6 +162,8 @@ mod tests {
             "XF86AudioRaiseVolume\" \"wpctl",
             "with repeat true",
             "overlay-fps false",
+            "halleyctl gamescope run -- %command%",
+            "output-width \"auto\"",
         ] {
             assert!(
                 DEFAULT_CONFIG.contains(expected),

@@ -677,6 +677,9 @@ pub fn handle_request<D: crate::session::SessionDriver>(
                         "subscriptions-v1".into(),
                         "cluster-drafts-v1".into(),
                         "trail-v1".into(),
+                        "control-v1".into(),
+                        "local-capture-v1".into(),
+                        "gamescope-v1".into(),
                     ],
                 })
             }

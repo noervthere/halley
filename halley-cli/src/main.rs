@@ -147,6 +147,8 @@ fn main() -> ExitCode {
         Ok(Action::TileHelp) => show(help::TILE_HELP),
         Ok(Action::Portal { command, json }) => cmd::portal::run(command, json),
         Ok(Action::PortalHelp) => show(help::PORTAL_HELP),
+        Ok(Action::Gamescope(invocation)) => cmd::gamescope::run(invocation),
+        Ok(Action::GamescopeHelp) => show(help::GAMESCOPE_HELP),
         Ok(Action::ConfigEdit(path)) => config::edit(path),
         Ok(Action::ConfigVerify(path)) => config::verify(path),
         Ok(Action::ConfigHelp) => show(help::CONFIG_HELP),
@@ -211,6 +213,7 @@ mod tests {
         assert!(commands.contains("stack"));
         assert!(commands.contains("tile"));
         assert!(commands.contains("portal"));
+        assert!(commands.contains("gamescope"));
         assert!(commands.contains("config"));
         assert!(commands.contains("quit"));
         assert!(!commands.contains("--help"));
