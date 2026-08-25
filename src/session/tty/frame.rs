@@ -26,6 +26,18 @@ pub(super) enum EstimatedVblankTimer {
     ArmAfter(Duration),
 }
 
+/// Work that becomes safe when the kernel reports a page flip.
+///
+/// A queued redraw takes precedence over releasing another client frame
+/// callback: the buffers for that redraw have not been latched yet. Once a
+/// frame is submitted, its callbacks are released immediately instead.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum VblankAction {
+    Ignore,
+    Redraw,
+    SendCallbacks,
+}
+
 pub(super) struct OutputFrameState {
     clock: FrameClock,
     redraw: RedrawState,
@@ -83,12 +95,12 @@ impl OutputFrameState {
         (target, dt)
     }
 
-    pub fn on_vblank(&mut self, presented: Option<Duration>) -> Option<String> {
+    pub fn on_vblank(&mut self, presented: Option<Duration>) -> (VblankAction, Option<String>) {
         self.clock.presented(presented);
         let (redraw_needed, unexpected_state) = match std::mem::take(&mut self.redraw) {
             RedrawState::Suspended => {
                 self.redraw = RedrawState::Suspended;
-                return None;
+                return (VblankAction::Ignore, None);
             }
             RedrawState::WaitingForVBlank { redraw_needed } => {
                 (redraw_needed || self.unfinished_animations, None)
@@ -101,7 +113,12 @@ impl OutputFrameState {
             RedrawState::Idle
         };
 
-        unexpected_state
+        let action = if redraw_needed {
+            VblankAction::Redraw
+        } else {
+            VblankAction::SendCallbacks
+        };
+        (action, unexpected_state)
     }
 
     /// Records a real page flip and returns an estimated-VBlank timer that
@@ -218,9 +235,10 @@ mod tests {
         assert_eq!(state.frame_submitted(false), None);
 
         state.queue_redraw();
-        let unexpected = state.on_vblank(None);
+        let (action, unexpected) = state.on_vblank(None);
 
         assert_eq!(unexpected, None);
+        assert_eq!(action, VblankAction::Redraw);
         assert!(state.is_redraw_queued());
     }
 
@@ -230,7 +248,7 @@ mod tests {
         state.queue_redraw();
         state.frame_submitted(true);
 
-        assert_eq!(state.on_vblank(None), None);
+        assert_eq!(state.on_vblank(None), (VblankAction::Redraw, None));
         assert!(state.is_redraw_queued());
     }
 
@@ -240,7 +258,7 @@ mod tests {
         state.queue_redraw();
         state.frame_submitted(false);
 
-        assert_eq!(state.on_vblank(None), None);
+        assert_eq!(state.on_vblank(None), (VblankAction::SendCallbacks, None));
         assert!(!state.is_redraw_queued());
     }
 
@@ -287,7 +305,7 @@ mod tests {
 
         state.queue_redraw();
         assert!(!state.is_redraw_queued());
-        assert_eq!(state.on_vblank(None), None);
+        assert_eq!(state.on_vblank(None), (VblankAction::Ignore, None));
         assert!(!state.is_redraw_queued());
 
         state.resume(Duration::from_secs(2));

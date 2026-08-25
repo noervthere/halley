@@ -36,7 +36,7 @@ use crate::render::{
 };
 use crate::wayland;
 
-use self::frame::{EstimatedVblankTimer, OutputFrameState};
+use self::frame::{EstimatedVblankTimer, OutputFrameState, VblankAction};
 use super::RenderDriver as _;
 
 struct TtyDriver {
@@ -670,7 +670,8 @@ fn on_vblank(app: &mut TtyApp, crtc: crtc::Handle, metadata: Option<&DrmEventMet
     let Some(state) = app.driver.output_frames.get_mut(&output) else {
         return;
     };
-    if let Some(unexpected) = state.on_vblank(presented) {
+    let (action, unexpected) = state.on_vblank(presented);
+    if let Some(unexpected) = unexpected {
         eventline::warn!(
             "unexpected redraw state on vblank for {:?}: {unexpected}",
             output.name()
@@ -723,7 +724,9 @@ fn on_vblank(app: &mut TtyApp, crtc: crtc::Handle, metadata: Option<&DrmEventMet
             .presented(time, refresh, sequence, flags);
     }
 
-    send_output_frame_callbacks(app, &output);
+    if action == VblankAction::SendCallbacks {
+        send_output_frame_callbacks(app, &output);
+    }
 }
 
 fn send_output_frame_callbacks(app: &mut TtyApp, output: &Output) {
@@ -1134,6 +1137,11 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
         if let Some(token) = state.frame_submitted(animating) {
             loop_handle.remove(token);
         }
+        // The compositor has latched every client buffer used by this frame.
+        // Release the next callbacks now; waiting for the page-flip event can
+        // starve an otherwise idle output while input is active elsewhere.
+        // A commit produced by these callbacks remains gated on that vblank.
+        send_output_frame_callbacks(app, output);
         app.service_screencopy(output);
         return;
     }
