@@ -9,7 +9,7 @@ use std::marker::PhantomData;
 use calloop::LoopHandle;
 use smithay::desktop::{Space, Window};
 use smithay::reexports::wayland_server::{Client, DisplayHandle};
-use smithay::utils::{Logical, Rectangle, Size};
+use smithay::utils::{Logical, Point, Rectangle, Size};
 use smithay::wayland::compositor::CompositorClientState;
 
 use crate::session::{Session, SessionDriver};
@@ -52,6 +52,12 @@ impl<D: SessionDriver> State<D> {
         surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
     ) -> bool {
         self.presented_frames.remove(surface)
+    }
+
+    pub(crate) fn arm_speculative_close_timeout(
+        &self,
+        _surface: smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+    ) {
     }
 
     pub fn display_name(&self) -> Option<OsString> {
@@ -168,6 +174,10 @@ pub fn server_geometry(_window: &Window) -> Option<(u32, Rectangle<i32, Logical>
 }
 
 pub fn is_x11(_window: &Window) -> bool {
+    false
+}
+
+pub(crate) fn is_steam_client_close_hit(_window: &Window, _local: Point<f64, Logical>) -> bool {
     false
 }
 

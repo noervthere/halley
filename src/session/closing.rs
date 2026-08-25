@@ -109,6 +109,38 @@ pub(crate) fn capture_close_control<D: SessionDriver>(
     )
 }
 
+/// Starts the visual close immediately for Steam's client-owned X11 control.
+/// CEF otherwise submits an opaque black teardown buffer for long enough to
+/// be presented before `UnmapNotify`. The active snapshot replaces that live
+/// surface, then remains transparent after the animation until teardown is
+/// confirmed or the bounded safety timeout restores the client.
+pub(crate) fn start_steam_client_close_control<D: SessionDriver>(
+    session: &mut Session<D>,
+    window: &Window,
+) -> bool {
+    let Some(surface) = window.wl_surface().map(|surface| surface.into_owned()) else {
+        return false;
+    };
+    if !capture_window_inner(
+        session,
+        window,
+        false,
+        crate::render::presented_x11::PresentedX11FramePolicy::Latest,
+    ) {
+        return false;
+    }
+    if !session
+        .render
+        .window_close_animations
+        .start_speculative(&surface, crate::frame_clock::monotonic_now())
+    {
+        return false;
+    }
+    session.xwayland.arm_speculative_close_timeout(surface);
+    session.request_redraw();
+    true
+}
+
 fn capture_window_inner<D: SessionDriver>(
     session: &mut Session<D>,
     window: &Window,
@@ -371,6 +403,10 @@ pub(crate) fn capture_and_activate_before_unmap<D: SessionDriver>(
         return false;
     };
     if session.render.window_close_animations.is_active(&surface) {
+        session
+            .render
+            .window_close_animations
+            .confirm_unmapped(&surface);
         session.xwayland.forget_presented_frame(&surface);
         return true;
     }
@@ -393,6 +429,40 @@ pub(crate) fn capture_and_activate_before_unmap<D: SessionDriver>(
         session.request_redraw();
     }
     activated
+}
+
+/// Handles XWayland's null-buffer commit before Smithay applies it. This is
+/// an authoritative visual teardown boundary even if the XWM callback is
+/// delayed: an already-started speculative close may now expire normally,
+/// and a compositor-requested pending snapshot may begin without exposing an
+/// empty live surface.
+pub(crate) fn x11_buffer_removed<D: SessionDriver>(
+    session: &mut Session<D>,
+    surface: &WlSurface,
+) -> bool {
+    let is_mapped_x11 = session.wayland.space.elements().any(|window| {
+        crate::xwayland::is_x11(window)
+            && window
+                .wl_surface()
+                .is_some_and(|candidate| candidate.as_ref() == surface)
+    });
+    if !is_mapped_x11 {
+        return false;
+    }
+
+    let animations = &mut session.render.window_close_animations;
+    let changed = if animations.is_active(surface) {
+        animations.confirm_unmapped(surface)
+    } else if animations.has_pending(surface) {
+        animations.start(surface, crate::frame_clock::monotonic_now())
+    } else {
+        false
+    };
+    if changed {
+        session.xwayland.forget_presented_frame(surface);
+        session.request_redraw();
+    }
+    true
 }
 
 pub(crate) fn mapped<D: SessionDriver>(session: &mut Session<D>, surface: &WlSurface) {

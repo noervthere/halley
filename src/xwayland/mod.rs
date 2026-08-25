@@ -19,7 +19,7 @@ use smithay::reexports::wayland_protocols::xwayland::shell::v1::server::{
     xwayland_shell_v1::XwaylandShellV1, xwayland_surface_v1::XwaylandSurfaceV1,
 };
 use smithay::reexports::wayland_server::{Dispatch, DisplayHandle, GlobalDispatch};
-use smithay::utils::{Logical, Rectangle, Size};
+use smithay::utils::{Logical, Point, Rectangle, Size};
 use smithay::wayland::compositor::CompositorClientState;
 use smithay::wayland::seat::WaylandFocus;
 use smithay::wayland::xwayland_keyboard_grab::{
@@ -135,6 +135,30 @@ impl<D: SessionDriver> State<D> {
         surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
     ) -> bool {
         self.presented_frames.remove(surface)
+    }
+
+    pub(crate) fn arm_speculative_close_timeout(
+        &self,
+        surface: smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+    ) {
+        const SPECULATIVE_CLOSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+        let loop_handle = self.loop_handle.clone();
+        if let Err(err) = loop_handle.insert_source(
+            Timer::from_duration(SPECULATIVE_CLOSE_TIMEOUT),
+            move |_, _, session| {
+                if session
+                    .render
+                    .window_close_animations
+                    .cancel_speculative(&surface)
+                {
+                    session.request_redraw();
+                }
+                TimeoutAction::Drop
+            },
+        ) {
+            eventline::warn!("xwayland: failed to schedule speculative close timeout: {err}");
+        }
     }
 
     pub fn display_name(&self) -> Option<OsString> {
@@ -614,6 +638,34 @@ pub fn is_x11(window: &smithay::desktop::Window) -> bool {
     window.x11_surface().is_some()
 }
 
+const STEAM_CLOSE_HIT_WIDTH: f64 = 40.0;
+const STEAM_CLOSE_HIT_HEIGHT: f64 = 40.0;
+
+/// Steam's X11/CEF windows draw their own titlebar, so clicking their close
+/// glyph has no window-management protocol meaning until CEF begins its
+/// delayed teardown. Recognize only Steam's conventional top-right control
+/// so Halley can own the visual handoff before the black buffer is submitted.
+pub(crate) fn is_steam_client_close_hit(
+    window: &smithay::desktop::Window,
+    local: Point<f64, Logical>,
+) -> bool {
+    let Some(surface) = window.x11_surface() else {
+        return false;
+    };
+    if !surface.is_decorated() || !surface.class().eq_ignore_ascii_case("steam") {
+        return false;
+    }
+    steam_close_hit(local, window.geometry().size)
+}
+
+fn steam_close_hit(local: Point<f64, Logical>, size: Size<i32, Logical>) -> bool {
+    let right = f64::from(size.w.max(0));
+    local.x >= (right - STEAM_CLOSE_HIT_WIDTH).max(0.0)
+        && local.x < right
+        && local.y >= 0.0
+        && local.y < STEAM_CLOSE_HIT_HEIGHT.min(f64::from(size.h.max(0)))
+}
+
 pub fn is_fullscreen(window: &smithay::desktop::Window) -> bool {
     window
         .x11_surface()
@@ -721,8 +773,8 @@ delegate_xwayland_keyboard_grab!(@<D: SessionDriver> Session<D>);
 
 #[cfg(test)]
 mod tests {
-    use super::{desktop_extent, work_area_extent};
-    use smithay::utils::Rectangle;
+    use super::{desktop_extent, steam_close_hit, work_area_extent};
+    use smithay::utils::{Point, Rectangle, Size};
 
     #[test]
     fn desktop_extent_spans_to_the_far_edge_of_the_layout() {
@@ -743,5 +795,15 @@ mod tests {
             Rectangle::<i32, smithay::utils::Logical>::new((0, 40).into(), (1920, 1160).into());
 
         assert_eq!(work_area_extent(output, zone), (2560, 40, 1920, 1160));
+    }
+
+    #[test]
+    fn steam_close_probe_is_limited_to_the_top_right_control() {
+        let size = Size::<i32, smithay::utils::Logical>::from((850, 722));
+
+        assert!(steam_close_hit(Point::from((836.0, 17.0)), size));
+        assert!(!steam_close_hit(Point::from((800.0, 17.0)), size));
+        assert!(!steam_close_hit(Point::from((836.0, 45.0)), size));
+        assert!(!steam_close_hit(Point::from((850.0, 17.0)), size));
     }
 }

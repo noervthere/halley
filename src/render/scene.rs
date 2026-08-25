@@ -610,10 +610,8 @@ pub fn build(
             continue;
         }
         if window.wl_surface().is_some_and(|surface| {
-            request
-                .resources
-                .window_close_animations
-                .has_pending(surface.as_ref())
+            let animations = &request.resources.window_close_animations;
+            animations.has_pending(surface.as_ref()) || animations.is_active(surface.as_ref())
         }) {
             continue;
         }

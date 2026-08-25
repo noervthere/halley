@@ -75,6 +75,10 @@ pub struct WindowCloseAnimations {
     config: Animations,
     pending: HashMap<WlSurface, CapturedWindow>,
     provisional: HashSet<WlSurface>,
+    /// Client-owned close controls can begin the visual handoff before the
+    /// client reaches an authoritative unmap boundary. Finished speculative
+    /// entries stay transparent until teardown is confirmed or cancelled.
+    speculative: Vec<WlSurface>,
     active: HashMap<WlSurface, ActiveClose>,
     next_order: u64,
 }
@@ -85,6 +89,7 @@ impl WindowCloseAnimations {
             config,
             pending: HashMap::new(),
             provisional: HashSet::new(),
+            speculative: Vec::new(),
             active: HashMap::new(),
             next_order: 0,
         }
@@ -127,6 +132,7 @@ impl WindowCloseAnimations {
 
     pub fn start(&mut self, surface: &WlSurface, now: Duration) -> bool {
         self.provisional.remove(surface);
+        remove_surface(&mut self.speculative, surface);
         let Some(captured) = self.pending.remove(surface) else {
             return false;
         };
@@ -143,6 +149,29 @@ impl WindowCloseAnimations {
             },
         );
         true
+    }
+
+    pub fn start_speculative(&mut self, surface: &WlSurface, now: Duration) -> bool {
+        if !self.start(surface, now) {
+            return false;
+        }
+        self.speculative.push(surface.clone());
+        true
+    }
+
+    /// Allows a speculative animation to expire normally once the client has
+    /// reached a real surface teardown boundary.
+    pub fn confirm_unmapped(&mut self, surface: &WlSurface) -> bool {
+        remove_surface(&mut self.speculative, surface)
+    }
+
+    /// Restores a client that did not actually close after activating its
+    /// client-owned close control.
+    pub fn cancel_speculative(&mut self, surface: &WlSurface) -> bool {
+        if !remove_surface(&mut self.speculative, surface) {
+            return false;
+        }
+        self.active.remove(surface).is_some()
     }
 
     pub fn retarget_pending_to_node(&mut self, surface: &WlSurface, target: Vec2) -> bool {
@@ -176,6 +205,7 @@ impl WindowCloseAnimations {
 
     pub fn cancel(&mut self, surface: &WlSurface) {
         self.provisional.remove(surface);
+        remove_surface(&mut self.speculative, surface);
         self.pending.remove(surface);
         self.active.remove(surface);
     }
@@ -184,6 +214,7 @@ impl WindowCloseAnimations {
         self.config = config;
         if !close_enabled(config) {
             self.provisional.clear();
+            self.speculative.clear();
             self.pending.clear();
         }
     }
@@ -241,9 +272,18 @@ impl WindowCloseAnimations {
     }
 
     pub fn cleanup(&mut self, now: Duration) {
-        self.active
-            .retain(|_, active| !active.timeline.is_finished_at(now));
+        let speculative = &self.speculative;
+        self.active.retain(|surface, active| {
+            speculative.iter().any(|candidate| candidate == surface)
+                || !active.timeline.is_finished_at(now)
+        });
     }
+}
+
+fn remove_surface(surfaces: &mut Vec<WlSurface>, surface: &WlSurface) -> bool {
+    let previous_len = surfaces.len();
+    surfaces.retain(|candidate| candidate != surface);
+    surfaces.len() != previous_len
 }
 
 fn closing_render(

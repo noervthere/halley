@@ -147,7 +147,7 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
                     Some(BufferAssignment::Removed)
                 )
             });
-            if removes_buffer {
+            if removes_buffer && !super::closing::x11_buffer_removed(session, surface) {
                 super::closing::capture_native_toplevel_before_unmap(session, surface);
             }
 

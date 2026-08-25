@@ -81,6 +81,18 @@ fn forward_pointer_button(intercepted: bool, finishing_client_move: bool) -> boo
     !intercepted || finishing_client_move
 }
 
+fn steam_client_close_target(
+    route: Option<&crate::input::pointer::PointerRoute>,
+) -> Option<Window> {
+    let route = route?;
+    let crate::input::pointer::PointerTarget::Window(window) = &route.target else {
+        return None;
+    };
+    let (_, surface_origin) = route.focus.as_ref()?;
+    let local = route.location - *surface_origin;
+    crate::xwayland::is_steam_client_close_hit(window, local).then(|| window.clone())
+}
+
 fn plain_background_press_dismisses_bloom(intercepted: bool, on_background: bool) -> bool {
     !intercepted && on_background
 }
@@ -2614,6 +2626,12 @@ where
         }
 
         if forward_pointer_button(intercepted, finishing_client_move) {
+            if button == BTN_LEFT
+                && state == ButtonState::Released
+                && let Some(window) = steam_client_close_target(route.as_ref())
+            {
+                super::closing::start_steam_client_close_control(session, &window);
+            }
             pointer_handle.button(
                 session,
                 &ButtonEvent {
