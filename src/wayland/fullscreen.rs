@@ -862,15 +862,15 @@ impl FullscreenManager {
                 wayland.space.element_geometry(&window),
             )
         {
-            entry.restore = Some(WindowedPlacement {
-                location,
-                geometry,
-                output: Some(output.name()),
-            });
-            entry.presentation_windowed = Some(geometry);
-            if !entry.preserve_stack {
-                entry.presentation_output = None;
-            }
+            record_native_exit_placement(
+                entry,
+                restore,
+                WindowedPlacement {
+                    location,
+                    geometry,
+                    output: Some(output.name()),
+                },
+            );
         }
         retarget_visual(entry, self.animations, now, visual_desired);
         entry.active = visual_desired;
@@ -1348,6 +1348,25 @@ fn prefer_seeded_restore(
     current: Option<WindowedPlacement>,
 ) -> Option<WindowedPlacement> {
     seeded.or(current)
+}
+
+fn record_native_exit_placement(
+    entry: &mut FullscreenWindow,
+    seeded: Option<WindowedPlacement>,
+    observed: WindowedPlacement,
+) {
+    // Native clients may acknowledge the windowed configure one commit before
+    // attaching the resized buffer. At that point Space still reports the
+    // fullscreen geometry. The pre-fullscreen placement is the configure's
+    // authoritative endpoint; replacing it with the stale observed geometry
+    // turns the exit motion into a same-size move followed by a cleanup snap.
+    let placement = prefer_seeded_restore(seeded, Some(observed))
+        .expect("the observed native placement is always available");
+    entry.presentation_windowed = Some(placement.geometry);
+    entry.restore = Some(placement);
+    if !entry.preserve_stack {
+        entry.presentation_output = None;
+    }
 }
 
 fn can_update_external_restore(entry: &FullscreenWindow) -> bool {
@@ -2058,5 +2077,28 @@ mod tests {
         assert_eq!(fallback.geometry, buffered_geometry);
         assert_eq!(restore.geometry, seeded_geometry);
         assert_eq!(restore.location, seeded_geometry.loc);
+    }
+
+    #[test]
+    fn native_exit_ack_keeps_windowed_endpoint_when_buffer_is_still_fullscreen() {
+        let windowed_geometry = Rectangle::new((960, 480).into(), (640, 480).into());
+        let fullscreen_geometry = Rectangle::new((0, 0).into(), (1920, 1080).into());
+        let windowed = WindowedPlacement {
+            location: windowed_geometry.loc,
+            geometry: windowed_geometry,
+            output: Some("DP-1".to_string()),
+        };
+        let observed = WindowedPlacement {
+            location: windowed_geometry.loc,
+            geometry: fullscreen_geometry,
+            output: Some("DP-1".to_string()),
+        };
+        let mut entry = test_entry(true);
+        entry.desired = false;
+
+        record_native_exit_placement(&mut entry, Some(windowed), observed);
+
+        assert_eq!(entry.restore.as_ref().unwrap().geometry, windowed_geometry);
+        assert_eq!(entry.presentation_windowed, Some(windowed_geometry));
     }
 }
