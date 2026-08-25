@@ -775,7 +775,8 @@ end
 # into that chord. Trigger names are case-insensitive.
 keybinds:
   # `$var.mod` in chord names expands to this modifier. Accepted values are
-  # "super", "alt", "ctrl", and "shift".
+  # "super", "alt", "ctrl", and "shift", or an exact side such as
+  # "left-super", "right-alt", or "left-ctrl".
   mod "super"
 
   # Built-in compositor actions.
