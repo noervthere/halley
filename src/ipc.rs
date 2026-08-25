@@ -9,7 +9,7 @@ use std::sync::mpsc;
 use calloop::channel::{Event, Sender, channel};
 use calloop::generic::Generic;
 use calloop::{Interest, LoopHandle, Mode as CalloopMode, PostAction};
-use smithay::output::Mode as OutputMode;
+use smithay::output::{Mode as OutputMode, Output};
 
 const MAX_REQUEST_FDS: usize = 32;
 
@@ -695,8 +695,214 @@ pub fn handle_request<D: crate::session::SessionDriver>(
         halley_ipc::Request::Trail(request) => {
             typed_api_response(crate::trail::handle_request(app, request))
         }
+        halley_ipc::Request::LocalCapture(request) => {
+            crate::capture::request_local_capture(app, request, reply);
+            return;
+        }
+        halley_ipc::Request::Control(request) => handle_control_request(app, request),
+        halley_ipc::Request::GamescopeTarget { selector } => {
+            gamescope_target_response(app, &selector)
+        }
     };
     let _ = reply.send(response, Vec::new());
+}
+
+fn handle_control_request<D: crate::session::SessionDriver>(
+    session: &mut crate::session::Session<D>,
+    request: halley_ipc::ControlRequest,
+) -> halley_ipc::Response {
+    let direction = |direction| match direction {
+        halley_ipc::ControlDirection::Left => halley_config::Direction::Left,
+        halley_ipc::ControlDirection::Right => halley_config::Direction::Right,
+        halley_ipc::ControlDirection::Up => halley_config::Direction::Up,
+        halley_ipc::ControlDirection::Down => halley_config::Direction::Down,
+    };
+    let (action, output) = match request {
+        halley_ipc::ControlRequest::MonitorFocus(target) => {
+            let target = match target {
+                halley_ipc::MonitorFocusTarget::Direction(value) => {
+                    halley_config::MonitorTarget::Direction(direction(value))
+                }
+                halley_ipc::MonitorFocusTarget::Output(name) => {
+                    if !session
+                        .wayland
+                        .space
+                        .outputs()
+                        .any(|output| output.name() == name)
+                    {
+                        return api_error(
+                            halley_ipc::ServerErrorKind::NotFound,
+                            format!("unknown output {name:?}"),
+                        );
+                    }
+                    halley_config::MonitorTarget::Output(name)
+                }
+            };
+            (halley_config::Action::MonitorFocus(target), None)
+        }
+        halley_ipc::ControlRequest::StackCycle {
+            direction: cycle,
+            output,
+        } => {
+            let output = match control_output(session, output.as_deref()) {
+                Ok(output) => output,
+                Err(response) => return response,
+            };
+            let is_stacking = session
+                .clusters
+                .active_on(&output)
+                .and_then(|id| session.clusters.metadata(id))
+                .is_some_and(|metadata| {
+                    metadata.layout
+                        == halley_core::cluster::layout::ClusterWorkspaceLayoutKind::Stacking
+                });
+            if !is_stacking {
+                return api_error(
+                    halley_ipc::ServerErrorKind::NotFound,
+                    format!("no active stacking cluster on output {output:?}"),
+                );
+            }
+            let cycle = match cycle {
+                halley_ipc::StackCycleDirection::Forward => {
+                    halley_config::FocusCycleDirection::Forward
+                }
+                halley_ipc::StackCycleDirection::Backward => {
+                    halley_config::FocusCycleDirection::Backward
+                }
+            };
+            (halley_config::Action::FocusCycle(cycle), Some(output))
+        }
+        halley_ipc::ControlRequest::TileFocus {
+            direction: value,
+            output,
+        } => {
+            let output = match control_output(session, output.as_deref()) {
+                Ok(output) => output,
+                Err(response) => return response,
+            };
+            (
+                halley_config::Action::ClusterTileFocus(direction(value)),
+                Some(output),
+            )
+        }
+        halley_ipc::ControlRequest::TileSwap {
+            direction: value,
+            output,
+        } => {
+            let output = match control_output(session, output.as_deref()) {
+                Ok(output) => output,
+                Err(response) => return response,
+            };
+            (
+                halley_config::Action::ClusterTileSwap(direction(value)),
+                Some(output),
+            )
+        }
+    };
+    let Some(socket_name) = session.wayland_display.clone() else {
+        return api_error(
+            halley_ipc::ServerErrorKind::Internal,
+            "Wayland display is not ready",
+        );
+    };
+    crate::session::input::actions::dispatch(
+        session,
+        action,
+        &socket_name,
+        output.as_deref(),
+        None,
+    );
+    halley_ipc::Response::Ack
+}
+
+fn control_output<D: crate::session::SessionDriver>(
+    session: &crate::session::Session<D>,
+    requested: Option<&str>,
+) -> Result<String, halley_ipc::Response> {
+    if let Some(name) = requested {
+        if session
+            .wayland
+            .space
+            .outputs()
+            .any(|output| output.name() == name)
+        {
+            return Ok(name.to_string());
+        }
+        return Err(api_error(
+            halley_ipc::ServerErrorKind::NotFound,
+            format!("unknown output {name:?}"),
+        ));
+    }
+    crate::wayland::focus::selected_output(&session.wayland)
+        .map(Output::name)
+        .or_else(|| Some(session.driver.primary_output().name()))
+        .ok_or_else(|| api_error(halley_ipc::ServerErrorKind::NotFound, "no active output"))
+}
+
+fn gamescope_target_response<D: crate::session::SessionDriver>(
+    session: &crate::session::Session<D>,
+    selector: &str,
+) -> halley_ipc::Response {
+    let output = match selector.trim() {
+        "" | "focused" => crate::wayland::focus::selected_output(&session.wayland)
+            .cloned()
+            .unwrap_or_else(|| session.driver.primary_output().clone()),
+        "cursor" => session
+            .wayland
+            .space
+            .output_under(session.pointer.position())
+            .next()
+            .cloned()
+            .or_else(|| crate::wayland::focus::selected_output(&session.wayland).cloned())
+            .unwrap_or_else(|| session.driver.primary_output().clone()),
+        "primary" => session.driver.primary_output().clone(),
+        name => {
+            let Some(output) = session
+                .wayland
+                .space
+                .outputs()
+                .find(|output| output.name() == name)
+                .cloned()
+            else {
+                return api_error(
+                    halley_ipc::ServerErrorKind::NotFound,
+                    format!("unknown gamescope monitor selector {name:?}"),
+                );
+            };
+            output
+        }
+    };
+    let name = output.name();
+    let info = session
+        .driver
+        .output_info()
+        .into_iter()
+        .find(|info| info.name == name);
+    let current = info.as_ref().and_then(|info| {
+        info.current_mode
+            .and_then(|index| info.modes.get(index))
+            .cloned()
+    });
+    let geometry = session.wayland.space.output_geometry(&output);
+    let width = current
+        .as_ref()
+        .map(|mode| mode.width.max(0) as u32)
+        .or_else(|| geometry.map(|geometry| geometry.size.w.max(0) as u32))
+        .unwrap_or(0);
+    let height = current
+        .as_ref()
+        .map(|mode| mode.height.max(0) as u32)
+        .or_else(|| geometry.map(|geometry| geometry.size.h.max(0) as u32))
+        .unwrap_or(0);
+    let refresh_hz = current
+        .filter(|mode| mode.refresh_millihz > 0)
+        .map(|mode| mode.refresh_millihz as f64 / 1000.0);
+    halley_ipc::Response::GamescopeTarget(halley_ipc::GamescopeTargetResponse {
+        output: name,
+        width,
+        height,
+        refresh_hz,
+    })
 }
 
 fn api_error(

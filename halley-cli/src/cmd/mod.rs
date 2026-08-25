@@ -1,13 +1,18 @@
+mod capture;
 mod cluster;
+mod control;
 mod node;
+pub mod portal;
 mod trail;
 
 use std::path::PathBuf;
 
 use halley_api::DpmsCommand;
+use halley_api::{CaptureMode, Direction, MonitorTarget, StackCycleDirection};
 
 pub use cluster::ClusterCommand;
 pub use node::NodeCommand;
+pub use portal::PortalCommand;
 pub use trail::TrailCommand;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -21,6 +26,12 @@ pub enum BearingsAction {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
     Outputs,
+    Reload,
+    Capture {
+        mode: CaptureMode,
+        output: Option<String>,
+    },
+    CaptureHelp,
     Dpms {
         command: DpmsCommand,
         output: Option<String>,
@@ -43,6 +54,24 @@ pub enum Action {
         output: TrailOutput,
     },
     TrailHelp,
+    MonitorFocus(MonitorTarget),
+    MonitorHelp,
+    StackCycle {
+        direction: StackCycleDirection,
+        output: Option<String>,
+    },
+    StackHelp,
+    Tile {
+        direction: Direction,
+        output: Option<String>,
+        swap: bool,
+    },
+    TileHelp,
+    Portal {
+        command: PortalCommand,
+        json: bool,
+    },
+    PortalHelp,
     ConfigEdit(Option<PathBuf>),
     ConfigVerify(Option<PathBuf>),
     ConfigHelp,
@@ -81,11 +110,17 @@ pub fn parse(args: &[String]) -> Result<Action, String> {
             }
             Action::Outputs
         }
+        Some("reload") => Action::Reload,
+        Some("capture") => return capture::parse(&args[1..]),
         Some("dpms") => return parse_dpms(&args[1..]),
         Some("node") => return node::parse(&args[1..]),
         Some("cluster") => return cluster::parse(&args[1..]),
         Some("bearings") => return parse_bearings(&args[1..]),
         Some("trail") => return trail::parse(&args[1..]),
+        Some("monitor") => return control::parse_monitor(&args[1..]),
+        Some("stack") => return control::parse_stack(&args[1..]),
+        Some("tile") => return control::parse_tile(&args[1..]),
+        Some("portal") => return portal::parse(&args[1..]),
         Some("config") => return parse_config(&args[1..]),
         Some("quit") => Action::Quit,
         Some(other) => return Err(format!("unknown command {other:?}")),
@@ -95,6 +130,29 @@ pub fn parse(args: &[String]) -> Result<Action, String> {
         return Err(format!("unexpected argument {unexpected:?}"));
     }
     Ok(action)
+}
+
+fn parse_output_option(args: &[String], command: &str) -> Result<Option<String>, String> {
+    let mut output = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "-o" | "--output" => {
+                index += 1;
+                let name = args
+                    .get(index)
+                    .ok_or_else(|| format!("{command} output option requires a connector name"))?;
+                if output.replace(name.clone()).is_some() {
+                    return Err(format!(
+                        "{command} output option was specified more than once"
+                    ));
+                }
+            }
+            other => return Err(format!("unexpected {command} argument {other:?}")),
+        }
+        index += 1;
+    }
+    Ok(output)
 }
 
 fn parse_dpms(args: &[String]) -> Result<Action, String> {

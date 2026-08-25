@@ -18,14 +18,15 @@ pub use types::{
     CaptureFrameRequest, CaptureFrameResponse, CaptureSource, ClusterDraftAppLaunch,
     ClusterDraftRequest, ClusterDraftSource, ClusterDraftState, ClusterInfo, ClusterLayoutKind,
     ClusterListResponse, ClusterOutputGroup, ClusterRequest, ClusterSummary, ClusterTarget,
-    CursorMetadata, CursorMode, DmabufFormat, DmabufPlane, DpmsCommand, EventTopic,
-    HALLEY_API_VERSION, HALLEY_IPC_VERSION, HelloRequest, ModeInfo, NodeInfo, NodeKind,
-    NodeListResponse, NodeMoveDirection, NodeOutputGroup, NodeProtocolFamily, NodeRelationInfo,
-    NodeRequest, NodeRole, NodeSelector, NodeState, OutputInfo, OutputsResponse,
+    ControlDirection, ControlRequest, CursorMetadata, CursorMode, DmabufFormat, DmabufPlane,
+    DpmsCommand, EventTopic, GamescopeTargetResponse, HALLEY_API_VERSION, HALLEY_IPC_VERSION,
+    HelloRequest, LocalCaptureMode, LocalCaptureRequest, ModeInfo, MonitorFocusTarget, NodeInfo,
+    NodeKind, NodeListResponse, NodeMoveDirection, NodeOutputGroup, NodeProtocolFamily,
+    NodeRelationInfo, NodeRequest, NodeRole, NodeSelector, NodeState, OutputInfo, OutputsResponse,
     RegisterDmabufRequest, Request, Response, SOURCE_MONITOR, SOURCE_WINDOW, ScreenshotRequest,
     ScreenshotResponse, ScreenshotTarget, ServerError, ServerErrorKind, ServerInfo,
-    SourceChooserRequest, SourceChooserResponse, StateSnapshot, SubscribeRequest, TrailEntryInfo,
-    TrailListResponse, TrailRequest, TrailTarget, VersionInfo,
+    SourceChooserRequest, SourceChooserResponse, StackCycleDirection, StateSnapshot,
+    SubscribeRequest, TrailEntryInfo, TrailListResponse, TrailRequest, TrailTarget, VersionInfo,
 };
 
 fn runtime_dir_from(base: impl AsRef<Path>) -> PathBuf {

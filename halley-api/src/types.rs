@@ -81,6 +81,48 @@ pub enum TrailDirection {
     Next,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Direction {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StackCycleDirection {
+    Forward,
+    Backward,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MonitorTarget {
+    Direction(Direction),
+    Output(String),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CaptureMode {
+    Menu,
+    Region,
+    Screen,
+    Window,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CaptureOutcome {
+    Saved(PathBuf),
+    Cancelled,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct GamescopeTarget {
+    pub output: String,
+    pub width: u32,
+    pub height: u32,
+    pub refresh_hz: Option<f64>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TrailTarget {
     Index(usize),

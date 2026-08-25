@@ -3,9 +3,10 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use crate::{
-    BearingsCommand, ClusterDraft, ClusterInfo, ClusterSummary, ClusterTarget, DpmsCommand, Error,
-    ErrorKind, EventStream, EventTopic, HALLEY_API_VERSION, NodeInfo, NodeMoveDirection,
-    NodeSelector, OutputInfo, Result, ServerInfo, Subscription, TrailDirection, TrailInfo,
+    BearingsCommand, CaptureMode, CaptureOutcome, ClusterDraft, ClusterInfo, ClusterSummary,
+    ClusterTarget, Direction, DpmsCommand, Error, ErrorKind, EventStream, EventTopic,
+    GamescopeTarget, HALLEY_API_VERSION, MonitorTarget, NodeInfo, NodeMoveDirection, NodeSelector,
+    OutputInfo, Result, ServerInfo, StackCycleDirection, Subscription, TrailDirection, TrailInfo,
     TrailTarget,
 };
 
@@ -308,6 +309,72 @@ impl Client {
     pub fn reload_config(&self) -> Result<()> {
         self.ack(halley_ipc::Request::ConfigReload)
     }
+    pub fn capture(&self, mode: CaptureMode, output: Option<&str>) -> Result<CaptureOutcome> {
+        let mode = match mode {
+            CaptureMode::Menu => halley_ipc::LocalCaptureMode::Menu,
+            CaptureMode::Region => halley_ipc::LocalCaptureMode::Region,
+            CaptureMode::Screen => halley_ipc::LocalCaptureMode::Screen,
+            CaptureMode::Window => halley_ipc::LocalCaptureMode::Window,
+        };
+        match self.request(halley_ipc::Request::LocalCapture(
+            halley_ipc::LocalCaptureRequest {
+                mode,
+                output: output.map(str::to_owned),
+            },
+        ))? {
+            halley_ipc::Response::Screenshot(halley_ipc::ScreenshotResponse::Saved { path }) => {
+                Ok(CaptureOutcome::Saved(path.into()))
+            }
+            halley_ipc::Response::Screenshot(halley_ipc::ScreenshotResponse::Cancelled) => {
+                Ok(CaptureOutcome::Cancelled)
+            }
+            halley_ipc::Response::Screenshot(halley_ipc::ScreenshotResponse::Failed {
+                message,
+            }) => Err(Error::new(ErrorKind::Internal, message)),
+            other => Err(unexpected("capture", other)),
+        }
+    }
+    pub fn focus_monitor(&self, target: MonitorTarget) -> Result<()> {
+        let target = match target {
+            MonitorTarget::Direction(direction) => {
+                halley_ipc::MonitorFocusTarget::Direction(direction_wire(direction))
+            }
+            MonitorTarget::Output(output) => halley_ipc::MonitorFocusTarget::Output(output),
+        };
+        self.ack(halley_ipc::Request::Control(
+            halley_ipc::ControlRequest::MonitorFocus(target),
+        ))
+    }
+    pub fn cycle_stack(&self, direction: StackCycleDirection, output: Option<&str>) -> Result<()> {
+        self.ack(halley_ipc::Request::Control(
+            halley_ipc::ControlRequest::StackCycle {
+                direction: match direction {
+                    StackCycleDirection::Forward => halley_ipc::StackCycleDirection::Forward,
+                    StackCycleDirection::Backward => halley_ipc::StackCycleDirection::Backward,
+                },
+                output: output.map(str::to_owned),
+            },
+        ))
+    }
+    pub fn focus_tile(&self, direction: Direction, output: Option<&str>) -> Result<()> {
+        self.tile_control(direction, output, false)
+    }
+    pub fn swap_tile(&self, direction: Direction, output: Option<&str>) -> Result<()> {
+        self.tile_control(direction, output, true)
+    }
+    pub fn gamescope_target(&self, selector: &str) -> Result<GamescopeTarget> {
+        match self.request(halley_ipc::Request::GamescopeTarget {
+            selector: selector.to_owned(),
+        })? {
+            halley_ipc::Response::GamescopeTarget(target) => Ok(GamescopeTarget {
+                output: target.output,
+                width: target.width,
+                height: target.height,
+                refresh_hz: target.refresh_hz,
+            }),
+            other => Err(unexpected("gamescope target", other)),
+        }
+    }
     pub fn request_quit(&self) -> Result<()> {
         self.ack(halley_ipc::Request::Quit)
     }
@@ -340,6 +407,21 @@ impl Client {
             halley_ipc::Response::NodeInfo(v) => Ok(v.into()),
             other => Err(unexpected("node", other)),
         }
+    }
+    fn tile_control(&self, direction: Direction, output: Option<&str>, swap: bool) -> Result<()> {
+        let direction = direction_wire(direction);
+        let request = if swap {
+            halley_ipc::ControlRequest::TileSwap {
+                direction,
+                output: output.map(str::to_owned),
+            }
+        } else {
+            halley_ipc::ControlRequest::TileFocus {
+                direction,
+                output: output.map(str::to_owned),
+            }
+        };
+        self.ack(halley_ipc::Request::Control(request))
     }
     fn ack(&self, request: halley_ipc::Request) -> Result<()> {
         match self.request(request)? {
@@ -387,6 +469,14 @@ fn selector_wire(v: NodeSelector) -> halley_ipc::NodeSelector {
         NodeSelector::Id(id) => halley_ipc::NodeSelector::Id(id.get()),
         NodeSelector::Title(s) => halley_ipc::NodeSelector::Title(s),
         NodeSelector::App(s) => halley_ipc::NodeSelector::App(s),
+    }
+}
+fn direction_wire(direction: Direction) -> halley_ipc::ControlDirection {
+    match direction {
+        Direction::Left => halley_ipc::ControlDirection::Left,
+        Direction::Right => halley_ipc::ControlDirection::Right,
+        Direction::Up => halley_ipc::ControlDirection::Up,
+        Direction::Down => halley_ipc::ControlDirection::Down,
     }
 }
 fn target_wire(v: ClusterTarget) -> halley_ipc::ClusterTarget {

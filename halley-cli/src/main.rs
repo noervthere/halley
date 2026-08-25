@@ -6,12 +6,24 @@ mod print;
 use std::process::ExitCode;
 
 use cmd::{Action, BearingsAction, ClusterCommand, NodeCommand, TrailCommand};
-use halley_api::{BearingsCommand, Client};
+use halley_api::{BearingsCommand, CaptureOutcome, Client};
 
 fn main() -> ExitCode {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     match cmd::parse(&args) {
         Ok(Action::Outputs) => with_client(|client| Ok(print::outputs(client.outputs()?))),
+        Ok(Action::Reload) => with_client(|client| {
+            client.reload_config()?;
+            Ok(ExitCode::SUCCESS)
+        }),
+        Ok(Action::Capture { mode, output }) => with_client(|client| {
+            match client.capture(mode, output.as_deref())? {
+                CaptureOutcome::Saved(path) => println!("saved: {}", path.display()),
+                CaptureOutcome::Cancelled => println!("cancelled"),
+            }
+            Ok(ExitCode::SUCCESS)
+        }),
+        Ok(Action::CaptureHelp) => show(help::CAPTURE_HELP),
         Ok(Action::Dpms { command, output }) => with_client(|client| {
             client.set_dpms(command, output.as_deref())?;
             Ok(ExitCode::SUCCESS)
@@ -110,6 +122,31 @@ fn main() -> ExitCode {
             }
         }),
         Ok(Action::TrailHelp) => show(help::TRAIL_HELP),
+        Ok(Action::MonitorFocus(target)) => with_client(|client| {
+            client.focus_monitor(target)?;
+            Ok(ExitCode::SUCCESS)
+        }),
+        Ok(Action::MonitorHelp) => show(help::MONITOR_HELP),
+        Ok(Action::StackCycle { direction, output }) => with_client(|client| {
+            client.cycle_stack(direction, output.as_deref())?;
+            Ok(ExitCode::SUCCESS)
+        }),
+        Ok(Action::StackHelp) => show(help::STACK_HELP),
+        Ok(Action::Tile {
+            direction,
+            output,
+            swap,
+        }) => with_client(|client| {
+            if swap {
+                client.swap_tile(direction, output.as_deref())?;
+            } else {
+                client.focus_tile(direction, output.as_deref())?;
+            }
+            Ok(ExitCode::SUCCESS)
+        }),
+        Ok(Action::TileHelp) => show(help::TILE_HELP),
+        Ok(Action::Portal { command, json }) => cmd::portal::run(command, json),
+        Ok(Action::PortalHelp) => show(help::PORTAL_HELP),
         Ok(Action::ConfigEdit(path)) => config::edit(path),
         Ok(Action::ConfigVerify(path)) => config::verify(path),
         Ok(Action::ConfigHelp) => show(help::CONFIG_HELP),
@@ -163,11 +200,17 @@ mod tests {
             .expect("help has Commands followed by Options");
 
         assert!(commands.contains("outputs"));
+        assert!(commands.contains("reload"));
+        assert!(commands.contains("capture"));
         assert!(commands.contains("dpms"));
         assert!(commands.contains("node"));
         assert!(commands.contains("cluster"));
         assert!(commands.contains("bearings"));
         assert!(commands.contains("trail"));
+        assert!(commands.contains("monitor"));
+        assert!(commands.contains("stack"));
+        assert!(commands.contains("tile"));
+        assert!(commands.contains("portal"));
         assert!(commands.contains("config"));
         assert!(commands.contains("quit"));
         assert!(!commands.contains("--help"));

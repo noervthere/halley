@@ -139,6 +139,7 @@ enum Selection {
 enum PendingCapture {
     Local {
         menu: ScreenshotMenu,
+        reply: Option<crate::ipc::ReplySender>,
     },
     Screenshot {
         request_handle: String,
@@ -281,8 +282,19 @@ impl CaptureState {
         self.selection = Some(Selection::Menu);
         self.pending = Some(PendingCapture::Local {
             menu: ScreenshotMenu::new(output.name(), geometry, window_available),
+            reply: None,
         });
         true
+    }
+
+    fn attach_local_reply(&mut self, reply: crate::ipc::ReplySender) {
+        let Some(PendingCapture::Local {
+            reply: local_reply, ..
+        }) = self.pending.as_mut()
+        else {
+            unreachable!("local reply can only be attached to a local capture")
+        };
+        *local_reply = Some(reply);
     }
 
     fn begin_area(
@@ -581,14 +593,14 @@ impl CaptureState {
 
     fn local_menu(&self) -> Option<&ScreenshotMenu> {
         match self.pending.as_ref() {
-            Some(PendingCapture::Local { menu }) => Some(menu),
+            Some(PendingCapture::Local { menu, .. }) => Some(menu),
             _ => None,
         }
     }
 
     fn local_menu_mut(&mut self) -> Option<&mut ScreenshotMenu> {
         match self.pending.as_mut() {
-            Some(PendingCapture::Local { menu }) => Some(menu),
+            Some(PendingCapture::Local { menu, .. }) => Some(menu),
             _ => None,
         }
     }
@@ -681,6 +693,73 @@ pub fn request_screenshot<D: SessionDriver>(
             begin_modal_capture(session);
         }
     }
+}
+
+pub fn request_local_capture<D: SessionDriver>(
+    session: &mut Session<D>,
+    request: halley_ipc::LocalCaptureRequest,
+    reply: crate::ipc::ReplySender,
+) {
+    let fail = |reply: crate::ipc::ReplySender, message: &str| {
+        let _ = reply.send(
+            halley_ipc::Response::Screenshot(halley_ipc::ScreenshotResponse::Failed {
+                message: message.to_string(),
+            }),
+            Vec::new(),
+        );
+    };
+    if session.session_lock.active() {
+        fail(reply, "session is locked");
+        return;
+    }
+    if let Some(output) = request.output.as_deref()
+        && !session
+            .wayland
+            .space
+            .outputs()
+            .any(|candidate| candidate.name() == output)
+    {
+        fail(reply, &format!("unknown output {output:?}"));
+        return;
+    }
+    let preferred = request.output.or_else(|| {
+        crate::wayland::focus::selected_output(&session.wayland).map(|output| output.name())
+    });
+    let window_available = session.wayland.space.elements().any(|window| {
+        preferred.as_deref().is_none_or(|output| {
+            crate::wayland::window_output_name(window)
+                .map(|name| name == output)
+                .unwrap_or_else(|| session.driver.primary_output().name() == output)
+        })
+    });
+    if !session.capture.begin_menu(
+        &session.wayland.space,
+        preferred.as_deref(),
+        window_available,
+    ) {
+        fail(
+            reply,
+            "another capture is already active or no output is available",
+        );
+        return;
+    }
+    session.capture.attach_local_reply(reply);
+    let mode = match request.mode {
+        halley_ipc::LocalCaptureMode::Menu => None,
+        halley_ipc::LocalCaptureMode::Region => Some(ScreenshotMode::Region),
+        halley_ipc::LocalCaptureMode::Screen => Some(ScreenshotMode::Screen),
+        halley_ipc::LocalCaptureMode::Window => Some(ScreenshotMode::Window),
+    };
+    if mode.is_some_and(|mode| !session.capture.activate_menu(mode, &session.wayland.space)) {
+        if let Some(PendingCapture::Local {
+            reply: Some(reply), ..
+        }) = session.capture.cancel()
+        {
+            fail(reply, "requested capture mode is unavailable");
+        }
+        return;
+    }
+    begin_modal_capture(session);
 }
 
 pub fn request_source<D: SessionDriver>(
@@ -824,9 +903,12 @@ pub enum PendingCaptureReply {
 impl From<PendingCapture> for PendingCaptureReply {
     fn from(pending: PendingCapture) -> Self {
         match pending {
-            PendingCapture::Local { menu } => Self::Local {
-                output_name: menu.output_name().to_string(),
-            },
+            PendingCapture::Local { menu, reply } => reply.map_or_else(
+                || Self::Local {
+                    output_name: menu.output_name().to_string(),
+                },
+                Self::Ipc,
+            ),
             PendingCapture::Screenshot { reply, .. } => Self::Ipc(reply),
             PendingCapture::Source { .. } => {
                 unreachable!("source selection returned a screenshot target")
@@ -888,7 +970,15 @@ pub fn cancel_selected<D: SessionDriver>(session: &mut Session<D>) -> bool {
                 Vec::new(),
             );
         }
-        PendingCapture::Local { .. } => {}
+        PendingCapture::Local {
+            reply: Some(reply), ..
+        } => {
+            let _ = reply.send(
+                halley_ipc::Response::Screenshot(halley_ipc::ScreenshotResponse::Cancelled),
+                Vec::new(),
+            );
+        }
+        PendingCapture::Local { reply: None, .. } => {}
     }
     finish_modal_capture(session);
     true

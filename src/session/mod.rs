@@ -16,7 +16,7 @@ pub(crate) mod closing;
 mod cursor;
 mod focus;
 pub(crate) mod gesture;
-mod input;
+pub(crate) mod input;
 pub(crate) use input::{cluster_owns_focus, sync_cluster_activation_focus};
 mod interaction;
 mod lifecycle;
