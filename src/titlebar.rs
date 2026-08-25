@@ -14,6 +14,18 @@ const TITLE_MAX_WIDTH: i32 = 240;
 pub const BUTTON_GLYPH_MAX: i32 = 16;
 pub const BUTTON_GLYPH_PADDING: i32 = 6;
 
+#[derive(Clone, Copy)]
+struct TitlebarExclusion {
+    app_id: &'static str,
+    title: &'static str,
+}
+
+// Clients that reach Halley as server-decorated despite owning their titlebar.
+const TITLEBAR_EXCLUSIONS: &[TitlebarExclusion] = &[TitlebarExclusion {
+    app_id: "com.danklinux.dms",
+    title: "Settings",
+}];
+
 /// The client's decoration contract, independent of temporary fullscreen
 /// suppression of compositor chrome.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -37,7 +49,11 @@ impl WindowChrome {
         decorations: &halley_config::Decorations,
         font: &halley_config::Font,
     ) -> Self {
-        Self::from_mode(decoration_mode(window), decorations, font)
+        let mut chrome = Self::from_mode(decoration_mode(window), decorations, font);
+        if titlebar_is_excluded(window) {
+            chrome.titlebar_height = None;
+        }
+        chrome
     }
 
     pub fn from_mode(
@@ -424,6 +440,17 @@ pub fn decoration_mode(window: &Window) -> DecorationMode {
     }
 }
 
+fn titlebar_is_excluded(window: &Window) -> bool {
+    let identity = crate::window::rules::identity(window);
+    titlebar_identity_is_excluded(identity.app_id.as_deref(), identity.title.as_deref())
+}
+
+fn titlebar_identity_is_excluded(app_id: Option<&str>, title: Option<&str>) -> bool {
+    TITLEBAR_EXCLUSIONS
+        .iter()
+        .any(|excluded| app_id == Some(excluded.app_id) && title == Some(excluded.title))
+}
+
 pub fn control_enabled(window: &Window, control: Control) -> bool {
     if control != Control::Maximize {
         return true;
@@ -521,6 +548,22 @@ mod tests {
         assert!(!csd.has_server_titlebar());
         assert_eq!(csd.frame_extents(), (3, 3, 3, 3));
         assert_eq!(unmanaged.frame_extents(), (0, 0, 0, 0));
+    }
+
+    #[test]
+    fn excludes_only_the_recorded_dms_settings_window_from_titlebars() {
+        assert!(titlebar_identity_is_excluded(
+            Some("com.danklinux.dms"),
+            Some("Settings")
+        ));
+        assert!(!titlebar_identity_is_excluded(
+            Some("com.danklinux.dms"),
+            Some("Inspector")
+        ));
+        assert!(!titlebar_identity_is_excluded(
+            Some("org.example.Settings"),
+            Some("Settings")
+        ));
     }
 
     #[test]
