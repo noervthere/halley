@@ -7,11 +7,11 @@ the SDK and compositor; its postcard representation is not a public contract.
 
 ## Add the SDK
 
-Inside this repository, use a path dependency:
+From a sibling project beside the active Halley checkout, use a path dependency:
 
 ```toml
 [dependencies]
-halley-api = { path = "../halley-next/halley-api" }
+halley-api = { path = "../halley/halley-api" }
 ```
 
 An application normally opens one `Client` and retains it. The client performs
