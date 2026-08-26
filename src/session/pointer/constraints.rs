@@ -251,6 +251,14 @@ fn owner_context<D: SessionDriver>(
     })
 }
 
+fn constraint_authority_root<D: SessionDriver>(
+    session: &Session<D>,
+    surface: &WlSurface,
+) -> WlSurface {
+    crate::xwayland::pointer_constraint_proxy_authority(&session.wayland.space, surface)
+        .unwrap_or_else(|| crate::wayland::compositor::root_surface(surface))
+}
+
 fn owner_authority_loss<D: SessionDriver>(
     session: &Session<D>,
     surface: &WlSurface,
@@ -267,7 +275,8 @@ fn owner_authority_loss<D: SessionDriver>(
     if !mapped {
         return Some(DeactivationReason::OwnerUnmapped);
     }
-    if session.wayland.focused_window.as_ref() != Some(&root) {
+    let authority = constraint_authority_root(session, surface);
+    if session.wayland.focused_window.as_ref() != Some(&authority) {
         return Some(DeactivationReason::CompositorFocusChanged);
     }
     let keyboard_root = session
@@ -276,7 +285,7 @@ fn owner_authority_loss<D: SessionDriver>(
         .and_then(|keyboard| keyboard.current_focus())
         .and_then(|focus| focus.wl_surface().map(|surface| surface.into_owned()))
         .map(|surface| crate::wayland::compositor::root_surface(&surface));
-    if keyboard_root.as_ref() != Some(&root) {
+    if keyboard_root.as_ref() != Some(&authority) {
         return Some(DeactivationReason::KeyboardFocusChanged);
     }
     None
@@ -632,6 +641,73 @@ fn prepare_candidate<D: SessionDriver>(
     Some(geometry)
 }
 
+/// Transfers pointer focus from a managed fullscreen X11 window to its
+/// protocol grab proxy. This is deliberately narrower than ordinary routing:
+/// direct constraints (including TF2's) have no proxy authority and are left
+/// untouched.
+pub(super) fn handoff_xwayland_proxy_focus<D: SessionDriver>(
+    session: &mut Session<D>,
+    surface: &WlSurface,
+    pointer: &PointerHandle<Session<D>>,
+) {
+    if session.interactions.pointer_constraints.active.is_some() {
+        return;
+    }
+    let Some(authority) =
+        crate::xwayland::pointer_constraint_proxy_authority(&session.wayland.space, surface)
+    else {
+        return;
+    };
+    let Some(current_focus) = pointer.current_focus() else {
+        return;
+    };
+    if crate::wayland::compositor::root_surface(&current_focus) != authority {
+        return;
+    }
+    let Some(context) = owner_context(session, surface) else {
+        return;
+    };
+    let Some(constraint) = descriptor(surface, pointer) else {
+        return;
+    };
+    let screen = Point::from(session.pointer.position());
+    let Some(local) = context.presentation.surface_from_screen(surface, screen) else {
+        return;
+    };
+    let local_i32 = local.to_i32_floor();
+    if !Rectangle::from_size(context.surface_size)
+        .to_f64()
+        .contains(local)
+        || !constraint
+            .region
+            .as_ref()
+            .is_none_or(|region| region.contains(local_i32))
+        || !surface_input_region(surface)
+            .as_ref()
+            .is_none_or(|region| region.contains(local_i32))
+    {
+        return;
+    }
+    let Some(origin) = context.presentation.surface_origin(surface) else {
+        return;
+    };
+
+    super::reset_client_cursor_image(session);
+    pointer.motion(
+        session,
+        Some((surface.clone(), origin)),
+        &MotionEvent {
+            location: origin + local,
+            serial: SERIAL_COUNTER.next_serial(),
+            time: session.start_time.elapsed().as_millis() as u32,
+        },
+    );
+    session.interactions.client_pointer_route = None;
+    eventline::debug!(
+        "pointer-constraint: handoff XWayland proxy surface={surface:?} authority={authority:?}"
+    );
+}
+
 /// Reconciles Halley's tracked owner, Smithay's protocol state, compositor
 /// focus, mapping, and live presentation geometry in one ordered transition.
 ///
@@ -840,8 +916,8 @@ pub(super) fn deactivate_before_focus_change<D: SessionDriver>(
         .active
         .as_ref()
         .is_some_and(|tracked| {
-            let root = crate::wayland::compositor::root_surface(&tracked.surface);
-            Some(&root) != next_focused_root
+            let authority = constraint_authority_root(session, &tracked.surface);
+            Some(&authority) != next_focused_root
         });
     if should_deactivate {
         if let Some(tracked) = session.interactions.pointer_constraints.active.take() {
@@ -896,7 +972,10 @@ pub(super) fn deactivate_before_unmap<D: SessionDriver>(
         .pointer_constraints
         .active
         .as_ref()
-        .is_some_and(|tracked| crate::wayland::compositor::root_surface(&tracked.surface) == *root);
+        .is_some_and(|tracked| {
+            crate::wayland::compositor::root_surface(&tracked.surface) == *root
+                || constraint_authority_root(session, &tracked.surface) == *root
+        });
     if should_deactivate {
         if let Some(tracked) = session.interactions.pointer_constraints.active.take() {
             session.interactions.pointer_constraints.suspended = None;

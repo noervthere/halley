@@ -4,6 +4,7 @@ use super::*;
 pub(super) enum OverrideRedirectOwnerSource {
     Transient,
     WindowGroup,
+    FullscreenGrabProxy,
 }
 
 pub(super) struct OverrideRedirectOwner {
@@ -153,6 +154,66 @@ pub(super) fn window_group_override_redirect_owner<D: SessionDriver>(
         .map(|(_, window)| window)
 }
 
+const FULLSCREEN_GRAB_PROXY_EDGE_TOLERANCE: i64 = 48;
+
+pub(super) fn fullscreen_grab_proxy_geometry_matches(
+    proxy: Rectangle<i32, Logical>,
+    candidate: Rectangle<i32, Logical>,
+) -> bool {
+    if proxy.size.w <= 0 || proxy.size.h <= 0 || candidate.size.w <= 0 || candidate.size.h <= 0 {
+        return false;
+    }
+    let edges = |geometry: Rectangle<i32, Logical>| {
+        [
+            i64::from(geometry.loc.x),
+            i64::from(geometry.loc.y),
+            i64::from(geometry.loc.x) + i64::from(geometry.size.w),
+            i64::from(geometry.loc.y) + i64::from(geometry.size.h),
+        ]
+    };
+    edges(proxy)
+        .into_iter()
+        .zip(edges(candidate))
+        .all(|(proxy, candidate)| {
+            proxy.abs_diff(candidate) <= FULLSCREEN_GRAB_PROXY_EDGE_TOLERANCE as u64
+        })
+}
+
+/// Proton can implement an X grab with a separate override-redirect X window
+/// whose Wayland surface owns the pointer constraint. Some games do not set a
+/// transient or window-group relationship on that window. Associate only a
+/// screen-sized proxy with a fullscreen managed X11 window on the same output;
+/// small menus and helpers cannot pass this fallback.
+pub(super) fn fullscreen_grab_proxy_owner<D: SessionDriver>(
+    session: &Session<D>,
+    geometry: Rectangle<i32, Logical>,
+) -> Option<Window> {
+    let output = output_for_geometry(session, geometry)?;
+    let focused = session.wayland.focused_window.as_ref();
+    let matches = session
+        .wayland
+        .space
+        .elements()
+        .filter(|window| {
+            let Some(surface) = window.x11_surface() else {
+                return false;
+            };
+            !surface.is_override_redirect()
+                && surface.is_fullscreen()
+                && crate::wayland::window_output_name(window).as_deref()
+                    == Some(output.name().as_str())
+                && fullscreen_grab_proxy_geometry_matches(geometry, surface.geometry())
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+
+    matches
+        .iter()
+        .find(|window| window.wl_surface().as_deref() == focused)
+        .cloned()
+        .or_else(|| (matches.len() == 1).then(|| matches[0].clone()))
+}
+
 pub(super) fn resolve_override_redirect_owner<D: SessionDriver>(
     session: &Session<D>,
     surface: &X11Surface,
@@ -169,6 +230,12 @@ pub(super) fn resolve_override_redirect_owner<D: SessionDriver>(
                     window,
                     source: OverrideRedirectOwnerSource::WindowGroup,
                 }
+            })
+        })
+        .or_else(|| {
+            fullscreen_grab_proxy_owner(session, geometry).map(|window| OverrideRedirectOwner {
+                window,
+                source: OverrideRedirectOwnerSource::FullscreenGrabProxy,
             })
         })
 }

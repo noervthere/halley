@@ -483,7 +483,9 @@ impl<D: SessionDriver> Session<D> {
 
     #[cfg(feature = "xwayland")]
     pub fn finish_x11_fullscreen_presentation(&mut self, surface: &WlSurface) -> bool {
-        let root = crate::wayland::compositor::root_surface(surface);
+        let root =
+            crate::xwayland::pointer_constraint_proxy_authority(&self.wayland.space, surface)
+                .unwrap_or_else(|| crate::wayland::compositor::root_surface(surface));
         let window = self
             .wayland
             .space

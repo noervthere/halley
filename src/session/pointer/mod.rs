@@ -484,6 +484,7 @@ pub(super) fn activate_new<D: SessionDriver>(
     surface: &WlSurface,
     pointer: &PointerHandle<Session<D>>,
 ) {
+    constraints::handoff_xwayland_proxy_focus(session, surface, pointer);
     constraints::reconcile(session, pointer, Some(surface));
     pointer.frame(session);
 }

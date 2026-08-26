@@ -633,9 +633,9 @@ mod tests {
     use super::{
         FullscreenRequestOrigin, OverrideRedirectIdentity, OverrideRedirectMapAdmission,
         OverrideRedirectStackAction, compositor_fullscreen_should_raise,
-        override_redirect_map_admission, override_redirect_owner_rank,
-        override_redirect_stack_action, presentation_configures_initial_geometry,
-        recovery_window_size, size_fills_output,
+        fullscreen_grab_proxy_geometry_matches, override_redirect_map_admission,
+        override_redirect_owner_rank, override_redirect_stack_action,
+        presentation_configures_initial_geometry, recovery_window_size, size_fills_output,
     };
     use smithay::utils::{Logical, Point, Rectangle, Size};
 
@@ -795,6 +795,26 @@ mod tests {
 
         assert!(owner > other_group_window);
         assert!(owner > unrelated_overlap);
+    }
+
+    #[test]
+    fn fullscreen_grab_proxy_accepts_stalker_insets() {
+        assert!(fullscreen_grab_proxy_geometry_matches(
+            Rectangle::new((1, 1).into(), (2558, 1438).into()),
+            Rectangle::new((0, 0).into(), (2566, 1472).into()),
+        ));
+    }
+
+    #[test]
+    fn fullscreen_grab_proxy_rejects_regular_override_redirects() {
+        let fullscreen = Rectangle::new((0, 0).into(), (2560, 1440).into());
+        for popup in [
+            Rectangle::new((0, 0).into(), (1, 1).into()),
+            Rectangle::new((1200, 600).into(), (320, 180).into()),
+            Rectangle::new((0, 0).into(), (2560, 1300).into()),
+        ] {
+            assert!(!fullscreen_grab_proxy_geometry_matches(popup, fullscreen));
+        }
     }
 
     #[test]

@@ -18,6 +18,7 @@ use smithay::reexports::wayland_protocols::xwayland::keyboard_grab::zv1::server:
 use smithay::reexports::wayland_protocols::xwayland::shell::v1::server::{
     xwayland_shell_v1::XwaylandShellV1, xwayland_surface_v1::XwaylandSurfaceV1,
 };
+use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{Dispatch, DisplayHandle, GlobalDispatch};
 use smithay::utils::{Logical, Point, Rectangle, Size};
 use smithay::wayland::compositor::CompositorClientState;
@@ -668,6 +669,26 @@ pub fn window_for_xid(space: &Space<Window>, xid: u32) -> Option<Window> {
                 .is_some_and(|surface| surface.window_id() == xid)
         })
         .cloned()
+}
+
+/// Resolves an XWayland grab-proxy surface to the managed window which retains
+/// compositor and keyboard focus while the proxy owns pointer focus.
+pub fn pointer_constraint_proxy_authority(
+    space: &Space<Window>,
+    surface: &WlSurface,
+) -> Option<WlSurface> {
+    let root = crate::wayland::compositor::root_surface(surface);
+    let proxy = space.elements().find(|window| {
+        window
+            .x11_surface()
+            .is_some_and(|surface| surface.is_override_redirect())
+            && window.wl_surface().as_deref() == Some(&root)
+    })?;
+    let owner = crate::wayland::window_presentation_owner(proxy)?;
+    let owner = window_for_xid(space, owner)?;
+    owner
+        .wl_surface()
+        .map(|surface| crate::wayland::compositor::root_surface(surface.as_ref()))
 }
 
 pub fn parent_window(space: &Space<Window>, window: &Window) -> Option<Window> {

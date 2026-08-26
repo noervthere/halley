@@ -8,6 +8,7 @@ use std::marker::PhantomData;
 
 use calloop::LoopHandle;
 use smithay::desktop::{Space, Window};
+use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{Client, DisplayHandle};
 use smithay::utils::{Logical, Point, Rectangle, Size};
 use smithay::wayland::compositor::CompositorClientState;
@@ -160,6 +161,13 @@ pub fn can_maximize(_window: &Window) -> bool {
 }
 
 pub fn window_for_xid(_space: &Space<Window>, _xid: u32) -> Option<Window> {
+    None
+}
+
+pub fn pointer_constraint_proxy_authority(
+    _space: &Space<Window>,
+    _surface: &WlSurface,
+) -> Option<WlSurface> {
     None
 }
 
