@@ -259,36 +259,58 @@ fn constraint_authority_root<D: SessionDriver>(
         .unwrap_or_else(|| crate::wayland::compositor::root_surface(surface))
 }
 
+fn owner_state_loss(
+    alive: bool,
+    mapped: bool,
+    wm_focus_exempt: bool,
+    compositor_focused: bool,
+    keyboard_focused: bool,
+) -> Option<DeactivationReason> {
+    if !alive {
+        Some(DeactivationReason::SurfaceDestroyed)
+    } else if !mapped {
+        Some(DeactivationReason::OwnerUnmapped)
+    } else if wm_focus_exempt {
+        None
+    } else if !compositor_focused {
+        Some(DeactivationReason::CompositorFocusChanged)
+    } else if !keyboard_focused {
+        Some(DeactivationReason::KeyboardFocusChanged)
+    } else {
+        None
+    }
+}
+
 fn owner_authority_loss<D: SessionDriver>(
     session: &Session<D>,
     surface: &WlSurface,
 ) -> Option<DeactivationReason> {
-    if !surface.alive() {
-        return Some(DeactivationReason::SurfaceDestroyed);
-    }
     let root = crate::wayland::compositor::root_surface(surface);
     let mapped = session.wayland.space.elements().any(|window| {
         window
             .wl_surface()
             .is_some_and(|candidate| candidate.as_ref() == &root)
     });
-    if !mapped {
-        return Some(DeactivationReason::OwnerUnmapped);
-    }
-    let authority = constraint_authority_root(session, surface);
-    if session.wayland.focused_window.as_ref() != Some(&authority) {
-        return Some(DeactivationReason::CompositorFocusChanged);
-    }
+    // An XWayland grab proxy deliberately keeps WM and keyboard focus on its
+    // managed owner. Pointer focus plus the explicit focus-change lifecycle
+    // below are authoritative for this one surface class.
+    let wm_focus_exempt =
+        crate::xwayland::pointer_constraint_proxy_authority(&session.wayland.space, surface)
+            .is_some();
+    let compositor_focused = session.wayland.focused_window.as_ref() == Some(&root);
     let keyboard_root = session
         .seat
         .get_keyboard()
         .and_then(|keyboard| keyboard.current_focus())
         .and_then(|focus| focus.wl_surface().map(|surface| surface.into_owned()))
         .map(|surface| crate::wayland::compositor::root_surface(&surface));
-    if keyboard_root.as_ref() != Some(&authority) {
-        return Some(DeactivationReason::KeyboardFocusChanged);
-    }
-    None
+    owner_state_loss(
+        surface.alive(),
+        mapped,
+        wm_focus_exempt,
+        compositor_focused,
+        keyboard_root.as_ref() == Some(&root),
+    )
 }
 
 fn owner_is_authoritative<D: SessionDriver>(session: &Session<D>, surface: &WlSurface) -> bool {
@@ -641,75 +663,9 @@ fn prepare_candidate<D: SessionDriver>(
     Some(geometry)
 }
 
-/// Transfers pointer focus from a managed fullscreen X11 window to its
-/// protocol grab proxy. This is deliberately narrower than ordinary routing:
-/// direct constraints (including TF2's) have no proxy authority and are left
-/// untouched.
-pub(super) fn handoff_xwayland_proxy_focus<D: SessionDriver>(
-    session: &mut Session<D>,
-    surface: &WlSurface,
-    pointer: &PointerHandle<Session<D>>,
-) {
-    if session.interactions.pointer_constraints.active.is_some() {
-        return;
-    }
-    let Some(authority) =
-        crate::xwayland::pointer_constraint_proxy_authority(&session.wayland.space, surface)
-    else {
-        return;
-    };
-    let Some(current_focus) = pointer.current_focus() else {
-        return;
-    };
-    if crate::wayland::compositor::root_surface(&current_focus) != authority {
-        return;
-    }
-    let Some(context) = owner_context(session, surface) else {
-        return;
-    };
-    let Some(constraint) = descriptor(surface, pointer) else {
-        return;
-    };
-    let screen = Point::from(session.pointer.position());
-    let Some(local) = context.presentation.surface_from_screen(surface, screen) else {
-        return;
-    };
-    let local_i32 = local.to_i32_floor();
-    if !Rectangle::from_size(context.surface_size)
-        .to_f64()
-        .contains(local)
-        || !constraint
-            .region
-            .as_ref()
-            .is_none_or(|region| region.contains(local_i32))
-        || !surface_input_region(surface)
-            .as_ref()
-            .is_none_or(|region| region.contains(local_i32))
-    {
-        return;
-    }
-    let Some(origin) = context.presentation.surface_origin(surface) else {
-        return;
-    };
-
-    super::reset_client_cursor_image(session);
-    pointer.motion(
-        session,
-        Some((surface.clone(), origin)),
-        &MotionEvent {
-            location: origin + local,
-            serial: SERIAL_COUNTER.next_serial(),
-            time: session.start_time.elapsed().as_millis() as u32,
-        },
-    );
-    session.interactions.client_pointer_route = None;
-    eventline::debug!(
-        "pointer-constraint: handoff XWayland proxy surface={surface:?} authority={authority:?}"
-    );
-}
-
 /// Reconciles Halley's tracked owner, Smithay's protocol state, compositor
-/// focus, mapping, and live presentation geometry in one ordered transition.
+/// pointer focus, mapping, and live presentation geometry in one ordered
+/// transition.
 ///
 /// Existing pointer focus is verified before activation. Conversely, an old
 /// constraint is explicitly deactivated before focus changes, so one-shot
@@ -1151,6 +1107,19 @@ mod tests {
         assert!(preferred_matches_focus(None));
         assert!(preferred_matches_focus(Some(true)));
         assert!(!preferred_matches_focus(Some(false)));
+    }
+
+    #[test]
+    fn xwayland_grab_proxy_uses_pointer_focus_without_wm_focus() {
+        assert_eq!(owner_state_loss(true, true, true, false, false), None);
+        assert_eq!(
+            owner_state_loss(true, true, false, false, false),
+            Some(DeactivationReason::CompositorFocusChanged)
+        );
+        assert_eq!(
+            owner_state_loss(true, false, true, false, false),
+            Some(DeactivationReason::OwnerUnmapped)
+        );
     }
 
     #[test]

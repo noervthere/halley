@@ -479,12 +479,60 @@ pub(super) fn prepare_unmap<D: SessionDriver>(session: &mut Session<D>, root: &W
     constraints::deactivate_before_unmap(session, root);
 }
 
+fn should_refresh_constraint_focus(
+    pointer_grabbed: bool,
+    active_constraint: bool,
+    route_matches_request: bool,
+    pointer_matches_route: bool,
+) -> bool {
+    !pointer_grabbed && !active_constraint && route_matches_request && !pointer_matches_route
+}
+
+/// Match niri and old Halley: when a new constraint arrives, refresh the
+/// stationary pointer from a fresh hit-test before deciding whether the
+/// requesting surface owns pointer focus. This repairs stale focus without
+/// letting an arbitrary client pull focus to itself.
+fn refresh_new_constraint_focus<D: SessionDriver>(
+    session: &mut Session<D>,
+    surface: &WlSurface,
+    pointer: &PointerHandle<Session<D>>,
+) {
+    let Some(route) = route_client(session) else {
+        return;
+    };
+    let routed_surface = route.focus.as_ref().map(|(surface, _)| surface);
+    let route_matches_request = routed_surface == Some(surface);
+    let pointer_matches_route = pointer.current_focus().as_ref() == routed_surface;
+    if !should_refresh_constraint_focus(
+        pointer.is_grabbed(),
+        has_active_constraint(session),
+        route_matches_request,
+        pointer_matches_route,
+    ) {
+        return;
+    }
+
+    reset_client_cursor_image(session);
+    constraints::deactivate_before_pointer_focus_change(session, routed_surface);
+    pointer.motion(
+        session,
+        route.focus.clone(),
+        &MotionEvent {
+            location: route.location,
+            serial: SERIAL_COUNTER.next_serial(),
+            time: session.start_time.elapsed().as_millis() as u32,
+        },
+    );
+    session.interactions.client_pointer_route = Some(ClientPointerRoute::from_route(&route));
+    eventline::debug!("pointer-constraint: refreshed focus from fresh route surface={surface:?}");
+}
+
 pub(super) fn activate_new<D: SessionDriver>(
     session: &mut Session<D>,
     surface: &WlSurface,
     pointer: &PointerHandle<Session<D>>,
 ) {
-    constraints::handoff_xwayland_proxy_focus(session, surface, pointer);
+    refresh_new_constraint_focus(session, surface, pointer);
     constraints::reconcile(session, pointer, Some(surface));
     pointer.frame(session);
 }
@@ -504,7 +552,7 @@ mod tests {
         AbsoluteMotionPolicy, DesktopRefreshBlockers, constraint_requires_stable_presentation,
         constraints, cursor_presentation_visible, desktop_refresh_allowed,
         interactive_overlay_cursor_override, interactive_overlay_forces_cursor,
-        should_emit_absolute_motion,
+        should_emit_absolute_motion, should_refresh_constraint_focus,
     };
 
     #[test]
@@ -586,6 +634,15 @@ mod tests {
             true,
             true,
         ));
+    }
+
+    #[test]
+    fn new_constraint_refreshes_only_a_stale_matching_route() {
+        assert!(should_refresh_constraint_focus(false, false, true, false));
+        assert!(!should_refresh_constraint_focus(false, false, true, true));
+        assert!(!should_refresh_constraint_focus(false, false, false, false));
+        assert!(!should_refresh_constraint_focus(true, false, true, false));
+        assert!(!should_refresh_constraint_focus(false, true, true, false));
     }
 
     #[test]
