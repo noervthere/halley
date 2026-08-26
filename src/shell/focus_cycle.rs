@@ -225,6 +225,10 @@ fn ease_in_out_cubic(value: f32) -> f32 {
     }
 }
 
+fn target_needs_pointer_warp(origin_focus: Option<NodeId>, target: NodeId) -> bool {
+    origin_focus != Some(target)
+}
+
 pub fn start_or_step<D: crate::session::SessionDriver>(
     session: &mut crate::session::Session<D>,
     direction: FocusCycleDirection,
@@ -255,6 +259,11 @@ pub fn commit<D: crate::session::SessionDriver>(
     session: &mut crate::session::Session<D>,
     serial: smithay::utils::Serial,
 ) -> bool {
+    let origin_focus = session
+        .shell
+        .focus_cycle
+        .session()
+        .and_then(|cycle| cycle.origin_focus);
     let Some(target) = session
         .shell
         .focus_cycle
@@ -272,8 +281,16 @@ pub fn commit<D: crate::session::SessionDriver>(
         crate::session::focus_window(session, &record.window, serial);
     }
     crate::nodes::reveal_for_focus_cycle(session, target);
-    session.pending_pointer_warp = Some(record.surface);
-    let _ = finish_pending_pointer_warp(session);
+    if target_needs_pointer_warp(origin_focus, target) {
+        session.pending_pointer_warp = Some(record.surface);
+        let _ = finish_pending_pointer_warp(session);
+    } else {
+        // Wrapping Alt+Tab back to the already focused window is not a new
+        // focus placement. In particular, releasing and rebuilding a game's
+        // pointer lock here would restore its old anchor and visibly jump the
+        // cursor even though focus never actually changed.
+        session.pending_pointer_warp = None;
+    }
     session.request_redraw();
     true
 }
@@ -304,9 +321,18 @@ pub fn finish_pending_pointer_warp<D: crate::session::SessionDriver>(
 
 #[cfg(test)]
 mod tests {
-    use super::Session;
+    use super::{Session, target_needs_pointer_warp};
     use halley_core::field::NodeId;
     use std::time::Duration;
+
+    #[test]
+    fn wrapping_back_to_the_origin_does_not_warp_the_pointer() {
+        let game = NodeId::new(7);
+
+        assert!(!target_needs_pointer_warp(Some(game), game));
+        assert!(target_needs_pointer_warp(Some(NodeId::new(8)), game));
+        assert!(target_needs_pointer_warp(None, game));
+    }
 
     #[test]
     fn visible_slots_do_not_duplicate_small_candidate_sets() {
