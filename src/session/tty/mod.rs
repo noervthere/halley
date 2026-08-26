@@ -795,6 +795,7 @@ fn complete_vblank(
 
 fn send_output_frame_callbacks(app: &mut TtyApp, output: &Output) {
     let elapsed = app.start_time.elapsed();
+    let callback_now = crate::frame_clock::monotonic_now();
     let primary = app.driver.backend.primary_output();
     let frame_callback_sequence = app
         .driver
@@ -812,7 +813,7 @@ fn send_output_frame_callbacks(app: &mut TtyApp, output: &Output) {
     } else if app.shell.apogee.is_active() {
         if app.shell.apogee.take_callback_due(
             &output.name(),
-            crate::frame_clock::monotonic_now(),
+            callback_now,
             app.settings.apogee.preview_max_fps,
         ) {
             crate::shell::apogee::send_preview_frames(
@@ -824,11 +825,28 @@ fn send_output_frame_callbacks(app: &mut TtyApp, output: &Output) {
             );
         }
     } else {
+        let cluster_exclusive_member =
+            crate::wayland::frame_callbacks::cluster_exclusive_callback_member(
+                &app.wayland.space,
+                &app.clusters,
+                &app.nodes,
+                &app.fullscreen,
+                &app.maximize,
+                output,
+                callback_now,
+            );
         app.wayland
             .space
             .elements()
             .filter(|window| wayland::window_is_on_output(window, output, primary))
             .for_each(|window| {
+                let window_member = window
+                    .wl_surface()
+                    .and_then(|surface| app.nodes.id_for_surface(surface.as_ref()));
+                let require_visible = crate::wayland::frame_callbacks::requires_render_visibility(
+                    window_member,
+                    cluster_exclusive_member,
+                );
                 window.send_frame(
                     output,
                     elapsed,
@@ -839,7 +857,7 @@ fn send_output_frame_callbacks(app: &mut TtyApp, output: &Output) {
                             states,
                             output,
                             frame_callback_sequence,
-                            true,
+                            require_visible,
                         )
                     },
                 );
@@ -848,7 +866,7 @@ fn send_output_frame_callbacks(app: &mut TtyApp, output: &Output) {
             &app.nodes,
             output,
             elapsed,
-            crate::frame_clock::monotonic_now(),
+            callback_now,
             frame_callback_sequence,
         );
     }

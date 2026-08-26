@@ -1,7 +1,8 @@
 use std::cell::RefCell;
 use std::time::Duration;
 
-use smithay::desktop::utils::surface_primary_scanout_output;
+use halley_core::field::NodeId;
+use smithay::desktop::{Space, Window, utils::surface_primary_scanout_output};
 use smithay::output::Output;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::wayland::compositor::SurfaceData;
@@ -9,6 +10,46 @@ use smithay::wayland::compositor::SurfaceData;
 /// Hidden surfaces are allowed one callback roughly every second so clients
 /// can make progress without running their render loops at the output rate.
 pub const FALLBACK_THROTTLE: Option<Duration> = Some(Duration::from_millis(995));
+
+/// Returns the cluster member promoted into the output-local exclusive scene.
+///
+/// The promoted surface is genuinely visible, but its client render elements
+/// can lose their primary-output association when the cluster scene wraps and
+/// reorders them. Compute this once per output callback pass so only that live
+/// member bypasses the render-state visibility gate.
+pub fn cluster_exclusive_callback_member(
+    space: &Space<Window>,
+    clusters: &crate::clusters::ClusterSystem,
+    nodes: &crate::nodes::NodesState,
+    fullscreen: &crate::wayland::fullscreen::FullscreenManager,
+    maximize: &crate::presentation::maximize::FieldMaximizeManager,
+    output: &Output,
+    now: Duration,
+) -> Option<NodeId> {
+    let output_geometry = space.output_geometry(output)?;
+    crate::presentation::window::cluster_exclusive_presentation(
+        clusters,
+        nodes,
+        fullscreen,
+        maximize,
+        output,
+        output_geometry,
+        now,
+    )
+    .map(|presentation| presentation.member)
+}
+
+/// Whether a window's callbacks must be backed by final render-element state.
+///
+/// Ordinary and hidden cluster members retain visibility throttling. The one
+/// member explicitly promoted into the cluster-exclusive scene is already
+/// known to be visible and must keep receiving output-rate callbacks.
+pub fn requires_render_visibility(
+    window_member: Option<NodeId>,
+    cluster_exclusive_member: Option<NodeId>,
+) -> bool {
+    cluster_exclusive_member.is_none_or(|exclusive| window_member != Some(exclusive))
+}
 
 #[derive(Default)]
 struct SurfaceFrameSequence {
@@ -54,7 +95,9 @@ pub fn already_sent_in_sequence(last: Option<(&str, u32)>, output: &str, sequenc
 
 #[cfg(test)]
 mod tests {
-    use super::already_sent_in_sequence;
+    use halley_core::field::NodeId;
+
+    use super::{already_sent_in_sequence, requires_render_visibility};
 
     #[test]
     fn callback_sequence_deduplicates_only_the_same_output_cycle() {
@@ -62,5 +105,21 @@ mod tests {
         assert!(!already_sent_in_sequence(Some(("DP-1", 7)), "DP-1", 8));
         assert!(!already_sent_in_sequence(Some(("DP-2", 7)), "DP-1", 7));
         assert!(!already_sent_in_sequence(None, "DP-1", 7));
+    }
+
+    #[test]
+    fn cluster_exclusive_member_bypasses_render_visibility() {
+        let exclusive = NodeId::new(7);
+
+        assert!(!requires_render_visibility(
+            Some(exclusive),
+            Some(exclusive)
+        ));
+        assert!(requires_render_visibility(
+            Some(NodeId::new(8)),
+            Some(exclusive)
+        ));
+        assert!(requires_render_visibility(None, Some(exclusive)));
+        assert!(requires_render_visibility(Some(exclusive), None));
     }
 }

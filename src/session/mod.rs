@@ -450,6 +450,7 @@ fn install_frame_callback_fallback_timer<D: SessionDriver>(
 fn send_fallback_frame_callbacks<D: SessionDriver>(session: &mut Session<D>) {
     let outputs = session.wayland.space.outputs().cloned().collect::<Vec<_>>();
     let elapsed = session.start_time.elapsed();
+    let callback_now = crate::frame_clock::monotonic_now();
     for output in outputs {
         let sequence = session.driver.frame_callback_sequence(&output);
         if session.session_lock.active() {
@@ -460,14 +461,35 @@ fn send_fallback_frame_callbacks<D: SessionDriver>(session: &mut Session<D>) {
                 sequence,
             );
         } else {
+            let cluster_exclusive_member =
+                crate::wayland::frame_callbacks::cluster_exclusive_callback_member(
+                    &session.wayland.space,
+                    &session.clusters,
+                    &session.nodes,
+                    &session.fullscreen,
+                    &session.maximize,
+                    &output,
+                    callback_now,
+                );
             for window in session.wayland.space.elements() {
+                let window_member = window
+                    .wl_surface()
+                    .and_then(|surface| session.nodes.id_for_surface(surface.as_ref()));
+                let require_visible = crate::wayland::frame_callbacks::requires_render_visibility(
+                    window_member,
+                    cluster_exclusive_member,
+                );
                 window.send_frame(
                     &output,
                     elapsed,
                     crate::wayland::frame_callbacks::FALLBACK_THROTTLE,
                     |surface, states| {
                         crate::wayland::frame_callbacks::callback_output(
-                            surface, states, &output, sequence, true,
+                            surface,
+                            states,
+                            &output,
+                            sequence,
+                            require_visible,
                         )
                     },
                 );

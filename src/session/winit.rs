@@ -548,7 +548,25 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                         );
                     }
                 } else {
+                    let cluster_exclusive_member =
+                        crate::wayland::frame_callbacks::cluster_exclusive_callback_member(
+                            &app.wayland.space,
+                            &app.clusters,
+                            &app.nodes,
+                            &app.fullscreen,
+                            &app.maximize,
+                            &output,
+                            target_presentation_time,
+                        );
                     app.wayland.space.elements().for_each(|window| {
+                        let window_member = window
+                            .wl_surface()
+                            .and_then(|surface| app.nodes.id_for_surface(surface.as_ref()));
+                        let require_visible =
+                            crate::wayland::frame_callbacks::requires_render_visibility(
+                                window_member,
+                                cluster_exclusive_member,
+                            );
                         window.send_frame(
                             &output,
                             elapsed,
@@ -559,7 +577,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                                     states,
                                     &output,
                                     frame_callback_sequence,
-                                    true,
+                                    require_visible,
                                 )
                             },
                         );
