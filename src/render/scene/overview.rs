@@ -2,9 +2,30 @@ use super::apogee_clusters::{ApogeeCoreTileContext, apogee_core_tile_elements};
 use super::nodes::{ease_in_out_cubic, fit_ui_text};
 use super::*;
 
-#[cfg(test)]
 pub(super) fn preview_content_radius(decorations: &halley_config::Decorations) -> f32 {
     decorations.border_radius_px.max(0) as f32
+}
+
+fn push_preview_texture(
+    elements: &mut Vec<SceneElement>,
+    renderer: &mut GlesRenderer,
+    window_decoration_renderer: &mut crate::render::window_decoration::WindowDecorationRenderer,
+    preview: smithay::backend::renderer::element::texture::TextureRenderElement<
+        smithay::backend::renderer::gles::GlesTexture,
+    >,
+    texture: smithay::backend::renderer::gles::GlesTexture,
+    destination: Rectangle<i32, Physical>,
+    decorations: &halley_config::Decorations,
+) {
+    let radius = preview_content_radius(decorations);
+    if radius > 0.0 && window_decoration_renderer.available(renderer) {
+        let preview = window_decoration_renderer
+            .texture_element(renderer, preview, texture, destination, radius)
+            .expect("rounded resources were checked above");
+        elements.push(SceneElement::RoundedTexture(preview));
+    } else {
+        elements.push(SceneElement::Closing(preview));
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -229,7 +250,15 @@ pub(super) fn apogee_elements(
                 text: ui_text,
             },
         ) {
-            Ok((preview, _)) => elements.push(SceneElement::Closing(preview)),
+            Ok((preview, texture)) => push_preview_texture(
+                &mut elements,
+                renderer,
+                window_decoration_renderer,
+                preview,
+                texture,
+                body,
+                decorations,
+            ),
             Err(_) => {
                 if let Some(app_id) = record.app_id.as_deref()
                     && let Some(icon) = node_renderer.app_icon_element(
@@ -595,7 +624,15 @@ pub(super) fn focus_cycle_elements(
                 text: ui_text,
             },
         ) {
-            Ok((preview, _)) => elements.push(SceneElement::Closing(preview)),
+            Ok((preview, texture)) => push_preview_texture(
+                &mut elements,
+                renderer,
+                window_decoration_renderer,
+                preview,
+                texture,
+                body,
+                context.decorations,
+            ),
             Err(_) => {
                 if let Some(app_id) = record.app_id.as_deref()
                     && let Some(icon) =
@@ -765,7 +802,15 @@ pub(super) fn hover_preview_elements(
             text: ui_text,
         },
     ) {
-        Ok((preview, _)) => elements.push(SceneElement::Closing(preview)),
+        Ok((preview, texture)) => push_preview_texture(
+            &mut elements,
+            renderer,
+            window_decoration_renderer,
+            preview,
+            texture,
+            body,
+            decorations,
+        ),
         Err(_) => elements.push(SceneElement::Border(crate::render::solid_color_element(
             node_renderer.active_slot_id(crate::render::node::NodeSlot::HoverPreviewFallback),
             body,
