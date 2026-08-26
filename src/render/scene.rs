@@ -46,7 +46,7 @@ pub(crate) use nodes::{contrast_text_rgb, node_fill_color, node_ring_color};
 use capture_ui::picker_layout;
 #[cfg(test)]
 use overview::{
-    apogee_caption_rect, apogee_transition_visuals, aspect_fit_rect, outset_physical, outset_rect,
+    apogee_caption_rect, apogee_transition_visuals, aspect_fit_rect, preview_card_rect,
     preview_content_radius, sort_apogee_tiles,
 };
 
@@ -994,12 +994,24 @@ mod tests {
         let slot = Rectangle::<i32, Physical>::new((40, 20).into(), (300, 240).into());
         let available = Rectangle::new((46, 26).into(), (288, 228).into());
         let body = aspect_fit_rect(available, 600, 1_600);
-        let chrome = outset_rect(body, 6);
+        let chrome = preview_card_rect(body, 4.0);
 
         assert_eq!(body.loc.x + body.size.w / 2, slot.loc.x + slot.size.w / 2);
-        assert_eq!(chrome.loc.x, body.loc.x - 6);
-        assert_eq!(chrome.size.w, body.size.w + 12);
+        assert_eq!(chrome.loc.x, body.loc.x - 4);
+        assert_eq!(chrome.size.w, body.size.w + 8);
         assert!(chrome.size.w < slot.size.w);
+    }
+
+    #[test]
+    fn overview_preview_texture_meets_the_card_border() {
+        let body = Rectangle::<i32, Physical>::new((100, 80).into(), (480, 240).into());
+        let card = preview_card_rect(body, 3.0);
+
+        assert_eq!(card, Rectangle::new((97, 77).into(), (486, 246).into()));
+        assert_eq!(card.loc.x + 3, body.loc.x);
+        assert_eq!(card.loc.y + 3, body.loc.y);
+        assert_eq!(card.loc.x + card.size.w - 3, body.loc.x + body.size.w);
+        assert_eq!(card.loc.y + card.size.h - 3, body.loc.y + body.size.h);
     }
 
     #[test]
@@ -1159,7 +1171,7 @@ mod tests {
 
         assert_eq!(caption, Rectangle::new((108, 281).into(), (464, 31).into()));
         assert!(body.contains_rect(caption));
-        assert_eq!(outset_physical(body, 4).size, (488, 248).into());
+        assert_eq!(preview_card_rect(body, 4.0).size, (488, 248).into());
     }
 
     #[test]

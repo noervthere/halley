@@ -144,11 +144,7 @@ pub(super) fn apogee_elements(
         // Old Halley kept the caption inside the preview. Growing the card by
         // a fixed footer made its backing look like an enlarged second window,
         // especially for short and wide Apogee tiles.
-        // Keep a real color gutter between the overlay border and the preview.
-        // The old fixed four-pixel outset was entirely consumed by common
-        // three/four-pixel borders, making the border and white preview appear
-        // stacked on top of each other.
-        let card = outset_physical(body, overlay_visuals.border_px.ceil() as i32 + 4);
+        let card = preview_card_rect(body, overlay_visuals.border_px);
         let caption = apogee_caption_rect(body);
         if let Some(caption) = caption {
             let (title, size) = fit_ui_text(
@@ -327,16 +323,6 @@ pub(super) fn lerp_rect(
     )
 }
 
-pub(super) fn outset_physical(
-    rect: Rectangle<i32, Physical>,
-    pad: i32,
-) -> Rectangle<i32, Physical> {
-    Rectangle::new(
-        (rect.loc.x - pad, rect.loc.y - pad).into(),
-        (rect.size.w + pad * 2, rect.size.h + pad * 2).into(),
-    )
-}
-
 pub(super) fn apogee_caption_rect(
     body: Rectangle<i32, Physical>,
 ) -> Option<Rectangle<i32, Physical>> {
@@ -463,7 +449,7 @@ pub(super) fn focus_cycle_elements(
             .source_dimensions(id)
             .unwrap_or((fallback_size.w, fallback_size.h));
         let body = aspect_fit_rect(body_bounds, source_width, source_height);
-        let card = outset_rect(body, pad);
+        let card = preview_card_rect(body, overlay_visuals.border_px);
 
         // Top-right monitor badge, over the preview.
         let monitor = truncate_chars(&record.output, 10);
@@ -906,15 +892,16 @@ pub(super) fn aspect_fit_rect(
     )
 }
 
-pub(super) fn outset_rect(
+pub(super) fn preview_card_rect(
     body: Rectangle<i32, Physical>,
-    padding: i32,
+    border_px: f32,
 ) -> Rectangle<i32, Physical> {
+    let outset = border_px.max(0.0).ceil() as i32;
     Rectangle::new(
-        (body.loc.x - padding, body.loc.y - padding).into(),
+        (body.loc.x - outset, body.loc.y - outset).into(),
         (
-            body.size.w + padding.saturating_mul(2),
-            body.size.h + padding.saturating_mul(2),
+            body.size.w + outset.saturating_mul(2),
+            body.size.h + outset.saturating_mul(2),
         )
             .into(),
     )
