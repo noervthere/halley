@@ -218,6 +218,7 @@ pub struct DesktopContext<'a> {
 /// part of rendering and remains owned by the session input subsystem.
 pub struct CursorContext<'a> {
     pub cursor: &'a CursorManager,
+    pub dnd_icon: Option<&'a crate::wayland::dnd::DndIcon>,
     pub cursor_position: (f64, f64),
     pub show_cursor: bool,
     pub cursor_override: Option<CursorIcon>,

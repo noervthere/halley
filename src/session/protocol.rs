@@ -198,6 +198,7 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
         crate::cursor::snapshot::prepare_commit(&self.cursor, surface);
         wayland::compositor::prepare_commit::<Self>(surface);
         let root = wayland::compositor::root_surface(surface);
+        let dnd_icon_commit = crate::wayland::dnd::handle_commit(self, surface, &root);
         let rule_window = self
             .wayland
             .space
@@ -425,7 +426,9 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
         let apogee_preview_commit = self.settings.apogee.live_previews
             && self.shell.apogee.accepts_live_previews()
             && preview_node.is_some_and(|id| self.shell.apogee.contains(id));
-        if apogee_preview_commit {
+        if dnd_icon_commit {
+            self.request_redraw();
+        } else if apogee_preview_commit {
             self.shell.apogee.mark_preview_dirty();
         } else {
             self.request_redraw();
@@ -441,6 +444,7 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
         if self.cursor.surface_destroyed(surface) {
             self.request_redraw();
         }
+        crate::wayland::dnd::destroyed(self, surface);
     }
 }
 
@@ -979,17 +983,34 @@ impl<D: SessionDriver> WaylandDndGrabHandler for Session<D> {
     fn dnd_requested<S: smithay::input::dnd::Source>(
         &mut self,
         source: S,
-        _icon: Option<WlSurface>,
+        icon: Option<WlSurface>,
         seat: Seat<Self>,
         serial: Serial,
         type_: smithay::input::dnd::GrabType,
     ) {
+        wayland::dnd::set_icon(self, icon);
         let display_handle = self.wayland.display_handle.clone();
-        wayland::selection::start_dnd_grab(self, &display_handle, source, seat, serial, type_);
+        if !wayland::selection::start_dnd_grab(self, &display_handle, source, seat, serial, type_) {
+            wayland::dnd::clear(self);
+        }
     }
 }
 
-impl<D: SessionDriver> smithay::input::dnd::DndGrabHandler for Session<D> {}
+impl<D: SessionDriver> smithay::input::dnd::DndGrabHandler for Session<D> {
+    fn dropped(
+        &mut self,
+        _target: Option<smithay::input::dnd::DndTarget<'_, Self>>,
+        _validated: bool,
+        _seat: Seat<Self>,
+        _location: Point<f64, Logical>,
+    ) {
+        wayland::dnd::clear(self);
+    }
+
+    fn cancelled(&mut self, _seat: Seat<Self>, _location: Point<f64, Logical>) {
+        wayland::dnd::clear(self);
+    }
+}
 
 impl<D: SessionDriver> PrimarySelectionHandler for Session<D> {
     fn primary_selection_state(&mut self) -> &mut PrimarySelectionState {

@@ -136,6 +136,7 @@ fn save_region_inner<D: SessionDriver>(
                         },
                         cursor: CursorContext {
                             cursor,
+                            dnd_icon: None,
                             cursor_position: pointer_position,
                             show_cursor: false,
                             cursor_override: None,
@@ -383,6 +384,7 @@ where
                 },
                 cursor: CursorContext {
                     cursor,
+                    dnd_icon: show_cursor.then_some(wayland.dnd_icon.as_ref()).flatten(),
                     cursor_position: pointer_position,
                     show_cursor,
                     cursor_override: None,

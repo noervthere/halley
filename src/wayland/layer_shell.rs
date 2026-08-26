@@ -92,12 +92,17 @@ pub fn cleanup(wayland: &mut WaylandState) {
     wayland.popup_manager.cleanup();
 }
 
-pub fn send_frames(output: &Output, elapsed: Duration) {
+pub fn send_frames(output: &Output, elapsed: Duration, sequence: u32) {
     let map = layer_map_for_output(output);
     for layer in map.layers() {
-        layer.send_frame(output, elapsed, Some(Duration::ZERO), |_, _| {
-            Some(output.clone())
-        });
+        layer.send_frame(
+            output,
+            elapsed,
+            super::frame_callbacks::FALLBACK_THROTTLE,
+            |surface, states| {
+                super::frame_callbacks::callback_output(surface, states, output, sequence, true)
+            },
+        );
     }
 }
 

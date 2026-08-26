@@ -132,6 +132,17 @@ pub fn send_output_feedback(
             },
         );
     }
+
+    if let Some(icon) = wayland.dnd_icon.as_ref() {
+        send_dmabuf_feedback_surface_tree(
+            &icon.surface,
+            output,
+            |_, _| Some(output.clone()),
+            |surface, _| {
+                select_dmabuf_feedback(surface, element_states, &feedback.render, &feedback.scanout)
+            },
+        );
+    }
 }
 
 #[cfg(test)]

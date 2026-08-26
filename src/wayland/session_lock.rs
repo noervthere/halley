@@ -263,14 +263,16 @@ pub fn surface_destroyed<D: SessionDriver>(session: &mut Session<D>, surface: &W
     session.request_redraw();
 }
 
-pub fn send_frames(state: &State, output: &Output, elapsed: std::time::Duration) {
+pub fn send_frames(state: &State, output: &Output, elapsed: std::time::Duration, sequence: u32) {
     for surface in state.surfaces_for_output(output) {
         smithay::desktop::utils::send_frames_surface_tree(
             surface.wl_surface(),
             output,
             elapsed,
-            Some(std::time::Duration::ZERO),
-            |_, _| Some(output.clone()),
+            super::frame_callbacks::FALLBACK_THROTTLE,
+            |surface, states| {
+                super::frame_callbacks::callback_output(surface, states, output, sequence, true)
+            },
         );
     }
 }
@@ -308,6 +310,7 @@ impl<D: SessionDriver> SessionLockHandler for Session<D> {
             generation: self.session_lock.generation,
             awaiting_outputs,
         });
+        crate::wayland::dnd::clear(self);
         super::session_lock::enter_secure_mode(self);
         if self
             .session_lock

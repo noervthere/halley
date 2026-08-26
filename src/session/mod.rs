@@ -432,6 +432,65 @@ fn install_overlay_timer<D: SessionDriver>(
         .map_err(Into::into)
 }
 
+fn install_frame_callback_fallback_timer<D: SessionDriver>(
+    handle: &LoopHandle<'_, Session<D>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    handle
+        .insert_source(
+            Timer::from_duration(Duration::from_secs(1)),
+            |_, _, session| {
+                send_fallback_frame_callbacks(session);
+                TimeoutAction::ToDuration(Duration::from_secs(1))
+            },
+        )
+        .map(|_| ())
+        .map_err(Into::into)
+}
+
+fn send_fallback_frame_callbacks<D: SessionDriver>(session: &mut Session<D>) {
+    let outputs = session.wayland.space.outputs().cloned().collect::<Vec<_>>();
+    let elapsed = session.start_time.elapsed();
+    for output in outputs {
+        let sequence = session.driver.frame_callback_sequence(&output);
+        if session.session_lock.active() {
+            crate::wayland::session_lock::send_frames(
+                &session.session_lock,
+                &output,
+                elapsed,
+                sequence,
+            );
+        } else {
+            for window in session.wayland.space.elements() {
+                window.send_frame(
+                    &output,
+                    elapsed,
+                    crate::wayland::frame_callbacks::FALLBACK_THROTTLE,
+                    |surface, states| {
+                        crate::wayland::frame_callbacks::callback_output(
+                            surface, states, &output, sequence, true,
+                        )
+                    },
+                );
+            }
+        }
+        crate::wayland::layer_shell::send_frames(&output, elapsed, sequence);
+        crate::cursor::surface::send_frame(
+            &session.cursor,
+            &session.wayland.space,
+            &output,
+            session.pointer.position(),
+            elapsed,
+            sequence,
+        );
+        crate::wayland::dnd::send_frame(
+            session.wayland.dnd_icon.as_ref(),
+            &output,
+            elapsed,
+            sequence,
+        );
+    }
+}
+
 pub(crate) fn reconcile_pointer_constraints<D: SessionDriver>(session: &mut Session<D>) {
     pointer::reconcile_state(session);
 }

@@ -775,6 +775,7 @@ pub fn send_preview_frames(
     nodes: &crate::nodes::NodesState,
     output: &smithay::output::Output,
     elapsed: Duration,
+    sequence: u32,
 ) {
     let Some(session) = state.session() else {
         return;
@@ -787,11 +788,16 @@ pub fn send_preview_frames(
         let Some(record) = nodes.record(tile.id).filter(|record| record.attached) else {
             continue;
         };
-        record
-            .window
-            .send_frame(output, elapsed, Some(Duration::ZERO), |_, _| {
-                Some(output.clone())
-            });
+        record.window.send_frame(
+            output,
+            elapsed,
+            crate::wayland::frame_callbacks::FALLBACK_THROTTLE,
+            |surface, states| {
+                crate::wayland::frame_callbacks::callback_output(
+                    surface, states, output, sequence, false,
+                )
+            },
+        );
     }
 }
 

@@ -43,6 +43,7 @@ pub(super) struct OutputFrameState {
     redraw: RedrawState,
     last_camera_sample: Duration,
     unfinished_animations: bool,
+    frame_callback_sequence: u32,
 }
 
 impl OutputFrameState {
@@ -52,7 +53,16 @@ impl OutputFrameState {
             redraw: RedrawState::default(),
             last_camera_sample: crate::frame_clock::monotonic_now(),
             unfinished_animations: false,
+            frame_callback_sequence: 0,
         }
+    }
+
+    pub fn advance_frame_callback_sequence(&mut self) {
+        self.frame_callback_sequence = self.frame_callback_sequence.wrapping_add(1);
+    }
+
+    pub fn frame_callback_sequence(&self) -> u32 {
+        self.frame_callback_sequence
     }
 
     pub fn queue_redraw(&mut self) {

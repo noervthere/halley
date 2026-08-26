@@ -106,6 +106,7 @@ pub fn send_frame(
     output: &Output,
     pointer_position: (f64, f64),
     elapsed: Duration,
+    sequence: u32,
 ) {
     let Some(surface) = manager.current_surface() else {
         return;
@@ -119,9 +120,17 @@ pub fn send_frame(
     {
         return;
     }
-    send_frames_surface_tree(surface, output, elapsed, Some(Duration::ZERO), |_, _| {
-        Some(output.clone())
-    });
+    send_frames_surface_tree(
+        surface,
+        output,
+        elapsed,
+        crate::wayland::frame_callbacks::FALLBACK_THROTTLE,
+        |surface, states| {
+            crate::wayland::frame_callbacks::callback_output(
+                surface, states, output, sequence, false,
+            )
+        },
+    );
 }
 
 fn send_scale_transform(

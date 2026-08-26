@@ -969,6 +969,7 @@ pub fn send_hover_preview_frame(
     output: &Output,
     elapsed: Duration,
     now: Duration,
+    sequence: u32,
 ) {
     let Some(id) = nodes.preview_hovered_on_output(&output.name(), now) else {
         return;
@@ -976,11 +977,16 @@ pub fn send_hover_preview_frame(
     let Some(record) = nodes.record(id) else {
         return;
     };
-    record
-        .window
-        .send_frame(output, elapsed, Some(Duration::ZERO), |_, _| {
-            Some(output.clone())
-        });
+    record.window.send_frame(
+        output,
+        elapsed,
+        crate::wayland::frame_callbacks::FALLBACK_THROTTLE,
+        |surface, states| {
+            crate::wayland::frame_callbacks::callback_output(
+                surface, states, output, sequence, false,
+            )
+        },
+    );
 }
 
 fn metadata(window: &Window) -> (String, Option<String>) {

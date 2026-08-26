@@ -135,18 +135,15 @@ pub fn build(
             Rectangle::from_size(backdrop_size),
             super::SESSION_LOCK_COLOR,
         )));
-        if request.cursor.show_cursor {
-            let cursor = crate::cursor::render::elements(
-                renderer,
-                request.cursor.cursor,
-                output,
-                output_geometry,
-                request.cursor.cursor_position,
-                request.frame.target_presentation_time,
-                request.cursor.cursor_override,
-            )?;
-            elements.splice(0..0, cursor.into_iter().map(SceneElement::Cursor));
-        }
+        prepend_pointer_elements(
+            renderer,
+            output,
+            output_geometry,
+            &request.cursor,
+            request.frame.target_presentation_time,
+            false,
+            &mut elements,
+        )?;
         return Ok(elements);
     }
 
@@ -281,18 +278,15 @@ pub fn build(
             )?;
             elements.splice(0..0, fps_elements);
         }
-        if request.cursor.show_cursor {
-            let cursor = crate::cursor::render::elements(
-                renderer,
-                request.cursor.cursor,
-                output,
-                output_geometry,
-                request.cursor.cursor_position,
-                request.frame.target_presentation_time,
-                request.cursor.cursor_override,
-            )?;
-            elements.splice(0..0, cursor.into_iter().map(SceneElement::Cursor));
-        }
+        prepend_pointer_elements(
+            renderer,
+            output,
+            output_geometry,
+            &request.cursor,
+            request.frame.target_presentation_time,
+            true,
+            &mut elements,
+        )?;
         return Ok(elements);
     }
 
@@ -909,22 +903,53 @@ pub fn build(
         elements.splice(0..0, fps_elements);
     }
 
-    if request.cursor.show_cursor {
-        let cursor = crate::cursor::render::elements(
-            renderer,
-            request.cursor.cursor,
-            output,
-            output_geometry,
-            request.cursor.cursor_position,
-            request.frame.target_presentation_time,
-            request.cursor.cursor_override,
-        )?;
-        // Element lists are front-to-back, so cursor surface trees belong
-        // before every compositor and client element.
-        elements.splice(0..0, cursor.into_iter().map(SceneElement::Cursor));
-    }
+    prepend_pointer_elements(
+        renderer,
+        output,
+        output_geometry,
+        &request.cursor,
+        request.frame.target_presentation_time,
+        true,
+        &mut elements,
+    )?;
 
     Ok(elements)
+}
+
+fn prepend_pointer_elements(
+    renderer: &mut GlesRenderer,
+    output: &Output,
+    output_geometry: Rectangle<i32, Logical>,
+    cursor_context: &super::CursorContext<'_>,
+    time: std::time::Duration,
+    show_dnd_icon: bool,
+    elements: &mut Vec<SceneElement>,
+) -> Result<(), Box<dyn Error>> {
+    if show_dnd_icon {
+        let dnd = crate::wayland::dnd::elements(
+            renderer,
+            cursor_context.dnd_icon,
+            output,
+            output_geometry,
+            cursor_context.cursor_position,
+        );
+        elements.splice(0..0, dnd.into_iter().map(SceneElement::Layer));
+    }
+    if cursor_context.show_cursor {
+        let cursor = crate::cursor::render::elements(
+            renderer,
+            cursor_context.cursor,
+            output,
+            output_geometry,
+            cursor_context.cursor_position,
+            time,
+            cursor_context.cursor_override,
+        )?;
+        // Element lists are front-to-back, so cursor surface trees belong
+        // immediately in front of the drag icon and every other element.
+        elements.splice(0..0, cursor.into_iter().map(SceneElement::Cursor));
+    }
+    Ok(())
 }
 
 fn cluster_float_is_above_exclusive(

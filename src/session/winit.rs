@@ -1,4 +1,4 @@
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use calloop::generic::Generic;
 use calloop::{EventLoop, Interest, LoopHandle, Mode, PostAction};
@@ -28,6 +28,7 @@ struct WinitDriver {
     loop_handle: LoopHandle<'static, App>,
     exit: bool,
     last_camera_tick: Instant,
+    frame_callback_sequence: u32,
 }
 
 impl crate::ipc::OutputInfoSource for WinitDriver {
@@ -88,6 +89,10 @@ impl super::RenderDriver for WinitDriver {
 impl super::OutputDriver for WinitDriver {
     fn primary_output(&self) -> &smithay::output::Output {
         self.backend.output()
+    }
+
+    fn frame_callback_sequence(&self, _output: &smithay::output::Output) -> u32 {
+        self.frame_callback_sequence
     }
 
     fn output_states(&self) -> Vec<super::output::OutputState> {
@@ -205,6 +210,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
         loop_handle: event_loop.handle(),
         exit: false,
         last_camera_tick: Instant::now(),
+        frame_callback_sequence: 0,
     };
     let mut wayland = App::create_wayland_state(dh.clone(), &mut driver);
     wayland.ensure_output_global::<App>(driver.backend.output());
@@ -328,6 +334,9 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
     if let Err(err) = super::install_overlay_timer(&event_loop.handle()) {
         eventline::warn!("overlays: failed to start lifecycle timer: {err}");
     }
+    if let Err(err) = super::install_frame_callback_fallback_timer(&event_loop.handle()) {
+        eventline::warn!("frame-callback: failed to start fallback timer: {err}");
+    }
 
     event_loop
         .handle()
@@ -414,6 +423,11 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                 let show_cursor = super::pointer::cursor_visible(app);
                 let cursor_override = super::pointer::cursor_override(app);
                 crate::cursor::surface::refresh_outputs(&app.cursor, &app.wayland.space, position);
+                crate::wayland::dnd::refresh_outputs(
+                    app.wayland.dnd_icon.as_ref(),
+                    &app.wayland.space,
+                    position,
+                );
                 let next_cursor_frame = show_cursor
                     .then(|| {
                         app.cursor.current_next_frame_in_with_override(
@@ -451,6 +465,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                         },
                         cursor: CursorContext {
                             cursor: &app.cursor,
+                            dnd_icon: app.wayland.dnd_icon.as_ref(),
                             cursor_position: position,
                             show_cursor,
                             cursor_override,
@@ -506,12 +521,16 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                 // this a client's redraw loop just stalls forever.
                 let output = app.driver.backend.output().clone();
                 let elapsed = app.start_time.elapsed();
+                app.driver.frame_callback_sequence =
+                    app.driver.frame_callback_sequence.wrapping_add(1);
+                let frame_callback_sequence = app.driver.frame_callback_sequence;
                 if app.session_lock.active() {
                     if submitted {
                         crate::wayland::session_lock::send_frames(
                             &app.session_lock,
                             &output,
                             elapsed,
+                            frame_callback_sequence,
                         );
                     }
                 } else if app.shell.apogee.is_active() {
@@ -525,28 +544,48 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                             &app.nodes,
                             &output,
                             elapsed,
+                            frame_callback_sequence,
                         );
                     }
                 } else {
                     app.wayland.space.elements().for_each(|window| {
-                        window.send_frame(&output, elapsed, Some(Duration::ZERO), |_, _| {
-                            Some(output.clone())
-                        });
+                        window.send_frame(
+                            &output,
+                            elapsed,
+                            crate::wayland::frame_callbacks::FALLBACK_THROTTLE,
+                            |surface, states| {
+                                crate::wayland::frame_callbacks::callback_output(
+                                    surface,
+                                    states,
+                                    &output,
+                                    frame_callback_sequence,
+                                    true,
+                                )
+                            },
+                        );
                     });
                     crate::nodes::send_hover_preview_frame(
                         &app.nodes,
                         &output,
                         elapsed,
                         target_presentation_time,
+                        frame_callback_sequence,
                     );
                 }
-                wayland::layer_shell::send_frames(&output, elapsed);
+                wayland::layer_shell::send_frames(&output, elapsed, frame_callback_sequence);
                 crate::cursor::surface::send_frame(
                     &app.cursor,
                     &app.wayland.space,
                     &output,
                     app.pointer.position(),
                     elapsed,
+                    frame_callback_sequence,
+                );
+                crate::wayland::dnd::send_frame(
+                    app.wayland.dnd_icon.as_ref(),
+                    &output,
+                    elapsed,
+                    frame_callback_sequence,
                 );
                 app.wayland.space.refresh();
                 if crate::xwayland::sync_positions(app) {

@@ -50,7 +50,8 @@ pub fn start_dnd_grab<D, S>(
     seat: Seat<D>,
     serial: Serial,
     type_: GrabType,
-) where
+) -> bool
+where
     D: SeatHandler + DndGrabHandler + 'static,
     D::PointerFocus: DndFocus<D>,
     D::TouchFocus: DndFocus<D>,
@@ -71,12 +72,16 @@ pub fn start_dnd_grab<D, S>(
                     // mid-drag would hand the grab to whatever the cursor
                     // happens to be over.
                     pointer.set_grab(state, grab, serial, Focus::Keep);
+                    true
                 }
                 // No implicit grab to promote (the button was already
                 // released, or the serial didn't match a real press) -
                 // cancelling tells the client the drag didn't start, which is
                 // what it's waiting to hear.
-                None => source.cancel(),
+                None => {
+                    source.cancel();
+                    false
+                }
             }
         }
         GrabType::Touch => {
@@ -89,8 +94,12 @@ pub fn start_dnd_grab<D, S>(
                 Some((touch, start_data)) => {
                     let grab = DnDGrab::new_touch(display_handle, start_data, source, seat);
                     touch.set_grab(state, grab, serial);
+                    true
                 }
-                None => source.cancel(),
+                None => {
+                    source.cancel();
+                    false
+                }
             }
         }
     }

@@ -2,7 +2,9 @@ pub mod background_effect;
 pub mod compositor;
 pub mod decoration;
 pub mod dmabuf;
+pub mod dnd;
 pub mod focus;
+pub mod frame_callbacks;
 pub mod fullscreen;
 pub mod idle_inhibit;
 pub mod layer_shell;
@@ -228,6 +230,7 @@ pub struct WaylandState {
     /// client - so this is only the global's state, with no compositor-side
     /// buffering of clipboard contents.
     pub data_device_state: DataDeviceState,
+    pub dnd_icon: Option<dnd::DndIcon>,
     /// Middle-click paste. A separate protocol from `data_device_state`, not
     /// a mode of it: clients set the two selections independently and
     /// expect them to hold different contents.
@@ -338,6 +341,7 @@ impl WaylandState {
             idle_inhibitors: HashMap::new(),
             output_globals,
             data_device_state,
+            dnd_icon: None,
             primary_selection_state,
             ext_data_control_state,
             popup_manager: PopupManager::default(),

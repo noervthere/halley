@@ -69,6 +69,7 @@ pub trait RenderDriver: 'static {
 /// Output discovery and hardware-policy mechanics supplied by a backend.
 pub trait OutputDriver: crate::ipc::OutputInfoSource + 'static {
     fn primary_output(&self) -> &Output;
+    fn frame_callback_sequence(&self, output: &Output) -> u32;
     fn output_states(&self) -> Vec<OutputState>;
     fn test_output_configuration(
         &mut self,

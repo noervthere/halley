@@ -8,12 +8,15 @@ use smithay::backend::renderer::element::{
 };
 use smithay::desktop::utils::{
     surface_primary_scanout_output, update_surface_primary_scanout_output,
+    with_surfaces_surface_tree,
 };
+use smithay::desktop::{PopupManager, layer_map_for_output};
 use smithay::output::Output;
 use smithay::reexports::wayland_server::Resource;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::wayland::compositor::with_states;
 use smithay::wayland::idle_inhibit::IdleInhibitHandler;
+use smithay::wayland::seat::WaylandFocus;
 
 use crate::session::{Session, SessionDriver};
 
@@ -44,6 +47,68 @@ impl<D: SessionDriver> Session<D> {
         output: &Output,
         element_states: &RenderElementStates,
     ) {
+        for window in self.wayland.space.elements() {
+            window.with_surfaces(|surface, states| {
+                update_surface_primary_scanout_output(
+                    surface,
+                    output,
+                    states,
+                    None,
+                    element_states,
+                    default_primary_scanout_output_compare,
+                );
+            });
+            if let Some(root) = window.wl_surface() {
+                for (popup, _) in PopupManager::popups_for_surface(root.as_ref()) {
+                    with_surfaces_surface_tree(popup.wl_surface(), |surface, states| {
+                        update_surface_primary_scanout_output(
+                            surface,
+                            output,
+                            states,
+                            None,
+                            element_states,
+                            default_primary_scanout_output_compare,
+                        );
+                    });
+                }
+            }
+        }
+        for layer in layer_map_for_output(output).layers() {
+            with_surfaces_surface_tree(layer.wl_surface(), |surface, states| {
+                update_surface_primary_scanout_output(
+                    surface,
+                    output,
+                    states,
+                    None,
+                    element_states,
+                    default_primary_scanout_output_compare,
+                );
+            });
+        }
+        for lock_surface in self.session_lock.surfaces_for_output(output) {
+            with_surfaces_surface_tree(lock_surface.wl_surface(), |surface, states| {
+                update_surface_primary_scanout_output(
+                    surface,
+                    output,
+                    states,
+                    None,
+                    element_states,
+                    default_primary_scanout_output_compare,
+                );
+            });
+        }
+        if let Some(icon) = self.wayland.dnd_icon.as_ref() {
+            with_surfaces_surface_tree(&icon.surface, |surface, states| {
+                update_surface_primary_scanout_output(
+                    surface,
+                    output,
+                    states,
+                    None,
+                    element_states,
+                    default_primary_scanout_output_compare,
+                );
+            });
+        }
         for surface in self.wayland.idle_inhibitors.keys() {
             with_states(surface, |states| {
                 update_surface_primary_scanout_output(

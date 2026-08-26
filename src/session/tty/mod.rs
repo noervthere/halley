@@ -151,6 +151,13 @@ impl super::OutputDriver for TtyDriver {
         self.backend.primary_output()
     }
 
+    fn frame_callback_sequence(&self, output: &Output) -> u32 {
+        self.output_frames
+            .get(output)
+            .map(OutputFrameState::frame_callback_sequence)
+            .unwrap_or_default()
+    }
+
     fn output_states(&self) -> Vec<super::output::OutputState> {
         self.backend.output_states()
     }
@@ -498,6 +505,9 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
     if let Err(err) = super::install_overlay_timer(&event_loop.handle()) {
         eventline::warn!("overlays: failed to start lifecycle timer: {err}");
     }
+    if let Err(err) = super::install_frame_callback_fallback_timer(&event_loop.handle()) {
+        eventline::warn!("frame-callback: failed to start fallback timer: {err}");
+    }
 
     // Queue every output's first frame through the same state machine used
     // for all later redraws.
@@ -727,8 +737,19 @@ fn on_vblank(app: &mut TtyApp, crtc: crtc::Handle, metadata: Option<&DrmEventMet
 fn send_output_frame_callbacks(app: &mut TtyApp, output: &Output) {
     let elapsed = app.start_time.elapsed();
     let primary = app.driver.backend.primary_output();
+    let frame_callback_sequence = app
+        .driver
+        .output_frames
+        .get(output)
+        .map(OutputFrameState::frame_callback_sequence)
+        .unwrap_or_default();
     if app.session_lock.active() {
-        crate::wayland::session_lock::send_frames(&app.session_lock, output, elapsed);
+        crate::wayland::session_lock::send_frames(
+            &app.session_lock,
+            output,
+            elapsed,
+            frame_callback_sequence,
+        );
     } else if app.shell.apogee.is_active() {
         if app.shell.apogee.take_callback_due(
             &output.name(),
@@ -740,6 +761,7 @@ fn send_output_frame_callbacks(app: &mut TtyApp, output: &Output) {
                 &app.nodes,
                 output,
                 elapsed,
+                frame_callback_sequence,
             );
         }
     } else {
@@ -748,24 +770,43 @@ fn send_output_frame_callbacks(app: &mut TtyApp, output: &Output) {
             .elements()
             .filter(|window| wayland::window_is_on_output(window, output, primary))
             .for_each(|window| {
-                window.send_frame(output, elapsed, Some(Duration::ZERO), |_, _| {
-                    Some(output.clone())
-                });
+                window.send_frame(
+                    output,
+                    elapsed,
+                    crate::wayland::frame_callbacks::FALLBACK_THROTTLE,
+                    |surface, states| {
+                        crate::wayland::frame_callbacks::callback_output(
+                            surface,
+                            states,
+                            output,
+                            frame_callback_sequence,
+                            true,
+                        )
+                    },
+                );
             });
         crate::nodes::send_hover_preview_frame(
             &app.nodes,
             output,
             elapsed,
             crate::frame_clock::monotonic_now(),
+            frame_callback_sequence,
         );
     }
-    wayland::layer_shell::send_frames(output, elapsed);
+    wayland::layer_shell::send_frames(output, elapsed, frame_callback_sequence);
     crate::cursor::surface::send_frame(
         &app.cursor,
         &app.wayland.space,
         output,
         app.pointer.position(),
         elapsed,
+        frame_callback_sequence,
+    );
+    crate::wayland::dnd::send_frame(
+        app.wayland.dnd_icon.as_ref(),
+        output,
+        elapsed,
+        frame_callback_sequence,
     );
     app.wayland.space.refresh();
     if crate::xwayland::sync_positions(app) {
@@ -986,6 +1027,11 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
         &app.wayland.space,
         app.pointer.position(),
     );
+    crate::wayland::dnd::refresh_outputs(
+        app.wayland.dnd_icon.as_ref(),
+        &app.wayland.space,
+        app.pointer.position(),
+    );
     if pointer_is_on_output {
         let next_cursor_frame = show_cursor
             .then(|| {
@@ -1056,6 +1102,7 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
             },
             cursor: CursorContext {
                 cursor: &app.cursor,
+                dnd_icon: app.wayland.dnd_icon.as_ref(),
                 cursor_position: app.pointer.position(),
                 show_cursor,
                 cursor_override,
@@ -1129,6 +1176,7 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
             .output_frames
             .get_mut(output)
             .expect("rendered output has frame state");
+        state.advance_frame_callback_sequence();
         if let Some(token) = state.frame_submitted(animating) {
             loop_handle.remove(token);
         }
@@ -1203,7 +1251,10 @@ fn on_estimated_vblank_timer(app: &mut TtyApp, output: &Output) {
         return;
     };
     match state.estimated_vblank_fired() {
-        Ok(true) => send_output_frame_callbacks(app, output),
+        Ok(true) => {
+            state.advance_frame_callback_sequence();
+            send_output_frame_callbacks(app, output)
+        }
         Ok(false) => {}
         Err(unexpected) => {
             eventline::warn!(
