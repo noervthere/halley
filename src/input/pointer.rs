@@ -529,7 +529,9 @@ fn window_under(
                 });
             }
         }
-        if hit_kind == WindowHitKind::Any && !presentation.contains_screen(screen_location) {
+        if visual_bounds_required(hit_kind, crate::xwayland::is_x11(window))
+            && !presentation.contains_screen(screen_location)
+        {
             continue;
         }
         let location = presentation.source_from_screen(screen_location);
@@ -558,6 +560,15 @@ fn window_under(
         });
     }
     None
+}
+
+fn visual_bounds_required(hit_kind: WindowHitKind, is_x11: bool) -> bool {
+    // Native popup trees perform their own surface-local hit testing and may
+    // legitimately extend beyond the toplevel's visual rectangle. X11
+    // override-redirect windows are independent rectangular surfaces; the
+    // X11 fast path below intentionally skips surface-tree input regions, so
+    // it must retain this explicit bounds gate in the popup plane.
+    hit_kind == WindowHitKind::Any || is_x11
 }
 
 const TITLEBAR_CONTROL_RESIZE_BAND: f64 = 8.0;
@@ -767,11 +778,20 @@ mod tests {
     use smithay::utils::Rectangle;
 
     use super::{
-        WheelAccumulator, axis_frame, axis_frame_filtered, clamp_to_outputs, decoration_hit_at,
-        desktop_bounds, exclusive_pointer_member_is_allowed, presentation_stack_key,
-        process_wheel_bindings, wheel_delta_v120, wheel_direction,
+        WheelAccumulator, WindowHitKind, axis_frame, axis_frame_filtered, clamp_to_outputs,
+        decoration_hit_at, desktop_bounds, exclusive_pointer_member_is_allowed,
+        presentation_stack_key, process_wheel_bindings, visual_bounds_required, wheel_delta_v120,
+        wheel_direction,
     };
     use crate::input::keybinds::WheelDirection;
+
+    #[test]
+    fn x11_popups_cannot_capture_input_outside_their_visual_bounds() {
+        assert!(visual_bounds_required(WindowHitKind::Popup, true));
+        assert!(visual_bounds_required(WindowHitKind::Any, true));
+        assert!(visual_bounds_required(WindowHitKind::Any, false));
+        assert!(!visual_bounds_required(WindowHitKind::Popup, false));
+    }
 
     #[test]
     fn titlebar_perimeter_resizes_while_control_interior_remains_clickable() {
