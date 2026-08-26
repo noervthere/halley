@@ -1,4 +1,6 @@
+use std::collections::HashMap;
 use std::error::Error;
+use std::hash::{DefaultHasher, Hash, Hasher};
 
 use image::RgbaImage;
 use resvg::{tiny_skia, usvg};
@@ -9,7 +11,7 @@ use smithay::backend::renderer::gles::{
     GlesError, GlesFrame, GlesRenderer, GlesTexProgram, GlesTexture, Uniform, UniformName,
     UniformType,
 };
-use smithay::backend::renderer::utils::{CommitCounter, DamageSet, OpaqueRegions};
+use smithay::backend::renderer::utils::{CommitCounter, OpaqueRegions};
 use smithay::backend::renderer::{ContextId, ImportMem, Renderer, Texture};
 use smithay::utils::user_data::UserDataMap;
 use smithay::utils::{Buffer, Logical, Physical, Rectangle, Scale, Transform};
@@ -30,6 +32,9 @@ struct Resources {
 #[derive(Default)]
 pub struct ClusterRenderer {
     resources: Option<Resources>,
+    ids: crate::render::ids::OutputElementIds<(u8, u32)>,
+    active_output: String,
+    occurrences: HashMap<u8, u32>,
 }
 
 #[derive(Debug)]
@@ -43,14 +48,30 @@ pub struct ClusterCoreElement {
     element_alpha: f32,
     flat_fill: f32,
     center_flat_fill: f32,
+    commit: CommitCounter,
 }
 
 #[derive(Debug)]
 pub struct ClusterIconElement {
     base: TextureRenderElement<GlesTexture>,
+    commit: CommitCounter,
 }
 
 impl ClusterRenderer {
+    pub fn begin_scene(&mut self, output: &str) {
+        self.active_output.clear();
+        self.active_output.push_str(output);
+        self.occurrences.clear();
+        self.ids.advance(output);
+    }
+
+    fn dynamic_id(&mut self, kind: u8) -> Id {
+        let occurrence = self.occurrences.entry(kind).or_default();
+        let index = *occurrence;
+        *occurrence = occurrence.wrapping_add(1);
+        self.ids.for_output(&self.active_output).id((kind, index))
+    }
+
     pub fn core(
         &mut self,
         renderer: &mut GlesRenderer,
@@ -64,6 +85,13 @@ impl ClusterRenderer {
             self.core_with_alpha(renderer, destination, border_rgb, fill_rgb, opacity, 1.0)?;
         if join_ready {
             element.border.3 = join_ready_border_fraction(destination);
+            element.commit = core_commit(
+                element.border,
+                element.fill,
+                element.fill_alpha,
+                element.flat_fill,
+                element.center_flat_fill,
+            );
         }
         Ok(element)
     }
@@ -77,6 +105,7 @@ impl ClusterRenderer {
         opacity: f32,
         alpha: f32,
     ) -> Result<ClusterCoreElement, Box<dyn Error>> {
+        let id = self.dynamic_id(0);
         self.ensure(renderer, [[255; 4]; 2])?;
         let resources = self.resources.as_ref().expect("resources ensured above");
         let source = Rectangle::<f64, Logical>::new(
@@ -89,7 +118,7 @@ impl ClusterRenderer {
         );
         Ok(ClusterCoreElement {
             base: TextureRenderElement::from_static_texture(
-                Id::new(),
+                id,
                 resources.context.clone(),
                 destination.loc.to_f64(),
                 resources.texture.clone(),
@@ -109,6 +138,13 @@ impl ClusterRenderer {
             element_alpha: alpha.clamp(0.0, 1.0),
             flat_fill: 0.0,
             center_flat_fill: 0.0,
+            commit: core_commit(
+                (border_rgb.0, border_rgb.1, border_rgb.2, 3.0 / 26.0),
+                (fill_rgb.0, fill_rgb.1, fill_rgb.2, 1.0),
+                opacity.clamp(0.0, 1.0),
+                0.0,
+                0.0,
+            ),
         })
     }
 
@@ -120,6 +156,7 @@ impl ClusterRenderer {
         colors: [[u8; 4]; 2],
         alpha: f32,
     ) -> Result<ClusterIconElement, Box<dyn Error>> {
+        let id = self.dynamic_id(1);
         self.ensure(renderer, colors)?;
         let resources = self.resources.as_ref().expect("resources ensured above");
         let texture = resources.icons[usize::from(focused)].clone();
@@ -129,7 +166,7 @@ impl ClusterRenderer {
         );
         Ok(ClusterIconElement {
             base: TextureRenderElement::from_static_texture(
-                Id::new(),
+                id,
                 resources.context.clone(),
                 destination.loc.to_f64(),
                 texture,
@@ -141,6 +178,7 @@ impl ClusterRenderer {
                 None,
                 Kind::Unspecified,
             ),
+            commit: icon_commit(focused, colors),
         })
     }
 
@@ -192,6 +230,39 @@ fn join_ready_border_fraction(destination: Rectangle<i32, Physical>) -> f32 {
     JOIN_READY_BORDER_WIDTH_PX / radius
 }
 
+fn core_commit(
+    border: (f32, f32, f32, f32),
+    fill: (f32, f32, f32, f32),
+    fill_alpha: f32,
+    flat_fill: f32,
+    center_flat_fill: f32,
+) -> CommitCounter {
+    let mut hasher = DefaultHasher::new();
+    for value in [
+        border.0,
+        border.1,
+        border.2,
+        border.3,
+        fill.0,
+        fill.1,
+        fill.2,
+        fill.3,
+        fill_alpha,
+        flat_fill,
+        center_flat_fill,
+    ] {
+        value.to_bits().hash(&mut hasher);
+    }
+    CommitCounter::from(hasher.finish() as usize)
+}
+
+fn icon_commit(focused: bool, colors: [[u8; 4]; 2]) -> CommitCounter {
+    let mut hasher = DefaultHasher::new();
+    focused.hash(&mut hasher);
+    colors.hash(&mut hasher);
+    CommitCounter::from(hasher.finish() as usize)
+}
+
 fn raster_icon(color: [u8; 4]) -> Option<RgbaImage> {
     let options = usvg::Options::default();
     let tree = usvg::Tree::from_data(CLUSTER_ICON, &options).ok()?;
@@ -224,7 +295,7 @@ impl Element for ClusterCoreElement {
     }
 
     fn current_commit(&self) -> CommitCounter {
-        self.base.current_commit()
+        self.commit
     }
 
     fn geometry(&self, scale: Scale<f64>) -> Rectangle<i32, Physical> {
@@ -237,14 +308,6 @@ impl Element for ClusterCoreElement {
 
     fn src(&self) -> Rectangle<f64, Buffer> {
         self.base.src()
-    }
-
-    fn damage_since(
-        &self,
-        scale: Scale<f64>,
-        commit: Option<CommitCounter>,
-    ) -> DamageSet<i32, Physical> {
-        self.base.damage_since(scale, commit)
     }
 
     fn opaque_regions(&self, _scale: Scale<f64>) -> OpaqueRegions<i32, Physical> {
@@ -300,7 +363,7 @@ impl Element for ClusterIconElement {
     }
 
     fn current_commit(&self) -> CommitCounter {
-        self.base.current_commit()
+        self.commit
     }
 
     fn geometry(&self, scale: Scale<f64>) -> Rectangle<i32, Physical> {
@@ -313,14 +376,6 @@ impl Element for ClusterIconElement {
 
     fn src(&self) -> Rectangle<f64, Buffer> {
         self.base.src()
-    }
-
-    fn damage_since(
-        &self,
-        scale: Scale<f64>,
-        commit: Option<CommitCounter>,
-    ) -> DamageSet<i32, Physical> {
-        self.base.damage_since(scale, commit)
     }
 
     fn opaque_regions(&self, scale: Scale<f64>) -> OpaqueRegions<i32, Physical> {
@@ -374,6 +429,24 @@ mod tests {
     fn join_ready_border_is_five_pixels_inside_the_original_core() {
         let core = Rectangle::new((0, 0).into(), (68, 68).into());
         assert_eq!(join_ready_border_fraction(core) * 34.0, 5.0);
+    }
+
+    #[test]
+    fn cluster_commits_follow_visual_state() {
+        let border = (0.8, 0.2, 0.1, 1.0);
+        let fill = (0.1, 0.2, 0.3, 1.0);
+        assert_eq!(
+            core_commit(border, fill, 0.8, 0.0, 0.0),
+            core_commit(border, fill, 0.8, 0.0, 0.0)
+        );
+        assert_ne!(
+            core_commit(border, fill, 0.8, 0.0, 0.0),
+            core_commit(border, fill, 0.8, 0.0, 1.0)
+        );
+        assert_ne!(
+            icon_commit(false, [[1, 2, 3, 255], [4, 5, 6, 255]]),
+            icon_commit(true, [[1, 2, 3, 255], [4, 5, 6, 255]])
+        );
     }
 
     #[test]

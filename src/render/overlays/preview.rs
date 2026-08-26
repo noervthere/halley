@@ -33,6 +33,9 @@ pub struct OverlayPreviewRequest<'a> {
     pub window: &'a Window,
     pub destination: Rectangle<i32, Physical>,
     pub alpha: f32,
+    /// Whether the client is still mapped and can safely be sampled again.
+    /// Collapsed nodes deliberately keep using their last-good snapshot.
+    pub allow_refresh: bool,
     pub live: bool,
     pub decorations: &'a halley_config::Decorations,
     pub font: &'a halley_config::Font,
@@ -47,7 +50,38 @@ pub struct OverlayPreviewRenderers<'a> {
     pub text: &'a mut crate::render::text::UiTextRenderer,
 }
 
+fn needs_refresh(
+    has_entry: bool,
+    allow_refresh: bool,
+    maximized_changed: bool,
+    live_dirty: bool,
+) -> bool {
+    !has_entry || allow_refresh && (maximized_changed || live_dirty)
+}
+
 impl OverlayPreviewCache {
+    /// Preserve a compositor-owned last-good frame for a window that is about
+    /// to leave the mapped scene. Collapsed nodes keep their client surface
+    /// hidden, so trying to create their first preview later can otherwise
+    /// sample an empty surface tree (Steam commonly exposes this as a white
+    /// Alt-Tab/Apogee tile).
+    pub fn store_last_good(&mut self, id: NodeId, texture: WindowTexture, maximized: bool) {
+        let element_id = self
+            .entries
+            .get(&id)
+            .map(|entry| entry.id.clone())
+            .unwrap_or_else(Id::new);
+        self.entries.insert(
+            id,
+            Entry {
+                id: element_id,
+                texture,
+                maximized,
+            },
+        );
+        self.dirty.remove(&id);
+    }
+
     /// Returns the captured texture dimensions without exposing renderer cache
     /// internals to overlay layout code.
     pub fn source_dimensions(&self, id: NodeId) -> Option<(i32, i32)> {
@@ -87,24 +121,27 @@ impl OverlayPreviewCache {
             window,
             destination,
             alpha,
+            allow_refresh,
             live,
             decorations,
             font,
             chrome_visible,
             maximized,
         } = request;
-        let refresh = self
-            .entries
-            .get(&id)
-            .is_none_or(|entry| entry.maximized != maximized)
-            || live && self.dirty.remove(&id);
+        let existing = self.entries.get(&id);
+        let refresh = needs_refresh(
+            existing.is_some(),
+            allow_refresh,
+            existing.is_some_and(|entry| entry.maximized != maximized),
+            live && self.dirty.contains(&id),
+        );
         if refresh {
             let previous = self.entries.remove(&id);
             let element_id = previous
                 .as_ref()
                 .map(|entry| entry.id.clone())
                 .unwrap_or_else(Id::new);
-            let reusable = previous.map(|entry| entry.texture.texture);
+            let reusable = previous.as_ref().map(|entry| entry.texture.texture.clone());
             match crate::render::window_texture::capture_decorated(
                 renderer,
                 window,
@@ -131,6 +168,9 @@ impl OverlayPreviewCache {
                     );
                 }
                 Err(err) => {
+                    if let Some(previous) = previous {
+                        self.entries.insert(id, previous);
+                    }
                     self.dirty.insert(id);
                     return Err(err);
                 }
@@ -146,5 +186,24 @@ impl OverlayPreviewCache {
                 .render_element(entry.id.clone(), destination, alpha),
             entry.texture.texture.clone(),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::needs_refresh;
+
+    #[test]
+    fn collapsed_previews_keep_the_last_good_texture() {
+        assert!(!needs_refresh(true, false, true, true));
+        assert!(!needs_refresh(true, false, false, true));
+    }
+
+    #[test]
+    fn mapped_previews_refresh_only_for_real_changes() {
+        assert!(!needs_refresh(true, true, false, false));
+        assert!(needs_refresh(true, true, true, false));
+        assert!(needs_refresh(true, true, false, true));
+        assert!(needs_refresh(false, false, false, false));
     }
 }

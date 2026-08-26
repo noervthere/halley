@@ -82,22 +82,24 @@ pub(super) fn capture_overlay_elements(
                 .rev()
                 .map(SceneElement::SourceChooser),
             );
-            elements.push(source_chooser_backdrop(output_geometry));
+            elements.push(source_chooser_backdrop(output_geometry, node_renderer));
             Ok(elements)
         }
-        crate::capture::CaptureOverlay::SourceMenu { .. } => {
-            Ok(vec![source_chooser_backdrop(output_geometry)])
-        }
+        crate::capture::CaptureOverlay::SourceMenu { .. } => Ok(vec![source_chooser_backdrop(
+            output_geometry,
+            node_renderer,
+        )]),
     }
 }
 
-fn source_chooser_backdrop(output: Rectangle<i32, Logical>) -> SceneElement {
-    SceneElement::Border(SolidColorRenderElement::new(
-        Id::new(),
+fn source_chooser_backdrop(
+    output: Rectangle<i32, Logical>,
+    node_renderer: &mut crate::render::node::NodeRenderer,
+) -> SceneElement {
+    SceneElement::Border(crate::render::solid_color_element(
+        node_renderer.active_slot_id(crate::render::node::NodeSlot::SourceChooserBackdrop),
         Rectangle::from_size(output.size.to_physical(1)),
-        CommitCounter::default(),
         crate::render::overlays::shell::backdrop_dim(0.45),
-        Kind::Unspecified,
     ))
 }
 

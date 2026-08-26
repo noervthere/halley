@@ -35,6 +35,12 @@ pub mod slot {
     pub const TITLEBAR_BACKGROUND_FALLBACK: usize = 6;
     /// Button backplates are offset by their control index.
     pub const TITLEBAR_BUTTON: usize = 16;
+    /// Button glyphs are offset by their control index. The unmaximize glyph
+    /// uses an additional offset so changing texture content also changes the
+    /// render-element identity.
+    pub const TITLEBAR_GLYPH: usize = 32;
+    pub const BORDER_FALLBACK: usize = 48;
+    pub const BODY_BORDER_FALLBACK: usize = 56;
 }
 
 /// Stable identity for one decoration part of `surface`.
@@ -51,9 +57,14 @@ pub fn surface_slot_for_instance(
     slot: usize,
     instance: Option<&str>,
 ) -> Id {
+    surface_slot(surface, instance_slot_namespace(slot, instance))
+}
+
+fn instance_slot_namespace(slot: usize, instance: Option<&str>) -> usize {
     let mut hash = DefaultHasher::new();
+    slot.hash(&mut hash);
     instance.unwrap_or("canonical").hash(&mut hash);
-    surface_slot(surface, slot).namespaced(hash.finish() as usize)
+    hash.finish() as usize
 }
 
 fn commit_seed(tag: u8, base: CommitCounter) -> DefaultHasher {
@@ -115,6 +126,19 @@ fn border_commit(
     }
     hash_radii(outer_radii, &mut hash);
     hash_radii(inner_radii, &mut hash);
+    finish_commit(hash)
+}
+
+fn rounded_surface_commit(
+    base: CommitCounter,
+    destination: Rectangle<i32, Physical>,
+    clip: Rectangle<i32, Physical>,
+    radii: CornerRadii,
+) -> CommitCounter {
+    let mut hash = commit_seed(1, base);
+    hash_rect(destination, &mut hash);
+    hash_rect(clip, &mut hash);
+    hash_radii(radii, &mut hash);
     finish_commit(hash)
 }
 
@@ -329,6 +353,12 @@ impl WindowDecorationRenderer {
     ) -> Option<RoundedSurfaceElement> {
         self.available(renderer);
         let resources = self.resources.as_ref()?;
+        let commit = rounded_surface_commit(
+            inner.current_commit(),
+            destination,
+            clip,
+            clamp_radii(radii, clip.size.w, clip.size.h),
+        );
         Some(RoundedSurfaceElement {
             inner,
             destination,
@@ -336,6 +366,7 @@ impl WindowDecorationRenderer {
             radii: clamp_radii(radii, clip.size.w, clip.size.h),
             program: resources.surface.clone(),
             white: resources.white.clone(),
+            commit,
         })
     }
 
@@ -676,6 +707,7 @@ pub struct RoundedSurfaceElement {
     radii: CornerRadii,
     program: GlesTexProgram,
     white: GlesTexture,
+    commit: CommitCounter,
 }
 
 impl Element for RoundedSurfaceElement {
@@ -684,7 +716,7 @@ impl Element for RoundedSurfaceElement {
     }
 
     fn current_commit(&self) -> CommitCounter {
-        self.inner.current_commit()
+        self.commit
     }
 
     fn geometry(&self, _scale: Scale<f64>) -> Rectangle<i32, Physical> {
@@ -1081,6 +1113,22 @@ mod tests {
                 common.3,
                 common.4,
             ),
+        );
+    }
+
+    #[test]
+    fn presentation_instances_preserve_the_decoration_slot() {
+        assert_ne!(
+            instance_slot_namespace(slot::TITLEBAR_GLYPH, Some("preview")),
+            instance_slot_namespace(slot::TITLEBAR_BUTTON, Some("preview"))
+        );
+        assert_ne!(
+            instance_slot_namespace(slot::TITLEBAR_GLYPH, Some("preview")),
+            instance_slot_namespace(slot::TITLEBAR_GLYPH, Some("canonical"))
+        );
+        assert_eq!(
+            instance_slot_namespace(slot::TITLEBAR_GLYPH, None),
+            instance_slot_namespace(slot::TITLEBAR_GLYPH, Some("canonical"))
         );
     }
 

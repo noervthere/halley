@@ -148,13 +148,14 @@ impl AppIconCache {
     pub(super) fn element(
         &mut self,
         renderer: &mut GlesRenderer,
+        id: Id,
         app_id: &str,
         destination: Rectangle<i32, Physical>,
         alpha: f32,
     ) -> Option<TextureRenderElement<GlesTexture>> {
         self.request(renderer, app_id);
         match self.entries.get(app_id).map(|entry| &entry.state) {
-            Some(State::Ready(icon)) => Some(icon.render_element(Id::new(), destination, alpha)),
+            Some(State::Ready(icon)) => Some(icon.render_element(id, destination, alpha)),
             Some(State::Pending { .. } | State::Missing) | None => None,
         }
     }

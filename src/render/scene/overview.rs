@@ -212,7 +212,8 @@ pub(super) fn apogee_elements(
                 window: &record.window,
                 destination: body,
                 alpha: visuals.preview_alpha,
-                live: config.live_previews,
+                allow_refresh: !record.collapsed,
+                live: config.live_previews && !record.collapsed,
                 decorations,
                 font,
                 chrome_visible,
@@ -258,17 +259,16 @@ pub(super) fn apogee_elements(
             )?,
         ));
     }
-    elements.push(SceneElement::Border(SolidColorRenderElement::new(
-        Id::new(),
+    let backdrop_color = smithay::backend::renderer::Color32F::new(
+        0.01,
+        0.018,
+        0.03,
+        config.background_dim * visuals.overlay_alpha,
+    );
+    elements.push(SceneElement::Border(crate::render::solid_color_element(
+        node_renderer.active_slot_id(crate::render::node::NodeSlot::ApogeeBackdrop),
         output_local,
-        CommitCounter::default(),
-        smithay::backend::renderer::Color32F::new(
-            0.01,
-            0.018,
-            0.03,
-            config.background_dim * visuals.overlay_alpha,
-        ),
-        Kind::Unspecified,
+        backdrop_color,
     )));
     Ok(elements)
 }
@@ -578,7 +578,8 @@ pub(super) fn focus_cycle_elements(
                 window: &record.window,
                 destination: body,
                 alpha,
-                live: selected,
+                allow_refresh: !record.collapsed,
+                live: selected && !record.collapsed,
                 decorations: context.decorations,
                 font: context.font,
                 chrome_visible,
@@ -632,12 +633,11 @@ pub(super) fn focus_cycle_elements(
     {
         elements.push(SceneElement::UiText(text.element));
     }
-    elements.push(SceneElement::Border(SolidColorRenderElement::new(
-        Id::new(),
+    let backdrop_color = smithay::backend::renderer::Color32F::new(0.02, 0.03, 0.05, 0.55 * alpha);
+    elements.push(SceneElement::Border(crate::render::solid_color_element(
+        node_renderer.active_slot_id(crate::render::node::NodeSlot::FocusCycleBackdrop),
         Rectangle::from_size(screen),
-        CommitCounter::default(),
-        smithay::backend::renderer::Color32F::new(0.02, 0.03, 0.05, 0.55 * alpha),
-        Kind::Unspecified,
+        backdrop_color,
     )));
     Ok(elements)
 }
@@ -751,7 +751,8 @@ pub(super) fn hover_preview_elements(
             window: &record.window,
             destination: body,
             alpha,
-            live: true,
+            allow_refresh: false,
+            live: false,
             decorations,
             font,
             chrome_visible,
@@ -765,12 +766,10 @@ pub(super) fn hover_preview_elements(
         },
     ) {
         Ok((preview, _)) => elements.push(SceneElement::Closing(preview)),
-        Err(_) => elements.push(SceneElement::Border(SolidColorRenderElement::new(
-            Id::new(),
+        Err(_) => elements.push(SceneElement::Border(crate::render::solid_color_element(
+            node_renderer.active_slot_id(crate::render::node::NodeSlot::HoverPreviewFallback),
             body,
-            CommitCounter::default(),
             smithay::backend::renderer::Color32F::new(0.02, 0.03, 0.05, 0.76 * alpha),
-            Kind::Unspecified,
         ))),
     }
 

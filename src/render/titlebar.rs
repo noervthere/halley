@@ -45,8 +45,9 @@ pub struct TitlebarRenderer {
 }
 
 /// One titlebar button glyph: which icon, drawn where, in what tint.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct ControlRequest {
+    pub id: Id,
     pub control: Control,
     /// Selects the unmaximize glyph in place of the maximize one.
     pub maximized: bool,
@@ -63,6 +64,7 @@ impl TitlebarRenderer {
         request: ControlRequest,
     ) -> Option<RoundedTextureElement> {
         let ControlRequest {
+            id,
             control,
             maximized,
             destination,
@@ -81,7 +83,7 @@ impl TitlebarRenderer {
         }
         let icon = self.icons.get(&Icon::for_control(control, maximized))?;
         let texture = icon.texture.clone();
-        let base = icon.render_element(Id::new(), destination, alpha);
+        let base = icon.render_element(id, destination, alpha);
         decorations.texture_element_with_radii(
             renderer,
             base,

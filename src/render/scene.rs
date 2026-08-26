@@ -98,6 +98,10 @@ pub fn build(
         .backdrop_blur_renderer
         .begin_scene(&output.name());
     request.resources.node_renderer.begin_scene(&output.name());
+    request
+        .resources
+        .cluster_renderer
+        .begin_scene(&output.name());
     request.resources.pin_renderer.begin_scene(&output.name());
     request.resources.ui_text.begin_scene();
     if request.desktop.session_lock.active() {
@@ -123,12 +127,13 @@ pub fn build(
             .to_f64()
             .to_physical(scale)
             .to_i32_round();
-        elements.push(SceneElement::Border(SolidColorRenderElement::new(
-            Id::new(),
+        elements.push(SceneElement::Border(super::solid_color_element(
+            request
+                .resources
+                .node_renderer
+                .slot_id(&output.name(), super::node::NodeSlot::SessionLockBackdrop),
             Rectangle::from_size(backdrop_size),
-            CommitCounter::default(),
             super::SESSION_LOCK_COLOR,
-            Kind::Unspecified,
         )));
         if request.cursor.show_cursor {
             let cursor = crate::cursor::render::elements(
@@ -514,9 +519,14 @@ pub fn build(
                     elements.push(SceneElement::WindowBorder(border));
                 } else {
                     elements.extend(
-                        super::border_strips(closing.destination, border.width, border.color)
-                            .into_iter()
-                            .map(SceneElement::Border),
+                        super::border_strips(
+                            std::array::from_fn(|index| closing.border_id.namespaced(100 + index)),
+                            closing.destination,
+                            border.width,
+                            border.color,
+                        )
+                        .into_iter()
+                        .map(SceneElement::Border),
                     );
                 }
             }
@@ -787,17 +797,18 @@ pub fn build(
                 .flat_map(|(_, scene)| scene.elements),
         );
         if exclusive.progress > 0.0 {
-            foreground.push(SceneElement::Border(SolidColorRenderElement::new(
-                Id::new(),
+            foreground.push(SceneElement::Border(super::solid_color_element(
+                request.resources.node_renderer.slot_id(
+                    &output.name(),
+                    super::node::NodeSlot::ClusterExclusiveBackdrop,
+                ),
                 Rectangle::from_size(output_geometry.size.to_physical(1)),
-                CommitCounter::default(),
                 smithay::backend::renderer::Color32F::new(
                     0.0,
                     0.0,
                     0.0,
                     exclusive.progress.clamp(0.0, 1.0),
                 ),
-                Kind::Unspecified,
             )));
         }
         elements.splice(

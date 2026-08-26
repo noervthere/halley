@@ -535,6 +535,13 @@ pub(super) fn live_window_elements(
         } else {
             let strips: Vec<_> = if server_titlebar {
                 crate::render::body_border_strips(
+                    std::array::from_fn(|index| {
+                        crate::render::window_decoration::surface_slot_for_instance(
+                            window_surface.as_ref(),
+                            crate::render::window_decoration::slot::BODY_BORDER_FALLBACK + index,
+                            context.instance_identity,
+                        )
+                    }),
                     visual.animated_rect,
                     border_width,
                     border_color * chrome_alpha,
@@ -543,6 +550,13 @@ pub(super) fn live_window_elements(
                 .collect()
             } else {
                 crate::render::border_strips(
+                    std::array::from_fn(|index| {
+                        crate::render::window_decoration::surface_slot_for_instance(
+                            window_surface.as_ref(),
+                            crate::render::window_decoration::slot::BORDER_FALLBACK + index,
+                            context.instance_identity,
+                        )
+                    }),
                     visual.animated_rect,
                     border_width,
                     border_color * chrome_alpha,
@@ -760,6 +774,13 @@ pub(crate) fn append_titlebar_elements(
             renderer,
             window_decoration_renderer,
             crate::render::titlebar::ControlRequest {
+                id: titlebar_slot(
+                    window,
+                    instance,
+                    crate::render::window_decoration::slot::TITLEBAR_GLYPH
+                        + index
+                        + usize::from(maximized) * 8,
+                ),
                 control: control.control,
                 maximized,
                 destination: glyph,

@@ -24,7 +24,6 @@ use smithay::backend::renderer::element::surface::{
 };
 use smithay::backend::renderer::element::{Id, Kind};
 use smithay::backend::renderer::gles::GlesRenderer;
-use smithay::backend::renderer::utils::CommitCounter;
 use smithay::desktop::{PopupManager, Space, Window, layer_map_for_output};
 use smithay::input::pointer::CursorIcon;
 use smithay::output::Output;
@@ -280,53 +279,75 @@ pub fn window_border_color(decorations: &Decorations, is_focused: bool) -> Color
     })
 }
 
+pub fn solid_color_element(
+    id: Id,
+    geometry: Rectangle<i32, Physical>,
+    color: Color32F,
+) -> SolidColorRenderElement {
+    SolidColorRenderElement::new(
+        id,
+        geometry,
+        window_decoration::solid_color_commit(color),
+        color,
+        Kind::Unspecified,
+    )
+}
+
 /// Left, right, and bottom strips used when a titlebar owns the top edge.
 pub fn body_border_strips(
+    ids: [Id; 3],
     bbox: Rectangle<i32, Physical>,
     width: i32,
     color: Color32F,
 ) -> [SolidColorRenderElement; 3] {
-    let make = |rect: Rectangle<i32, Physical>| {
+    let make = |id: Id, rect: Rectangle<i32, Physical>| {
         SolidColorRenderElement::new(
-            Id::new(),
+            id,
             rect,
-            CommitCounter::default(),
+            window_decoration::solid_color_commit(color),
             color,
             Kind::Unspecified,
         )
     };
     [
-        make(Rectangle::new(
-            (bbox.loc.x - width, bbox.loc.y).into(),
-            (width, bbox.size.h + width).into(),
-        )),
-        make(Rectangle::new(
-            (bbox.loc.x + bbox.size.w, bbox.loc.y).into(),
-            (width, bbox.size.h + width).into(),
-        )),
-        make(Rectangle::new(
-            (bbox.loc.x - width, bbox.loc.y + bbox.size.h).into(),
-            (bbox.size.w + width * 2, width).into(),
-        )),
+        make(
+            ids[0].clone(),
+            Rectangle::new(
+                (bbox.loc.x - width, bbox.loc.y).into(),
+                (width, bbox.size.h + width).into(),
+            ),
+        ),
+        make(
+            ids[1].clone(),
+            Rectangle::new(
+                (bbox.loc.x + bbox.size.w, bbox.loc.y).into(),
+                (width, bbox.size.h + width).into(),
+            ),
+        ),
+        make(
+            ids[2].clone(),
+            Rectangle::new(
+                (bbox.loc.x - width, bbox.loc.y + bbox.size.h).into(),
+                (bbox.size.w + width * 2, width).into(),
+            ),
+        ),
     ]
 }
 
 /// Four thin solid-color strips forming a frame just outside `bbox` - not
 /// overlapping window content, since nothing shrinks a window to make room
 /// for a border yet (that's real decoration-chrome-painting work, deferred).
-/// A fresh `Id` per call is fine: neither backend does incremental damage
-/// tracking already - a full-output clear + redraw happens every frame
-/// regardless.
 pub fn border_strips(
+    ids: [Id; 4],
     bbox: Rectangle<i32, Physical>,
     width: i32,
     color: Color32F,
 ) -> [SolidColorRenderElement; 4] {
-    let make = |rect: Rectangle<i32, Physical>| {
+    let make = |id: Id, rect: Rectangle<i32, Physical>| {
         SolidColorRenderElement::new(
-            Id::new(),
+            id,
             rect,
-            CommitCounter::default(),
+            window_decoration::solid_color_commit(color),
             color,
             Kind::Unspecified,
         )
@@ -347,7 +368,12 @@ pub fn border_strips(
         (bbox.loc.x + bbox.size.w, bbox.loc.y).into(),
         (width, bbox.size.h).into(),
     );
-    [make(top), make(bottom), make(left), make(right)]
+    [
+        make(ids[0].clone(), top),
+        make(ids[1].clone(), bottom),
+        make(ids[2].clone(), left),
+        make(ids[3].clone(), right),
+    ]
 }
 
 /// Maps a physical-pixel rect from world (`Space`) coordinates to screen

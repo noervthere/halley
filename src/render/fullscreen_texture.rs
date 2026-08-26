@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::error::Error;
+use std::hash::{DefaultHasher, Hash, Hasher};
 
 use smithay::backend::renderer::element::texture::TextureRenderElement;
 use smithay::backend::renderer::element::{Element, Id, Kind, RenderElement, UnderlyingStorage};
@@ -8,7 +9,7 @@ use smithay::backend::renderer::gles::{
     UniformType, ffi,
 };
 use smithay::backend::renderer::utils::with_renderer_surface_state;
-use smithay::backend::renderer::utils::{CommitCounter, DamageSet, OpaqueRegions};
+use smithay::backend::renderer::utils::{CommitCounter, OpaqueRegions};
 use smithay::backend::renderer::{ContextId, Renderer};
 use smithay::desktop::Window;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
@@ -82,6 +83,7 @@ struct TransitionTextures {
     previous: WindowTexture,
     current: Option<GlesTexture>,
     owner: TextureTransitionOwner,
+    capture_generation: CommitCounter,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -105,6 +107,7 @@ pub struct FullscreenBlendElement {
     progress: f32,
     size: (f32, f32),
     radii: super::window_decoration::CornerRadii,
+    commit: CommitCounter,
 }
 
 /// One window's crossfade between its captured and live textures.
@@ -144,6 +147,7 @@ impl FullscreenTextureTransitions {
                 previous,
                 current: None,
                 owner,
+                capture_generation: CommitCounter::default(),
             },
         );
         Ok(())
@@ -196,6 +200,7 @@ impl FullscreenTextureTransitions {
                     return Err(err);
                 }
             };
+            entry.capture_generation.increment();
             (current, progress)
         } else {
             (
@@ -227,6 +232,13 @@ impl FullscreenTextureTransitions {
             }
         };
         let previous_element = entry.previous.render_element(id, destination, alpha);
+        let commit = blend_commit(
+            previous_element.current_commit(),
+            entry.capture_generation,
+            texture_progress as f32,
+            destination,
+            radii,
+        );
 
         Ok(Some(FullscreenBlendElement {
             previous: previous_element,
@@ -245,6 +257,7 @@ impl FullscreenTextureTransitions {
                     .max(0.0)
                     .min(destination.size.w.min(destination.size.h).max(0) as f32 * 0.5),
             },
+            commit,
         }))
     }
 }
@@ -257,13 +270,36 @@ fn transition_buffer_ready(
     !hold_previous || buffer_size == Some(configured_size)
 }
 
+fn blend_commit(
+    base: CommitCounter,
+    generation: CommitCounter,
+    progress: f32,
+    destination: Rectangle<i32, Physical>,
+    radii: super::window_decoration::CornerRadii,
+) -> CommitCounter {
+    let mut hasher = DefaultHasher::new();
+    base.distance(Some(CommitCounter::default()))
+        .unwrap_or(usize::MAX)
+        .hash(&mut hasher);
+    generation
+        .distance(Some(CommitCounter::default()))
+        .unwrap_or(usize::MAX)
+        .hash(&mut hasher);
+    progress.to_bits().hash(&mut hasher);
+    destination.size.w.hash(&mut hasher);
+    destination.size.h.hash(&mut hasher);
+    radii.top.to_bits().hash(&mut hasher);
+    radii.bottom.to_bits().hash(&mut hasher);
+    CommitCounter::from(hasher.finish() as usize)
+}
+
 impl Element for FullscreenBlendElement {
     fn id(&self) -> &Id {
         self.previous.id()
     }
 
     fn current_commit(&self) -> CommitCounter {
-        self.previous.current_commit()
+        self.commit
     }
 
     fn geometry(&self, scale: Scale<f64>) -> Rectangle<i32, Physical> {
@@ -276,14 +312,6 @@ impl Element for FullscreenBlendElement {
 
     fn src(&self) -> Rectangle<f64, Buffer> {
         self.previous.src()
-    }
-
-    fn damage_since(
-        &self,
-        scale: Scale<f64>,
-        commit: Option<CommitCounter>,
-    ) -> DamageSet<i32, Physical> {
-        self.previous.damage_since(scale, commit)
     }
 
     fn opaque_regions(&self, _scale: Scale<f64>) -> OpaqueRegions<i32, Physical> {
@@ -364,7 +392,9 @@ impl RenderElement<GlesRenderer> for FullscreenBlendElement {
 
 #[cfg(test)]
 mod tests {
-    use super::transition_buffer_ready;
+    use super::{blend_commit, transition_buffer_ready};
+    use smithay::backend::renderer::utils::CommitCounter;
+    use smithay::utils::{Physical, Rectangle};
 
     #[test]
     fn x11_fullscreen_exit_holds_previous_texture_until_restored_buffer_arrives() {
@@ -386,5 +416,26 @@ mod tests {
             Some((1920, 1080).into()),
             restored
         ));
+    }
+
+    #[test]
+    fn blend_commits_follow_capture_generation_and_animation_progress() {
+        let destination = Rectangle::<i32, Physical>::new((0, 0).into(), (1920, 1080).into());
+        let radii = crate::render::window_decoration::CornerRadii::all(8.0);
+        let base = CommitCounter::from(7);
+        let first = blend_commit(base, CommitCounter::from(1), 0.25, destination, radii);
+
+        assert_eq!(
+            first,
+            blend_commit(base, CommitCounter::from(1), 0.25, destination, radii)
+        );
+        assert_ne!(
+            first,
+            blend_commit(base, CommitCounter::from(2), 0.25, destination, radii)
+        );
+        assert_ne!(
+            first,
+            blend_commit(base, CommitCounter::from(1), 0.5, destination, radii)
+        );
     }
 }

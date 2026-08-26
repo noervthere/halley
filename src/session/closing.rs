@@ -207,12 +207,14 @@ fn capture_window_inner<D: SessionDriver>(
     };
     let decorations = session.settings.decorations;
     let font = session.settings.font.clone();
+    let preview_id = session.nodes.id_for_surface(&surface);
     let render = &mut session.render;
     let titlebar_renderer = &mut render.titlebar_renderer;
     let window_decoration_renderer = &mut render.window_decoration_renderer;
     let node_renderer = &mut render.node_renderer;
     let ui_text = &mut render.ui_text;
     let window_close_animations = &mut render.window_close_animations;
+    let overlay_previews = &mut render.overlay_previews;
     let capture = session.driver.with_renderer(|renderer| {
         let texture = crate::render::window_texture::capture_decorated(
             renderer,
@@ -228,6 +230,9 @@ fn capture_window_inner<D: SessionDriver>(
             node_renderer,
             ui_text,
         )?;
+        if let Some(id) = preview_id {
+            overlay_previews.store_last_good(id, texture.clone(), maximized);
+        }
         window_close_animations.capture(window, texture, metadata)
     });
     match capture {

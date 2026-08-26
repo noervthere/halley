@@ -5,11 +5,13 @@ use smithay::backend::renderer::gles::{
     GlesError, GlesFrame, GlesRenderer, GlesTexProgram, GlesTexture, Uniform, UniformName,
     UniformType,
 };
-use smithay::backend::renderer::utils::{CommitCounter, DamageSet, OpaqueRegions};
+use smithay::backend::renderer::utils::{CommitCounter, OpaqueRegions};
 use smithay::backend::renderer::{ContextId, ImportMem, Renderer, Texture};
 use smithay::utils::user_data::UserDataMap;
 use smithay::utils::{Buffer, Logical, Physical, Rectangle, Scale, Size, Transform};
+use std::collections::HashMap;
 use std::error::Error;
+use std::hash::{DefaultHasher, Hash, Hasher};
 
 const SQUARE: &str = include_str!("shaders/node_square.frag");
 const SQUIRCLE: &str = include_str!("shaders/node_squircle.frag");
@@ -22,6 +24,20 @@ const DASHED_OUTLINE: &str = include_str!("shaders/dashed_outline.frag");
 /// identity. See [`crate::render::ids`] for why this matters.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum NodeSlot {
+    NodeBody(u32),
+    NodeLabel(u32),
+    OverlayCard(u32),
+    AppIcon(u32),
+    SessionLockBackdrop,
+    ClusterExclusiveBackdrop,
+    ApogeeBackdrop,
+    FocusCycleBackdrop,
+    HoverPreviewFallback,
+    ShellBackdrop,
+    SourceChooserBackdrop,
+    ClusterCreationBackdrop,
+    ClusterNameSelection,
+    ClusterNameCaret,
     FocusRing,
     /// One of the four dimmed regions around the capture selection.
     PickerDim(u8),
@@ -58,6 +74,125 @@ fn overlay_card_metrics(
     )
 }
 
+fn finish_commit(hasher: DefaultHasher) -> CommitCounter {
+    CommitCounter::from(hasher.finish() as usize)
+}
+
+fn hash_floats(values: impl IntoIterator<Item = f32>, hasher: &mut DefaultHasher) {
+    for value in values {
+        value.to_bits().hash(hasher);
+    }
+}
+
+fn shape_tag(shape: halley_config::NodeShape) -> u8 {
+    match shape {
+        halley_config::NodeShape::Square => 0,
+        halley_config::NodeShape::Squircle => 1,
+    }
+}
+
+fn node_commit(shape: halley_config::NodeShape, style: NodeStyle) -> CommitCounter {
+    let mut hasher = DefaultHasher::new();
+    shape_tag(shape).hash(&mut hasher);
+    hash_floats(
+        [
+            style.border_rgb.0,
+            style.border_rgb.1,
+            style.border_rgb.2,
+            style.fill_rgb.0,
+            style.fill_rgb.1,
+            style.fill_rgb.2,
+            style.opacity,
+        ],
+        &mut hasher,
+    );
+    style.flat_fill.hash(&mut hasher);
+    finish_commit(hasher)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn label_commit(
+    shape: halley_config::NodeShape,
+    fill: (f32, f32, f32, f32),
+    border: (f32, f32, f32, f32),
+    destination: Rectangle<i32, Physical>,
+    corner_radius: f32,
+    inner_offset: f32,
+    inner_corner_radius: f32,
+    border_px: f32,
+) -> CommitCounter {
+    let mut hasher = DefaultHasher::new();
+    shape_tag(shape).hash(&mut hasher);
+    destination.size.w.hash(&mut hasher);
+    destination.size.h.hash(&mut hasher);
+    hash_floats(
+        [
+            fill.0,
+            fill.1,
+            fill.2,
+            fill.3,
+            border.0,
+            border.1,
+            border.2,
+            border.3,
+            corner_radius,
+            inner_offset,
+            inner_corner_radius,
+            border_px,
+        ],
+        &mut hasher,
+    );
+    finish_commit(hasher)
+}
+
+fn focus_ring_commit(
+    destination: Rectangle<i32, Physical>,
+    color: (f32, f32, f32, f32),
+    radii: (f32, f32),
+    dash_period: f32,
+) -> CommitCounter {
+    let mut hasher = DefaultHasher::new();
+    destination.size.w.hash(&mut hasher);
+    destination.size.h.hash(&mut hasher);
+    hash_floats(
+        [
+            color.0,
+            color.1,
+            color.2,
+            color.3,
+            radii.0,
+            radii.1,
+            dash_period,
+        ],
+        &mut hasher,
+    );
+    finish_commit(hasher)
+}
+
+fn dashed_outline_commit(
+    destination: Rectangle<i32, Physical>,
+    color: (f32, f32, f32, f32),
+    thickness: f32,
+    dash: (f32, f32),
+) -> CommitCounter {
+    let mut hasher = DefaultHasher::new();
+    destination.size.w.hash(&mut hasher);
+    destination.size.h.hash(&mut hasher);
+    hash_floats(
+        [
+            color.0, color.1, color.2, color.3, thickness, dash.0, dash.1,
+        ],
+        &mut hasher,
+    );
+    finish_commit(hasher)
+}
+
+fn string_commit(value: &str) -> CommitCounter {
+    let mut hasher = DefaultHasher::new();
+    value.hash(&mut hasher);
+    finish_commit(hasher)
+}
+
 struct Resources {
     context: ContextId<GlesTexture>,
     texture: GlesTexture,
@@ -74,6 +209,8 @@ pub struct NodeRenderer {
     resources: Option<Resources>,
     icons: super::app_icon::AppIconCache,
     ids: super::ids::OutputElementIds<NodeSlot>,
+    active_output: String,
+    occurrences: HashMap<u8, u32>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -94,6 +231,7 @@ pub struct NodeRenderElement {
     fill: (f32, f32, f32, f32),
     fill_alpha: f32,
     flat_fill: bool,
+    commit: CommitCounter,
 }
 
 #[derive(Debug)]
@@ -108,6 +246,7 @@ pub struct LabelRenderElement {
     inner_offset: f32,
     inner_corner_radius: f32,
     border_px: f32,
+    commit: CommitCounter,
 }
 
 impl LabelRenderElement {
@@ -127,6 +266,7 @@ pub struct NodeStyle {
 #[derive(Debug)]
 pub struct NodeTextureElement {
     base: TextureRenderElement<GlesTexture>,
+    commit: CommitCounter,
 }
 
 #[derive(Debug)]
@@ -138,6 +278,7 @@ pub struct FocusRingElement {
     size: (f32, f32),
     radii: (f32, f32),
     dash_period: f32,
+    commit: CommitCounter,
 }
 
 impl Element for FocusRingElement {
@@ -145,7 +286,7 @@ impl Element for FocusRingElement {
         self.base.id()
     }
     fn current_commit(&self) -> CommitCounter {
-        self.base.current_commit()
+        self.commit
     }
     fn geometry(&self, scale: Scale<f64>) -> Rectangle<i32, Physical> {
         self.base.geometry(scale)
@@ -155,13 +296,6 @@ impl Element for FocusRingElement {
     }
     fn src(&self) -> Rectangle<f64, Buffer> {
         self.base.src()
-    }
-    fn damage_since(
-        &self,
-        scale: Scale<f64>,
-        commit: Option<CommitCounter>,
-    ) -> DamageSet<i32, Physical> {
-        self.base.damage_since(scale, commit)
     }
     fn opaque_regions(&self, _scale: Scale<f64>) -> OpaqueRegions<i32, Physical> {
         OpaqueRegions::default()
@@ -184,6 +318,7 @@ pub struct DashedOutlineElement {
     thickness: f32,
     dash_period: f32,
     dash_length: f32,
+    commit: CommitCounter,
 }
 
 impl Element for DashedOutlineElement {
@@ -191,7 +326,7 @@ impl Element for DashedOutlineElement {
         self.base.id()
     }
     fn current_commit(&self) -> CommitCounter {
-        self.base.current_commit()
+        self.commit
     }
     fn geometry(&self, scale: Scale<f64>) -> Rectangle<i32, Physical> {
         self.base.geometry(scale)
@@ -201,13 +336,6 @@ impl Element for DashedOutlineElement {
     }
     fn src(&self) -> Rectangle<f64, Buffer> {
         self.base.src()
-    }
-    fn damage_since(
-        &self,
-        scale: Scale<f64>,
-        commit: Option<CommitCounter>,
-    ) -> DamageSet<i32, Physical> {
-        self.base.damage_since(scale, commit)
     }
     fn opaque_regions(&self, _scale: Scale<f64>) -> OpaqueRegions<i32, Physical> {
         OpaqueRegions::default()
@@ -290,6 +418,20 @@ impl RenderElement<GlesRenderer> for FocusRingElement {
 }
 
 impl NodeRenderer {
+    fn dynamic_id(&mut self, kind: u8) -> Id {
+        let occurrence = self.occurrences.entry(kind).or_default();
+        let index = *occurrence;
+        *occurrence = occurrence.wrapping_add(1);
+        let slot = match kind {
+            0 => NodeSlot::NodeBody(index),
+            1 => NodeSlot::NodeLabel(index),
+            2 => NodeSlot::OverlayCard(index),
+            3 => NodeSlot::AppIcon(index),
+            _ => unreachable!("unknown node render slot kind"),
+        };
+        self.ids.for_output(&self.active_output).id(slot)
+    }
+
     pub fn has_pending_icons(&self) -> bool {
         self.icons.has_pending()
     }
@@ -309,6 +451,7 @@ impl NodeRenderer {
         shape: halley_config::NodeShape,
         style: NodeStyle,
     ) -> Result<NodeRenderElement, Box<dyn Error>> {
+        let id = self.dynamic_id(0);
         self.ensure_resources(renderer)?;
         let resources = self.resources.as_ref().expect("ensured above");
         let program = match shape {
@@ -324,7 +467,7 @@ impl NodeRenderer {
                 .into(),
         );
         let base = TextureRenderElement::from_static_texture(
-            Id::new(),
+            id,
             resources.context.clone(),
             destination.loc.to_f64(),
             resources.texture.clone(),
@@ -350,6 +493,7 @@ impl NodeRenderer {
             fill,
             fill_alpha: style.opacity,
             flat_fill: style.flat_fill,
+            commit: node_commit(shape, style),
         })
     }
 
@@ -361,6 +505,7 @@ impl NodeRenderer {
         rgb: (f32, f32, f32),
         alpha: f32,
     ) -> Result<LabelRenderElement, Box<dyn Error>> {
+        let id = self.dynamic_id(1);
         self.ensure_resources(renderer)?;
         let resources = self.resources.as_ref().expect("ensured above");
         let program = match shape {
@@ -376,7 +521,7 @@ impl NodeRenderer {
                 .into(),
         );
         let base = TextureRenderElement::from_static_texture(
-            Id::new(),
+            id,
             resources.context.clone(),
             destination.loc.to_f64(),
             resources.texture.clone(),
@@ -399,6 +544,16 @@ impl NodeRenderer {
             inner_offset: 0.0,
             inner_corner_radius: destination.size.h as f32 * 0.32,
             border_px: 0.0,
+            commit: label_commit(
+                shape,
+                (rgb.0, rgb.1, rgb.2, 1.0),
+                (rgb.0, rgb.1, rgb.2, 1.0),
+                destination,
+                destination.size.h as f32 * 0.32,
+                0.0,
+                destination.size.h as f32 * 0.32,
+                0.0,
+            ),
         })
     }
 
@@ -408,6 +563,7 @@ impl NodeRenderer {
         destination: Rectangle<i32, Physical>,
         style: OverlayCardStyle,
     ) -> Result<LabelRenderElement, Box<dyn Error>> {
+        let id = self.dynamic_id(2);
         self.ensure_resources(renderer)?;
         let resources = self.resources.as_ref().expect("ensured above");
         let metrics = overlay_card_metrics(destination.size, style.content_radius, style.border_px);
@@ -425,7 +581,7 @@ impl NodeRenderer {
                 .into(),
         );
         let base = TextureRenderElement::from_static_texture(
-            Id::new(),
+            id,
             resources.context.clone(),
             destination.loc.to_f64(),
             resources.texture.clone(),
@@ -448,6 +604,20 @@ impl NodeRenderer {
             inner_offset: metrics.inner_offset,
             inner_corner_radius: metrics.inner_radius,
             border_px: metrics.border_width,
+            commit: label_commit(
+                if metrics.content_radius > 0.0 {
+                    halley_config::NodeShape::Squircle
+                } else {
+                    halley_config::NodeShape::Square
+                },
+                style.fill,
+                style.border,
+                destination,
+                metrics.outer_radius,
+                metrics.inner_offset,
+                metrics.inner_radius,
+                metrics.border_width,
+            ),
         })
     }
 
@@ -514,6 +684,12 @@ impl NodeRenderer {
             size: (destination.size.w as f32, destination.size.h as f32),
             radii: (rx, ry),
             dash_period: ellipse_perimeter(rx, ry) / FOCUS_RING_SEGMENTS,
+            commit: focus_ring_commit(
+                destination,
+                (rgb.0, rgb.1, rgb.2, 1.0),
+                (rx, ry),
+                ellipse_perimeter(rx, ry) / FOCUS_RING_SEGMENTS,
+            ),
         })
     }
 
@@ -524,9 +700,13 @@ impl NodeRenderer {
         destination: Rectangle<i32, Physical>,
         alpha: f32,
     ) -> Option<NodeTextureElement> {
+        let id = self.dynamic_id(3);
         self.icons
-            .element(renderer, app_id, destination, alpha.clamp(0.0, 1.0))
-            .map(|base| NodeTextureElement { base })
+            .element(renderer, id, app_id, destination, alpha.clamp(0.0, 1.0))
+            .map(|base| NodeTextureElement {
+                base,
+                commit: string_commit(app_id),
+            })
     }
 
     pub fn request_app_icon(&mut self, renderer: &mut GlesRenderer, app_id: &str) {
@@ -536,6 +716,9 @@ impl NodeRenderer {
     /// Advances this renderer's stable-identity generation for `output`, so
     /// slots that stop being drawn are eventually released.
     pub fn begin_scene(&mut self, output: &str) {
+        self.active_output.clear();
+        self.active_output.push_str(output);
+        self.occurrences.clear();
         self.ids.advance(output);
     }
 
@@ -547,6 +730,10 @@ impl NodeRenderer {
     /// [`SolidColorRenderElement`]: smithay::backend::renderer::element::solid::SolidColorRenderElement
     pub fn slot_id(&mut self, output: &str, slot: NodeSlot) -> Id {
         self.ids.for_output(output).id(slot)
+    }
+
+    pub fn active_slot_id(&mut self, slot: NodeSlot) -> Id {
+        self.ids.for_output(&self.active_output).id(slot)
     }
 
     /// A dashed (or, with `dash_length >= dash_period`, solid) rectangular
@@ -595,6 +782,7 @@ impl NodeRenderer {
             thickness,
             dash_period: dash.0,
             dash_length: dash.1,
+            commit: dashed_outline_commit(destination, rgba, thickness, dash),
         })
     }
 
@@ -671,7 +859,7 @@ impl Element for NodeRenderElement {
         self.base.id()
     }
     fn current_commit(&self) -> CommitCounter {
-        self.base.current_commit()
+        self.commit
     }
     fn geometry(&self, scale: Scale<f64>) -> Rectangle<i32, Physical> {
         self.base.geometry(scale)
@@ -681,13 +869,6 @@ impl Element for NodeRenderElement {
     }
     fn src(&self) -> Rectangle<f64, Buffer> {
         self.base.src()
-    }
-    fn damage_since(
-        &self,
-        scale: Scale<f64>,
-        commit: Option<CommitCounter>,
-    ) -> DamageSet<i32, Physical> {
-        self.base.damage_since(scale, commit)
     }
     fn opaque_regions(&self, _scale: Scale<f64>) -> OpaqueRegions<i32, Physical> {
         OpaqueRegions::default()
@@ -705,7 +886,7 @@ impl Element for NodeTextureElement {
         self.base.id()
     }
     fn current_commit(&self) -> CommitCounter {
-        self.base.current_commit()
+        self.commit
     }
     fn geometry(&self, scale: Scale<f64>) -> Rectangle<i32, Physical> {
         self.base.geometry(scale)
@@ -715,13 +896,6 @@ impl Element for NodeTextureElement {
     }
     fn src(&self) -> Rectangle<f64, Buffer> {
         self.base.src()
-    }
-    fn damage_since(
-        &self,
-        scale: Scale<f64>,
-        commit: Option<CommitCounter>,
-    ) -> DamageSet<i32, Physical> {
-        self.base.damage_since(scale, commit)
     }
     fn opaque_regions(&self, scale: Scale<f64>) -> OpaqueRegions<i32, Physical> {
         self.base.opaque_regions(scale)
@@ -767,7 +941,7 @@ impl Element for LabelRenderElement {
         self.base.id()
     }
     fn current_commit(&self) -> CommitCounter {
-        self.base.current_commit()
+        self.commit
     }
     fn geometry(&self, scale: Scale<f64>) -> Rectangle<i32, Physical> {
         self.base.geometry(scale)
@@ -777,13 +951,6 @@ impl Element for LabelRenderElement {
     }
     fn src(&self) -> Rectangle<f64, Buffer> {
         self.base.src()
-    }
-    fn damage_since(
-        &self,
-        scale: Scale<f64>,
-        commit: Option<CommitCounter>,
-    ) -> DamageSet<i32, Physical> {
-        self.base.damage_since(scale, commit)
     }
     fn opaque_regions(&self, _scale: Scale<f64>) -> OpaqueRegions<i32, Physical> {
         OpaqueRegions::default()
@@ -886,5 +1053,47 @@ mod tests {
         assert_eq!(overlay.content_radius, 8.0);
         assert_eq!(overlay.outer_radius, 11.0);
         assert_eq!(overlay_card_metrics(size, 0.0, 3.0).outer_radius, 0.0);
+    }
+
+    #[test]
+    fn node_commits_are_stable_but_follow_shader_inputs() {
+        let style = NodeStyle {
+            border_rgb: (0.8, 0.2, 0.1),
+            fill_rgb: (0.1, 0.2, 0.3),
+            opacity: 0.9,
+            flat_fill: false,
+        };
+        assert_eq!(
+            node_commit(halley_config::NodeShape::Squircle, style),
+            node_commit(halley_config::NodeShape::Squircle, style)
+        );
+        assert_ne!(
+            node_commit(halley_config::NodeShape::Squircle, style),
+            node_commit(
+                halley_config::NodeShape::Squircle,
+                NodeStyle {
+                    opacity: 0.5,
+                    ..style
+                }
+            )
+        );
+        assert_ne!(
+            node_commit(halley_config::NodeShape::Squircle, style),
+            node_commit(halley_config::NodeShape::Square, style)
+        );
+    }
+
+    #[test]
+    fn animated_outline_commits_follow_geometry_and_phase_inputs() {
+        let rect = Rectangle::new((0, 0).into(), (300, 180).into());
+        let color = (0.8, 0.4, 0.2, 1.0);
+        assert_eq!(
+            dashed_outline_commit(rect, color, 2.0, (16.0, 10.0)),
+            dashed_outline_commit(rect, color, 2.0, (16.0, 10.0))
+        );
+        assert_ne!(
+            dashed_outline_commit(rect, color, 2.0, (16.0, 10.0)),
+            dashed_outline_commit(rect, color, 3.0, (16.0, 10.0))
+        );
     }
 }

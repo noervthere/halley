@@ -13,7 +13,7 @@ use smithay::desktop::Window;
 use smithay::utils::{Logical, Physical, Rectangle, Transform};
 use smithay::wayland::seat::WaylandFocus;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct WindowTexture {
     pub(crate) texture: GlesTexture,
     pub(crate) context: ContextId<GlesTexture>,
@@ -273,13 +273,23 @@ fn capture_decorated_inner(
             elements.push(crate::render::scene::SceneElement::WindowBorder(border));
         } else {
             let strips: Vec<_> = if server_titlebar {
-                crate::render::body_border_strips(content, border_width, border_color)
-                    .into_iter()
-                    .collect()
+                crate::render::body_border_strips(
+                    std::array::from_fn(|_| Id::new()),
+                    content,
+                    border_width,
+                    border_color,
+                )
+                .into_iter()
+                .collect()
             } else {
-                crate::render::border_strips(content, border_width, border_color)
-                    .into_iter()
-                    .collect()
+                crate::render::border_strips(
+                    std::array::from_fn(|_| Id::new()),
+                    content,
+                    border_width,
+                    border_color,
+                )
+                .into_iter()
+                .collect()
             };
             elements.extend(
                 strips

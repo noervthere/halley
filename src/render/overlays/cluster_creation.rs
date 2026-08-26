@@ -2,10 +2,7 @@ use std::collections::HashMap;
 use std::error::Error;
 
 use smithay::backend::renderer::Color32F;
-use smithay::backend::renderer::element::Id;
-use smithay::backend::renderer::element::solid::SolidColorRenderElement;
 use smithay::backend::renderer::gles::GlesRenderer;
-use smithay::backend::renderer::utils::CommitCounter;
 use smithay::output::Output;
 use smithay::utils::{Buffer, Logical, Physical, Point, Rectangle, Size};
 
@@ -144,12 +141,10 @@ pub(crate) fn elements(
         ui_text,
     )?;
     state.naming_layouts.insert(output_name, layout);
-    dialog.push(SceneElement::Border(SolidColorRenderElement::new(
-        Id::new(),
+    dialog.push(SceneElement::Border(crate::render::solid_color_element(
+        node_renderer.active_slot_id(crate::render::node::NodeSlot::ClusterCreationBackdrop),
         screen,
-        CommitCounter::default(),
         Color32F::new(0.0, 0.0, 0.0, 0.14),
-        smithay::backend::renderer::element::Kind::Unspecified,
     )));
     dialog.extend(banner);
     dialog.extend(markers);
@@ -482,26 +477,22 @@ fn naming_dialog_elements(
         let selection_width = text_size(renderer, ui_text, &selected, visuals.text.bytes())?
             .w
             .max(1);
-        elements.push(SceneElement::Border(SolidColorRenderElement::new(
-            Id::new(),
+        elements.push(SceneElement::Border(crate::render::solid_color_element(
+            node_renderer.active_slot_id(crate::render::node::NodeSlot::ClusterNameSelection),
             Rectangle::new(
                 (selection_x, input.loc.y + 7).into(),
                 (selection_width, (input.size.h - 14).max(1)).into(),
             ),
-            CommitCounter::default(),
             rgb_color(accent_fill(visuals), 1.0),
-            smithay::backend::renderer::element::Kind::Unspecified,
         )));
     } else {
-        elements.push(SceneElement::Border(SolidColorRenderElement::new(
-            Id::new(),
+        elements.push(SceneElement::Border(crate::render::solid_color_element(
+            node_renderer.active_slot_id(crate::render::node::NodeSlot::ClusterNameCaret),
             Rectangle::new(
                 (caret_x, input.loc.y + 7).into(),
                 (2, (input.size.h - 14).max(1)).into(),
             ),
-            CommitCounter::default(),
             rgb_color(visuals.text, 0.94),
-            smithay::backend::renderer::element::Kind::Unspecified,
         )));
     }
     elements.push(SceneElement::NodeLabel(card_element(

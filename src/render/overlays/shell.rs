@@ -1,10 +1,7 @@
 use std::error::Error;
 
 use smithay::backend::renderer::Color32F;
-use smithay::backend::renderer::element::Id;
-use smithay::backend::renderer::element::solid::SolidColorRenderElement;
 use smithay::backend::renderer::gles::GlesRenderer;
-use smithay::backend::renderer::utils::CommitCounter;
 use smithay::utils::{Buffer, Logical, Physical, Rectangle};
 
 use crate::render::node::{LabelRenderElement, NodeRenderer, OverlayCardStyle};
@@ -343,12 +340,11 @@ fn exit_elements(
         visuals.fill,
         0.97 * mix,
     )?));
-    elements.push(SceneElement::Border(SolidColorRenderElement::new(
-        Id::new(),
+    let color = backdrop_dim(0.62 * mix);
+    elements.push(SceneElement::Border(crate::render::solid_color_element(
+        node_renderer.active_slot_id(crate::render::node::NodeSlot::ShellBackdrop),
         screen,
-        CommitCounter::default(),
-        backdrop_dim(0.62 * mix),
-        smithay::backend::renderer::element::Kind::Unspecified,
+        color,
     )));
     Ok(())
 }
