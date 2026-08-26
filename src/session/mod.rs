@@ -824,14 +824,27 @@ fn toggle_focused_fullscreen<D: SessionDriver>(session: &mut Session<D>, output:
         );
     }
     if let Some(toplevel) = window.toplevel() {
+        if session.fullscreen.animations_enabled() {
+            let textures = &mut session.render.fullscreen_textures;
+            let capture = session.driver.with_renderer(|renderer| {
+                textures.capture_previous(
+                    renderer,
+                    &window,
+                    crate::render::fullscreen_texture::TextureTransitionOwner::Fullscreen,
+                )
+            });
+            if let Err(err) = capture {
+                eventline::warn!("fullscreen: failed to capture previous window texture: {err}");
+            }
+        }
         if entering {
             session
                 .fullscreen
-                .request_compositor(&mut session.wayland, toplevel);
+                .request_compositor(&mut session.wayland, toplevel, now);
         } else {
             session
                 .fullscreen
-                .unrequest_compositor(&session.wayland, toplevel);
+                .unrequest_compositor(&session.wayland, toplevel, now);
         }
     } else {
         crate::xwayland::set_window_fullscreen(session, &window, entering);

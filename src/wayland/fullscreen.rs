@@ -221,8 +221,10 @@ impl FullscreenManager {
         &mut self,
         wayland: &mut WaylandState,
         toplevel: &ToplevelSurface,
+        now: Duration,
     ) {
         self.request_with_origin(wayland, toplevel, None, FullscreenOrigin::Compositor);
+        self.begin_compositor_visual(toplevel.wl_surface(), now);
     }
 
     fn request_with_origin(
@@ -368,6 +370,7 @@ impl FullscreenManager {
         &mut self,
         wayland: &WaylandState,
         toplevel: &ToplevelSurface,
+        now: Duration,
     ) {
         let retained_client = self
             .windows
@@ -395,6 +398,18 @@ impl FullscreenManager {
             return;
         }
         self.unrequest(wayland, toplevel);
+        self.begin_compositor_visual(toplevel.wl_surface(), now);
+    }
+
+    /// Starts a Mod+F presentation at input time instead of waiting for the
+    /// client to acknowledge and commit its new size. Geometry remains
+    /// commit-gated in `handle_commit`; this only makes the visual timeline as
+    /// responsive and reversible as field maximize.
+    fn begin_compositor_visual(&mut self, surface: &WlSurface, now: Duration) {
+        let Some(entry) = self.windows.get_mut(surface) else {
+            return;
+        };
+        begin_compositor_visual(entry, self.animations, now);
     }
 
     pub fn unrequest(&mut self, wayland: &WaylandState, toplevel: &ToplevelSurface) {
@@ -543,14 +558,22 @@ impl FullscreenManager {
         wayland: &mut WaylandState,
         window: &Window,
         origin: FullscreenOrigin,
+        now: Duration,
     ) -> Option<ExternalTransactionRequest> {
-        self.request_external_transaction(
+        let request = self.request_external_transaction(
             wayland,
             window,
             ExternalPresentationKind::Animated,
             None,
             origin,
-        )
+        )?;
+        if origin == FullscreenOrigin::Compositor
+            && request != ExternalTransactionRequest::NoChange
+            && let Some(surface) = window.wl_surface()
+        {
+            self.begin_compositor_visual(surface.as_ref(), now);
+        }
+        Some(request)
     }
 
     pub(crate) fn request_external_opening(
@@ -642,8 +665,18 @@ impl FullscreenManager {
     pub(crate) fn unrequest_external_animated(
         &mut self,
         window: &Window,
+        origin: FullscreenOrigin,
+        now: Duration,
     ) -> Option<ExternalTransactionRequest> {
-        self.unrequest_external_transaction(window, ExternalPresentationKind::Animated)
+        let request =
+            self.unrequest_external_transaction(window, ExternalPresentationKind::Animated)?;
+        if origin == FullscreenOrigin::Compositor
+            && request != ExternalTransactionRequest::NoChange
+            && let Some(surface) = window.wl_surface()
+        {
+            self.begin_compositor_visual(surface.as_ref(), now);
+        }
+        Some(request)
     }
 
     pub(crate) fn unrequest_external_opening(
@@ -872,8 +905,7 @@ impl FullscreenManager {
                 },
             );
         }
-        retarget_visual(entry, self.animations, now, visual_desired);
-        entry.active = visual_desired;
+        settle_visual_commit(entry, self.animations, now, visual_desired);
         true
     }
 
@@ -1159,6 +1191,10 @@ impl FullscreenManager {
                 .is_none_or(|entry| entry.desired != fullscreen)
     }
 
+    pub(crate) fn animations_enabled(&self) -> bool {
+        animations_enabled(self.animations)
+    }
+
     pub fn reconfigure_output(
         &mut self,
         wayland: &WaylandState,
@@ -1434,8 +1470,7 @@ fn acknowledge_external_transaction(
             entry.transition = None;
         }
         ExternalPresentationKind::Animated => {
-            retarget_visual(entry, animations, now, fullscreen);
-            entry.active = fullscreen;
+            settle_visual_commit(entry, animations, now, fullscreen);
         }
     }
     ExternalConfigureResult::Settled {
@@ -1505,6 +1540,41 @@ fn retarget_visual(
         entry.presented = presented;
         entry.transition = None;
     }
+}
+
+/// Retarget compositor-owned fullscreen immediately while retaining the
+/// committed `active` state until the matching client buffer arrives. Rapid
+/// reversals can therefore sample the in-flight position and velocity even
+/// when the client has not acknowledged either configure yet.
+fn begin_compositor_visual(entry: &mut FullscreenWindow, animations: Animations, now: Duration) {
+    entry.snapshot_serials.clear();
+    let target = if entry.desired { 1.0 } else { 0.0 };
+    if (entry.desired != entry.active || entry.transition.is_some())
+        && entry
+            .transition
+            .is_none_or(|transition| (transition.target() - target).abs() > f64::EPSILON)
+    {
+        retarget_visual(entry, animations, now, entry.desired);
+    }
+}
+
+/// A compositor-owned timeline may already be running by the time the client
+/// commits its configured size. In that case the commit settles geometry and
+/// logical state without restarting the motion from the current point.
+fn settle_visual_commit(
+    entry: &mut FullscreenWindow,
+    animations: Animations,
+    now: Duration,
+    desired: bool,
+) {
+    let target = if desired { 1.0 } else { 0.0 };
+    if entry
+        .transition
+        .is_none_or(|transition| (transition.target() - target).abs() > f64::EPSILON)
+    {
+        retarget_visual(entry, animations, now, desired);
+    }
+    entry.active = desired;
 }
 
 fn send_required_configure(toplevel: &ToplevelSurface) -> Option<Serial> {
@@ -1845,6 +1915,107 @@ mod tests {
     }
 
     #[test]
+    fn compositor_fullscreen_starts_before_the_configure_commit() {
+        let mut animations = Animations::default();
+        animations.fullscreen.motion = AnimationMotion::Easing(EasingMotion {
+            duration_ms: 400,
+            curve: AnimationCurve::Linear,
+        });
+        let mut entry = test_entry(false);
+        entry.snapshot_serials.push(Serial::from(7));
+        let started = Duration::from_secs(1);
+
+        request_native_owner(&mut entry, FullscreenOrigin::Compositor);
+        begin_compositor_visual(&mut entry, animations, started);
+
+        assert!(entry.desired);
+        assert!(!entry.active, "geometry remains commit-gated");
+        assert!(entry.snapshot_serials.is_empty());
+        assert_eq!(
+            entry
+                .transition
+                .expect("visual starts at input time")
+                .value_at(started + Duration::from_millis(100)),
+            0.25
+        );
+    }
+
+    #[test]
+    fn rapid_compositor_fullscreen_reversal_keeps_motion_continuous() {
+        let mut animations = Animations::default();
+        animations.fullscreen.motion = AnimationMotion::Easing(EasingMotion {
+            duration_ms: 400,
+            curve: AnimationCurve::Linear,
+        });
+        let mut entry = test_entry(false);
+        let started = Duration::from_secs(1);
+
+        request_native_owner(&mut entry, FullscreenOrigin::Compositor);
+        begin_compositor_visual(&mut entry, animations, started);
+        let reversed_at = started + Duration::from_millis(100);
+        let before = entry
+            .transition
+            .expect("forward transition")
+            .value_at(reversed_at);
+
+        release_native_owner(&mut entry, FullscreenOrigin::Compositor);
+        begin_compositor_visual(&mut entry, animations, reversed_at);
+        let reverse = entry.transition.expect("reverse transition");
+
+        assert!(!entry.desired);
+        assert!(!entry.active);
+        assert!((reverse.value_at(reversed_at) - before).abs() < f64::EPSILON);
+        assert_eq!(
+            reverse.value_at(reversed_at + Duration::from_millis(400)),
+            0.0
+        );
+    }
+
+    #[test]
+    fn compositor_configure_commit_does_not_restart_running_motion() {
+        let mut animations = Animations::default();
+        animations.fullscreen.motion = AnimationMotion::Easing(EasingMotion {
+            duration_ms: 400,
+            curve: AnimationCurve::Linear,
+        });
+        let mut entry = test_entry(false);
+        let started = Duration::from_secs(1);
+
+        request_native_owner(&mut entry, FullscreenOrigin::Compositor);
+        begin_compositor_visual(&mut entry, animations, started);
+        let committed_at = started + Duration::from_millis(100);
+        let expected = entry
+            .transition
+            .expect("input-time transition")
+            .value_at(started + Duration::from_millis(200));
+
+        settle_visual_commit(&mut entry, animations, committed_at, true);
+
+        assert!(entry.active);
+        assert_eq!(
+            entry
+                .transition
+                .expect("commit retains input-time transition")
+                .value_at(started + Duration::from_millis(200)),
+            expected
+        );
+    }
+
+    #[test]
+    fn client_fullscreen_remains_commit_gated() {
+        let animations = Animations::default();
+        let mut entry = test_entry(false);
+
+        request_native_owner(&mut entry, FullscreenOrigin::Client);
+        assert!(entry.transition.is_none());
+        assert!(!entry.active);
+
+        settle_visual_commit(&mut entry, animations, Duration::ZERO, true);
+        assert!(entry.active);
+        assert!(entry.transition.is_some());
+    }
+
+    #[test]
     fn fullscreen_transition_owns_the_zero_progress_handoff_frame() {
         assert!(fullscreen_presentation_is_visible(0.0, true));
         assert!(fullscreen_presentation_is_visible(0.5, true));
@@ -1895,11 +2066,16 @@ mod tests {
     }
 
     #[test]
-    fn external_mod_f_waits_for_x11_geometry_then_starts_motion() {
-        let animations = Animations::default();
+    fn external_mod_f_starts_before_x11_geometry_and_does_not_restart() {
+        let mut animations = Animations::default();
+        animations.fullscreen.motion = AnimationMotion::Easing(EasingMotion {
+            duration_ms: 400,
+            curve: AnimationCurve::Linear,
+        });
         let mut entry = test_entry(false);
         let target = Rectangle::new((0, 0).into(), (1920, 1080).into());
         let intermediate = Rectangle::new((0, 0).into(), (1280, 720).into());
+        let started = Duration::from_secs(1);
 
         assert_eq!(
             begin_external_transaction(
@@ -1910,18 +2086,23 @@ mod tests {
             ),
             ExternalTransactionRequest::Configure(target)
         );
+        begin_compositor_visual(&mut entry, animations, started);
+        let expected = entry
+            .transition
+            .expect("input-time transition")
+            .value_at(started + Duration::from_millis(200));
         assert_eq!(
-            acknowledge_external_transaction(&mut entry, intermediate, animations, Duration::ZERO),
+            acknowledge_external_transaction(&mut entry, intermediate, animations, started),
             ExternalConfigureResult::Waiting
         );
-        assert!(entry.transition.is_none());
+        assert!(!entry.active);
 
         assert_eq!(
             acknowledge_external_transaction(
                 &mut entry,
                 target,
                 animations,
-                Duration::from_secs(1),
+                started + Duration::from_millis(100),
             ),
             ExternalConfigureResult::Settled {
                 fullscreen: true,
@@ -1929,8 +2110,35 @@ mod tests {
             }
         );
         assert!(entry.active);
-        assert!(entry.transition.is_some());
+        assert_eq!(
+            entry
+                .transition
+                .expect("configure retains input-time transition")
+                .value_at(started + Duration::from_millis(200)),
+            expected
+        );
         assert!(entry.external_pending.is_none());
+    }
+
+    #[test]
+    fn client_external_fullscreen_remains_geometry_gated() {
+        let animations = Animations::default();
+        let mut entry = test_entry(false);
+        let target = Rectangle::new((0, 0).into(), (1920, 1080).into());
+
+        begin_external_transaction(&mut entry, true, target, ExternalPresentationKind::Animated);
+
+        assert!(entry.transition.is_none());
+        assert!(!entry.active);
+        assert_eq!(
+            acknowledge_external_transaction(&mut entry, target, animations, Duration::ZERO),
+            ExternalConfigureResult::Settled {
+                fullscreen: true,
+                animated: true,
+            }
+        );
+        assert!(entry.active);
+        assert!(entry.transition.is_some());
     }
 
     #[test]

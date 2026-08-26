@@ -167,9 +167,14 @@ pub(super) fn set_external_fullscreen<D: SessionDriver>(
                 &mut session.wayland,
                 &window,
                 origin.presentation_origin(),
+                now,
             )
         } else {
-            session.fullscreen.unrequest_external_animated(&window)
+            session.fullscreen.unrequest_external_animated(
+                &window,
+                origin.presentation_origin(),
+                now,
+            )
         };
         match request {
             Some(ExternalTransactionRequest::Configure(geometry)) => {

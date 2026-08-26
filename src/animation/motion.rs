@@ -137,6 +137,10 @@ impl MotionTimeline {
     pub fn is_finished_at(self, now: Duration) -> bool {
         now.saturating_sub(self.started_at) >= self.duration
     }
+
+    pub fn target(self) -> f64 {
+        self.target
+    }
 }
 
 pub fn apply_curve(curve: AnimationCurve, progress: f64) -> f64 {
