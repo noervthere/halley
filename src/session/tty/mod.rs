@@ -237,8 +237,10 @@ impl TtyDriver {
             };
             if change.enabled {
                 state.resume(now);
-            } else if let Some(token) = state.suspend(now) {
-                self.loop_handle.remove(token);
+            } else {
+                for token in state.suspend(now) {
+                    self.loop_handle.remove(token);
+                }
             }
         }
         match applied.error {
@@ -324,7 +326,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
             let mut state = OutputFrameState::new(interval);
             state.set_vrr(vrr_active);
             if initially_paused {
-                state.suspend(now);
+                drop(state.suspend(now));
             }
             (output, state)
         })
@@ -667,21 +669,81 @@ fn on_vblank(app: &mut TtyApp, crtc: crtc::Handle, metadata: Option<&DrmEventMet
         eventline::warn!("vblank received for unknown CRTC {crtc:?}");
         return;
     };
-    let submission = match app.driver.backend.frame_submitted(crtc) {
-        Ok(submission) => submission,
+    let presented = presentation_time(metadata);
+    let sequence = metadata
+        .map(|metadata| u64::from(metadata.sequence))
+        .unwrap_or(0);
+    let refresh_interval = app.driver.backend.refresh_interval_for_output(&output);
+    let Some(state) = app.driver.output_frames.get_mut(&output) else {
+        return;
+    };
+    let throttle = state.throttle_vblank(presented, refresh_interval);
+    if let Some(token) = throttle.cancel_timer {
+        app.driver.loop_handle.remove(token);
+    }
+    if let Some(delay) = throttle.delay {
+        if throttle.warn {
+            eventline::warn!(
+                "output {:?}: kernel reported a vblank less than half a refresh after the previous event; delaying completion by {delay:?}",
+                output.name()
+            );
+        }
+        let delayed_output = output.clone();
+        let timer = Timer::from_duration(delay);
+        match app
+            .driver
+            .loop_handle
+            .insert_source(timer, move |_, _, app| {
+                if let Some(state) = app.driver.output_frames.get_mut(&delayed_output) {
+                    state.vblank_throttle_timer_fired();
+                }
+                complete_vblank(app, crtc, &delayed_output, presented, sequence);
+                TimeoutAction::Drop
+            }) {
+            Ok(token) => {
+                if let Some(state) = app.driver.output_frames.get_mut(&output) {
+                    state.vblank_throttle_timer_armed(token);
+                }
+                return;
+            }
+            Err(err) => eventline::warn!(
+                "output {:?}: failed to arm vblank throttle timer: {err}",
+                output.name()
+            ),
+        }
+    }
+
+    complete_vblank(app, crtc, &output, presented, sequence);
+}
+
+fn complete_vblank(
+    app: &mut TtyApp,
+    crtc: crtc::Handle,
+    output: &Output,
+    presented: Option<Duration>,
+    sequence: u64,
+) {
+    let (submission, acknowledge_failed) = match app.driver.backend.frame_submitted(crtc) {
+        Ok(submission) => (submission, false),
         Err(err) => {
             eventline::warn!(
                 "failed to acknowledge vblank for {:?}: {err}",
                 output.name()
             );
-            None
+            (None, true)
         }
     };
-    let presented = presentation_time(metadata);
-    let Some(state) = app.driver.output_frames.get_mut(&output) else {
+    let Some(state) = app.driver.output_frames.get_mut(output) else {
         return;
     };
-    let (action, unexpected) = state.on_vblank(presented);
+    let (mut action, unexpected) = state.on_vblank(presented);
+    if acknowledge_failed {
+        // Smithay may have failed while submitting an already-queued follow-up
+        // frame. Always redraw after an acknowledgement error so the cleared
+        // backend gate is exercised and the output cannot settle while stale.
+        state.queue_redraw();
+        action = VblankAction::Redraw;
+    }
     if let Some(unexpected) = unexpected {
         eventline::warn!(
             "unexpected redraw state on vblank for {:?}: {unexpected}",
@@ -709,9 +771,6 @@ fn on_vblank(app: &mut TtyApp, crtc: crtc::Handle, metadata: Option<&DrmEventMet
             (false, Some(refresh)) => smithay::wayland::presentation::Refresh::fixed(refresh),
             (_, None) => smithay::wayland::presentation::Refresh::Unknown,
         };
-        let sequence = metadata
-            .map(|metadata| u64::from(metadata.sequence))
-            .unwrap_or(0);
         let (time, flags) = match presented {
             Some(time) => (
                 smithay::utils::Time::<smithay::utils::Monotonic>::from(time),
@@ -730,7 +789,7 @@ fn on_vblank(app: &mut TtyApp, crtc: crtc::Handle, metadata: Option<&DrmEventMet
     }
 
     if action == VblankAction::SendCallbacks {
-        send_output_frame_callbacks(app, &output);
+        send_output_frame_callbacks(app, output);
     }
 }
 
@@ -1268,7 +1327,7 @@ fn on_estimated_vblank_timer(app: &mut TtyApp, output: &Output) {
 fn suspend_redraw_state(app: &mut TtyApp, loop_handle: &LoopHandle<'_, TtyApp>) {
     let now = crate::frame_clock::monotonic_now();
     for state in app.driver.output_frames.values_mut() {
-        if let Some(token) = state.suspend(now) {
+        for token in state.suspend(now) {
             loop_handle.remove(token);
         }
     }

@@ -38,12 +38,25 @@ pub(super) enum VblankAction {
     SendCallbacks,
 }
 
+/// Result of filtering a kernel VBlank through the output's fixed-refresh
+/// cadence. Some drivers occasionally report a second event far too early;
+/// delaying its completion avoids turning that glitch into a compositor-side
+/// busy loop.
+pub(super) struct VblankThrottleResult {
+    pub delay: Option<Duration>,
+    pub cancel_timer: Option<RegistrationToken>,
+    pub warn: bool,
+}
+
 pub(super) struct OutputFrameState {
     clock: FrameClock,
     redraw: RedrawState,
     last_camera_sample: Duration,
     unfinished_animations: bool,
     frame_callback_sequence: u32,
+    last_vblank_timestamp: Option<Duration>,
+    vblank_throttle_timer: Option<RegistrationToken>,
+    vblank_throttle_warned: bool,
 }
 
 impl OutputFrameState {
@@ -54,6 +67,9 @@ impl OutputFrameState {
             last_camera_sample: crate::frame_clock::monotonic_now(),
             unfinished_animations: false,
             frame_callback_sequence: 0,
+            last_vblank_timestamp: None,
+            vblank_throttle_timer: None,
+            vblank_throttle_warned: false,
         }
     }
 
@@ -63,6 +79,49 @@ impl OutputFrameState {
 
     pub fn frame_callback_sequence(&self) -> u32 {
         self.frame_callback_sequence
+    }
+
+    pub fn throttle_vblank(
+        &mut self,
+        timestamp: Option<Duration>,
+        refresh_interval: Duration,
+    ) -> VblankThrottleResult {
+        let cancel_timer = self.vblank_throttle_timer.take();
+        let Some(timestamp) = timestamp else {
+            return VblankThrottleResult {
+                delay: None,
+                cancel_timer,
+                warn: false,
+            };
+        };
+
+        if let Some(last) = self.last_vblank_timestamp {
+            let passed = timestamp.saturating_sub(last);
+            if passed < refresh_interval / 2 {
+                let warn = !self.vblank_throttle_warned;
+                self.vblank_throttle_warned = true;
+                return VblankThrottleResult {
+                    delay: Some(refresh_interval.saturating_sub(passed)),
+                    cancel_timer,
+                    warn,
+                };
+            }
+        }
+
+        self.last_vblank_timestamp = Some(timestamp);
+        VblankThrottleResult {
+            delay: None,
+            cancel_timer,
+            warn: false,
+        }
+    }
+
+    pub fn vblank_throttle_timer_armed(&mut self, token: RegistrationToken) {
+        self.vblank_throttle_timer = Some(token);
+    }
+
+    pub fn vblank_throttle_timer_fired(&mut self) {
+        self.vblank_throttle_timer = None;
     }
 
     pub fn queue_redraw(&mut self) {
@@ -189,22 +248,30 @@ impl OutputFrameState {
         }
     }
 
-    pub fn suspend(&mut self, now: Duration) -> Option<RegistrationToken> {
-        let timer = match std::mem::take(&mut self.redraw) {
+    pub fn suspend(&mut self, now: Duration) -> Vec<RegistrationToken> {
+        let mut timers = Vec::with_capacity(2);
+        if let Some(token) = self.vblank_throttle_timer.take() {
+            timers.push(token);
+        }
+        if let Some(token) = match std::mem::take(&mut self.redraw) {
             RedrawState::WaitingForEstimatedVBlank(token)
             | RedrawState::WaitingForEstimatedVBlankAndQueued(token) => Some(token),
             _ => None,
-        };
+        } {
+            timers.push(token);
+        }
         self.clock.reset();
+        self.last_vblank_timestamp = None;
         self.last_camera_sample = now;
         self.unfinished_animations = false;
         self.redraw = RedrawState::Suspended;
-        timer
+        timers
     }
 
     pub fn resume(&mut self, now: Duration) {
         debug_assert!(matches!(self.redraw, RedrawState::Suspended));
         self.clock.reset();
+        self.last_vblank_timestamp = None;
         self.last_camera_sample = now;
         self.unfinished_animations = false;
         self.redraw = RedrawState::Queued;
@@ -307,11 +374,50 @@ mod tests {
     }
 
     #[test]
+    fn vblank_throttle_delays_only_implausibly_early_events() {
+        let mut state = state();
+        let refresh = Duration::from_millis(10);
+
+        let first = state.throttle_vblank(Some(Duration::from_millis(100)), refresh);
+        assert_eq!(first.delay, None);
+        assert!(!first.warn);
+
+        let early = state.throttle_vblank(Some(Duration::from_millis(103)), refresh);
+        assert_eq!(early.delay, Some(Duration::from_millis(7)));
+        assert!(early.warn);
+
+        let normal = state.throttle_vblank(Some(Duration::from_millis(110)), refresh);
+        assert_eq!(normal.delay, None);
+        assert!(!normal.warn);
+    }
+
+    #[test]
+    fn vblank_throttle_warning_is_bounded_and_replaces_its_timer() {
+        let mut state = state();
+        let refresh = Duration::from_millis(10);
+        assert_eq!(
+            state
+                .throttle_vblank(Some(Duration::from_millis(100)), refresh)
+                .delay,
+            None
+        );
+
+        let early = state.throttle_vblank(Some(Duration::from_millis(102)), refresh);
+        assert!(early.warn);
+        state.vblank_throttle_timer_armed(registration_token());
+
+        let repeated = state.throttle_vblank(Some(Duration::from_millis(103)), refresh);
+        assert_eq!(repeated.delay, Some(Duration::from_millis(7)));
+        assert!(!repeated.warn);
+        assert!(repeated.cancel_timer.is_some());
+    }
+
+    #[test]
     fn suspended_output_ignores_redraws_and_late_vblanks_until_resume() {
         let mut state = state();
         state.queue_redraw();
         state.frame_submitted(false);
-        state.suspend(Duration::from_secs(1));
+        drop(state.suspend(Duration::from_secs(1)));
 
         state.queue_redraw();
         assert!(!state.is_redraw_queued());

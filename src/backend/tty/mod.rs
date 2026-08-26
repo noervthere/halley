@@ -82,6 +82,8 @@ struct DrmOutputEntry {
     configured_vrr: halley_config::Vrr,
     vrr_support: VrrSupport,
     vrr_active: bool,
+    vrr_failure_warned_for: Option<bool>,
+    direct_scanout_active: Option<bool>,
     output: Output,
     drm_output: TtyDrmOutput,
     dmabuf_feedback: Option<super::dmabuf::SurfaceDmabufFeedback>,
@@ -325,6 +327,8 @@ impl TtyBackend {
                         configured_vrr: vrr,
                         vrr_support,
                         vrr_active,
+                        vrr_failure_warned_for: None,
+                        direct_scanout_active: None,
                         output,
                         drm_output,
                         dmabuf_feedback,
@@ -685,6 +689,7 @@ impl TtyBackend {
                     failures.push(format!("{}: {err}", entry.output.name()));
                     continue;
                 }
+                entry.direct_scanout_active = None;
             }
             entry.dpms_enabled = target_enabled;
             entry.pending = false;
@@ -940,6 +945,8 @@ impl TtyBackend {
         // output from rendering again (its VBlank is never coming).
         for entry in &mut self.drm_outputs {
             entry.pending = false;
+            entry.direct_scanout_active = None;
+            entry.vrr_failure_warned_for = None;
             // The manager activation above refreshes each compositor's KMS
             // state. Drop its pre-switch scan-out buffers as well so the
             // first frame after returning cannot reuse storage owned by the
@@ -1009,9 +1016,12 @@ impl TtyBackend {
         crtc: crtc::Handle,
     ) -> Result<Option<FrameSubmission>, Box<dyn Error>> {
         if let Some(entry) = self.drm_outputs.iter_mut().find(|e| e.crtc == crtc) {
-            let submitted = entry.drm_output.frame_submitted()?;
+            // The kernel event completed the page flip regardless of whether
+            // Smithay can advance a queued follow-up frame. Clear our gate
+            // first so an acknowledgement error cannot wedge this output
+            // permanently in `pending`.
             entry.pending = false;
-            return Ok(submitted);
+            return entry.drm_output.frame_submitted().map_err(Into::into);
         }
         Ok(None)
     }
@@ -1092,6 +1102,7 @@ impl Renderable for TtyBackend {
         )?;
 
         let element_states = result.states.clone();
+        let direct_scanout = matches!(&result.primary_element, PrimaryPlaneElement::Element(_));
         if result.needs_sync()
             && let PrimaryPlaneElement::Swapchain(element) = &result.primary_element
             && let Err(err) = element.sync.wait()
@@ -1123,6 +1134,7 @@ impl Renderable for TtyBackend {
             variable_refresh: entry.vrr_active,
         })?;
         entry.pending = true;
+        set_entry_direct_scanout(entry, direct_scanout);
         Ok(RenderOutcome::new(
             RenderStatus::Submitted,
             Some(element_states),
@@ -1136,18 +1148,57 @@ fn set_entry_vrr(entry: &mut DrmOutputEntry, requested: bool) {
         return;
     }
     let name = entry.output.name();
+    let previous = entry.vrr_active;
     if let Err(err) = entry
         .drm_output
         .with_compositor(|compositor| compositor.use_vrr(requested))
     {
-        eventline::warn!(
-            "output {name:?}: failed to {} VRR: {err}",
-            if requested { "enable" } else { "disable" }
-        );
+        if entry.vrr_failure_warned_for != Some(requested) {
+            eventline::warn!(
+                "output {name:?}: failed to {} VRR: {err}",
+                if requested { "enable" } else { "disable" }
+            );
+            entry.vrr_failure_warned_for = Some(requested);
+        }
     }
     entry.vrr_active = entry
         .drm_output
         .with_compositor(|compositor| compositor.vrr_enabled());
+    if entry.vrr_active == requested {
+        entry.vrr_failure_warned_for = None;
+    } else if entry.vrr_failure_warned_for != Some(requested) {
+        eventline::warn!(
+            "output {name:?}: VRR {} request did not take effect",
+            if requested { "enable" } else { "disable" }
+        );
+        entry.vrr_failure_warned_for = Some(requested);
+    }
+    if entry.vrr_active != previous {
+        eventline::info!(
+            "output {name:?}: VRR {}",
+            if entry.vrr_active {
+                "enabled"
+            } else {
+                "disabled"
+            }
+        );
+    }
+}
+
+fn set_entry_direct_scanout(entry: &mut DrmOutputEntry, active: bool) {
+    if entry.direct_scanout_active == Some(active) {
+        return;
+    }
+    entry.direct_scanout_active = Some(active);
+    eventline::info!(
+        "output {:?}: render path is {}",
+        entry.output.name(),
+        if active {
+            "direct scanout"
+        } else {
+            "composited"
+        }
+    );
 }
 
 fn query_vrr_support(
