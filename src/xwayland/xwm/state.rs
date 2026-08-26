@@ -66,9 +66,19 @@ impl ManagedStateRegistry {
     /// X11 timestamps wrap at 32 bits. A signed wrapping difference is the
     /// conventional ordering as long as compared events are less than 2^31 ms
     /// apart.
-    pub fn accept_activation(&mut self, timestamp: u32, same_client_handoff: bool) -> bool {
+    pub fn accept_activation(
+        &mut self,
+        timestamp: u32,
+        requesting_window: u32,
+        focused_window: Option<u32>,
+    ) -> bool {
         if timestamp == 0 {
-            return same_client_handoff || self.last_activation_time.is_none();
+            // Globally-active ICCCM clients answer WM_TAKE_FOCUS with a
+            // CurrentTime activation request. That request is authoritative
+            // when the compositor has already selected the exact window, but
+            // it must not let an unrelated client steal focus.
+            return focused_window == Some(requesting_window)
+                || self.last_activation_time.is_none();
         }
         let accepted = self
             .last_activation_time
@@ -110,17 +120,18 @@ mod tests {
     #[test]
     fn activation_order_handles_timestamp_wrap() {
         let mut states = ManagedStateRegistry::default();
-        assert!(states.accept_activation(u32::MAX - 4, false));
-        assert!(states.accept_activation(3, false));
-        assert!(!states.accept_activation(u32::MAX - 20, false));
+        assert!(states.accept_activation(u32::MAX - 4, 7, None));
+        assert!(states.accept_activation(3, 7, None));
+        assert!(!states.accept_activation(u32::MAX - 20, 7, None));
     }
 
     #[test]
-    fn zero_timestamp_requires_a_handoff_after_the_first_request() {
+    fn zero_timestamp_requires_the_exact_compositor_focused_window() {
         let mut states = ManagedStateRegistry::default();
-        assert!(states.accept_activation(0, false));
-        assert!(states.accept_activation(10, false));
-        assert!(!states.accept_activation(0, false));
-        assert!(states.accept_activation(0, true));
+        assert!(states.accept_activation(0, 7, None));
+        assert!(states.accept_activation(10, 7, Some(7)));
+        assert!(!states.accept_activation(0, 8, Some(7)));
+        assert!(!states.accept_activation(0, 8, None));
+        assert!(states.accept_activation(0, 7, Some(7)));
     }
 }

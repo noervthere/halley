@@ -695,7 +695,7 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
         _xwm: XwmId,
         surface: X11Surface,
         timestamp: u32,
-        currently_active_window: Option<X11Surface>,
+        _currently_active_window: Option<X11Surface>,
     ) {
         if surface.is_override_redirect() {
             eventline::debug!(
@@ -711,14 +711,11 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
                     .flatten()
             })
         });
-        let same_client_handoff = currently_active_window
-            .as_ref()
-            .is_some_and(|active| Some(active.window_id()) == focused_xid);
-        if !self
-            .xwayland
-            .managed_states
-            .accept_activation(timestamp, same_client_handoff)
-        {
+        if !self.xwayland.managed_states.accept_activation(
+            timestamp,
+            surface.window_id(),
+            focused_xid,
+        ) {
             if let Err(err) = surface.set_demands_attention(true) {
                 eventline::warn!(
                     "xwayland: failed to mark rejected activation xid={}: {err}",
