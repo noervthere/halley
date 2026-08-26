@@ -3,12 +3,13 @@ use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::element::{Element, Id, Kind, RenderElement, UnderlyingStorage};
 use smithay::backend::renderer::gles::{
-    GlesError, GlesFrame, GlesRenderer, GlesTexProgram, GlesTexture, Uniform, UniformName,
-    UniformType, ffi, link_program,
+    Capability, GlesError, GlesFrame, GlesRenderer, GlesTexProgram, GlesTexture, Uniform,
+    UniformName, UniformType, ffi, link_program,
 };
 use smithay::backend::renderer::utils::CommitCounter;
 use smithay::backend::renderer::{ContextId, Offscreen, Renderer, Texture};
@@ -57,18 +58,47 @@ struct RawPassProgram {
 
 struct BlurTextures {
     size: Size<i32, Physical>,
-    levels: u32,
     accum: GlesTexture,
     chain: Vec<GlesTexture>,
     result: GlesTexture,
     dirty: bool,
-    failed: bool,
 }
 
 struct OutputResources {
-    textures: Rc<RefCell<BlurTextures>>,
+    textures: Option<Rc<RefCell<BlurTextures>>>,
+    retry: Rc<RefCell<RetryState>>,
+    size: Size<i32, Physical>,
+    levels: u32,
+    config_fingerprint: u64,
     ids: HashMap<BlurIdentity, Id>,
     scene_identities: HashSet<BlurIdentity>,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct RetryState {
+    attempts: u32,
+    retry_at: Option<Instant>,
+}
+
+impl RetryState {
+    fn blocked(self, now: Instant) -> bool {
+        self.retry_at.is_some_and(|retry_at| now < retry_at)
+    }
+
+    fn begin_attempt(&mut self) {
+        self.retry_at = None;
+    }
+
+    fn fail(&mut self, now: Instant) -> Duration {
+        self.attempts = self.attempts.saturating_add(1);
+        let delay = retry_delay(self.attempts);
+        self.retry_at = Some(now + delay);
+        delay
+    }
+
+    fn recover(&mut self) {
+        *self = Self::default();
+    }
 }
 
 /// Stable identity of one logical framebuffer-effect stack position. A
@@ -84,6 +114,9 @@ pub enum BlurIdentity {
 #[derive(Default)]
 pub struct BackdropBlurRenderer {
     programs: Option<Programs>,
+    program_context: Option<ContextId<GlesTexture>>,
+    program_retry: RetryState,
+    unsupported_context: Option<ContextId<GlesTexture>>,
     outputs: HashMap<String, OutputResources>,
 }
 
@@ -93,6 +126,7 @@ pub struct BackdropBlurElement {
     size: Size<i32, Physical>,
     patches: Vec<BlurPatch>,
     textures: Rc<RefCell<BlurTextures>>,
+    retry: Rc<RefCell<RetryState>>,
     down: RawPassProgram,
     up: RawPassProgram,
     composite: GlesTexProgram,
@@ -124,42 +158,86 @@ impl BackdropBlurRenderer {
         if patches.is_empty() {
             return Ok(None);
         }
-        if let Err(error) = self.ensure_programs(renderer) {
-            eventline::error!("backdrop-blur: disabling effect after shader setup failed: {error}");
+        let context = renderer.context_id();
+        if self.program_context.as_ref() != Some(&context) {
+            self.program_context = Some(context.clone());
+            self.programs = None;
+            self.outputs.clear();
+            self.program_retry.recover();
+            self.unsupported_context = None;
+        }
+        if !renderer.capabilities().contains(&Capability::Blit) {
+            if self.unsupported_context.as_ref() != Some(&context) {
+                eventline::warn!(
+                    "backdrop-blur: framebuffer blit is unavailable on this GLES context; effect disabled"
+                );
+                self.unsupported_context = Some(context);
+            }
             return Ok(None);
         }
+        let now = Instant::now();
+        if self.program_retry.blocked(now) {
+            return Ok(None);
+        }
+        if self.programs.is_none() {
+            self.program_retry.begin_attempt();
+            if let Err(error) = self.ensure_programs(renderer) {
+                let delay = self.program_retry.fail(now);
+                eventline::warn!(
+                    "backdrop-blur: shader setup failed; retrying in {} ms: {error}",
+                    delay.as_millis()
+                );
+                return Ok(None);
+            }
+            self.program_retry.recover();
+        }
         let physical_size = size.to_physical(1);
-        let context = renderer.context_id();
         let levels = config.passes.clamp(1, 5);
-        let needs_textures = self.outputs.get(output).is_none_or(|resources| {
-            let textures = resources.textures.borrow();
-            textures.size != physical_size || textures.levels != levels
-        });
-        if needs_textures {
-            let textures = match create_textures(renderer, physical_size, levels) {
-                Ok(textures) => Rc::new(RefCell::new(textures)),
+        let config_fingerprint = blur_config_fingerprint(config);
+        let resources = self
+            .outputs
+            .entry(output.to_string())
+            .or_insert_with(|| OutputResources {
+                textures: None,
+                retry: Rc::new(RefCell::new(RetryState::default())),
+                size: physical_size,
+                levels,
+                config_fingerprint,
+                ids: HashMap::new(),
+                scene_identities: HashSet::new(),
+            });
+        if resources.size != physical_size
+            || resources.levels != levels
+            || resources.config_fingerprint != config_fingerprint
+        {
+            resources.size = physical_size;
+            resources.levels = levels;
+            resources.config_fingerprint = config_fingerprint;
+            resources.textures = None;
+            resources.retry.borrow_mut().recover();
+        }
+        if resources.retry.borrow().blocked(now) {
+            return Ok(None);
+        }
+        if resources.retry.borrow().retry_at.is_some() {
+            resources.retry.borrow_mut().begin_attempt();
+            resources.textures = None;
+        }
+        if resources.textures.is_none() {
+            match create_textures(renderer, physical_size, levels) {
+                Ok(textures) => {
+                    resources.textures = Some(Rc::new(RefCell::new(textures)));
+                }
                 Err(error) => {
-                    eventline::error!(
-                        "backdrop-blur: skipping effect after scratch allocation failed: {error}"
+                    let delay = resources.retry.borrow_mut().fail(now);
+                    eventline::warn!(
+                        "backdrop-blur: scratch allocation failed on {output}; retrying in {} ms: {error}",
+                        delay.as_millis()
                     );
                     return Ok(None);
                 }
-            };
-            match self.outputs.get_mut(output) {
-                Some(resources) => resources.textures = textures,
-                None => {
-                    self.outputs.insert(
-                        output.to_string(),
-                        OutputResources {
-                            textures,
-                            ids: HashMap::new(),
-                            scene_identities: HashSet::new(),
-                        },
-                    );
-                }
             }
         }
-        let resources = self.outputs.get_mut(output).expect("inserted above");
         let programs = self.programs.as_ref().expect("ensured above");
         debug_assert_eq!(programs.context, context);
         if !resources.scene_identities.insert(identity.clone()) {
@@ -181,7 +259,8 @@ impl BackdropBlurRenderer {
             commit,
             size: physical_size,
             patches,
-            textures: Rc::clone(&resources.textures),
+            textures: Rc::clone(resources.textures.as_ref().expect("allocated above")),
+            retry: Rc::clone(&resources.retry),
             down: programs.down,
             up: programs.up,
             composite: programs.composite.clone(),
@@ -200,7 +279,6 @@ impl BackdropBlurRenderer {
         {
             return Ok(());
         }
-        self.outputs.clear();
         let composite_uniforms = [
             UniformName::new("rect_size", UniformType::_2f),
             UniformName::new("patch_origin_uv", UniformType::_2f),
@@ -213,20 +291,25 @@ impl BackdropBlurRenderer {
             UniformName::new("saturation", UniformType::_1f),
             UniformName::new("noise", UniformType::_1f),
         ];
+        let composite =
+            renderer.compile_custom_texture_shader(COMPOSITE_SHADER, &composite_uniforms)?;
         let down_source = raw_fragment_shader(DOWN_SHADER);
         let up_source = raw_fragment_shader(UP_SHADER);
         let (down, up) = renderer.with_context(|gl| unsafe {
-            Ok::<_, GlesError>((
-                compile_raw_pass_program(gl, &down_source)?,
-                compile_raw_pass_program(gl, &up_source)?,
-            ))
+            let down = compile_raw_pass_program(gl, &down_source)?;
+            match compile_raw_pass_program(gl, &up_source) {
+                Ok(up) => Ok::<_, GlesError>((down, up)),
+                Err(error) => {
+                    gl.DeleteProgram(down.program);
+                    Err(error)
+                }
+            }
         })??;
         self.programs = Some(Programs {
             context,
             down,
             up,
-            composite: renderer
-                .compile_custom_texture_shader(COMPOSITE_SHADER, &composite_uniforms)?,
+            composite,
         });
         Ok(())
     }
@@ -241,14 +324,48 @@ unsafe fn compile_raw_pass_program(
     fragment: &str,
 ) -> Result<RawPassProgram, GlesError> {
     let program = unsafe { link_program(gl, BLUR_VERTEX_SHADER, fragment)? };
-    Ok(RawPassProgram {
+    let pass = RawPassProgram {
         program,
         texture: unsafe { gl.GetUniformLocation(program, c"tex".as_ptr()) },
         alpha: unsafe { gl.GetUniformLocation(program, c"alpha".as_ptr()) },
         halfpixel: unsafe { gl.GetUniformLocation(program, c"halfpixel".as_ptr()) },
         offset: unsafe { gl.GetUniformLocation(program, c"offset".as_ptr()) },
         vertex: unsafe { gl.GetAttribLocation(program, c"vert".as_ptr()) },
+    };
+    if [
+        pass.texture,
+        pass.alpha,
+        pass.halfpixel,
+        pass.offset,
+        pass.vertex,
+    ]
+    .into_iter()
+    .any(|location| location < 0)
+    {
+        unsafe { gl.DeleteProgram(program) };
+        return Err(GlesError::ShaderCompileError);
+    }
+    Ok(pass)
+}
+
+fn retry_delay(attempt: u32) -> Duration {
+    Duration::from_secs(match attempt {
+        0 | 1 => 1,
+        2 => 2,
+        3 => 4,
+        4 => 8,
+        5 => 16,
+        _ => 30,
     })
+}
+
+fn blur_config_fingerprint(config: halley_config::Blur) -> u64 {
+    let mut hash = DefaultHasher::new();
+    config.passes.hash(&mut hash);
+    config.radius.to_bits().hash(&mut hash);
+    config.saturation.to_bits().hash(&mut hash);
+    config.noise.to_bits().hash(&mut hash);
+    hash.finish()
 }
 
 fn level_size(size: Size<i32, Physical>, level: u32) -> Size<i32, Physical> {
@@ -279,13 +396,87 @@ fn create_textures(
     }
     Ok(BlurTextures {
         size,
-        levels,
         accum: create_texture(renderer, size)?,
         chain,
         result: create_texture(renderer, size)?,
         dirty: true,
-        failed: false,
     })
+}
+
+#[derive(Clone, Copy)]
+struct VertexAttribState {
+    index: u32,
+    enabled: bool,
+    buffer: u32,
+    size: i32,
+    kind: u32,
+    normalized: bool,
+    stride: i32,
+    pointer: *mut std::ffi::c_void,
+}
+
+unsafe fn vertex_attrib_state(gl: &ffi::Gles2, index: u32) -> VertexAttribState {
+    let mut enabled = 0;
+    let mut buffer = 0;
+    let mut size = 0;
+    let mut kind = 0;
+    let mut normalized = 0;
+    let mut stride = 0;
+    let mut pointer: *mut std::ffi::c_void = std::ptr::null_mut();
+    unsafe {
+        gl.GetVertexAttribiv(index, ffi::VERTEX_ATTRIB_ARRAY_ENABLED, &mut enabled);
+        gl.GetVertexAttribiv(index, ffi::VERTEX_ATTRIB_ARRAY_BUFFER_BINDING, &mut buffer);
+        gl.GetVertexAttribiv(index, ffi::VERTEX_ATTRIB_ARRAY_SIZE, &mut size);
+        gl.GetVertexAttribiv(index, ffi::VERTEX_ATTRIB_ARRAY_TYPE, &mut kind);
+        gl.GetVertexAttribiv(index, ffi::VERTEX_ATTRIB_ARRAY_NORMALIZED, &mut normalized);
+        gl.GetVertexAttribiv(index, ffi::VERTEX_ATTRIB_ARRAY_STRIDE, &mut stride);
+        gl.GetVertexAttribPointerv(
+            index,
+            ffi::VERTEX_ATTRIB_ARRAY_POINTER,
+            std::ptr::addr_of_mut!(pointer).cast_const(),
+        );
+    }
+    VertexAttribState {
+        index,
+        enabled: enabled != 0,
+        buffer: buffer as u32,
+        size,
+        kind: kind as u32,
+        normalized: normalized != 0,
+        stride,
+        pointer,
+    }
+}
+
+unsafe fn restore_vertex_attrib(gl: &ffi::Gles2, state: VertexAttribState) {
+    unsafe {
+        gl.BindBuffer(ffi::ARRAY_BUFFER, state.buffer);
+        gl.VertexAttribPointer(
+            state.index,
+            state.size,
+            state.kind,
+            if state.normalized {
+                ffi::TRUE
+            } else {
+                ffi::FALSE
+            },
+            state.stride,
+            state.pointer,
+        );
+        if state.enabled {
+            gl.EnableVertexAttribArray(state.index);
+        } else {
+            gl.DisableVertexAttribArray(state.index);
+        }
+    }
+}
+
+unsafe fn clear_gl_errors(gl: &ffi::Gles2) {
+    for _ in 0..32 {
+        if unsafe { gl.GetError() } == ffi::NO_ERROR {
+            break;
+        }
+    }
 }
 
 fn run_blur(
@@ -298,12 +489,14 @@ fn run_blur(
     let size = textures.size;
     frame.with_context(|gl| unsafe {
         let mut draw_fbo = 0_i32;
+        let mut read_fbo = 0_i32;
         let mut viewport = [0_i32; 4];
         let mut active_texture = 0_i32;
         let mut texture_binding = 0_i32;
         let mut program = 0_i32;
         let mut array_buffer = 0_i32;
         gl.GetIntegerv(ffi::DRAW_FRAMEBUFFER_BINDING, &mut draw_fbo);
+        gl.GetIntegerv(ffi::READ_FRAMEBUFFER_BINDING, &mut read_fbo);
         gl.GetIntegerv(ffi::VIEWPORT, viewport.as_mut_ptr());
         gl.GetIntegerv(ffi::ACTIVE_TEXTURE, &mut active_texture);
         gl.ActiveTexture(ffi::TEXTURE0);
@@ -312,6 +505,11 @@ fn run_blur(
         gl.GetIntegerv(ffi::ARRAY_BUFFER_BINDING, &mut array_buffer);
         let blend_enabled = gl.IsEnabled(ffi::BLEND) == ffi::TRUE;
         let scissor_enabled = gl.IsEnabled(ffi::SCISSOR_TEST) == ffi::TRUE;
+        let mut attribs = vec![vertex_attrib_state(gl, down.vertex as u32)];
+        if up.vertex != down.vertex {
+            attribs.push(vertex_attrib_state(gl, up.vertex as u32));
+        }
+        clear_gl_errors(gl);
 
         let mut fbo = 0;
         gl.GenFramebuffers(1, &mut fbo);
@@ -371,12 +569,7 @@ fn run_blur(
                     vertices.as_ptr().cast(),
                 );
                 gl.DrawArrays(ffi::TRIANGLES, 0, 6);
-                gl.DisableVertexAttribArray(pass.vertex as u32);
-                if gl.GetError() == ffi::NO_ERROR {
-                    Ok(())
-                } else {
-                    Err(GlesError::BlitError)
-                }
+                Ok(())
             };
 
             render_pass(
@@ -415,9 +608,9 @@ fn run_blur(
         })();
         gl.DeleteFramebuffers(1, &fbo);
 
+        gl.BindFramebuffer(ffi::READ_FRAMEBUFFER, read_fbo as u32);
         gl.BindFramebuffer(ffi::DRAW_FRAMEBUFFER, draw_fbo as u32);
         gl.Viewport(viewport[0], viewport[1], viewport[2], viewport[3]);
-        gl.BindBuffer(ffi::ARRAY_BUFFER, array_buffer as u32);
         gl.BindTexture(ffi::TEXTURE_2D, texture_binding as u32);
         gl.ActiveTexture(active_texture as u32);
         gl.UseProgram(program as u32);
@@ -431,7 +624,15 @@ fn run_blur(
         } else {
             gl.Disable(ffi::SCISSOR_TEST);
         }
-        result
+        for attrib in attribs {
+            restore_vertex_attrib(gl, attrib);
+        }
+        gl.BindBuffer(ffi::ARRAY_BUFFER, array_buffer as u32);
+        if gl.GetError() == ffi::NO_ERROR {
+            result
+        } else {
+            Err(GlesError::BlitError)
+        }
     })?
 }
 
@@ -472,51 +673,56 @@ impl RenderElement<GlesRenderer> for BackdropBlurElement {
         _dst: Rectangle<i32, Physical>,
         _cache: &UserDataMap,
     ) -> Result<(), GlesError> {
-        let mut textures = self.textures.borrow_mut();
-        if textures.failed {
+        let now = Instant::now();
+        if self.retry.borrow().blocked(now) {
             return Ok(());
         }
+        let mut textures = self.textures.borrow_mut();
         let size = textures.size;
-        frame.with_context(|gl| unsafe {
-            let mut prior_error = gl.GetError();
-            while prior_error != ffi::NO_ERROR {
-                eventline::error!(
-                    "gles: error present before backdrop capture code=0x{prior_error:04x}"
-                );
-                prior_error = gl.GetError();
-            }
+        let capture = frame.with_context(|gl| unsafe {
             let mut current_draw_fbo = 0_i32;
             let mut current_read_fbo = 0_i32;
             gl.GetIntegerv(ffi::DRAW_FRAMEBUFFER_BINDING, &mut current_draw_fbo);
             gl.GetIntegerv(ffi::READ_FRAMEBUFFER_BINDING, &mut current_read_fbo);
             let scissor_was_enabled = gl.IsEnabled(ffi::SCISSOR_TEST) == ffi::TRUE;
+            clear_gl_errors(gl);
             gl.Disable(ffi::SCISSOR_TEST);
             let mut fbo = 0;
             gl.GenFramebuffers(1, &mut fbo);
-            // Smithay leaves the output framebuffer bound for drawing. Bind it
-            // explicitly for reading as well: blur passes use offscreen FBOs,
-            // so relying on a stale READ binding can capture the wrong texture.
-            gl.BindFramebuffer(ffi::READ_FRAMEBUFFER, current_draw_fbo as u32);
-            gl.BindFramebuffer(ffi::DRAW_FRAMEBUFFER, fbo);
-            gl.FramebufferTexture2D(
-                ffi::DRAW_FRAMEBUFFER,
-                ffi::COLOR_ATTACHMENT0,
-                ffi::TEXTURE_2D,
-                textures.accum.tex_id(),
-                0,
-            );
-            gl.BlitFramebuffer(
-                0,
-                0,
-                size.w,
-                size.h,
-                0,
-                0,
-                size.w,
-                size.h,
-                ffi::COLOR_BUFFER_BIT,
-                ffi::NEAREST,
-            );
+            let result = (|| {
+                // Smithay leaves the output framebuffer bound for drawing.
+                // Bind it explicitly for reading as well: blur passes use
+                // offscreen FBOs, so a stale READ binding can capture the
+                // wrong texture.
+                gl.BindFramebuffer(ffi::READ_FRAMEBUFFER, current_draw_fbo as u32);
+                if gl.CheckFramebufferStatus(ffi::READ_FRAMEBUFFER) != ffi::FRAMEBUFFER_COMPLETE {
+                    return Err(GlesError::FramebufferBindingError);
+                }
+                gl.BindFramebuffer(ffi::DRAW_FRAMEBUFFER, fbo);
+                gl.FramebufferTexture2D(
+                    ffi::DRAW_FRAMEBUFFER,
+                    ffi::COLOR_ATTACHMENT0,
+                    ffi::TEXTURE_2D,
+                    textures.accum.tex_id(),
+                    0,
+                );
+                if gl.CheckFramebufferStatus(ffi::DRAW_FRAMEBUFFER) != ffi::FRAMEBUFFER_COMPLETE {
+                    return Err(GlesError::FramebufferBindingError);
+                }
+                gl.BlitFramebuffer(
+                    0,
+                    0,
+                    size.w,
+                    size.h,
+                    0,
+                    0,
+                    size.w,
+                    size.h,
+                    ffi::COLOR_BUFFER_BIT,
+                    ffi::NEAREST,
+                );
+                Ok(())
+            })();
             gl.BindFramebuffer(ffi::READ_FRAMEBUFFER, current_read_fbo as u32);
             gl.BindFramebuffer(ffi::DRAW_FRAMEBUFFER, current_draw_fbo as u32);
             if scissor_was_enabled {
@@ -526,11 +732,15 @@ impl RenderElement<GlesRenderer> for BackdropBlurElement {
             }
             gl.DeleteFramebuffers(1, &fbo);
             if gl.GetError() == ffi::NO_ERROR {
-                Ok(())
+                result
             } else {
                 Err(GlesError::BlitError)
             }
-        })??;
+        })?;
+        if let Err(error) = capture {
+            suspend_blur(&self.retry, "framebuffer capture", &error);
+            return Ok(());
+        }
         textures.dirty = true;
         Ok(())
     }
@@ -544,20 +754,21 @@ impl RenderElement<GlesRenderer> for BackdropBlurElement {
         _opaque_regions: &[Rectangle<i32, Physical>],
         _cache: Option<&UserDataMap>,
     ) -> Result<(), GlesError> {
-        let mut textures = self.textures.borrow_mut();
-        if textures.failed {
+        let now = Instant::now();
+        if self.retry.borrow().blocked(now) {
             return Ok(());
         }
+        let mut textures = self.textures.borrow_mut();
         if textures.dirty {
             if let Err(error) = run_blur(frame, &mut textures, self.down, self.up, self.offset) {
-                eventline::error!("backdrop-blur: skipping effect after render failure: {error}");
-                textures.failed = true;
+                suspend_blur(&self.retry, "render passes", &error);
                 return Ok(());
             }
             textures.dirty = false;
+            self.retry.borrow_mut().recover();
         }
         for patch in &self.patches {
-            composite_patch(
+            if let Err(error) = composite_patch(
                 frame,
                 &textures.result,
                 &self.composite,
@@ -565,7 +776,10 @@ impl RenderElement<GlesRenderer> for BackdropBlurElement {
                 damage,
                 self.saturation,
                 self.noise,
-            )?;
+            ) {
+                suspend_blur(&self.retry, "composite pass", &error);
+                return Ok(());
+            }
         }
         Ok(())
     }
@@ -573,6 +787,14 @@ impl RenderElement<GlesRenderer> for BackdropBlurElement {
     fn underlying_storage(&self, _renderer: &mut GlesRenderer) -> Option<UnderlyingStorage<'_>> {
         None
     }
+}
+
+fn suspend_blur(retry: &Rc<RefCell<RetryState>>, stage: &str, error: &GlesError) {
+    let delay = retry.borrow_mut().fail(Instant::now());
+    eventline::warn!(
+        "backdrop-blur: {stage} failed; retrying in {} ms: {error}",
+        delay.as_millis()
+    );
 }
 
 fn composite_patch(
@@ -695,7 +917,9 @@ mod tests {
     use smithay::backend::renderer::element::Id;
     use smithay::utils::{Physical, Size};
 
-    use super::{BlurIdentity, DOWN_SHADER, level_size, raw_fragment_shader};
+    use super::{
+        BlurIdentity, DOWN_SHADER, RetryState, level_size, raw_fragment_shader, retry_delay,
+    };
 
     #[test]
     fn typed_identities_do_not_alias_across_scene_roles() {
@@ -733,5 +957,24 @@ mod tests {
         let shader = raw_fragment_shader(DOWN_SHADER);
         assert!(shader.starts_with("#version 100\n"));
         assert!(!shader.contains("//_DEFINES"));
+    }
+
+    #[test]
+    fn transient_failures_back_off_and_recovery_clears_the_budget() {
+        assert_eq!(retry_delay(1), std::time::Duration::from_secs(1));
+        assert_eq!(retry_delay(2), std::time::Duration::from_secs(2));
+        assert_eq!(retry_delay(5), std::time::Duration::from_secs(16));
+        assert_eq!(retry_delay(20), std::time::Duration::from_secs(30));
+
+        let now = std::time::Instant::now();
+        let mut retry = RetryState::default();
+        assert_eq!(retry.fail(now), std::time::Duration::from_secs(1));
+        assert!(retry.blocked(now));
+        retry.begin_attempt();
+        assert!(!retry.blocked(now));
+        assert_eq!(retry.fail(now), std::time::Duration::from_secs(2));
+        retry.recover();
+        assert_eq!(retry.attempts, 0);
+        assert!(!retry.blocked(now));
     }
 }
