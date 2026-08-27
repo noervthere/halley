@@ -117,9 +117,13 @@ impl OutputCameras {
         })
     }
 
-    /// Parks the Field camera while a cluster workspace is presented. Cluster
-    /// workspace rectangles use output-local coordinates, so they remain
-    /// native-sized without rewriting the camera that positions the core.
+    /// Parks the Field camera while a cluster workspace is presented.
+    ///
+    /// This does not clamp or rewrite zoom to 1.0. The live Field scale is
+    /// left untouched so the cluster core stays put; tiles are output-local
+    /// native pixels and never go through `view.scale`. That is why cluster
+    /// fullscreen/maximize textures stay 1:1 while Field has to scale a
+    /// native clip-reveal onto a zoomed screen dest.
     pub fn set_cluster_active(&mut self, output_name: &str, active: bool) -> bool {
         if active {
             self.cluster_locked.insert(output_name.to_string());

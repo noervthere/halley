@@ -32,6 +32,10 @@ pub struct ResizeWindowTexture {
     pub(crate) surface_geometry: Rectangle<i32, Physical>,
     pub(crate) window_size: Size<i32, Physical>,
     pub(crate) client_opaque: bool,
+    /// Approximate opaque pixel count at capture. Field fullscreen uses this
+    /// to hold the outgoing snapshot until Firefox has painted the larger
+    /// allocation instead of blending in a black buffer.
+    pub(crate) opaque_area: i64,
     /// Stable surface identities and their client-local bounds at capture
     /// time. Resize transactions use this to reject a mixed surface tree in
     /// which (for example) Firefox has resized its CSD surface but is still
@@ -145,6 +149,10 @@ pub fn capture_for_resize(
         })
         .collect::<Vec<_>>();
     let client_opaque = rectangle_is_covered(client_rect, &opaque_regions);
+    let opaque_area = opaque_regions
+        .iter()
+        .map(|region| i64::from(region.size.w.max(0)) * i64::from(region.size.h.max(0)))
+        .sum();
     let offset = surface_geometry.loc.upscale(-1);
     let relocated = elements
         .iter()
@@ -182,6 +190,7 @@ pub fn capture_for_resize(
         surface_geometry,
         window_size: geometry.size.to_physical(1),
         client_opaque,
+        opaque_area,
         surface_layers,
     })
 }

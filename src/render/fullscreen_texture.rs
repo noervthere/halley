@@ -19,17 +19,14 @@ use super::window_texture::ResizeWindowTexture;
 struct TransitionTextures {
     id: Id,
     previous: ResizeWindowTexture,
-    /// Latest accepted live endpoint. The outgoing texture remains immutable,
-    /// while this offscreen texture is refreshed for every rendered animation
-    /// frame just like Niri's resize pipeline. Reusing the allocation keeps the
-    /// refresh cheap and leaves the last blended frame adjacent to the live
-    /// surface instead of jumping from an early frozen repaint.
+    /// Incoming endpoint, refreshed offscreen each animation frame. The live
+    /// tree stays out of the scene; clip-reveal hides unpainted extra area of a
+    /// newly-allocated buffer (the black Firefox fullscreen allocation) until
+    /// later commits paint it into this snapshot.
     next: Option<ResizeWindowTexture>,
-    /// Scratch endpoint used for validation. Before authorization it becomes
-    /// `next` only if the owning transaction accepts the same commit. During
-    /// the animation it forms the other half of a ping-pong pair, so a mixed
-    /// Firefox surface-tree commit can never overwrite the displayed endpoint
-    /// before it has been validated.
+    /// Scratch endpoint used for validation. It becomes `next` only if the
+    /// owning transaction accepts the same commit. Mixed Firefox surface-tree
+    /// commits never overwrite the displayed endpoint before that.
     prepared: Option<ResizeWindowTexture>,
     owner: TextureTransitionOwner,
     last_surface_commit: CommitCounter,
@@ -123,13 +120,11 @@ pub struct BlendRequest<'a> {
 }
 
 impl FullscreenTextureTransitions {
-    /// The live surface is intentionally absent from the scene while the
-    /// outgoing snapshot is holding the resize transaction. Frame callbacks
-    /// must still reach that client so it can finish painting the new buffer.
+    /// The live surface stays out of the scene for the whole crossfade, not
+    /// only while the first incoming snapshot is missing. Frame callbacks must
+    /// still reach that client so it can finish painting offscreen.
     pub fn awaiting_target(&self, surface: &WlSurface) -> bool {
-        self.windows
-            .get(surface)
-            .is_some_and(|entry| entry.next.is_none() && !entry.target_readiness.authorized)
+        self.windows.contains_key(surface)
     }
 
     pub fn capture_previous(
@@ -406,10 +401,11 @@ impl FullscreenTextureTransitions {
                 entry.capture_generation.increment();
             } else {
                 eventline::debug!(
-                    "window transition: retained last complete endpoint owner={:?} candidate-window={:?} candidate-surface={:?}",
+                    "window transition: retained last complete endpoint owner={:?} candidate-window={:?} candidate-surface={:?} opaque={}",
                     entry.owner,
                     candidate.window_size,
                     candidate.surface_geometry,
+                    candidate.client_opaque,
                 );
                 entry.prepared = Some(candidate);
             }
@@ -417,7 +413,12 @@ impl FullscreenTextureTransitions {
                 .next
                 .clone()
                 .expect("authorized resize transition has an accepted endpoint");
-            (next, progress)
+            let texture_progress = if expanding_endpoint_is_painted(&entry.previous, &next) {
+                progress
+            } else {
+                0.0
+            };
+            (next, texture_progress)
         } else {
             (
                 ResizeWindowTexture {
@@ -426,6 +427,7 @@ impl FullscreenTextureTransitions {
                     surface_geometry: entry.previous.surface_geometry,
                     window_size: entry.previous.window_size,
                     client_opaque: entry.previous.client_opaque,
+                    opaque_area: entry.previous.opaque_area,
                     surface_layers: entry.previous.surface_layers.clone(),
                 },
                 0.0,
@@ -444,6 +446,33 @@ impl FullscreenTextureTransitions {
             entry.capture_generation,
         )?))
     }
+}
+
+fn expanding_endpoint_is_painted(
+    outgoing: &ResizeWindowTexture,
+    incoming: &ResizeWindowTexture,
+) -> bool {
+    incoming_paint_is_ready(
+        outgoing.window_size,
+        outgoing.opaque_area,
+        incoming.window_size,
+        incoming.client_opaque,
+        incoming.opaque_area,
+    )
+}
+
+fn incoming_paint_is_ready(
+    outgoing_size: Size<i32, Physical>,
+    outgoing_opaque_area: i64,
+    incoming_size: Size<i32, Physical>,
+    incoming_opaque: bool,
+    incoming_opaque_area: i64,
+) -> bool {
+    let expanding = incoming_size.w > outgoing_size.w || incoming_size.h > outgoing_size.h;
+    if !expanding {
+        return true;
+    }
+    incoming_opaque || (incoming_opaque_area >= outgoing_opaque_area && incoming_opaque_area > 0)
 }
 
 fn snapshot_matches_target_endpoint(
@@ -575,12 +604,32 @@ fn transition_buffer_ready(
 mod tests {
     use super::{
         TargetDamageCoverage, TargetReadiness, commit_has_advanced, damage_covers_buffer,
-        native_target_buffer_ready, native_target_candidate_ready,
+        incoming_paint_is_ready, native_target_buffer_ready, native_target_candidate_ready,
         persistent_endpoint_layers_cover_target, surface_tree_matches_target_endpoint,
         transition_buffer_ready,
     };
     use smithay::backend::renderer::utils::CommitCounter;
     use smithay::utils::{Buffer, Logical, Physical, Rectangle, Size};
+
+    #[test]
+    fn expanding_firefox_buffer_does_not_blend_until_it_has_paint() {
+        let windowed = Size::<i32, Physical>::from((800, 600));
+        let fullscreen = Size::<i32, Physical>::from((1920, 1080));
+        let painted = i64::from(800 * 600);
+
+        assert!(!incoming_paint_is_ready(
+            windowed, painted, fullscreen, false, 0
+        ));
+        assert!(incoming_paint_is_ready(
+            windowed, painted, fullscreen, true, painted
+        ));
+        assert!(incoming_paint_is_ready(
+            windowed, painted, fullscreen, false, painted
+        ));
+        assert!(incoming_paint_is_ready(
+            fullscreen, painted, windowed, false, 0
+        ));
+    }
 
     #[test]
     fn x11_fullscreen_exit_holds_previous_texture_until_restored_buffer_arrives() {

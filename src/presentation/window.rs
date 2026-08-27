@@ -100,6 +100,26 @@ fn output_local_zoom_scale(space: PresentationSpace, view_scale: f32) -> f32 {
     }
 }
 
+/// Chrome scale for a fullscreen/maximize crossfade.
+///
+/// Cluster destinations interpolate in native pixels, so this stays 1.0.
+/// Field destinations start at the camera-scaled on-screen rect; using native
+/// 1.0 there draws a full-size titlebar on a still-zoomed window, and using
+/// the live camera fights the output-local dest. Scale chrome by dest vs the
+/// native size at the same progress.
+fn presentation_display_scale(
+    animated: smithay::utils::Size<i32, Physical>,
+    windowed_native: smithay::utils::Size<i32, Physical>,
+    target_native: smithay::utils::Size<i32, Physical>,
+    progress: f64,
+) -> f32 {
+    let native = (f64::from(windowed_native.h)
+        + f64::from(target_native.h - windowed_native.h) * progress)
+        .round()
+        .max(1.0);
+    animated.h as f32 / native as f32
+}
+
 fn inherited_visual_rects(
     source: Rectangle<i32, Physical>,
     owner_source: Rectangle<i32, Physical>,
@@ -308,10 +328,30 @@ pub(crate) fn window_visual_state_with_cluster_presentation(
     let mut inherited_camera_center = camera_center;
     // Cluster tiles already live in output-local space at scale 1.0, so their
     // maximize/fullscreen crossfade interpolates a stable rectangle. Field
-    // windows must do the same once they take that presentation: leaving the
-    // live camera scale on decorations and surface mapping fights the
-    // output-local resize blend and is what made field transitions jumpy.
-    let mut inherited_zoom_scale = output_local_zoom_scale(presentation_space, view.scale);
+    // windows take the same output-local dest, but that dest starts camera-
+    // scaled: decorations have to follow dest/native, not live camera zoom
+    // and not native 1.0.
+    let mut inherited_zoom_scale = if let Some(presentation) = fullscreen_presentation {
+        let windowed = presentation.windowed_geometry.map_or_else(
+            || presentation.fullscreen_size.to_physical(1),
+            |geometry| geometry.size.to_physical(1),
+        );
+        presentation_display_scale(
+            animated_rect.size,
+            windowed,
+            presentation.fullscreen_size.to_physical(1),
+            presentation.progress,
+        )
+    } else if let Some(presentation) = maximize_presentation {
+        presentation_display_scale(
+            animated_rect.size,
+            presentation.windowed_rect.size.to_physical(1),
+            presentation.target_rect.size,
+            presentation.progress,
+        )
+    } else {
+        output_local_zoom_scale(presentation_space, view.scale)
+    };
     let mut inherited_cluster_depth = cluster_depth.filter(|_| !cluster_exclusive);
     let mut inherited_cluster_floating = window_node
         .is_some_and(|node| clusters.is_some_and(|clusters| clusters.is_member_floating(node)));
@@ -683,6 +723,56 @@ mod tests {
             1.0
         );
         assert_eq!(output_local_zoom_scale(PresentationSpace::Field, 0.5), 0.5);
+    }
+
+    #[test]
+    fn cluster_crossfade_chrome_stays_native() {
+        assert_eq!(
+            presentation_display_scale(
+                (1000, 600).into(),
+                (1000, 600).into(),
+                (2000, 1200).into(),
+                0.0
+            ),
+            1.0
+        );
+        assert_eq!(
+            presentation_display_scale(
+                (1500, 900).into(),
+                (1000, 600).into(),
+                (2000, 1200).into(),
+                0.5
+            ),
+            1.0
+        );
+        assert_eq!(
+            presentation_display_scale(
+                (2000, 1200).into(),
+                (1000, 600).into(),
+                (2000, 1200).into(),
+                1.0
+            ),
+            1.0
+        );
+    }
+
+    #[test]
+    fn field_crossfade_chrome_follows_the_zoomed_destination() {
+        let start = presentation_display_scale(
+            (350, 210).into(),
+            (1000, 600).into(),
+            (2000, 1200).into(),
+            0.0,
+        );
+        let end = presentation_display_scale(
+            (2000, 1200).into(),
+            (1000, 600).into(),
+            (2000, 1200).into(),
+            1.0,
+        );
+
+        assert!((start - 0.35).abs() < f32::EPSILON);
+        assert_eq!(end, 1.0);
     }
 
     #[test]

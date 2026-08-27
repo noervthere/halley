@@ -83,6 +83,20 @@ pub(super) fn set_external_fullscreen<D: SessionDriver>(
     let cluster_restore = window.wl_surface().and_then(|wl_surface| {
         crate::session::cluster_presentation_restore(session, wl_surface.as_ref(), now, fullscreen)
     });
+    let field_output_rect = (fullscreen && cluster_restore.is_none())
+        .then(|| {
+            let output_name = crate::wayland::window_output_name(&window)?;
+            session
+                .wayland
+                .space
+                .outputs()
+                .find(|output| output.name() == output_name)
+                .cloned()
+                .and_then(|output| {
+                    crate::session::presented_window_rect(session, &window, &output, now)
+                })
+        })
+        .flatten();
     let client_cluster_request = cluster_restore.is_some() && origin.client_owns_geometry();
     if client_cluster_request {
         let quiet_until = session
@@ -202,16 +216,19 @@ pub(super) fn set_external_fullscreen<D: SessionDriver>(
         );
         settle_external_immediately(session, surface, &window, fullscreen, origin);
     }
-    if fullscreen
-        && let Some(restore) = cluster_restore
-        && let Some(wl_surface) = window.wl_surface()
-    {
-        session.fullscreen.override_restore_from_cluster(
-            wl_surface.as_ref(),
-            restore.geometry,
-            restore.output,
-            restore.presentation_output,
-        );
+    if fullscreen && let Some(wl_surface) = window.wl_surface() {
+        if let Some(restore) = cluster_restore {
+            session.fullscreen.override_restore_from_cluster(
+                wl_surface.as_ref(),
+                restore.geometry,
+                restore.output,
+                restore.presentation_output,
+            );
+        } else if let Some(rect) = field_output_rect {
+            session
+                .fullscreen
+                .override_presentation_output(wl_surface.as_ref(), rect);
+        }
     }
     if let Some(handoff) = field_handoff
         && let Some(wl_surface) = window.wl_surface()

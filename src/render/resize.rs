@@ -177,7 +177,7 @@ impl ResizeRenderer {
             }
         };
 
-        let mapping = resize_mapping(previous, &next, destination);
+        let mapping = resize_mapping(previous, &next, destination, progress);
         let base = texture_element(previous, id, mapping.draw_area, alpha.clamp(0.0, 1.0));
         let radii = super::window_decoration::CornerRadii {
             top: fit_radius(radii.top, destination),
@@ -245,6 +245,7 @@ fn resize_mapping(
     previous: &ResizeWindowTexture,
     next: &ResizeWindowTexture,
     destination: Rectangle<i32, Physical>,
+    progress: f32,
 ) -> ResizeMapping {
     resize_mapping_from_metadata(
         previous.surface_geometry,
@@ -252,6 +253,7 @@ fn resize_mapping(
         next.surface_geometry,
         next.window_size,
         destination,
+        progress,
     )
 }
 
@@ -261,20 +263,23 @@ fn resize_mapping_from_metadata(
     next_surface: Rectangle<i32, Physical>,
     next_window: smithay::utils::Size<i32, Physical>,
     destination: Rectangle<i32, Physical>,
+    progress: f32,
 ) -> ResizeMapping {
     let previous_bounds = scaled_surface_bounds(previous_surface, previous_window, destination);
     let next_bounds = scaled_surface_bounds(next_surface, next_window, destination);
     let draw_area = previous_bounds.merge(next_bounds);
     let width = destination.size.w.max(1) as f32;
     let height = destination.size.h.max(1) as f32;
-    // Niri deliberately maps both textures through the *current* animated
-    // geometry. It does not stretch each endpoint's window geometry across
-    // the destination. At the start the outgoing texture is pixel-stable; at
-    // the end the incoming texture is pixel-stable, and the crossfade hides
-    // the clipped/revealed portions between them.
-    let (previous_scale, previous_offset) =
-        texture_coordinate_mapping(previous_surface, destination.size);
-    let (next_scale, next_offset) = texture_coordinate_mapping(next_surface, destination.size);
+    // Cluster never applies Field zoom to tiles: they are output-local native
+    // pixels, and clip-reveal uses that native dest. Field still eases zoom,
+    // so the on-screen dest can be a scaled-down cluster frame. Sample both
+    // textures in native window space (the cluster mapping), then the element
+    // is drawn at `destination` which uniformly scales that frame onto the
+    // screen. Using the zoomed dest as texel space magnified a crop of the
+    // incoming buffer — the fucked Field texture.
+    let content = interpolated_window_size(previous_window, next_window, progress);
+    let (previous_scale, previous_offset) = texture_coordinate_mapping(previous_surface, content);
+    let (next_scale, next_offset) = texture_coordinate_mapping(next_surface, content);
 
     ResizeMapping {
         draw_area,
@@ -314,6 +319,20 @@ fn scaled_surface_bounds(
         (left, top).into(),
         (right.saturating_sub(left), bottom.saturating_sub(top)).into(),
     )
+}
+
+fn interpolated_window_size(
+    from: smithay::utils::Size<i32, Physical>,
+    to: smithay::utils::Size<i32, Physical>,
+    progress: f32,
+) -> smithay::utils::Size<i32, Physical> {
+    let progress = progress.clamp(0.0, 1.0);
+    let lerp = |from: i32, to: i32| {
+        (from as f32 + (to - from) as f32 * progress)
+            .round()
+            .max(1.0) as i32
+    };
+    (lerp(from.w, to.w), lerp(from.h, to.h)).into()
 }
 
 fn texture_coordinate_mapping(
@@ -466,7 +485,7 @@ impl RenderElement<GlesRenderer> for ResizeRenderElement {
 
 #[cfg(test)]
 mod tests {
-    use super::{resize_commit, resize_mapping_from_metadata};
+    use super::{interpolated_window_size, resize_commit, resize_mapping_from_metadata};
     use smithay::backend::renderer::utils::CommitCounter;
     use smithay::utils::{Physical, Rectangle};
 
@@ -482,16 +501,19 @@ mod tests {
             next_surface,
             (2560, 1440).into(),
             destination,
+            0.5,
         );
 
         assert_eq!(mapping.draw_area.loc, (-26, -22).into());
         assert_eq!(mapping.draw_area.size, (1332, 764).into());
         assert!(mapping.input_offset.0 < 0.0);
         assert!(mapping.input_offset.1 < 0.0);
-        assert!((mapping.previous_scale.0 - 1280.0 / 1036.0).abs() < f32::EPSILON);
-        assert!((mapping.previous_scale.1 - 720.0 / 704.0).abs() < f32::EPSILON);
+        let content_w = 996.0 + (2560.0 - 996.0) * 0.5;
+        let content_h = 664.0 + (1440.0 - 664.0) * 0.5;
+        assert!((mapping.previous_scale.0 - content_w / 1036.0).abs() < 0.01);
+        assert!((mapping.previous_scale.1 - content_h / 704.0).abs() < 0.01);
         assert!((mapping.previous_offset.0 - 20.0 / 1036.0).abs() < f32::EPSILON);
-        assert_eq!(mapping.next_scale, (0.5, 0.5));
+        assert!((mapping.next_scale.0 - content_w / 2560.0).abs() < 0.01);
         assert_eq!(mapping.next_offset, (0.0, 0.0));
     }
 
@@ -507,6 +529,7 @@ mod tests {
             next_surface,
             (2000, 1200).into(),
             midway,
+            0.5,
         );
 
         assert_eq!(mapping.previous_scale, (1.5, 1.5));
@@ -522,6 +545,7 @@ mod tests {
             surface,
             (996, 664).into(),
             Rectangle::new((100, 200).into(), (996, 664).into()),
+            0.0,
         );
         let cluster = resize_mapping_from_metadata(
             surface,
@@ -529,6 +553,7 @@ mod tests {
             surface,
             (996, 664).into(),
             Rectangle::new((500, 50).into(), (996, 664).into()),
+            0.0,
         );
 
         assert_eq!(field.input_scale, cluster.input_scale);
@@ -565,6 +590,36 @@ mod tests {
         assert_ne!(
             first,
             resize_commit(base, CommitCounter::from(1), 0.5, destination, radii)
+        );
+    }
+
+    #[test]
+    fn zoomed_field_samples_native_cluster_space_then_scales_to_the_screen() {
+        let previous_surface = Rectangle::new((0, 0).into(), (1000, 600).into());
+        let next_surface = Rectangle::new((0, 0).into(), (2000, 1200).into());
+        let zoomed = Rectangle::new((80, 40).into(), (350, 210).into());
+
+        let mapping = resize_mapping_from_metadata(
+            previous_surface,
+            (1000, 600).into(),
+            next_surface,
+            (2000, 1200).into(),
+            zoomed,
+            0.0,
+        );
+
+        // Native clip-reveal at the outgoing window, not the zoomed dest.
+        // next_scale 0.5 is a windowed-sized crop of the fullscreen buffer
+        // scaled down onto the 350px dest — not a 1:1 magnified 350px corner.
+        assert_eq!(mapping.previous_scale, (1.0, 1.0));
+        assert_eq!(mapping.next_scale, (0.5, 0.5));
+        assert_eq!(
+            interpolated_window_size((1000, 600).into(), (2000, 1200).into(), 0.0),
+            (1000, 600).into()
+        );
+        assert_eq!(
+            interpolated_window_size((1000, 600).into(), (2000, 1200).into(), 0.5),
+            (1500, 900).into()
         );
     }
 }
