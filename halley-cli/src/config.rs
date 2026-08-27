@@ -98,11 +98,28 @@ pub fn migrate(explicit: Option<PathBuf>, dry_run: bool) -> ExitCode {
                         "  Version: {} -> {}",
                         report.from_version, report.to_version
                     );
+                    if let Some(reason) = &report.reason {
+                        println!("  Reason: {reason}");
+                    }
                     for item in &report.applied {
                         println!("  Add: {item}");
                     }
                     for item in &report.skipped {
                         println!("  Skip: {item}");
+                    }
+                    if let Some(backup) = report.backup {
+                        println!("  Backup: {}", backup.display());
+                    }
+                }
+                MigrationStatus::Replaced => {
+                    println!("Configuration replaced");
+                    println!("  File: {}", path.display());
+                    println!(
+                        "  Version: {} -> {}",
+                        report.from_version, report.to_version
+                    );
+                    if let Some(reason) = &report.reason {
+                        println!("  Reason: {reason}");
                     }
                     if let Some(backup) = report.backup {
                         println!("  Backup: {}", backup.display());

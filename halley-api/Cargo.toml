@@ -3,8 +3,13 @@ name = "halley-api"
 version = "0.3.0"
 edition = "2024"
 description = "Stable Rust client API for the Halley compositor"
-license = "GPL-3.0-only"
+authors.workspace = true
+license.workspace = true
 readme = "README.md"
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
 halley-ipc = { version = "0.6.0", path = "../halley-ipc" }

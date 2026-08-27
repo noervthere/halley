@@ -55,8 +55,9 @@ Usage:
   halleyctl config migrate [--dry-run] --config PATH
 
 `edit` uses $VISUAL, then $EDITOR, and falls back to vi.
-`migrate` applies versioned compatibility entries, validates the complete
-result, and keeps a timestamped backup. Use --dry-run to inspect it first.
+`migrate` replaces pre-0.6 files with the current default (keeping a
+timestamped backup), then applies versioned compatibility entries to 0.6
+configs. Use --dry-run to inspect it first.
 ";
 
 pub const NODE_HELP: &str = "\

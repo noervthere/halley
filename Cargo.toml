@@ -2,10 +2,26 @@
 name = "halley"
 version = "0.6.0"
 edition = "2024"
+description = "Spatial Wayland compositor built around infinite workspace navigation"
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish = false
 
 [workspace]
 resolver = "2"
 members = ["halley-api", "halley-cli", "halley-config", "halley-core", "halley-ipc", "halley-lift", "halley-portal"]
+
+[workspace.package]
+authors = ["Dustin Pilgrim <dustin.pilgrim1997@gmail.com>"]
+license = "GPL-3.0-only"
+repository = "https://github.com/saltnpepper97/halley"
+homepage = "https://github.com/saltnpepper97/halley"
+keywords = ["wayland", "compositor", "rust", "linux"]
+categories = ["os::linux-apis", "gui"]
 
 [dependencies]
 smithay = { version = "0.7.0", git = "https://github.com/Smithay/smithay.git", rev = "ff5fa7df392cecfba049ffed55cdaa4e98a8e7ef", default-features = false, features = [

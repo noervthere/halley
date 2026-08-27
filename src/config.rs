@@ -228,6 +228,16 @@ pub fn load_initial(explicit_path: Option<PathBuf>) -> InitialConfig {
                         eventline::warn!("config: migration skipped binding: {skipped}");
                     }
                 }
+                Ok(report) if report.status == halley_config::MigrationStatus::Replaced => {
+                    eventline::info!(
+                        "config: backed up pre-0.6 {} to {} and installed the current default",
+                        path.display(),
+                        report.backup.as_deref().map_or_else(
+                            || "none".to_string(),
+                            |backup| backup.display().to_string()
+                        )
+                    );
+                }
                 Ok(report) if report.status == halley_config::MigrationStatus::Skipped => {
                     eventline::info!(
                         "config: automatic migration skipped for {}: {}",

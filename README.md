@@ -255,11 +255,13 @@ bindings rather than hardcoded mouse policy.
 On first launch Halley creates
 `$XDG_CONFIG_HOME/halley/halley.rune`, falling back to
 `~/.config/halley/halley.rune`, from the canonical
-[`examples/halley.rune`](examples/halley.rune) template. Existing files are
-updated only by guarded, versioned compatibility migrations. Migrations add a
-finite set of missing bindings, skip conflicting custom chords, validate the
-complete candidate, write atomically, and retain a timestamped backup. Split
-configs using `gather` are not changed automatically.
+[`examples/halley.rune`](examples/halley.rune) template. A pre-0.6 file is
+backed up beside the original and replaced with that template; later 0.6
+compatibility changes use guarded, versioned backfill instead of rewriting
+the whole file. Backfill adds a finite set of missing bindings, skips
+conflicting custom chords, validates the complete candidate, writes
+atomically, and retains a timestamped backup. Split 0.6 configs using
+`gather` are not backfilled automatically.
 
 Pass `-c PATH` or `--config PATH` to select another file. Valid edits reload as
 one atomic snapshot; invalid edits leave the last valid runtime state active.

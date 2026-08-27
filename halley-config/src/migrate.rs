@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
@@ -6,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rune_cfg::RuneConfig;
 
-use crate::{Action, BindingScope, Keybind, ModifierKey};
+use crate::{Action, BindingScope, DEFAULT_CONFIG, Keybind, ModifierKey};
 
 pub const CONFIG_VERSION: u32 = 2;
 
@@ -14,8 +15,10 @@ const VERSION_PREFIX: &str = "# halley-config-version:";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MigrationMode {
-    /// Startup migration of the canonical user config. Split configs are left
-    /// alone because the root file may not own the keybind section.
+    /// Startup migration of the canonical user config. Pre-0.6 files, including
+    /// split trees, are replaced with the current default. Versioned 0.6 split
+    /// configs are left alone because the root file may not own the keybind
+    /// section.
     Automatic,
     /// A migration explicitly requested through `halleyctl config migrate`.
     Explicit,
@@ -27,6 +30,8 @@ pub enum MigrationStatus {
     Skipped,
     WouldUpdate,
     Updated,
+    /// A pre-0.6 file was backed up and replaced with the current default.
+    Replaced,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -101,6 +106,25 @@ struct BindingCandidate {
     name: &'static str,
     line: &'static str,
 }
+
+const PRE_06_REPLACE: &str = "pre-0.6 configuration replaced with the current default";
+
+/// Top-level sections that exist in released pre-0.6 Halley configs and never
+/// appear in the 0.6 schema. `viewport` was also rewritten on first tty launch.
+const PRE_06_TOP_LEVEL: &[&str] = &["viewport", "gaming", "tile", "stacking"];
+
+/// Nested keys that 0.6 renamed or removed. Any one of these is enough to
+/// treat an unversioned file as a generation boundary rather than a backfill.
+const PRE_06_ASSIGNMENTS: &[&str] = &[
+    "show-ring-when-resizing",
+    "node-shape",
+    "node-label-shape",
+    "border-colour-hover",
+    "border-colour-inactive",
+    "cluster-dwell-ms",
+    "active-windows-allowed",
+    "layer-shell",
+];
 
 /// Bindings added while the 0.6 compositor surface was being completed.
 ///
@@ -232,6 +256,9 @@ pub fn migrate_config_at(
             "config version {from_version} is newer than this Halley build (supports {CONFIG_VERSION})"
         )));
     }
+    if from_version == 0 && looks_like_pre_06_tree(path, &source) {
+        return replace_pre_06_config(path, dry_run);
+    }
     if mode == MigrationMode::Automatic && contains_gather(&source) {
         return Ok(MigrationReport::skipped(
             from_version,
@@ -336,13 +363,129 @@ fn config_version(source: &str) -> Result<u32, MigrationError> {
 }
 
 fn contains_gather(source: &str) -> bool {
-    source.lines().any(|line| {
-        let line = line.trim_start();
-        !line.starts_with('#')
-            && line
-                .strip_prefix("gather")
-                .is_some_and(|rest| rest.chars().next().is_some_and(char::is_whitespace))
+    source.lines().any(|line| gather_path(line).is_some())
+}
+
+fn replace_pre_06_config(path: &Path, dry_run: bool) -> Result<MigrationReport, MigrationError> {
+    let applied = vec![PRE_06_REPLACE.to_string()];
+    if dry_run {
+        return Ok(MigrationReport {
+            status: MigrationStatus::WouldUpdate,
+            from_version: 0,
+            to_version: CONFIG_VERSION,
+            applied,
+            skipped: Vec::new(),
+            reason: Some("pre-0.6 configuration is not compatible with Halley 0.6".to_string()),
+            backup: None,
+        });
+    }
+
+    let backup = backup_path_with_label(path, "pre-0.6.bak")?;
+    fs::copy(path, &backup)?;
+    if let Err(error) = atomic_replace(path, DEFAULT_CONFIG.as_bytes()) {
+        return Err(MigrationError::Invalid(format!(
+            "failed to install the 0.6 default config (backup retained at {}): {error}",
+            backup.display()
+        )));
+    }
+
+    Ok(MigrationReport {
+        status: MigrationStatus::Replaced,
+        from_version: 0,
+        to_version: CONFIG_VERSION,
+        applied,
+        skipped: Vec::new(),
+        reason: Some("pre-0.6 configuration is not compatible with Halley 0.6".to_string()),
+        backup: Some(backup),
     })
+}
+
+fn looks_like_pre_06_tree(path: &Path, source: &str) -> bool {
+    if looks_like_pre_06(source) {
+        return true;
+    }
+    let mut visited = HashSet::new();
+    visited.insert(path.to_path_buf());
+    scan_gather_tree(path, source, &mut visited)
+}
+
+fn scan_gather_tree(path: &Path, source: &str, visited: &mut HashSet<PathBuf>) -> bool {
+    let Some(base) = path.parent() else {
+        return false;
+    };
+    for raw in source.lines().filter_map(gather_path) {
+        let Some(child) = resolve_gather_path(raw, base) else {
+            continue;
+        };
+        if !visited.insert(child.clone()) {
+            continue;
+        }
+        let Ok(child_source) = fs::read_to_string(&child) else {
+            continue;
+        };
+        if looks_like_pre_06(&child_source) || scan_gather_tree(&child, &child_source, visited) {
+            return true;
+        }
+    }
+    false
+}
+
+fn gather_path(line: &str) -> Option<&str> {
+    let rest = line.trim().strip_prefix("gather")?.trim();
+    let quote = rest.chars().next()?;
+    if !matches!(quote, '\'' | '"') {
+        return None;
+    }
+    let after_quote = &rest[quote.len_utf8()..];
+    let end = after_quote.find(quote)?;
+    Some(&after_quote[..end])
+}
+
+fn resolve_gather_path(raw: &str, base: &Path) -> Option<PathBuf> {
+    let path = if let Some(rest) = raw.strip_prefix("~/") {
+        PathBuf::from(std::env::var_os("HOME")?).join(rest)
+    } else {
+        PathBuf::from(raw)
+    };
+    Some(if path.is_absolute() {
+        path
+    } else {
+        base.join(path)
+    })
+}
+
+fn looks_like_pre_06(source: &str) -> bool {
+    source.lines().any(|line| {
+        let Some(trimmed) = uncommented_code(line) else {
+            return false;
+        };
+        if !line.starts_with(char::is_whitespace)
+            && PRE_06_TOP_LEVEL.iter().any(|name| {
+                trimmed
+                    .strip_prefix(name)
+                    .is_some_and(|rest| rest.starts_with(':'))
+            })
+        {
+            return true;
+        }
+        if trimmed == "rule:" {
+            return true;
+        }
+        PRE_06_ASSIGNMENTS.iter().any(|key| {
+            trimmed
+                .strip_prefix(key)
+                .is_some_and(|rest| rest.chars().next().is_some_and(char::is_whitespace))
+        })
+    })
+}
+
+fn uncommented_code(line: &str) -> Option<&str> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with('@') {
+        None
+    } else {
+        Some(trimmed)
+    }
 }
 
 fn parse_candidate(modifier: ModifierKey, line: &str) -> Result<Keybind, MigrationError> {
@@ -582,6 +725,10 @@ fn validate_candidate(path: &Path, source: &str) -> Result<(), MigrationError> {
 }
 
 fn backup_path(path: &Path) -> Result<PathBuf, MigrationError> {
+    backup_path_with_label(path, "bak")
+}
+
+fn backup_path_with_label(path: &Path, label: &str) -> Result<PathBuf, MigrationError> {
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|error| MigrationError::Invalid(format!("system clock error: {error}")))?
@@ -590,7 +737,7 @@ fn backup_path(path: &Path) -> Result<PathBuf, MigrationError> {
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(|| MigrationError::Invalid("config path has no UTF-8 file name".to_string()))?;
-    Ok(path.with_file_name(format!("{file_name}.bak-{timestamp}")))
+    Ok(path.with_file_name(format!("{file_name}.{label}-{timestamp}")))
 }
 
 fn temporary_path(path: &Path, purpose: &str) -> Result<PathBuf, MigrationError> {
@@ -673,6 +820,153 @@ mod tests {
 
     fn minimal(bindings: &str) -> String {
         format!("keybinds:\n  mod \"super\"\n{bindings}end\n")
+    }
+
+    fn pre_06_root() -> String {
+        concat!(
+            "@author \"Dustin Pilgrim\"\n",
+            "viewport:\n",
+            "  DP-1:\n",
+            "    enabled true\n",
+            "    width 2560\n",
+            "    height 1440\n",
+            "  end\n",
+            "end\n\n",
+            "node:\n",
+            "  node-shape \"square\"\n",
+            "  border-colour-hover \"use-window-active\"\n",
+            "end\n\n",
+            "tile:\n",
+            "  gaps-inner 20\n",
+            "end\n\n",
+            "gaming:\n",
+            "  games [\"steam_app_*\"]\n",
+            "end\n\n",
+            "effects:\n",
+            "  blur:\n",
+            "    enabled false\n",
+            "    windows \"auto\"\n",
+            "    layer-shell \"off\"\n",
+            "  end\n",
+            "end\n\n",
+            "keybinds:\n",
+            "  mod \"super\"\n",
+            "  \"$var.mod+return\" \"open-terminal\"\n",
+            "  \"$var.mod+leftmouse\" \"move-window\"\n",
+            "end\n",
+        )
+        .to_string()
+    }
+
+    #[test]
+    fn current_default_is_not_treated_as_pre_06() {
+        assert!(!looks_like_pre_06(DEFAULT_CONFIG));
+        assert!(looks_like_pre_06(&pre_06_root()));
+    }
+
+    #[test]
+    fn dry_run_replaces_pre_06_config_without_writing() {
+        let scratch = ScratchDir::new("pre06-dry");
+        let path = scratch.config();
+        let original = pre_06_root();
+        fs::write(&path, &original).unwrap();
+
+        let report = migrate_config_at(&path, MigrationMode::Automatic, true).unwrap();
+
+        assert_eq!(report.status, MigrationStatus::WouldUpdate);
+        assert_eq!(report.from_version, 0);
+        assert_eq!(report.to_version, CONFIG_VERSION);
+        assert!(report.applied.iter().any(|item| item == PRE_06_REPLACE));
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+        assert!(report.backup.is_none());
+    }
+
+    #[test]
+    fn pre_06_config_is_backed_up_and_replaced_with_the_bootstrap_template() {
+        let scratch = ScratchDir::new("pre06-write");
+        let path = scratch.config();
+        let original = pre_06_root();
+        fs::write(&path, &original).unwrap();
+
+        let report = migrate_config_at(&path, MigrationMode::Automatic, false).unwrap();
+
+        assert_eq!(report.status, MigrationStatus::Replaced);
+        let backup = report.backup.expect("backup path");
+        assert!(
+            backup
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.contains("pre-0.6.bak-")),
+            "backup name should mark the generation boundary: {}",
+            backup.display()
+        );
+        assert_eq!(fs::read_to_string(&backup).unwrap(), original);
+        assert_eq!(fs::read_to_string(&path).unwrap(), DEFAULT_CONFIG);
+        crate::load_runtime_config_at(&path).expect("installed default validates");
+
+        assert_eq!(
+            migrate_config_at(&path, MigrationMode::Automatic, false)
+                .unwrap()
+                .status,
+            MigrationStatus::UpToDate
+        );
+    }
+
+    #[test]
+    fn commented_pre_06_markers_do_not_trigger_replacement() {
+        let scratch = ScratchDir::new("pre06-comment");
+        let path = scratch.config();
+        fs::write(
+            &path,
+            concat!(
+                "# viewport:\n",
+                "#   gaming is unused\n",
+                "# tile:\n",
+                "keybinds:\n",
+                "  mod \"super\"\n",
+                "  \"$var.mod+q\" \"close-focused\"\n",
+                "end\n",
+            ),
+        )
+        .unwrap();
+
+        let report = migrate_config_at(&path, MigrationMode::Automatic, false).unwrap();
+
+        assert_eq!(report.status, MigrationStatus::Updated);
+        let updated = fs::read_to_string(&path).unwrap();
+        assert!(updated.contains("# viewport:"));
+        assert!(updated.contains("# tile:"));
+        assert!(updated.contains("# halley-config-version: 2"));
+        assert_ne!(updated, DEFAULT_CONFIG);
+    }
+
+    #[test]
+    fn automatic_migration_replaces_gathered_pre_06_trees() {
+        let scratch = ScratchDir::new("pre06-gather");
+        let path = scratch.config();
+        let keys = scratch.0.join("keys.rune");
+        fs::write(&path, "gather \"keys.rune\"\n").unwrap();
+        fs::write(
+            &keys,
+            concat!(
+                "keybinds:\n",
+                "  mod \"super\"\n",
+                "  \"$var.mod+q\" \"close-focused\"\n",
+                "end\n\n",
+                "viewport:\n",
+                "  DP-1:\n",
+                "    enabled true\n",
+                "  end\n",
+                "end\n",
+            ),
+        )
+        .unwrap();
+
+        let report = migrate_config_at(&path, MigrationMode::Automatic, false).unwrap();
+
+        assert_eq!(report.status, MigrationStatus::Replaced);
+        assert_eq!(fs::read_to_string(&path).unwrap(), DEFAULT_CONFIG);
+        assert!(fs::read_to_string(&keys).unwrap().contains("viewport:"));
     }
 
     #[test]

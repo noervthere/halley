@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 /// The default config file contents are identical to the shipped top-level
 /// example. Keeping one canonical template for the whole workspace prevents
 /// fresh-install behavior and user-facing documentation from drifting apart.
-pub const DEFAULT_CONFIG: &str = include_str!("../../examples/halley.rune");
+pub const DEFAULT_CONFIG: &str = include_str!("../halley.default.rune");
 
 /// Resolve the config file path: `$XDG_CONFIG_HOME/halley/halley.rune`,
 /// falling back to `$HOME/.config/halley/halley.rune` when
@@ -80,6 +80,16 @@ mod tests {
     }
 
     #[test]
+    fn default_config_matches_shipped_example() {
+        let example = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../examples/halley.rune"
+        ))
+        .expect("shipped example exists in the workspace");
+        assert_eq!(DEFAULT_CONFIG, example);
+    }
+
+    #[test]
     fn writes_default_config_when_absent() {
         let scratch = ScratchDir::new("writes_default_config_when_absent");
         let config_file = scratch.path().join("halley").join("halley.rune");
@@ -126,6 +136,7 @@ mod tests {
     #[test]
     fn template_contains_overview_and_old_halley_controls() {
         for expected in [
+            "A pre-0.6 file is",
             "\"$var.mod+n\" \"toggle-state\"",
             "\"$var.mod+o\" \"apogee\"",
             "\"alt+tab\" \"cycle-focus\"",

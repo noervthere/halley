@@ -2,6 +2,13 @@
 name = "halley-cli"
 version = "0.6.0"
 edition = "2024"
+description = "Command-line interface for interacting with and controlling the Halley Wayland compositor"
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [[bin]]
 name = "halleyctl"

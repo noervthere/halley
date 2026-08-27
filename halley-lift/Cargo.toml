@@ -3,8 +3,13 @@ name = "halley-lift"
 version = "0.2.0"
 edition = "2024"
 description = "Search and action launcher for the Halley Wayland compositor"
-license = "GPL-3.0-only"
+authors.workspace = true
+license.workspace = true
 readme = "README.md"
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
 calloop = "0.14.4"
