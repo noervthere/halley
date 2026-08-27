@@ -102,9 +102,10 @@ pub fn write_frame_with_fds(
 
     let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
     message.msg_iov = iov.as_ptr().cast_mut();
-    message.msg_iovlen = iov.len();
+    // glibc types these as size_t; musl uses int / socklen_t.
+    message.msg_iovlen = iov.len() as _;
     message.msg_control = control.as_mut_ptr().cast();
-    message.msg_controllen = control.len();
+    message.msg_controllen = control.len() as _;
 
     unsafe {
         let header = libc::CMSG_FIRSTHDR(&message);
@@ -113,7 +114,7 @@ pub fn write_frame_with_fds(
         }
         (*header).cmsg_level = libc::SOL_SOCKET;
         (*header).cmsg_type = libc::SCM_RIGHTS;
-        (*header).cmsg_len = libc::CMSG_LEN(fd_bytes as libc::c_uint) as usize;
+        (*header).cmsg_len = libc::CMSG_LEN(fd_bytes as libc::c_uint) as _;
         std::ptr::copy_nonoverlapping(
             fds.as_ptr().cast::<u8>(),
             libc::CMSG_DATA(header).cast::<u8>(),
@@ -165,10 +166,10 @@ pub fn read_frame_with_fds(
 
     let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
     message.msg_iov = iov.as_mut_ptr();
-    message.msg_iovlen = iov.len();
+    message.msg_iovlen = iov.len() as _;
     if !control.is_empty() {
         message.msg_control = control.as_mut_ptr().cast();
-        message.msg_controllen = control.len();
+        message.msg_controllen = control.len() as _;
     }
 
     let received =
@@ -188,9 +189,8 @@ pub fn read_frame_with_fds(
         let mut header = libc::CMSG_FIRSTHDR(&message);
         while !header.is_null() {
             if (*header).cmsg_level == libc::SOL_SOCKET && (*header).cmsg_type == libc::SCM_RIGHTS {
-                let data_len = (*header)
-                    .cmsg_len
-                    .saturating_sub(libc::CMSG_LEN(0) as usize);
+                let data_len =
+                    ((*header).cmsg_len as usize).saturating_sub(libc::CMSG_LEN(0) as usize);
                 let count = data_len / std::mem::size_of::<RawFd>();
                 let data = libc::CMSG_DATA(header).cast::<RawFd>();
                 for index in 0..count {
