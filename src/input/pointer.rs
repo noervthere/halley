@@ -293,7 +293,15 @@ pub fn route_to_client(
 
     if !context
         .fullscreen
-        .covers_top(context.focused, output, context.now)
+        .covers_top_matching(context.focused, output, context.now, |surface| {
+            crate::presentation::surface_workspace_is_active(
+                context.clusters,
+                context.nodes,
+                surface,
+                &output.name(),
+                context.now,
+            )
+        })
         && let Some((layer, focus)) =
             layer_under(output, output_geometry.loc, output_local, [Layer::Top])
     {

@@ -1069,10 +1069,24 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
             })
     });
     let _ = crate::shell::focus_cycle::finish_pending_pointer_warp(app);
-    let fullscreen_animating = app
-        .fullscreen
-        .is_animating_on_output(output, target_presentation_time);
-    let maximize_animating = app.maximize.is_animating(target_presentation_time);
+    let presentation_workspace = crate::presentation::active_workspace_on_output(
+        &app.clusters,
+        &output.name(),
+        target_presentation_time,
+    );
+    let fullscreen_animating = app.fullscreen.is_animating_on_output_matching(
+        output,
+        target_presentation_time,
+        |surface| {
+            crate::presentation::workspace_for_surface(&app.clusters, &app.nodes, surface)
+                == presentation_workspace
+        },
+    );
+    let maximize_animating = app.maximize.is_animating_on_output(
+        output,
+        presentation_workspace,
+        target_presentation_time,
+    );
     let closing_animating = app
         .render
         .window_close_animations
@@ -1294,7 +1308,15 @@ fn auto_vrr_eligible(app: &TtyApp, output: &Output, now: Duration) -> bool {
         return false;
     }
     app.fullscreen
-        .stable_fullscreen_surface_on_output(output, now)
+        .stable_fullscreen_surface_on_output_matching(output, now, |surface| {
+            crate::presentation::surface_workspace_is_active(
+                &app.clusters,
+                &app.nodes,
+                surface,
+                &output.name(),
+                now,
+            )
+        })
         .is_some_and(|surface| app.window_rules.opacity(surface) >= 0.999)
 }
 

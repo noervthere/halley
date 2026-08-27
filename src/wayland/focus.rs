@@ -33,6 +33,8 @@ impl KeyboardFocus {
 pub fn current(
     wayland: &WaylandState,
     fullscreen: &super::fullscreen::FullscreenManager,
+    clusters: &crate::clusters::ClusterSystem,
+    nodes: &crate::nodes::NodesState,
     now: std::time::Duration,
 ) -> Option<KeyboardFocus> {
     if let Some(surface) = first_interactive(
@@ -46,7 +48,18 @@ pub fn current(
     if let Some(surface) = selected_on_demand(wayland, Layer::Overlay) {
         return Some(KeyboardFocus::OnDemandLayer(surface));
     }
-    if !fullscreen.covers_any_top(wayland, wayland.focused_window.as_ref(), now) {
+    let fullscreen_covers_top = wayland.space.outputs().any(|output| {
+        fullscreen.covers_top_matching(wayland.focused_window.as_ref(), output, now, |surface| {
+            crate::presentation::surface_workspace_is_active(
+                clusters,
+                nodes,
+                surface,
+                &output.name(),
+                now,
+            )
+        })
+    });
+    if !fullscreen_covers_top {
         if let Some(surface) =
             first_interactive(wayland, Layer::Top, KeyboardInteractivity::Exclusive, None)
         {

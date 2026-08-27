@@ -125,6 +125,8 @@ pub(super) fn bindings_enabled<D: SessionDriver>(session: &Session<D>) -> bool {
     let focus = wayland::focus::current(
         &session.wayland,
         &session.fullscreen,
+        &session.clusters,
+        &session.nodes,
         crate::frame_clock::monotonic_now(),
     );
     let bypasses_shortcuts = focus

@@ -8,6 +8,7 @@ use smithay::utils::{Logical, Physical, Rectangle};
 use smithay::wayland::seat::WaylandFocus;
 
 use crate::animation::MotionTimeline;
+use crate::presentation::{PresentationScope, PresentationWorkspace};
 
 #[derive(Clone, Copy, Debug)]
 pub struct FieldMaximizePresentation {
@@ -63,7 +64,7 @@ struct Entry {
 pub struct FieldMaximizeManager {
     field: Field,
     animations: Animations,
-    outputs: HashMap<String, Entry>,
+    entries: HashMap<PresentationScope, Entry>,
 }
 
 impl FieldMaximizeManager {
@@ -71,7 +72,7 @@ impl FieldMaximizeManager {
         Self {
             field,
             animations,
-            outputs: HashMap::new(),
+            entries: HashMap::new(),
         }
     }
 
@@ -79,7 +80,7 @@ impl FieldMaximizeManager {
         self.field = field;
         self.animations = animations;
         if !animations_enabled(animations) {
-            for entry in self.outputs.values_mut() {
+            for entry in self.entries.values_mut() {
                 entry.window_timeline = None;
                 entry.camera_timeline = None;
             }
@@ -96,9 +97,10 @@ impl FieldMaximizeManager {
         animations_enabled(self.animations)
     }
 
-    pub fn toggle(
+    pub(crate) fn toggle(
         &mut self,
         output: &Output,
+        workspace: PresentationWorkspace,
         restore: FieldRestore,
         target_rect: Rectangle<i32, Logical>,
         presentation_output: Option<Rectangle<i32, Physical>>,
@@ -110,14 +112,15 @@ impl FieldMaximizeManager {
             output: restore_output,
         } = restore;
         let output_name = output.name();
+        let scope = PresentationScope::new(output_name.clone(), workspace);
         let (restore_geometry, restore_output) = authoritative_restore(
-            self.outputs
-                .get(&output_name)
+            self.entries
+                .get(&scope)
                 .filter(|entry| entry.surface == surface)
                 .map(|entry| (entry.restore_geometry, entry.restore_output.clone())),
             (restore_geometry, restore_output),
         );
-        match self.outputs.get_mut(&output_name) {
+        match self.entries.get_mut(&scope) {
             Some(entry) if entry.surface == surface && entry.active => {
                 let (window_progress, window_velocity) =
                     motion_state(entry.window_timeline, entry.active, now);
@@ -191,8 +194,8 @@ impl FieldMaximizeManager {
                 }
             }
             None => {
-                self.outputs.insert(
-                    output_name.clone(),
+                self.entries.insert(
+                    scope,
                     Entry {
                         surface,
                         restore_geometry,
@@ -217,14 +220,14 @@ impl FieldMaximizeManager {
     pub fn presentation(
         &self,
         surface: &WlSurface,
-        output: &Output,
+        _output: &Output,
         output_geometry: Rectangle<i32, Logical>,
         now: Duration,
     ) -> Option<FieldMaximizePresentation> {
-        let entry = self.outputs.get(&output.name())?;
-        if &entry.surface != surface {
-            return None;
-        }
+        let entry = self
+            .entries
+            .values()
+            .find(|entry| &entry.surface == surface)?;
         let progress = progress(entry.window_timeline, entry.active, now).clamp(0.0, 1.0);
         let transition_completion = entry
             .window_timeline
@@ -259,7 +262,7 @@ impl FieldMaximizeManager {
         fullscreen_output_rect: Option<Rectangle<i32, Physical>>,
     ) {
         if let Some(entry) = self
-            .outputs
+            .entries
             .values_mut()
             .find(|entry| &entry.surface == surface && entry.active)
         {
@@ -268,24 +271,31 @@ impl FieldMaximizeManager {
         }
     }
 
-    pub fn camera_progress(&self, output: &Output, now: Duration) -> Option<f32> {
-        let entry = self.outputs.get(&output.name())?;
+    pub(crate) fn camera_progress(
+        &self,
+        output: &Output,
+        workspace: PresentationWorkspace,
+        now: Duration,
+    ) -> Option<f32> {
+        let entry = self
+            .entries
+            .get(&PresentationScope::new(output.name(), workspace))?;
         Some(progress(entry.camera_timeline, entry.active, now).clamp(0.0, 1.0) as f32)
     }
 
     pub fn owns_output(&self, output: &str) -> bool {
-        self.outputs.contains_key(output)
+        self.entries.keys().any(|scope| scope.output == output)
     }
 
     pub fn contains(&self, surface: &WlSurface) -> bool {
-        self.outputs
+        self.entries
             .values()
             .any(|entry| &entry.surface == surface && entry.active)
     }
 
     pub fn output_for_surface(&self, surface: &WlSurface) -> Option<&str> {
-        self.outputs.iter().find_map(|(output, entry)| {
-            (&entry.surface == surface && entry.active).then_some(output.as_str())
+        self.entries.iter().find_map(|(scope, entry)| {
+            (&entry.surface == surface && entry.active).then_some(scope.output.as_str())
         })
     }
 
@@ -294,15 +304,21 @@ impl FieldMaximizeManager {
     }
 
     pub fn take_restore(&mut self, surface: &WlSurface) -> Option<FieldRestore> {
-        let output = self
-            .outputs
+        let scope = self
+            .entries
             .iter()
-            .find_map(|(output, entry)| (&entry.surface == surface).then(|| output.clone()))?;
-        self.take_output_restore(&output)
+            .find_map(|(scope, entry)| (&entry.surface == surface).then(|| scope.clone()))?;
+        self.take_scope_restore(&scope.output, scope.workspace)
     }
 
-    pub fn take_output_restore(&mut self, output: &str) -> Option<FieldRestore> {
-        let entry = self.outputs.remove(output)?;
+    pub(crate) fn take_scope_restore(
+        &mut self,
+        output: &str,
+        workspace: PresentationWorkspace,
+    ) -> Option<FieldRestore> {
+        let entry = self
+            .entries
+            .remove(&PresentationScope::new(output, workspace))?;
         Some(FieldRestore {
             surface: entry.surface,
             geometry: entry.restore_geometry,
@@ -311,7 +327,7 @@ impl FieldMaximizeManager {
     }
 
     pub fn restore(&self, surface: &WlSurface) -> Option<FieldRestore> {
-        self.outputs.values().find_map(|entry| {
+        self.entries.values().find_map(|entry| {
             (&entry.surface == surface).then(|| FieldRestore {
                 surface: entry.surface.clone(),
                 geometry: entry.restore_geometry,
@@ -321,13 +337,15 @@ impl FieldMaximizeManager {
     }
 
     pub fn remove_output(&mut self, output: &str) -> bool {
-        self.outputs.remove(output).is_some()
+        let before = self.entries.len();
+        self.entries.retain(|scope, _| scope.output != output);
+        self.entries.len() != before
     }
 
     pub fn cleanup(&mut self, now: Duration) -> FieldMaximizeCleanup {
         let mut changed = false;
         let mut finished_surfaces = Vec::new();
-        self.outputs.retain(|_, entry| {
+        self.entries.retain(|_, entry| {
             if entry
                 .window_timeline
                 .is_some_and(|timeline| timeline.is_finished_at(now))
@@ -352,7 +370,7 @@ impl FieldMaximizeManager {
     }
 
     pub fn is_animating(&self, now: Duration) -> bool {
-        self.outputs.values().any(|entry| {
+        self.entries.values().any(|entry| {
             entry
                 .window_timeline
                 .is_some_and(|timeline| !timeline.is_finished_at(now))
@@ -367,10 +385,10 @@ impl FieldMaximizeManager {
         wayland: &mut crate::wayland::WaylandState,
         surface: &WlSurface,
     ) -> bool {
-        let Some(entry) = self
-            .outputs
-            .values()
-            .find(|entry| &entry.surface == surface)
+        let Some((scope, entry)) = self
+            .entries
+            .iter()
+            .find(|(_, entry)| &entry.surface == surface)
         else {
             return false;
         };
@@ -398,7 +416,7 @@ impl FieldMaximizeManager {
             wayland
                 .space
                 .outputs()
-                .find(|output| output.name() == self.output_for_surface_including_exit(surface))
+                .find(|output| output.name() == scope.output)
         } else {
             wayland
                 .space
@@ -416,11 +434,22 @@ impl FieldMaximizeManager {
         false
     }
 
-    fn output_for_surface_including_exit(&self, surface: &WlSurface) -> &str {
-        self.outputs
-            .iter()
-            .find_map(|(output, entry)| (&entry.surface == surface).then_some(output.as_str()))
-            .unwrap_or("")
+    pub(crate) fn is_animating_on_output(
+        &self,
+        output: &Output,
+        workspace: PresentationWorkspace,
+        now: Duration,
+    ) -> bool {
+        self.entries
+            .get(&PresentationScope::new(output.name(), workspace))
+            .is_some_and(|entry| {
+                entry
+                    .window_timeline
+                    .is_some_and(|timeline| !timeline.is_finished_at(now))
+                    || entry
+                        .camera_timeline
+                        .is_some_and(|timeline| !timeline.is_finished_at(now))
+            })
     }
 }
 

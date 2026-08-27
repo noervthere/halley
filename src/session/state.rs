@@ -417,7 +417,15 @@ impl<D: SessionDriver> Session<D> {
             return true;
         }
         self.fullscreen
-            .stable_fullscreen_surface_on_output(output, now)
+            .stable_fullscreen_surface_on_output_matching(output, now, |surface| {
+                crate::presentation::surface_workspace_is_active(
+                    &self.clusters,
+                    &self.nodes,
+                    surface,
+                    &output.name(),
+                    now,
+                )
+            })
             .is_none_or(|surface| self.window_rules.opacity(surface) < 0.999)
     }
 
@@ -464,17 +472,28 @@ impl<D: SessionDriver> Session<D> {
         output: &smithay::output::Output,
         now: std::time::Duration,
     ) -> bool {
+        let workspace =
+            crate::presentation::active_workspace_on_output(&self.clusters, &output.name(), now);
         let frame = self
             .wayland
             .space
             .output_geometry(output)
-            .and_then(|geometry| self.fullscreen.camera_frame(output, geometry, now));
+            .and_then(|geometry| {
+                self.fullscreen
+                    .camera_frame_matching(output, geometry, now, |surface| {
+                        crate::presentation::workspace_for_surface(
+                            &self.clusters,
+                            &self.nodes,
+                            surface,
+                        ) == workspace
+                    })
+            });
         if let Some(frame) = frame {
             let field_changed = self.cameras.apply_field_maximize(&output.name(), None);
             field_changed | self.cameras.apply_fullscreen(&output.name(), Some(frame))
         } else {
             let fullscreen_changed = self.cameras.apply_fullscreen(&output.name(), None);
-            let maximize_progress = self.maximize.camera_progress(output, now);
+            let maximize_progress = self.maximize.camera_progress(output, workspace, now);
             fullscreen_changed
                 | self
                     .cameras

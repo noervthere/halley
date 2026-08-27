@@ -1603,6 +1603,31 @@ mod tests {
     }
 
     #[test]
+    fn presentation_workspace_returns_to_field_after_cluster_close_finishes() {
+        let (_field, mut system, cluster, _members) =
+            active_test_cluster(2, ClusterWorkspaceLayoutKind::Tiling);
+        assert_eq!(
+            crate::presentation::active_workspace_on_output(&system, "DP-1", Duration::ZERO),
+            crate::presentation::PresentationWorkspace::Cluster(cluster)
+        );
+
+        let closing_at = Duration::from_secs(1);
+        assert!(system.activate_slot("DP-1", 1, closing_at));
+        assert_eq!(
+            crate::presentation::active_workspace_on_output(&system, "DP-1", closing_at),
+            crate::presentation::PresentationWorkspace::Cluster(cluster)
+        );
+        assert_eq!(
+            crate::presentation::active_workspace_on_output(
+                &system,
+                "DP-1",
+                Duration::from_secs(20),
+            ),
+            crate::presentation::PresentationWorkspace::Field
+        );
+    }
+
+    #[test]
     fn member_float_preserves_membership_order_and_remembered_geometry() {
         let (_field, mut system, cluster, members) =
             active_test_cluster(3, ClusterWorkspaceLayoutKind::Tiling);
@@ -1793,10 +1818,9 @@ mod tests {
         assert!(system.labels_animating_on_output("DP-1", halley_config::NodeDisplayPolicy::Hover));
         assert!(system.label_hover_mix(id, true) > 0.0);
         system.active.insert("DP-1".into(), id);
-        assert!(!system.labels_animating_on_output(
-            "DP-1",
-            halley_config::NodeDisplayPolicy::Hover
-        ));
+        assert!(
+            !system.labels_animating_on_output("DP-1", halley_config::NodeDisplayPolicy::Hover)
+        );
     }
 
     #[test]

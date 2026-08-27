@@ -402,10 +402,19 @@ pub fn build(
     // It sits in front of panels (`Layer::Top`) so menus are not clipped by a
     // status bar, while overlay surfaces and compositor UI remain authoritative.
     let popup_foreground_index = elements.len();
-    if !request.desktop.fullscreen.covers_top(
+    if !request.desktop.fullscreen.covers_top_matching(
         request.desktop.focused,
         output,
         request.frame.target_presentation_time,
+        |surface| {
+            crate::presentation::surface_workspace_is_active(
+                request.desktop.clusters,
+                request.desktop.nodes,
+                surface,
+                &output.name(),
+                request.frame.target_presentation_time,
+            )
+        },
     ) {
         elements.extend(layer_surface_scene_elements(
             renderer,

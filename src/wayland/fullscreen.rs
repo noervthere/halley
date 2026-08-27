@@ -953,13 +953,25 @@ impl FullscreenManager {
         output_geometry: Rectangle<i32, Logical>,
         now: Duration,
     ) -> Option<FullscreenCameraFrame> {
-        let entry = self.windows.values().find(|entry| {
-            entry.target_output == output.name()
+        self.camera_frame_matching(output, output_geometry, now, |_| true)
+    }
+
+    pub(crate) fn camera_frame_matching(
+        &self,
+        output: &Output,
+        output_geometry: Rectangle<i32, Logical>,
+        now: Duration,
+        matches: impl Fn(&WlSurface) -> bool,
+    ) -> Option<FullscreenCameraFrame> {
+        let entry = self.windows.iter().find_map(|(surface, entry)| {
+            (matches(surface)
+                && entry.target_output == output.name()
                 && (entry.active
                     || entry.desired
                     || entry.presented
                     || entry.transition.is_some()
-                    || entry.external_pending.is_some())
+                    || entry.external_pending.is_some()))
+            .then_some(entry)
         })?;
         let progress = entry
             .transition
@@ -992,10 +1004,20 @@ impl FullscreenManager {
         })
     }
 
-    pub fn covers_top(&self, _focused: Option<&WlSurface>, output: &Output, now: Duration) -> bool {
-        self.windows
-            .values()
-            .any(|entry| entry_covers_top(entry, &output.name(), now))
+    pub fn covers_top(&self, focused: Option<&WlSurface>, output: &Output, now: Duration) -> bool {
+        self.covers_top_matching(focused, output, now, |_| true)
+    }
+
+    pub(crate) fn covers_top_matching(
+        &self,
+        _focused: Option<&WlSurface>,
+        output: &Output,
+        now: Duration,
+        matches: impl Fn(&WlSurface) -> bool,
+    ) -> bool {
+        self.windows.iter().any(|(surface, entry)| {
+            matches(surface) && entry_covers_top(entry, &output.name(), now)
+        })
     }
 
     pub fn covers_any_top(
@@ -1011,8 +1033,18 @@ impl FullscreenManager {
     }
 
     pub fn is_animating_on_output(&self, output: &Output, now: Duration) -> bool {
-        self.windows.values().any(|entry| {
-            entry.target_output == output.name()
+        self.is_animating_on_output_matching(output, now, |_| true)
+    }
+
+    pub(crate) fn is_animating_on_output_matching(
+        &self,
+        output: &Output,
+        now: Duration,
+        matches: impl Fn(&WlSurface) -> bool,
+    ) -> bool {
+        self.windows.iter().any(|(surface, entry)| {
+            matches(surface)
+                && entry.target_output == output.name()
                 && entry
                     .transition
                     .is_some_and(|transition| !transition.is_finished_at(now))
@@ -1023,9 +1055,14 @@ impl FullscreenManager {
     /// taking/releasing, this output. Unlike `covers_top`, this includes the
     /// configure and transition handoffs so input-side desktop maintenance
     /// cannot leak into a fullscreen path between frames.
-    pub(crate) fn has_fullscreen_activity_on_output(&self, output: &Output) -> bool {
-        self.windows.values().any(|entry| {
-            entry.origin != FullscreenOrigin::Maximize
+    pub(crate) fn has_fullscreen_activity_on_output_matching(
+        &self,
+        output: &Output,
+        matches: impl Fn(&WlSurface) -> bool,
+    ) -> bool {
+        self.windows.iter().any(|(surface, entry)| {
+            matches(surface)
+                && entry.origin != FullscreenOrigin::Maximize
                 && entry_occupies_output(entry, &output.name())
         })
     }
@@ -1040,8 +1077,18 @@ impl FullscreenManager {
         output: &Output,
         now: Duration,
     ) -> Option<&WlSurface> {
+        self.stable_fullscreen_surface_on_output_matching(output, now, |_| true)
+    }
+
+    pub(crate) fn stable_fullscreen_surface_on_output_matching(
+        &self,
+        output: &Output,
+        now: Duration,
+        matches: impl Fn(&WlSurface) -> bool,
+    ) -> Option<&WlSurface> {
         self.windows.iter().find_map(|(surface, entry)| {
-            (entry.target_output == output.name()
+            (matches(surface)
+                && entry.target_output == output.name()
                 && entry.origin != FullscreenOrigin::Maximize
                 && entry.desired
                 && entry.active

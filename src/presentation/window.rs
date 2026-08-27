@@ -245,6 +245,19 @@ pub(crate) fn window_visual_state_with_cluster_presentation(
         .is_none()
         .then(|| maximize.presentation(window_surface.as_ref(), output, output_geometry, now))
         .flatten();
+    if (fullscreen_presentation.is_some() || maximize_presentation.is_some())
+        && clusters.zip(nodes).is_some_and(|(clusters, nodes)| {
+            !crate::presentation::surface_workspace_is_active(
+                clusters,
+                nodes,
+                window_surface.as_ref(),
+                &output.name(),
+                now,
+            )
+        })
+    {
+        return None;
+    }
     let mut presentation_rect = fullscreen_presentation
         .map(|presentation| {
             let windowed = presentation.windowed_geometry.map_or_else(

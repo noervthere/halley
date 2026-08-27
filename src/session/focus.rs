@@ -295,6 +295,8 @@ fn hover_is_blocked<D: SessionDriver>(session: &Session<D>) -> bool {
         crate::wayland::focus::current(
             &session.wayland,
             &session.fullscreen,
+            &session.clusters,
+            &session.nodes,
             crate::frame_clock::monotonic_now(),
         ),
         Some(crate::wayland::focus::KeyboardFocus::ExclusiveLayer(_))

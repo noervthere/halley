@@ -892,6 +892,13 @@ pub(crate) struct FieldMaximizeFullscreenHandoff {
     output_rect: Option<Rectangle<i32, smithay::utils::Physical>>,
 }
 
+pub(crate) fn presentation_workspace_for_surface<D: SessionDriver>(
+    session: &Session<D>,
+    surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+) -> crate::presentation::PresentationWorkspace {
+    crate::presentation::workspace_for_surface(&session.clusters, &session.nodes, surface)
+}
+
 impl FieldMaximizeFullscreenHandoff {
     pub(crate) fn apply(
         self,
@@ -922,6 +929,7 @@ pub(crate) fn prepare_field_maximize_fullscreen_handoff<D: SessionDriver>(
     fullscreen_output: &str,
     now: std::time::Duration,
 ) -> Option<FieldMaximizeFullscreenHandoff> {
+    let workspace = presentation_workspace_for_surface(session, surface);
     let same_surface = session.maximize.contains(surface);
     let output_rect = (same_surface && maximize_output == fullscreen_output)
         .then(|| {
@@ -934,7 +942,9 @@ pub(crate) fn prepare_field_maximize_fullscreen_handoff<D: SessionDriver>(
                 .and_then(|output| presented_window_rect(session, window, &output, now))
         })
         .flatten();
-    let restore = session.maximize.take_output_restore(maximize_output)?;
+    let restore = session
+        .maximize
+        .take_scope_restore(maximize_output, workspace)?;
     let geometry = (restore.surface == *surface)
         .then(|| session.wayland.space.element_geometry(window))
         .flatten();
@@ -969,7 +979,13 @@ fn displace_fullscreen_on_output<D: SessionDriver>(
     output: &str,
     except: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
 ) {
-    let occupants = session.fullscreen.occupants_on_output(output, except);
+    let workspace = presentation_workspace_for_surface(session, except);
+    let occupants = session
+        .fullscreen
+        .occupants_on_output(output, except)
+        .into_iter()
+        .filter(|(surface, _)| presentation_workspace_for_surface(session, surface) == workspace)
+        .collect::<Vec<_>>();
     for (surface, origin) in occupants {
         let restore = session.fullscreen.restore_location(&surface);
         let window = session
@@ -1234,6 +1250,7 @@ fn toggle_field_maximize<D: SessionDriver>(
     );
     let now = crate::frame_clock::monotonic_now();
     let entering = !session.maximize.contains(&record.surface);
+    let workspace = presentation_workspace_for_surface(session, &record.surface);
     // A maximize entry owns the original windowed placement for its entire
     // lifetime, including an in-flight unmaximize/re-maximize reversal. The
     // live Space geometry is already the maximized configure by the time a
@@ -1308,13 +1325,16 @@ fn toggle_field_maximize<D: SessionDriver>(
         })
         .flatten();
     if handoff_geometry.is_none() {
-        let camera_progress = session.maximize.camera_progress(&target_output, now);
+        let camera_progress = session
+            .maximize
+            .camera_progress(&target_output, workspace, now);
         session
             .cameras
             .clear_field_maximize_handoff(&output_name, camera_progress);
     }
     let change = session.maximize.toggle(
         &target_output,
+        workspace,
         crate::presentation::maximize::FieldRestore {
             surface: record.surface.clone(),
             geometry: restore_geometry,
@@ -1521,6 +1541,8 @@ pub(crate) fn sync_keyboard_focus<D: SessionDriver>(
     let focused = wayland::focus::current(
         &session.wayland,
         &session.fullscreen,
+        &session.clusters,
+        &session.nodes,
         crate::frame_clock::monotonic_now(),
     )
     .and_then(|focus| match focus {

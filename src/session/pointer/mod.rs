@@ -308,7 +308,15 @@ pub(crate) fn refresh_desktop_client_focus<D: SessionDriver>(session: &mut Sessi
         crate::input::pointer::PointerTarget::Layer(_)
         | crate::input::pointer::PointerTarget::Background => session
             .fullscreen
-            .has_fullscreen_activity_on_output(&route.output),
+            .has_fullscreen_activity_on_output_matching(&route.output, |surface| {
+                crate::presentation::surface_workspace_is_active(
+                    &session.clusters,
+                    &session.nodes,
+                    surface,
+                    &route.output.name(),
+                    crate::frame_clock::monotonic_now(),
+                )
+            }),
     };
     let blockers = DesktopRefreshBlockers {
         pointer_grabbed: pointer.is_grabbed(),
