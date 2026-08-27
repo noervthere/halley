@@ -339,6 +339,7 @@ pub fn elements(
         output_geometry.size,
         blur_patches,
         blur_config,
+        0,
     )? {
         foreground.push(SceneElement::BackdropBlur(blur));
     }

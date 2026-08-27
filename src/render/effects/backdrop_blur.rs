@@ -154,6 +154,7 @@ impl BackdropBlurRenderer {
         size: Size<i32, Logical>,
         patches: Vec<BlurPatch>,
         config: halley_config::Blur,
+        presentation_epoch: u64,
     ) -> Result<Option<BackdropBlurElement>, Box<dyn Error>> {
         if patches.is_empty() {
             return Ok(None);
@@ -250,7 +251,7 @@ impl BackdropBlurRenderer {
             .entry(identity)
             .or_insert_with(Id::new)
             .clone();
-        let commit = blur_commit(&patches, config);
+        let commit = blur_commit(&patches, config, presentation_epoch);
         Ok(Some(BackdropBlurElement {
             // Each stack position keeps a stable identity. Smithay can then
             // retain its per-effect capture cache without ever aliasing two
@@ -882,8 +883,20 @@ fn blur_offset(radius: f32) -> f32 {
     (radius / 16.0).clamp(0.6, 3.0)
 }
 
-fn blur_commit(patches: &[BlurPatch], config: halley_config::Blur) -> CommitCounter {
+fn blur_commit(
+    patches: &[BlurPatch],
+    config: halley_config::Blur,
+    presentation_epoch: u64,
+) -> CommitCounter {
     let mut hash = DefaultHasher::new();
+    // Camera zoom/pan can move a window by sub-pixel amounts that round to
+    // the same integer patch rects. Smithay only recaptures framebuffer
+    // effects when this commit changes or something *behind* the effect is
+    // damaged, and the window surface sits in front of its own blur. Mixing
+    // the live camera into the commit forces a recapture on every zoom tick
+    // instead of compositing a stale blur onto a freshly cleared swapchain
+    // buffer.
+    presentation_epoch.hash(&mut hash);
     config.passes.hash(&mut hash);
     config.radius.to_bits().hash(&mut hash);
     config.saturation.to_bits().hash(&mut hash);
@@ -957,6 +970,30 @@ mod tests {
         let shader = raw_fragment_shader(DOWN_SHADER);
         assert!(shader.starts_with("#version 100\n"));
         assert!(!shader.contains("//_DEFINES"));
+    }
+
+    #[test]
+    fn blur_commit_changes_when_the_camera_moves_even_if_patches_do_not() {
+        use smithay::utils::Rectangle;
+
+        use super::{BlurPatch, blur_commit};
+
+        let patches = [BlurPatch {
+            rect: Rectangle::new((40, 80).into(), (400, 300).into()),
+            radius: 0.0,
+            alpha: 1.0,
+            clip: None,
+        }];
+        let config = halley_config::Blur::default();
+
+        assert_ne!(
+            blur_commit(&patches, config, 0),
+            blur_commit(&patches, config, 1)
+        );
+        assert_eq!(
+            blur_commit(&patches, config, 7),
+            blur_commit(&patches, config, 7)
+        );
     }
 
     #[test]

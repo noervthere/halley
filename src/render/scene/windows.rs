@@ -75,6 +75,23 @@ fn compositor_chrome_visible(logical_fullscreen: bool, x11_fullscreen: bool) -> 
     !logical_fullscreen && !x11_fullscreen
 }
 
+fn window_blur_epoch(visual: &crate::presentation::window::WindowVisualState) -> u64 {
+    use std::hash::{Hash, Hasher};
+
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    visual.zoom_scale.to_bits().hash(&mut hash);
+    visual.camera_center.x.to_bits().hash(&mut hash);
+    visual.camera_center.y.to_bits().hash(&mut hash);
+    visual.opening_alpha.to_bits().hash(&mut hash);
+    if let Some(presentation) = visual.fullscreen {
+        presentation.transition_completion.to_bits().hash(&mut hash);
+    }
+    if let Some(presentation) = visual.maximize {
+        presentation.transition_completion.to_bits().hash(&mut hash);
+    }
+    hash.finish()
+}
+
 fn should_hold_x11_fullscreen_exit(
     is_x11: bool,
     has_fullscreen_presentation: bool,
@@ -490,6 +507,7 @@ pub(super) fn live_window_elements(
             context.output_geometry.size,
             patches,
             context.blur,
+            window_blur_epoch(&visual),
         )? {
             elements.push(SceneElement::BackdropBlur(blur));
         }
