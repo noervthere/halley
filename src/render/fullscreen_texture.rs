@@ -472,7 +472,13 @@ fn incoming_paint_is_ready(
     if !expanding {
         return true;
     }
-    incoming_opaque || (incoming_opaque_area >= outgoing_opaque_area && incoming_opaque_area > 0)
+    // Firefox can attach a larger unpainted allocation whose opaque area is
+    // still empty. Hold the outgoing snapshot then. Clients that never
+    // advertise opaque regions (Quickshell / DMS Settings) report 0 on both
+    // ends even after they have finished painting; requiring `> 0` froze
+    // their enter blend at the windowed frame for the whole motion. Exit
+    // already skipped this hold because the destination shrinks.
+    incoming_opaque || incoming_opaque_area >= outgoing_opaque_area
 }
 
 fn snapshot_matches_target_endpoint(
@@ -628,6 +634,16 @@ mod tests {
         ));
         assert!(incoming_paint_is_ready(
             fullscreen, painted, windowed, false, 0
+        ));
+    }
+
+    #[test]
+    fn translucent_expanding_window_blends_without_opaque_regions() {
+        let windowed = Size::<i32, Physical>::from((1155, 910));
+        let maximized = Size::<i32, Physical>::from((1920, 1200));
+
+        assert!(incoming_paint_is_ready(
+            windowed, 0, maximized, false, 0
         ));
     }
 
