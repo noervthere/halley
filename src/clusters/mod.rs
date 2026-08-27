@@ -1098,8 +1098,16 @@ impl ClusterSystem {
             self.dragged_window = None;
         }
         self.surfaces.invalidate_target(member);
+        let was_floating = self.member_floats.is_floating(member);
         if !self.detach_member(field, cluster, member, position, now) {
             return false;
+        }
+        if was_floating {
+            // Mod+V floats are already above the workspace. Ejecting them
+            // from the cluster must keep that Field presentation, matching
+            // rule-admitted floats, instead of hiding them behind the still-
+            // open workspace.
+            self.admission_floats.insert(member);
         }
         if self.active_on(output) == Some(cluster) {
             let duration_ms = match layout {
@@ -2350,6 +2358,43 @@ mod tests {
             system.registry.cluster(cluster).unwrap().members(),
             original_order
         );
+    }
+
+    #[test]
+    fn floating_member_dropped_outside_the_workspace_joins_the_field() {
+        let (mut field, mut system, cluster, members) =
+            active_test_cluster(3, ClusterWorkspaceLayoutKind::Tiling);
+        let work_area = Rectangle::new((0, 0).into(), (1_000, 700).into());
+        let initial = Rectangle::new((120, 90).into(), (520, 400).into());
+
+        assert_eq!(
+            system.toggle_member_floating("DP-1", members[0], work_area, initial, Duration::ZERO,),
+            Some(true)
+        );
+        assert!(system.begin_floating_member_drag("DP-1", "DP-1", members[0], initial));
+        assert!(system.detach_active_member_for_drag(
+            &mut field,
+            "DP-1",
+            ClusterDragMember {
+                cluster_id: cluster,
+                node_id: members[0],
+            },
+            work_area,
+            Vec2 {
+                x: 1_400.0,
+                y: 220.0
+            },
+            Duration::from_secs(2),
+        ));
+
+        assert_eq!(system.cluster_for_member(members[0]), None);
+        assert!(!system.is_member_floating(members[0]));
+        assert_eq!(
+            system
+                .window_presentation(members[0], "DP-1", work_area, None, Duration::from_secs(2),),
+            WindowPresentation::Field
+        );
+        assert_eq!(system.member_ids(cluster), members[1..]);
     }
 
     #[test]

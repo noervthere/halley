@@ -296,11 +296,13 @@ output camera.
 The default `Mod+V` `cluster-toggle-float` binding moves the focused member of
 an active cluster between its layout and a cluster-owned floating layer. The
 remaining tiles or cards reflow without changing membership order. A floating
-member stays above the layout, supports the normal Mod+left move and Mod+right
-resize gestures, and can cross outputs without leaving its cluster. Its output,
-geometry, floating state, and membership survive closing and reopening that
-cluster and are forgotten only when the member leaves or the cluster is
-dissolved. Raising the member, including through `Alt+Tab`, can place it above
+member stays above the layout and supports the normal Mod+left move and
+Mod+right resize gestures. Dropping it inside the cluster workspace keeps it as
+a cluster float. Dropping it outside that workspace, including on another
+output, leaves the cluster and the window becomes an ordinary Field window.
+Its output, geometry, floating state, and membership survive closing and
+reopening that cluster and are forgotten only when the member leaves or the
+cluster is dissolved. Raising the member, including through `Alt+Tab`, can place it above
 a fullscreen or maximized window using the normal window stack. The action is
 inert outside an active cluster and while the member is fullscreen, maximized,
 or already held by a compositor grab.
