@@ -843,9 +843,15 @@ fn send_output_frame_callbacks(app: &mut TtyApp, output: &Output) {
                 let window_member = window
                     .wl_surface()
                     .and_then(|surface| app.nodes.id_for_surface(surface.as_ref()));
+                let compositor_snapshot = window.wl_surface().is_some_and(|surface| {
+                    app.render
+                        .fullscreen_textures
+                        .awaiting_target(surface.as_ref())
+                });
                 let require_visible = crate::wayland::frame_callbacks::requires_render_visibility(
                     window_member,
                     cluster_exclusive_member,
+                    compositor_snapshot,
                 );
                 window.send_frame(
                     output,
@@ -1051,15 +1057,25 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
     let cluster_camera_changed =
         super::sync_cluster_camera(app, &output.name(), target_presentation_time);
     let fullscreen_camera_changed = app.sync_fullscreen_camera(output, target_presentation_time);
-    let camera_animating = app.cameras.get_mut(&output.name()).is_some_and(|camera| {
-        crate::input::zoom::tick(
+    let zoom_tick = app.cameras.get_mut(&output.name()).map(|camera| {
+        let before = crate::input::zoom::scale(camera);
+        let (after, animating) = crate::input::zoom::tick(
             camera,
             &app.settings.zoom,
             app.settings.input.gestures.pan_decay_rate,
             dt.as_secs_f32(),
-        )
-        .1
+        );
+        (animating, (before != after).then_some(after))
     });
+    let camera_animating = zoom_tick.is_some_and(|(animating, _)| animating);
+    if let Some(scale) = zoom_tick.and_then(|(_, scale)| scale) {
+        app.shell.overlays.show_zoom_indicator(
+            &output.name(),
+            scale,
+            &app.settings.overlays.zoom_indicator,
+            target_presentation_time,
+        );
+    }
     let primary = app.driver.backend.primary_output();
     let window_animating = app.wayland.space.elements().any(|window| {
         wayland::window_is_on_output(window, output, primary)
@@ -1173,6 +1189,7 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
             frame: FrameContext {
                 target_presentation_time,
                 vrr_auto_eligible,
+                force_full_repaint: animating,
                 clear: CLEAR_COLOR,
             },
             desktop: DesktopContext {
@@ -1240,7 +1257,6 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
         super::sync_keyboard_focus(app, smithay::utils::SERIAL_COUNTER.next_serial());
         super::pointer::update_client_state(app, app.start_time.elapsed().as_millis() as u32);
     }
-
     let feedback = app.driver.dmabuf_feedback(output).cloned();
     if let (Some(feedback), Some(element_states)) = (feedback.as_ref(), outcome.element_states()) {
         let primary_output = app.driver.backend.primary_output().clone();
@@ -1297,7 +1313,10 @@ fn auto_vrr_eligible(app: &TtyApp, output: &Output, now: Duration) -> bool {
         return false;
     }
     let overlays = app.shell.overlays.snapshot(&output.name(), now);
-    if overlays.exit_mix.is_some() || overlays.notification.is_some() {
+    if overlays.exit_mix.is_some()
+        || overlays.notification.is_some()
+        || overlays.zoom_indicator.is_some()
+    {
         return false;
     }
     if smithay::desktop::layer_map_for_output(output)

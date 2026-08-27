@@ -339,9 +339,6 @@ mod tests {
                 direction: crate::ControlDirection::Left,
                 output: None,
             }),
-            Request::GamescopeTarget {
-                selector: "cursor".to_string(),
-            },
         ] {
             let bytes = encode_request(&req).unwrap();
             let decoded = decode_request(&bytes).unwrap();
@@ -387,19 +384,6 @@ mod tests {
     fn screenshot_response_round_trips_through_postcard() {
         let response = Response::Screenshot(crate::ScreenshotResponse::Saved {
             path: "/tmp/halley screenshot.png".to_string(),
-        });
-        let bytes = encode_response(&response).unwrap();
-        let decoded = decode_response(&bytes).unwrap();
-        assert_eq!(format!("{decoded:?}"), format!("{response:?}"));
-    }
-
-    #[test]
-    fn gamescope_target_round_trips_through_postcard() {
-        let response = Response::GamescopeTarget(crate::GamescopeTargetResponse {
-            output: "DP-1".to_string(),
-            width: 2560,
-            height: 1440,
-            refresh_hz: Some(179.998),
         });
         let bytes = encode_response(&response).unwrap();
         let decoded = decode_response(&bytes).unwrap();

@@ -239,6 +239,22 @@ pub fn elements(
             &mut elements,
         )?;
     }
+    if config.zoom_indicator.enabled
+        && let Some(zoom_indicator) = snapshot.zoom_indicator
+    {
+        let zoom_visuals =
+            resolve_zoom_indicator_visuals(config.zoom_indicator, visuals, decorations);
+        zoom_indicator_elements(
+            renderer,
+            screen,
+            zoom_indicator,
+            config.zoom_indicator,
+            zoom_visuals,
+            node_renderer,
+            ui_text,
+            &mut elements,
+        )?;
+    }
     Ok(elements)
 }
 
@@ -419,6 +435,122 @@ fn notification_elements(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
+fn zoom_indicator_elements(
+    renderer: &mut GlesRenderer,
+    screen: Rectangle<i32, Physical>,
+    indicator: crate::shell::overlay::ZoomIndicatorSnapshot,
+    config: halley_config::ZoomIndicator,
+    visuals: OverlayVisuals,
+    node_renderer: &mut NodeRenderer,
+    ui_text: &mut UiTextRenderer,
+    elements: &mut Vec<SceneElement>,
+) -> Result<(), Box<dyn Error>> {
+    let label = zoom_indicator_label(indicator.scale);
+    let measured = match config.text_size {
+        Some(size_px) => {
+            ui_text.measure_at_size(renderer, &label, visuals.text.bytes(), size_px)?
+        }
+        None => ui_text.measure(renderer, &label, visuals.text.bytes())?,
+    };
+    let Some(text_size) = measured else {
+        return Ok(());
+    };
+    let card = zoom_indicator_card_rect(screen, text_size, config.position);
+    let origin = (
+        card.loc.x + 16,
+        card.loc.y + (card.size.h - text_size.h) / 2,
+    )
+        .into();
+    let alpha = indicator.mix * config.opacity;
+    let text = match config.text_size {
+        Some(size_px) => ui_text.element_at_size(
+            renderer,
+            origin,
+            &label,
+            visuals.text.bytes(),
+            visuals.text.a * alpha,
+            size_px,
+        )?,
+        None => ui_text.element(
+            renderer,
+            origin,
+            &label,
+            visuals.text.bytes(),
+            visuals.text.a * alpha,
+        )?,
+    };
+    if let Some(text) = text {
+        elements.push(SceneElement::UiText(text.element));
+    }
+    if config.background {
+        elements.push(SceneElement::NodeLabel(card_element(
+            renderer,
+            node_renderer,
+            card,
+            visuals,
+            visuals.fill,
+            0.97 * alpha,
+        )?));
+    }
+    Ok(())
+}
+
+fn resolve_zoom_indicator_visuals(
+    config: halley_config::ZoomIndicator,
+    mut visuals: OverlayVisuals,
+    decorations: &halley_config::Decorations,
+) -> OverlayVisuals {
+    if let Some(mode) = config.background_color {
+        visuals.fill = resolve_fill(mode);
+    }
+    if let Some(mode) = config.text_color {
+        visuals.text = resolve_text(mode, visuals.fill);
+    }
+    if let Some(borders) = config.borders {
+        visuals.border_px = if borders {
+            decorations.border_width_px.max(0) as f32
+        } else {
+            0.0
+        };
+    }
+    if let Some(radius_px) = config.radius_px {
+        visuals.radius = radius_px.max(0) as f32;
+    }
+    visuals
+}
+
+fn zoom_indicator_label(scale: f32) -> String {
+    format!("{:.2}x", scale.clamp(0.0, 1.0))
+}
+
+fn zoom_indicator_card_rect(
+    screen: Rectangle<i32, Physical>,
+    text_size: smithay::utils::Size<i32, Buffer>,
+    position: halley_config::NotificationPosition,
+) -> Rectangle<i32, Physical> {
+    let card_size: smithay::utils::Size<i32, Physical> =
+        (text_size.w + 32, text_size.h + 16).into();
+    let margin = 24;
+    let x = match position {
+        halley_config::NotificationPosition::TopLeft
+        | halley_config::NotificationPosition::BottomLeft => margin,
+        halley_config::NotificationPosition::TopCenter
+        | halley_config::NotificationPosition::BottomCenter => (screen.size.w - card_size.w) / 2,
+        halley_config::NotificationPosition::TopRight
+        | halley_config::NotificationPosition::BottomRight => screen.size.w - card_size.w - margin,
+    };
+    let y = match position {
+        halley_config::NotificationPosition::TopLeft
+        | halley_config::NotificationPosition::TopCenter
+        | halley_config::NotificationPosition::TopRight => margin,
+        halley_config::NotificationPosition::BottomLeft
+        | halley_config::NotificationPosition::BottomCenter
+        | halley_config::NotificationPosition::BottomRight => screen.size.h - card_size.h - margin,
+    };
+    Rectangle::new((x, y).into(), card_size)
+}
+
 fn fit_middle(
     renderer: &mut GlesRenderer,
     ui_text: &mut UiTextRenderer,
@@ -487,5 +619,84 @@ mod tests {
 
         assert!(visuals.border_px > 0.0);
         assert_eq!(visuals.label_chrome().border_px, 0.0);
+    }
+
+    #[test]
+    fn zoom_indicator_label_has_two_decimal_places() {
+        assert_eq!(zoom_indicator_label(1.0), "1.00x");
+        assert_eq!(zoom_indicator_label(0.754), "0.75x");
+        assert_eq!(zoom_indicator_label(0.756), "0.76x");
+    }
+
+    #[test]
+    fn zoom_indicator_visual_overrides_are_independent() {
+        let decorations = halley_config::Decorations::default();
+        let shared = resolve_visuals(&halley_config::Overlays::default(), &decorations);
+        let config = halley_config::ZoomIndicator {
+            background_color: Some(halley_config::OverlayColorMode::Dark),
+            text_color: Some(halley_config::OverlayColorMode::Auto),
+            borders: Some(false),
+            radius_px: Some(20),
+            ..halley_config::ZoomIndicator::default()
+        };
+
+        let visuals = resolve_zoom_indicator_visuals(config, shared, &decorations);
+        assert_eq!(visuals.fill, DARK_FILL);
+        assert_eq!(visuals.text, DARK_TEXT);
+        assert_eq!(visuals.border_px, 0.0);
+        assert_eq!(visuals.radius, 20.0);
+    }
+
+    #[test]
+    fn zoom_indicator_visual_defaults_inherit_shared_style() {
+        let decorations = halley_config::Decorations::default();
+        let shared_config = halley_config::Overlays {
+            background_color: halley_config::OverlayColorMode::Dark,
+            radius_px: 14,
+            borders: false,
+            ..halley_config::Overlays::default()
+        };
+        let shared = resolve_visuals(&shared_config, &decorations);
+
+        assert_eq!(
+            resolve_zoom_indicator_visuals(
+                halley_config::ZoomIndicator::default(),
+                shared,
+                &decorations,
+            )
+            .fill,
+            shared.fill
+        );
+        assert_eq!(
+            resolve_zoom_indicator_visuals(
+                halley_config::ZoomIndicator::default(),
+                shared,
+                &decorations,
+            )
+            .radius,
+            14.0
+        );
+    }
+
+    #[test]
+    fn zoom_indicator_card_uses_each_configured_anchor() {
+        let screen = Rectangle::from_size((1_000, 800).into());
+        let text_size = (48, 18).into();
+        let expected = [
+            (halley_config::NotificationPosition::TopLeft, (24, 24)),
+            (halley_config::NotificationPosition::TopCenter, (460, 24)),
+            (halley_config::NotificationPosition::TopRight, (896, 24)),
+            (halley_config::NotificationPosition::BottomLeft, (24, 742)),
+            (
+                halley_config::NotificationPosition::BottomCenter,
+                (460, 742),
+            ),
+            (halley_config::NotificationPosition::BottomRight, (896, 742)),
+        ];
+        for (position, location) in expected {
+            let card = zoom_indicator_card_rect(screen, text_size, position);
+            assert_eq!(card.loc, location.into());
+            assert_eq!(card.size, (80, 34).into());
+        }
     }
 }

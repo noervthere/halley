@@ -401,13 +401,106 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
         crate::cursor::surface::handle_commit(&self.cursor, surface, &root);
         crate::wayland::session_lock::surface_committed(self, surface);
         crate::xwayland::handle_commit(self, &root);
-        self.fullscreen.handle_commit(
+        let fullscreen_commit_now = crate::frame_clock::monotonic_now();
+        let external_surface_size =
+            smithay::backend::renderer::utils::with_renderer_surface_state(&root, |state| {
+                state.surface_size()
+            })
+            .flatten();
+        let target_repaint = self
+            .render
+            .fullscreen_textures
+            .observe_surface_commit(&root);
+        let prepared_target_repaint = target_repaint.and_then(|repaint| {
+            if !repaint.ready {
+                return None;
+            }
+            let window = self
+                .wayland
+                .space
+                .elements()
+                .find(|window| {
+                    window
+                        .wl_surface()
+                        .is_some_and(|candidate| candidate.as_ref() == &root)
+                })
+                .cloned()?;
+            let textures = &mut self.render.fullscreen_textures;
+            match self
+                .driver
+                .with_renderer(|renderer| textures.prepare_target(renderer, &window, repaint.owner))
+            {
+                Ok(true) => Some(repaint),
+                Ok(false) => None,
+                Err(err) => {
+                    eventline::warn!("window transition: failed to prepare target texture: {err}");
+                    None
+                }
+            }
+        });
+        let fullscreen_repaint_ready = target_repaint.is_none_or(|repaint| {
+            repaint.owner != crate::render::fullscreen_texture::TextureTransitionOwner::Fullscreen
+                || prepared_target_repaint.is_some_and(|prepared| prepared.owner == repaint.owner)
+        });
+        let maximize_repaint_ready = target_repaint.is_none_or(|repaint| {
+            repaint.owner != crate::render::fullscreen_texture::TextureTransitionOwner::Maximize
+                || prepared_target_repaint.is_some_and(|prepared| prepared.owner == repaint.owner)
+        });
+        let external_fullscreen_started = self.fullscreen.settle_external_surface_commit(
+            &mut self.wayland,
+            &root,
+            external_surface_size,
+            fullscreen_repaint_ready,
+            fullscreen_commit_now,
+        );
+        let native_fullscreen_started = self.fullscreen.handle_commit(
             &mut self.wayland,
             &self.cameras,
             &root,
-            crate::frame_clock::monotonic_now(),
+            external_surface_size,
+            fullscreen_repaint_ready,
+            fullscreen_commit_now,
         );
-        self.maximize.handle_commit(&mut self.wayland, &root);
+        let maximize_started = self.maximize.handle_commit(
+            &mut self.wayland,
+            &root,
+            external_surface_size,
+            maximize_repaint_ready,
+            fullscreen_commit_now,
+        );
+        let target_owner = prepared_target_repaint.and_then(|repaint| match repaint.owner {
+            crate::render::fullscreen_texture::TextureTransitionOwner::Fullscreen
+                if external_fullscreen_started || native_fullscreen_started =>
+            {
+                Some(repaint.owner)
+            }
+            crate::render::fullscreen_texture::TextureTransitionOwner::Maximize
+                if maximize_started =>
+            {
+                Some(repaint.owner)
+            }
+            _ => None,
+        });
+        if let Some(owner) = target_owner
+            && let Some(window) = self
+                .wayland
+                .space
+                .elements()
+                .find(|window| {
+                    window
+                        .wl_surface()
+                        .is_some_and(|candidate| candidate.as_ref() == &root)
+                })
+                .cloned()
+        {
+            let textures = &mut self.render.fullscreen_textures;
+            let capture = self
+                .driver
+                .with_renderer(|renderer| textures.capture_target(renderer, &window, owner));
+            if let Err(err) = capture {
+                eventline::warn!("window transition: failed to capture target texture: {err}");
+            }
+        }
         crate::input::grab::finish_resize_commit(
             &mut self.interactions.resize_anchor,
             &mut self.wayland.space,
@@ -564,8 +657,9 @@ impl<D: SessionDriver> XdgShellHandler for Session<D> {
         }
         super::cancel_grab_for_surface(self, surface.wl_surface());
         let now = crate::frame_clock::monotonic_now();
-        let cluster_restore =
-            super::cluster_presentation_restore(self, surface.wl_surface(), now, true);
+        let capture_outgoing = self
+            .fullscreen
+            .client_request_changes_visual(surface.wl_surface(), true);
         let window = self
             .wayland
             .space
@@ -576,6 +670,23 @@ impl<D: SessionDriver> XdgShellHandler for Session<D> {
                     .is_some_and(|candidate| candidate.as_ref() == surface.wl_surface())
             })
             .cloned();
+        if capture_outgoing && let Some(window) = window.as_ref() {
+            let textures = &mut self.render.fullscreen_textures;
+            let capture = self.driver.with_renderer(|renderer| {
+                textures.capture_previous(
+                    renderer,
+                    window,
+                    crate::render::fullscreen_texture::TextureTransitionOwner::Fullscreen,
+                )
+            });
+            if let Err(err) = capture {
+                eventline::warn!(
+                    "fullscreen: failed to capture client-requested outgoing window texture: {err}"
+                );
+            }
+        }
+        let cluster_restore =
+            super::cluster_presentation_restore(self, surface.wl_surface(), now, true);
         let maximize_output = window.as_ref().and_then(crate::wayland::window_output_name);
         let fullscreen_output = output
             .as_ref()
@@ -594,6 +705,10 @@ impl<D: SessionDriver> XdgShellHandler for Session<D> {
             )
         });
         self.fullscreen.request(&mut self.wayland, &surface, output);
+        if capture_outgoing {
+            self.fullscreen
+                .discard_snapshot_requests(surface.wl_surface());
+        }
         if let Some(restore) = cluster_restore {
             self.fullscreen.override_restore_from_cluster(
                 surface.wl_surface(),
@@ -610,6 +725,31 @@ impl<D: SessionDriver> XdgShellHandler for Session<D> {
     }
 
     fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
+        let capture_outgoing = self
+            .fullscreen
+            .client_request_changes_visual(surface.wl_surface(), false);
+        if capture_outgoing
+            && let Some(window) = self.wayland.space.elements().find(|window| {
+                window
+                    .wl_surface()
+                    .is_some_and(|candidate| candidate.as_ref() == surface.wl_surface())
+            })
+        {
+            let window = window.clone();
+            let textures = &mut self.render.fullscreen_textures;
+            let capture = self.driver.with_renderer(|renderer| {
+                textures.capture_previous(
+                    renderer,
+                    &window,
+                    crate::render::fullscreen_texture::TextureTransitionOwner::Fullscreen,
+                )
+            });
+            if let Err(err) = capture {
+                eventline::warn!(
+                    "fullscreen: failed to capture client-requested outgoing window texture: {err}"
+                );
+            }
+        }
         if let Some(restore) = super::cluster_presentation_restore(
             self,
             surface.wl_surface(),

@@ -91,7 +91,7 @@ impl PinchGesture {
         dx: f64,
         dy: f64,
         scale: f64,
-    ) {
+    ) -> bool {
         self.velocity = sample_velocity(self.velocity, self.last_time, time, dx, dy);
         self.last_time = Some(time);
         match self.mode {
@@ -113,6 +113,7 @@ impl PinchGesture {
             PinchMode::Pan => apply_pan(camera, dx, dy),
             PinchMode::Zoom => apply_zoom(camera, zoom, self.start_view_size, scale),
         }
+        matches!(self.mode, PinchMode::Zoom)
     }
 
     pub fn finish(self, camera: &mut Camera, cancelled: bool, momentum: bool, minimum_speed: f32) {
@@ -209,6 +210,16 @@ mod tests {
             classify_pinch(Vec2 { x: 0.0, y: 0.0 }, 1.2),
             Some(PinchIntent::Zoom)
         );
+    }
+
+    #[test]
+    fn pinch_update_reports_only_latched_zoom_activity() {
+        let mut camera = Camera::new(Vec2 { x: 400.0, y: 300.0 }, Vec2 { x: 800.0, y: 600.0 });
+        let mut gesture = PinchGesture::new("DP-1".into(), &mut camera);
+        let zoom = halley_config::Zoom::default();
+
+        assert!(!gesture.update(&mut camera, &zoom, 10, 1.0, 1.0, 1.01));
+        assert!(gesture.update(&mut camera, &zoom, 20, 0.0, 0.0, 1.20));
     }
 
     #[test]

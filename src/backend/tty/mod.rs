@@ -1086,6 +1086,7 @@ impl Renderable for TtyBackend {
             request.frame.clear
         };
         let target_presentation_time = request.frame.target_presentation_time;
+        let force_full_repaint = request.frame.force_full_repaint;
         let session_lock_generation = request.desktop.session_lock.frame_generation();
         let elements = crate::render::scene::build(
             &mut self.renderer,
@@ -1094,6 +1095,16 @@ impl Renderable for TtyBackend {
             output_geometry,
             request,
         )?;
+        if force_full_repaint {
+            // Geometry animations (window open/close, zoom, camera motion)
+            // can touch a different pixel set in every swapchain buffer. A
+            // stale buffer-age history then presents old client pixels on
+            // alternating page flips. Preserve the buffers themselves, but
+            // make Smithay repaint the complete output for animated frames.
+            entry
+                .drm_output
+                .with_compositor(|compositor| compositor.reset_buffer_ages());
+        }
         let result = entry.drm_output.render_frame::<_, SceneElement>(
             &mut self.renderer,
             &elements,

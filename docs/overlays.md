@@ -2,13 +2,13 @@
 
 The `overlays:` section is the shared style contract for compositor-owned UI:
 Apogee title bands, the Alt+Tab rail, Bearings chips, the screenshot picker,
-configuration notices, and the exit confirmation. It deliberately does not
-restyle client window decorations or node labels; those retain their existing
-sections.
+configuration notices, the zoom indicator, and the exit confirmation. It
+deliberately does not restyle client window decorations or node labels; those
+retain their existing sections.
 
-All overlay text uses the exact family and size from the global
-[`font:`](fonts.md) section. Overlays do not apply private small, normal, or
-large font tiers.
+Overlay text uses the family and size from the global [`font:`](fonts.md)
+section. The zoom indicator may override only its size explicitly; every other
+overlay continues to use the global typography without private tiers.
 
 ```rune
 overlays:
@@ -22,6 +22,22 @@ overlays:
     position "top-center"
     success-duration-ms 4000
     error-duration-ms 9000
+  end
+
+  zoom-indicator:
+    enabled true
+    position "bottom-center"
+    hold-duration-ms 750
+    fade-duration-ms 180
+    background true
+    opacity 1.0
+
+    # Optional; omitted values inherit the shared overlay style.
+    # text-size 18
+    # text-colour "auto"
+    # background-colour "auto"
+    # borders true
+    # radius 8
   end
 end
 ```
@@ -46,6 +62,29 @@ milliseconds. The renderer builds every card at its final pixel dimensions,
 so changing its radius or output scale does not stretch a small blurred texture.
 After a native screenshot is saved, a success notification shows its destination
 directory for `success-duration-ms`.
+
+## Zoom indicator
+
+Camera zoom displays the affected monitor's live scale as `0.75x`, always with
+two decimal places. The card appears immediately for keybind, wheel-bound,
+reset, or compositor pinch zoom input and continues updating throughout the
+smooth camera transition. Repeated input and live scale changes restart its
+hold, so it does not begin fading while a longer zoom sequence is still moving.
+
+`enabled false` disables and clears the indicator. `position` accepts the same
+six values as notifications. Once input and camera motion have both stopped,
+the final value remains fully visible for the positive `hold-duration-ms`, then
+fades over the positive `fade-duration-ms`.
+
+`background false` draws only the text. Because there is no card surface in
+that mode, its border, blur, and shadow are removed too. `opacity` multiplies
+the whole indicator's fade and is clamped from `0.0` to `1.0`. `text-size` is
+clamped from `6` to `96` pixels. `text-colour`, `background-colour`, `borders`,
+and `radius` override the corresponding shared overlay value only when present;
+otherwise they inherit it. Both colour spellings are accepted, and colours use
+the same `auto`, `light`, `dark`, and hex formats as the shared palette. A
+private `radius` is clamped from `0` to `256` pixels. `borders` and `radius`
+remain configured but have no visible effect while `background false`.
 
 ## Configuration lifecycle
 

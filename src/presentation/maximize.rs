@@ -3,9 +3,12 @@ use std::time::Duration;
 
 use halley_config::{Animations, Field};
 use smithay::output::Output;
+use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::utils::{Logical, Physical, Rectangle};
+use smithay::utils::{Logical, Physical, Rectangle, Size};
+use smithay::wayland::compositor::with_states;
 use smithay::wayland::seat::WaylandFocus;
+use smithay::wayland::shell::xdg::SurfaceCachedState;
 
 use crate::animation::MotionTimeline;
 use crate::presentation::{PresentationScope, PresentationWorkspace};
@@ -56,9 +59,12 @@ struct Entry {
     /// through the old camera and must not be projected through the maximize
     /// camera again.
     presentation_output: Option<Rectangle<i32, Physical>>,
+    desired: bool,
     active: bool,
     window_timeline: Option<MotionTimeline>,
     camera_timeline: Option<MotionTimeline>,
+    pending_window_motion: (f64, f64),
+    pending_camera_motion: (f64, f64),
 }
 
 pub struct FieldMaximizeManager {
@@ -81,6 +87,7 @@ impl FieldMaximizeManager {
         self.animations = animations;
         if !animations_enabled(animations) {
             for entry in self.entries.values_mut() {
+                entry.active = entry.desired;
                 entry.window_timeline = None;
                 entry.camera_timeline = None;
             }
@@ -121,20 +128,27 @@ impl FieldMaximizeManager {
             (restore_geometry, restore_output),
         );
         match self.entries.get_mut(&scope) {
-            Some(entry) if entry.surface == surface && entry.active => {
+            Some(entry) if entry.surface == surface && entry.desired => {
                 let (window_progress, window_velocity) =
                     motion_state(entry.window_timeline, entry.active, now);
                 let (camera_progress, camera_velocity) =
                     motion_state(entry.camera_timeline, entry.active, now);
-                entry.active = false;
+                entry.desired = false;
                 entry.restore_geometry = restore_geometry;
                 entry.restore_output = restore_output;
                 entry.presentation_windowed = None;
-                entry.presentation_output = presentation_output;
-                entry.window_timeline =
-                    timeline(self.animations, now, window_progress, 0.0, window_velocity);
-                entry.camera_timeline =
-                    timeline(self.animations, now, camera_progress, 0.0, camera_velocity);
+                // Field maximize parks the field camera while the client grows.
+                // Keep the output-local endpoint captured on entry so the
+                // window does not get projected through that moving camera on
+                // the way back. Cluster exits provide a newer explicit tile
+                // endpoint and replace it here.
+                if presentation_output.is_some() {
+                    entry.presentation_output = presentation_output;
+                }
+                entry.window_timeline = None;
+                entry.camera_timeline = None;
+                entry.pending_window_motion = (window_progress, window_velocity);
+                entry.pending_camera_motion = (camera_progress, camera_velocity);
                 FieldMaximizeChange {
                     geometry: entry.restore_geometry,
                     output: entry.restore_output.clone(),
@@ -146,16 +160,16 @@ impl FieldMaximizeManager {
                     motion_state(entry.window_timeline, entry.active, now);
                 let (camera_progress, camera_velocity) =
                     motion_state(entry.camera_timeline, entry.active, now);
-                entry.active = true;
+                entry.desired = true;
                 entry.restore_geometry = restore_geometry;
                 entry.restore_output = restore_output;
                 entry.target_rect = target_rect;
                 entry.presentation_windowed = None;
-                entry.presentation_output = presentation_output;
-                entry.window_timeline =
-                    timeline(self.animations, now, window_progress, 1.0, window_velocity);
-                entry.camera_timeline =
-                    timeline(self.animations, now, camera_progress, 1.0, camera_velocity);
+                entry.presentation_output = presentation_output.or(entry.presentation_output);
+                entry.window_timeline = None;
+                entry.camera_timeline = None;
+                entry.pending_window_motion = (window_progress, window_velocity);
+                entry.pending_camera_motion = (camera_progress, camera_velocity);
                 FieldMaximizeChange {
                     geometry: target_rect,
                     output: output_name,
@@ -177,15 +191,12 @@ impl FieldMaximizeManager {
                     target_rect,
                     presentation_windowed: None,
                     presentation_output,
-                    active: true,
-                    window_timeline: timeline(self.animations, now, 0.0, 1.0, 0.0),
-                    camera_timeline: timeline(
-                        self.animations,
-                        now,
-                        camera_progress,
-                        1.0,
-                        camera_velocity,
-                    ),
+                    desired: true,
+                    active: false,
+                    window_timeline: None,
+                    camera_timeline: None,
+                    pending_window_motion: (0.0, 0.0),
+                    pending_camera_motion: (camera_progress, camera_velocity),
                 };
                 FieldMaximizeChange {
                     geometry: target_rect,
@@ -203,9 +214,12 @@ impl FieldMaximizeManager {
                         target_rect,
                         presentation_windowed: None,
                         presentation_output,
-                        active: true,
-                        window_timeline: timeline(self.animations, now, 0.0, 1.0, 0.0),
-                        camera_timeline: timeline(self.animations, now, 0.0, 1.0, 0.0),
+                        desired: true,
+                        active: false,
+                        window_timeline: None,
+                        camera_timeline: None,
+                        pending_window_motion: (0.0, 0.0),
+                        pending_camera_motion: (0.0, 0.0),
                     },
                 );
                 FieldMaximizeChange {
@@ -228,12 +242,22 @@ impl FieldMaximizeManager {
             .entries
             .values()
             .find(|entry| &entry.surface == surface)?;
-        let progress = progress(entry.window_timeline, entry.active, now).clamp(0.0, 1.0);
-        let transition_completion = entry
-            .window_timeline
-            .map(|timeline| timeline.completion_at(now))
-            .unwrap_or(1.0);
-        presentation_is_visible(progress, entry.window_timeline.is_some()).then(|| {
+        let pending = entry.desired != entry.active;
+        let progress = if pending {
+            entry.pending_window_motion.0
+        } else {
+            progress(entry.window_timeline, entry.active, now)
+        }
+        .clamp(0.0, 1.0);
+        let transition_completion = if pending {
+            0.0
+        } else {
+            entry
+                .window_timeline
+                .map(|timeline| timeline.completion_at(now))
+                .unwrap_or(1.0)
+        };
+        presentation_is_visible(progress, pending || entry.window_timeline.is_some()).then(|| {
             FieldMaximizePresentation {
                 progress,
                 transition_completion,
@@ -264,7 +288,7 @@ impl FieldMaximizeManager {
         if let Some(entry) = self
             .entries
             .values_mut()
-            .find(|entry| &entry.surface == surface && entry.active)
+            .find(|entry| &entry.surface == surface && entry.desired)
         {
             entry.presentation_windowed = Some(fullscreen_geometry);
             entry.presentation_output = fullscreen_output_rect;
@@ -280,7 +304,12 @@ impl FieldMaximizeManager {
         let entry = self
             .entries
             .get(&PresentationScope::new(output.name(), workspace))?;
-        Some(progress(entry.camera_timeline, entry.active, now).clamp(0.0, 1.0) as f32)
+        let progress = if entry.desired != entry.active {
+            entry.pending_camera_motion.0
+        } else {
+            progress(entry.camera_timeline, entry.active, now)
+        };
+        Some(progress.clamp(0.0, 1.0) as f32)
     }
 
     pub fn owns_output(&self, output: &str) -> bool {
@@ -290,12 +319,12 @@ impl FieldMaximizeManager {
     pub fn contains(&self, surface: &WlSurface) -> bool {
         self.entries
             .values()
-            .any(|entry| &entry.surface == surface && entry.active)
+            .any(|entry| &entry.surface == surface && entry.desired)
     }
 
     pub fn output_for_surface(&self, surface: &WlSurface) -> Option<&str> {
         self.entries.iter().find_map(|(scope, entry)| {
-            (&entry.surface == surface && entry.active).then_some(scope.output.as_str())
+            (&entry.surface == surface && entry.desired).then_some(scope.output.as_str())
         })
     }
 
@@ -361,7 +390,10 @@ impl FieldMaximizeManager {
                 entry.camera_timeline = None;
                 changed = true;
             }
-            entry.active || entry.window_timeline.is_some() || entry.camera_timeline.is_some()
+            entry.active
+                || entry.desired
+                || entry.window_timeline.is_some()
+                || entry.camera_timeline.is_some()
         });
         FieldMaximizeCleanup {
             visual_finished: changed,
@@ -380,60 +412,6 @@ impl FieldMaximizeManager {
         })
     }
 
-    pub fn handle_commit(
-        &self,
-        wayland: &mut crate::wayland::WaylandState,
-        surface: &WlSurface,
-    ) -> bool {
-        let Some((scope, entry)) = self
-            .entries
-            .iter()
-            .find(|(_, entry)| &entry.surface == surface)
-        else {
-            return false;
-        };
-        let Some(window) = wayland
-            .space
-            .elements()
-            .find(|window| {
-                window
-                    .wl_surface()
-                    .is_some_and(|candidate| candidate.as_ref() == surface)
-            })
-            .cloned()
-        else {
-            return false;
-        };
-        let (geometry, location) = if entry.active {
-            (entry.target_rect, entry.target_rect.loc)
-        } else {
-            (entry.restore_geometry, entry.restore_geometry.loc)
-        };
-        if window.geometry().size != geometry.size {
-            return false;
-        }
-        let output = if entry.active {
-            wayland
-                .space
-                .outputs()
-                .find(|output| output.name() == scope.output)
-        } else {
-            wayland
-                .space
-                .outputs()
-                .find(|output| output.name() == entry.restore_output)
-        }
-        .cloned();
-        if let Some(output) = output {
-            crate::wayland::set_window_output(&window, &output);
-        }
-        if wayland.space.element_location(&window) != Some(location) {
-            wayland.space.relocate_element(&window, location);
-            return true;
-        }
-        false
-    }
-
     pub(crate) fn is_animating_on_output(
         &self,
         output: &Output,
@@ -450,6 +428,117 @@ impl FieldMaximizeManager {
                         .camera_timeline
                         .is_some_and(|timeline| !timeline.is_finished_at(now))
             })
+    }
+
+    pub fn handle_commit(
+        &mut self,
+        wayland: &mut crate::wayland::WaylandState,
+        surface: &WlSurface,
+        buffer_size: Option<Size<i32, Logical>>,
+        target_repaint_ready: bool,
+        now: Duration,
+    ) -> bool {
+        let Some(scope) = self
+            .entries
+            .iter()
+            .find_map(|(scope, entry)| (&entry.surface == surface).then(|| scope.clone()))
+        else {
+            return false;
+        };
+        let output_name = scope.output.clone();
+        let Some(window) = wayland
+            .space
+            .elements()
+            .find(|window| {
+                window
+                    .wl_surface()
+                    .is_some_and(|candidate| candidate.as_ref() == surface)
+            })
+            .cloned()
+        else {
+            return false;
+        };
+        let entry = self
+            .entries
+            .get_mut(&scope)
+            .expect("maximize output found above");
+        if entry.desired == entry.active {
+            return false;
+        }
+        let buffer_size = if let Some(toplevel) = window.toplevel() {
+            let maximized_committed = toplevel.with_committed_state(|state| {
+                state.is_some_and(|state| state.states.contains(State::Maximized))
+            });
+            if maximized_committed != entry.desired {
+                return false;
+            }
+            committed_xdg_window_size(surface).or(buffer_size)
+        } else {
+            buffer_size
+        };
+        if !target_repaint_ready {
+            return false;
+        }
+        let (geometry, outgoing_size, location) = if entry.desired {
+            (
+                entry.target_rect,
+                entry.restore_geometry.size,
+                entry.target_rect.loc,
+            )
+        } else {
+            (
+                entry.restore_geometry,
+                entry.target_rect.size,
+                entry.restore_geometry.loc,
+            )
+        };
+        let Some(observed_size) =
+            accepted_resize_buffer_size(buffer_size, geometry.size, outgoing_size)
+        else {
+            return false;
+        };
+        if observed_size != geometry.size {
+            if entry.desired {
+                entry.target_rect.size = observed_size;
+            } else {
+                entry.restore_geometry.size = observed_size;
+            }
+        }
+        let output = if entry.desired {
+            wayland
+                .space
+                .outputs()
+                .find(|output| output.name() == output_name)
+        } else {
+            wayland
+                .space
+                .outputs()
+                .find(|output| output.name() == entry.restore_output)
+        }
+        .cloned();
+        if let Some(output) = output {
+            crate::wayland::set_window_output(&window, &output);
+        }
+        let target = if entry.desired { 1.0 } else { 0.0 };
+        entry.window_timeline = timeline(
+            self.animations,
+            now,
+            entry.pending_window_motion.0,
+            target,
+            entry.pending_window_motion.1,
+        );
+        entry.camera_timeline = timeline(
+            self.animations,
+            now,
+            entry.pending_camera_motion.0,
+            target,
+            entry.pending_camera_motion.1,
+        );
+        entry.active = entry.desired;
+        if wayland.space.element_location(&window) != Some(location) {
+            wayland.space.relocate_element(&window, location);
+        }
+        true
     }
 }
 
@@ -499,6 +588,26 @@ fn authoritative_restore(
     requested: (Rectangle<i32, Logical>, String),
 ) -> (Rectangle<i32, Logical>, String) {
     existing.unwrap_or(requested)
+}
+
+fn accepted_resize_buffer_size(
+    observed: Option<Size<i32, Logical>>,
+    target: Size<i32, Logical>,
+    outgoing: Size<i32, Logical>,
+) -> Option<Size<i32, Logical>> {
+    let observed = observed?;
+    (observed == target || observed != outgoing).then_some(observed)
+}
+
+fn committed_xdg_window_size(surface: &WlSurface) -> Option<Size<i32, Logical>> {
+    with_states(surface, |states| {
+        states
+            .cached_state
+            .get::<SurfaceCachedState>()
+            .current()
+            .geometry
+            .map(|geometry| geometry.size)
+    })
 }
 
 fn interpolate_rect(
@@ -566,6 +675,27 @@ mod tests {
         assert_eq!(
             authoritative_restore(None, (maximized, "DP-2".to_string())),
             (maximized, "DP-2".to_string())
+        );
+    }
+
+    #[test]
+    fn maximize_waits_for_a_real_repaint_and_accepts_client_constraints() {
+        let outgoing = Size::from((800, 600));
+        let target = Size::from((1880, 1040));
+        let constrained = Size::from((1800, 1000));
+
+        assert_eq!(accepted_resize_buffer_size(None, target, outgoing), None);
+        assert_eq!(
+            accepted_resize_buffer_size(Some(outgoing), target, outgoing),
+            None,
+        );
+        assert_eq!(
+            accepted_resize_buffer_size(Some(target), target, outgoing),
+            Some(target),
+        );
+        assert_eq!(
+            accepted_resize_buffer_size(Some(constrained), target, outgoing),
+            Some(constrained),
         );
     }
 

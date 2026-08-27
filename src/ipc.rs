@@ -679,7 +679,6 @@ pub fn handle_request<D: crate::session::SessionDriver>(
                         "trail-v1".into(),
                         "control-v1".into(),
                         "local-capture-v1".into(),
-                        "gamescope-v1".into(),
                     ],
                 })
             }
@@ -703,9 +702,6 @@ pub fn handle_request<D: crate::session::SessionDriver>(
             return;
         }
         halley_ipc::Request::Control(request) => handle_control_request(app, request),
-        halley_ipc::Request::GamescopeTarget { selector } => {
-            gamescope_target_response(app, &selector)
-        }
     };
     let _ = reply.send(response, Vec::new());
 }
@@ -841,72 +837,6 @@ fn control_output<D: crate::session::SessionDriver>(
         .map(Output::name)
         .or_else(|| Some(session.driver.primary_output().name()))
         .ok_or_else(|| api_error(halley_ipc::ServerErrorKind::NotFound, "no active output"))
-}
-
-fn gamescope_target_response<D: crate::session::SessionDriver>(
-    session: &crate::session::Session<D>,
-    selector: &str,
-) -> halley_ipc::Response {
-    let output = match selector.trim() {
-        "" | "focused" => crate::wayland::focus::selected_output(&session.wayland)
-            .cloned()
-            .unwrap_or_else(|| session.driver.primary_output().clone()),
-        "cursor" => session
-            .wayland
-            .space
-            .output_under(session.pointer.position())
-            .next()
-            .cloned()
-            .or_else(|| crate::wayland::focus::selected_output(&session.wayland).cloned())
-            .unwrap_or_else(|| session.driver.primary_output().clone()),
-        "primary" => session.driver.primary_output().clone(),
-        name => {
-            let Some(output) = session
-                .wayland
-                .space
-                .outputs()
-                .find(|output| output.name() == name)
-                .cloned()
-            else {
-                return api_error(
-                    halley_ipc::ServerErrorKind::NotFound,
-                    format!("unknown gamescope monitor selector {name:?}"),
-                );
-            };
-            output
-        }
-    };
-    let name = output.name();
-    let info = session
-        .driver
-        .output_info()
-        .into_iter()
-        .find(|info| info.name == name);
-    let current = info.as_ref().and_then(|info| {
-        info.current_mode
-            .and_then(|index| info.modes.get(index))
-            .cloned()
-    });
-    let geometry = session.wayland.space.output_geometry(&output);
-    let width = current
-        .as_ref()
-        .map(|mode| mode.width.max(0) as u32)
-        .or_else(|| geometry.map(|geometry| geometry.size.w.max(0) as u32))
-        .unwrap_or(0);
-    let height = current
-        .as_ref()
-        .map(|mode| mode.height.max(0) as u32)
-        .or_else(|| geometry.map(|geometry| geometry.size.h.max(0) as u32))
-        .unwrap_or(0);
-    let refresh_hz = current
-        .filter(|mode| mode.refresh_millihz > 0)
-        .map(|mode| mode.refresh_millihz as f64 / 1000.0);
-    halley_ipc::Response::GamescopeTarget(halley_ipc::GamescopeTargetResponse {
-        output: name,
-        width,
-        height,
-        refresh_hz,
-    })
 }
 
 fn api_error(

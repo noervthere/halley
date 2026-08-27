@@ -11,7 +11,6 @@ pub mod diagnostic;
 pub mod effects;
 pub mod field;
 pub mod font;
-pub mod gamescope;
 pub mod input;
 pub mod keybinds;
 pub mod launch;
@@ -62,11 +61,6 @@ pub use field::{
     CloseRestorePan, Field, FieldParseError, PinBadgeCorner, Pins, parse_field, parse_field_checked,
 };
 pub use font::{Font, parse_font};
-pub use gamescope::{
-    DimSpec, GamescopeConfig, GamescopeDecision, GamescopeGameProfile, GamescopeParseError, Gaming,
-    ResolvedGamescopeProfile, TargetDims, build_gamescope_argv, glob_match, parse_gaming,
-    resolve_profile,
-};
 pub use input::{
     AccelProfile, ClickMethod, DeviceKind, DeviceOverride, DeviceSettings, FocusMode,
     GestureAction, GestureBinding, GestureHoldBinding, GestureModifier, GestureScope,
@@ -89,8 +83,10 @@ pub use nodes::{
 };
 pub use output::{OutputConfig, Vrr};
 pub use overlays::{
-    DEFAULT_ERROR_DURATION_MS, DEFAULT_SUCCESS_DURATION_MS, NotificationPosition, Notifications,
-    OverlayColorMode, OverlayParseError, Overlays, parse_overlays_checked,
+    DEFAULT_ERROR_DURATION_MS, DEFAULT_SUCCESS_DURATION_MS,
+    DEFAULT_ZOOM_INDICATOR_FADE_DURATION_MS, DEFAULT_ZOOM_INDICATOR_HOLD_DURATION_MS,
+    NotificationPosition, Notifications, OverlayColorMode, OverlayParseError, Overlays,
+    ZoomIndicator, parse_overlays_checked,
 };
 pub use parse::{ParseError, parse_keybinds};
 pub use physics::{Physics, parse_physics};

@@ -543,6 +543,7 @@ where
     let Some(mut sequence) = session.gestures.pinch.take() else {
         return;
     };
+    let zoom_indicator_config = session.settings.overlays.zoom_indicator;
     let client_owner_is_current = owner_is_current(session, &sequence);
     match &mut sequence {
         Sequence::Client(_) if client_owner_is_current => {
@@ -566,7 +567,7 @@ where
                 sequence = Sequence::Ignored;
             } else if let Some(camera) = session.cameras.get_mut(&gesture.output) {
                 let delta = event.delta();
-                gesture.update(
+                let zooming = gesture.update(
                     camera,
                     &session.settings.zoom,
                     event.time_msec(),
@@ -574,6 +575,14 @@ where
                     delta.y,
                     event.scale(),
                 );
+                if zooming {
+                    session.shell.overlays.show_zoom_indicator(
+                        &gesture.output,
+                        crate::input::zoom::scale(camera),
+                        &zoom_indicator_config,
+                        crate::frame_clock::monotonic_now(),
+                    );
+                }
                 session.request_redraw();
             } else {
                 sequence = Sequence::Ignored;

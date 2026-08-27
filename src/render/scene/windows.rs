@@ -62,17 +62,14 @@ pub(super) struct LiveWindowContext<'a> {
     pub(super) titlebar_pressed: Option<&'a crate::titlebar::ButtonTarget>,
 }
 
-/// Crossfade progress past which the captured textures stop contributing.
-///
-/// A spring's settle time is numeric, not perceptual: `spring_duration` hunts
-/// for a displacement below 1e-4, which for the default fullscreen spring is
-/// roughly 230ms after the motion has visually stopped. Holding the offscreen
-/// texture path open across that tail puts the swap back to live surfaces well
-/// clear of the animation, where it reads as a discrete flash rather than part
-/// of it. Past this point the previous texture contributes under one part in
-/// two hundred, so retiring the blend early is not visible - but the swap now
-/// happens under the last pixels of motion, which is.
-const CROSSFADE_COMPLETE: f64 = 0.995;
+/// Keep the accepted live endpoint in the offscreen blend until motion is
+/// actually complete. Retiring at 99.5% exposed any client repaint since the
+/// first accepted frame as a final-frame jump, particularly through Xwayland.
+const CROSSFADE_COMPLETE: f64 = 1.0;
+
+fn active_crossfade_completion(completion: Option<f64>) -> Option<f64> {
+    completion.filter(|completion| *completion < CROSSFADE_COMPLETE)
+}
 
 fn compositor_chrome_visible(logical_fullscreen: bool, x11_fullscreen: bool) -> bool {
     !logical_fullscreen && !x11_fullscreen
@@ -307,15 +304,16 @@ pub(super) fn live_window_elements(
             &mut elements,
         )?;
     }
-    let texture_transition_completion = visual
-        .fullscreen
-        .map(|presentation| presentation.transition_completion)
-        .or_else(|| {
-            visual
-                .maximize
-                .map(|presentation| presentation.transition_completion)
-        })
-        .filter(|completion| *completion < CROSSFADE_COMPLETE);
+    let texture_transition_completion = active_crossfade_completion(
+        visual
+            .fullscreen
+            .map(|presentation| presentation.transition_completion)
+            .or_else(|| {
+                visual
+                    .maximize
+                    .map(|presentation| presentation.transition_completion)
+            }),
+    );
     let texture_blend = if let Some(completion) = texture_transition_completion {
         let hold_x11_fullscreen_exit = should_hold_x11_fullscreen_exit(
             crate::xwayland::is_x11(window),
@@ -351,7 +349,7 @@ pub(super) fn live_window_elements(
         None
     };
     if let Some(blend) = texture_blend {
-        elements.push(SceneElement::FullscreenBlend(blend));
+        elements.push(SceneElement::WindowResize(blend));
     } else {
         for surface_element in surface_elements {
             let native_geometry = surface_element.geometry(Scale::from(1.0));
@@ -943,7 +941,20 @@ fn scaled_title_size(
 mod tests {
     use smithay::utils::{Buffer, Size};
 
-    use super::{compositor_chrome_visible, scaled_title_size, should_hold_x11_fullscreen_exit};
+    use super::{
+        active_crossfade_completion, compositor_chrome_visible, scaled_title_size,
+        should_hold_x11_fullscreen_exit,
+    };
+
+    #[test]
+    fn accepted_endpoint_stays_offscreen_until_motion_exactly_finishes() {
+        assert_eq!(active_crossfade_completion(Some(0.995)), Some(0.995));
+        assert_eq!(
+            active_crossfade_completion(Some(0.999_999)),
+            Some(0.999_999)
+        );
+        assert_eq!(active_crossfade_completion(Some(1.0)), None);
+    }
 
     #[test]
     fn title_text_size_shrinks_with_zoom() {

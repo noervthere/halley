@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::Path;
 use std::time::Duration;
 
@@ -73,10 +74,43 @@ impl ExitConfirmation {
     }
 }
 
+#[derive(Clone, Debug)]
+struct ZoomIndicator {
+    scale: f32,
+    shown_at: Duration,
+    enter_from: f32,
+    expires_at: Duration,
+    fade_duration: Duration,
+    expiry_notified: bool,
+}
+
+impl ZoomIndicator {
+    fn mix(&self, now: Duration) -> f32 {
+        if now >= self.expires_at {
+            return 1.0
+                - transition_progress_for(now.saturating_sub(self.expires_at), self.fade_duration);
+        }
+        self.enter_from
+            + (1.0 - self.enter_from)
+                * transition_progress_for(now.saturating_sub(self.shown_at), self.fade_duration)
+    }
+
+    fn finished(&self, now: Duration) -> bool {
+        now >= self.expires_at + self.fade_duration
+    }
+
+    fn animating(&self, now: Duration) -> bool {
+        !self.finished(now)
+            && (self.enter_from < 0.999 && now < self.shown_at + self.fade_duration
+                || now >= self.expires_at)
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct OverlayManager {
     exit: Option<ExitConfirmation>,
     notification: Option<Notification>,
+    zoom_indicators: HashMap<String, ZoomIndicator>,
 }
 
 #[derive(Clone, Debug)]
@@ -86,10 +120,17 @@ pub struct NotificationSnapshot {
     pub mix: f32,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct ZoomIndicatorSnapshot {
+    pub scale: f32,
+    pub mix: f32,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct OverlaySnapshot {
     pub exit_mix: Option<f32>,
     pub notification: Option<NotificationSnapshot>,
+    pub zoom_indicator: Option<ZoomIndicatorSnapshot>,
 }
 
 impl OverlayManager {
@@ -217,6 +258,55 @@ impl OverlayManager {
         });
     }
 
+    pub fn show_zoom_indicator(
+        &mut self,
+        output: &str,
+        scale: f32,
+        config: &halley_config::ZoomIndicator,
+        now: Duration,
+    ) -> bool {
+        if !config.enabled {
+            return self.zoom_indicators.remove(output).is_some();
+        }
+
+        let (shown_at, enter_from) = self
+            .zoom_indicators
+            .get(output)
+            .filter(|indicator| !indicator.finished(now))
+            .map(|indicator| {
+                if now >= indicator.expires_at {
+                    (now, indicator.mix(now))
+                } else {
+                    (indicator.shown_at, indicator.enter_from)
+                }
+            })
+            .unwrap_or((now, 1.0));
+        self.zoom_indicators.insert(
+            output.to_string(),
+            ZoomIndicator {
+                scale,
+                shown_at,
+                enter_from,
+                expires_at: now + Duration::from_millis(config.hold_duration_ms),
+                fade_duration: Duration::from_millis(config.fade_duration_ms),
+                expiry_notified: false,
+            },
+        );
+        true
+    }
+
+    pub fn reload_zoom_indicator(&mut self, config: &halley_config::ZoomIndicator) -> bool {
+        if config.enabled || self.zoom_indicators.is_empty() {
+            return false;
+        }
+        self.zoom_indicators.clear();
+        true
+    }
+
+    pub fn remove_output(&mut self, output: &str) {
+        self.zoom_indicators.remove(output);
+    }
+
     pub fn snapshot(&self, output: &str, now: Duration) -> OverlaySnapshot {
         OverlaySnapshot {
             exit_mix: self
@@ -233,6 +323,12 @@ impl OverlayManager {
                     }
                 })
             }),
+            zoom_indicator: self.zoom_indicators.get(output).and_then(|indicator| {
+                (!indicator.finished(now)).then(|| ZoomIndicatorSnapshot {
+                    scale: indicator.scale,
+                    mix: indicator.mix(now),
+                })
+            }),
         }
     }
 
@@ -244,6 +340,10 @@ impl OverlayManager {
                 .notification
                 .as_ref()
                 .is_some_and(|notification| notification.animating(now))
+            || self
+                .zoom_indicators
+                .values()
+                .any(|indicator| indicator.animating(now))
     }
 
     /// Timer-side lifecycle update. Returns true when a frame must be queued
@@ -274,12 +374,26 @@ impl OverlayManager {
             self.exit = None;
             redraw = true;
         }
+        for indicator in self.zoom_indicators.values_mut() {
+            if now >= indicator.expires_at && !indicator.expiry_notified {
+                indicator.expiry_notified = true;
+                redraw = true;
+            }
+        }
+        let before = self.zoom_indicators.len();
+        self.zoom_indicators
+            .retain(|_, indicator| !indicator.finished(now));
+        redraw |= self.zoom_indicators.len() != before;
         redraw
     }
 }
 
 fn transition_progress(elapsed: Duration) -> f32 {
-    let t = (elapsed.as_secs_f32() / TRANSITION_DURATION.as_secs_f32()).clamp(0.0, 1.0);
+    transition_progress_for(elapsed, TRANSITION_DURATION)
+}
+
+fn transition_progress_for(elapsed: Duration, duration: Duration) -> f32 {
+    let t = (elapsed.as_secs_f32() / duration.as_secs_f32()).clamp(0.0, 1.0);
     if t < 0.5 {
         4.0 * t * t * t
     } else {
@@ -349,5 +463,134 @@ mod tests {
         assert!(overlays.exit_modal_active());
         assert!(overlays.cancel_exit(Duration::from_millis(20)));
         assert!(!overlays.exit_modal_active());
+    }
+
+    #[test]
+    fn zoom_indicator_holds_after_activity_then_fades() {
+        let mut overlays = OverlayManager::default();
+        let config = halley_config::ZoomIndicator::default();
+        overlays.show_zoom_indicator("DP-1", 0.75, &config, Duration::ZERO);
+
+        let initial = overlays
+            .snapshot("DP-1", Duration::ZERO)
+            .zoom_indicator
+            .unwrap();
+        assert_eq!(initial.scale, 0.75);
+        assert_eq!(initial.mix, 1.0);
+        assert_eq!(
+            overlays
+                .snapshot("DP-1", Duration::from_millis(749))
+                .zoom_indicator
+                .unwrap()
+                .mix,
+            1.0
+        );
+        assert!(
+            overlays
+                .snapshot("DP-1", Duration::from_millis(840))
+                .zoom_indicator
+                .unwrap()
+                .mix
+                < 1.0
+        );
+        assert!(
+            overlays
+                .snapshot("DP-1", Duration::from_millis(930))
+                .zoom_indicator
+                .is_none()
+        );
+
+        let mut overlays = OverlayManager::default();
+        overlays.show_zoom_indicator("DP-1", 0.75, &config, Duration::ZERO);
+        assert!(!overlays.animating(Duration::from_millis(749)));
+        assert!(overlays.wakeup(Duration::from_millis(750)));
+        assert!(overlays.animating(Duration::from_millis(750)));
+        assert!(overlays.wakeup(Duration::from_millis(930)));
+    }
+
+    #[test]
+    fn repeated_zoom_activity_extends_the_hold_and_updates_the_live_scale() {
+        let mut overlays = OverlayManager::default();
+        let config = halley_config::ZoomIndicator::default();
+        overlays.show_zoom_indicator("DP-1", 0.90, &config, Duration::ZERO);
+        overlays.show_zoom_indicator("DP-1", 0.70, &config, Duration::from_millis(700));
+
+        let snapshot = overlays
+            .snapshot("DP-1", Duration::from_millis(1_000))
+            .zoom_indicator
+            .unwrap();
+        assert_eq!(snapshot.scale, 0.70);
+        assert_eq!(snapshot.mix, 1.0);
+    }
+
+    #[test]
+    fn activity_during_fade_reverses_without_flashing_or_affecting_other_outputs() {
+        let mut overlays = OverlayManager::default();
+        let config = halley_config::ZoomIndicator::default();
+        overlays.show_zoom_indicator("DP-1", 0.80, &config, Duration::ZERO);
+        overlays.show_zoom_indicator("DP-2", 0.60, &config, Duration::ZERO);
+        let reactivated_at = Duration::from_millis(840);
+        let before = overlays
+            .snapshot("DP-1", reactivated_at)
+            .zoom_indicator
+            .unwrap()
+            .mix;
+
+        overlays.show_zoom_indicator("DP-1", 0.75, &config, reactivated_at);
+        let after = overlays
+            .snapshot("DP-1", reactivated_at)
+            .zoom_indicator
+            .unwrap();
+
+        assert_eq!(after.mix, before);
+        assert_eq!(after.scale, 0.75);
+        assert_eq!(
+            overlays
+                .snapshot("DP-2", reactivated_at)
+                .zoom_indicator
+                .unwrap()
+                .scale,
+            0.60
+        );
+        assert!(
+            overlays
+                .snapshot("DP-1", Duration::from_millis(900))
+                .zoom_indicator
+                .unwrap()
+                .mix
+                > before
+        );
+    }
+
+    #[test]
+    fn disabling_or_removing_an_output_clears_zoom_indicator_state() {
+        let mut overlays = OverlayManager::default();
+        let mut config = halley_config::ZoomIndicator::default();
+        overlays.show_zoom_indicator("DP-1", 0.75, &config, Duration::ZERO);
+        overlays.remove_output("DP-1");
+        assert!(
+            overlays
+                .snapshot("DP-1", Duration::ZERO)
+                .zoom_indicator
+                .is_none()
+        );
+
+        overlays.show_zoom_indicator("DP-1", 0.75, &config, Duration::ZERO);
+        config.enabled = false;
+        assert!(overlays.reload_zoom_indicator(&config));
+        assert!(
+            overlays
+                .snapshot("DP-1", Duration::ZERO)
+                .zoom_indicator
+                .is_none()
+        );
+
+        assert!(!overlays.show_zoom_indicator("DP-1", 0.75, &config, Duration::ZERO));
+        assert!(
+            overlays
+                .snapshot("DP-1", Duration::ZERO)
+                .zoom_indicator
+                .is_none()
+        );
     }
 }

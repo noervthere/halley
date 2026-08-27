@@ -5,9 +5,8 @@ use std::time::Duration;
 use crate::{
     BearingsCommand, CaptureMode, CaptureOutcome, ClusterDraft, ClusterInfo, ClusterSummary,
     ClusterTarget, Direction, DpmsCommand, Error, ErrorKind, EventStream, EventTopic,
-    GamescopeTarget, HALLEY_API_VERSION, MonitorTarget, NodeInfo, NodeMoveDirection, NodeSelector,
-    OutputInfo, Result, ServerInfo, StackCycleDirection, Subscription, TrailDirection, TrailInfo,
-    TrailTarget,
+    HALLEY_API_VERSION, MonitorTarget, NodeInfo, NodeMoveDirection, NodeSelector, OutputInfo,
+    Result, ServerInfo, StackCycleDirection, Subscription, TrailDirection, TrailInfo, TrailTarget,
 };
 
 #[derive(Clone, Debug, Default)]
@@ -361,19 +360,6 @@ impl Client {
     }
     pub fn swap_tile(&self, direction: Direction, output: Option<&str>) -> Result<()> {
         self.tile_control(direction, output, true)
-    }
-    pub fn gamescope_target(&self, selector: &str) -> Result<GamescopeTarget> {
-        match self.request(halley_ipc::Request::GamescopeTarget {
-            selector: selector.to_owned(),
-        })? {
-            halley_ipc::Response::GamescopeTarget(target) => Ok(GamescopeTarget {
-                output: target.output,
-                width: target.width,
-                height: target.height,
-                refresh_hz: target.refresh_hz,
-            }),
-            other => Err(unexpected("gamescope target", other)),
-        }
     }
     pub fn request_quit(&self) -> Result<()> {
         self.ack(halley_ipc::Request::Quit)

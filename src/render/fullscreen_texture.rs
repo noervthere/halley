@@ -1,89 +1,90 @@
 use std::collections::HashMap;
 use std::error::Error;
-use std::hash::{DefaultHasher, Hash, Hasher};
 
-use smithay::backend::renderer::element::texture::TextureRenderElement;
-use smithay::backend::renderer::element::{Element, Id, Kind, RenderElement, UnderlyingStorage};
-use smithay::backend::renderer::gles::{
-    GlesError, GlesFrame, GlesRenderer, GlesTexProgram, GlesTexture, Uniform, UniformName,
-    UniformType, ffi,
-};
+use smithay::backend::renderer::element::Id;
+use smithay::backend::renderer::gles::GlesRenderer;
+use smithay::backend::renderer::utils::CommitCounter;
 use smithay::backend::renderer::utils::with_renderer_surface_state;
-use smithay::backend::renderer::utils::{CommitCounter, OpaqueRegions};
-use smithay::backend::renderer::{ContextId, Renderer};
+use smithay::backend::renderer::{Renderer, Texture};
 use smithay::desktop::Window;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::utils::user_data::UserDataMap;
-use smithay::utils::{Buffer, Logical, Physical, Rectangle, Scale, Size, Transform};
+use smithay::utils::{Buffer, Logical, Physical, Rectangle, Size};
+use smithay::wayland::compositor::with_states;
 use smithay::wayland::seat::WaylandFocus;
+use smithay::wayland::shell::xdg::SurfaceCachedState;
 
-use super::window_texture::WindowTexture;
-
-const FULLSCREEN_BLEND_SHADER: &str = r#"
-//_DEFINES_
-
-#if defined(EXTERNAL)
-#extension GL_OES_EGL_image_external : require
-#endif
-
-precision highp float;
-varying vec2 v_coords;
-
-#if defined(EXTERNAL)
-uniform samplerExternalOES tex;
-#else
-uniform sampler2D tex;
-#endif
-
-uniform sampler2D halley_next_tex;
-uniform float halley_progress;
-uniform float alpha;
-uniform vec2 halley_rect_size;
-uniform vec2 halley_corner_radii;
-
-#if defined(DEBUG_FLAGS)
-uniform float tint;
-#endif
-
-// Signed distance to a rounded rectangle, negative inside. See the matching
-// note in `window_decoration.rs`: the interior term is what stops a radius
-// animating toward zero from fading the whole surface to half opacity.
-float rounded_alpha(vec2 coords, vec2 size, vec2 radii) {
-    float radius = coords.y < size.y * 0.5 ? radii.x : radii.y;
-    radius = clamp(radius, 0.0, min(size.x, size.y) * 0.5);
-    vec2 half_size = size * 0.5;
-    vec2 q = abs(coords - half_size) - (half_size - vec2(radius));
-    float distance_to_edge =
-        length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - radius;
-    return 1.0 - smoothstep(-0.75, 0.75, distance_to_edge);
-}
-
-void main() {
-    vec4 previous = texture2D(tex, v_coords);
-#if defined(NO_ALPHA)
-    previous.a = 1.0;
-#endif
-    vec4 next = texture2D(halley_next_tex, v_coords);
-    vec2 size = max(halley_rect_size, vec2(1.0));
-    float mask = rounded_alpha(v_coords * size, size, halley_corner_radii);
-    vec4 color = mix(previous, next, halley_progress) * (alpha * mask);
-
-#if defined(DEBUG_FLAGS)
-    if (tint == 1.0)
-        color = vec4(0.0, 0.2, 0.0, 0.2) + color * 0.8;
-#endif
-
-    gl_FragColor = color;
-}
-"#;
+use super::window_texture::ResizeWindowTexture;
 
 #[derive(Debug)]
 struct TransitionTextures {
     id: Id,
-    previous: WindowTexture,
-    current: Option<GlesTexture>,
+    previous: ResizeWindowTexture,
+    /// Latest accepted live endpoint. The outgoing texture remains immutable,
+    /// while this offscreen texture is refreshed for every rendered animation
+    /// frame just like Niri's resize pipeline. Reusing the allocation keeps the
+    /// refresh cheap and leaves the last blended frame adjacent to the live
+    /// surface instead of jumping from an early frozen repaint.
+    next: Option<ResizeWindowTexture>,
+    /// Scratch endpoint used for validation. Before authorization it becomes
+    /// `next` only if the owning transaction accepts the same commit. During
+    /// the animation it forms the other half of a ping-pong pair, so a mixed
+    /// Firefox surface-tree commit can never overwrite the displayed endpoint
+    /// before it has been validated.
+    prepared: Option<ResizeWindowTexture>,
     owner: TextureTransitionOwner,
+    last_surface_commit: CommitCounter,
+    outgoing_surface_size: Option<Size<i32, Logical>>,
+    requires_fresh_damage: bool,
+    target_readiness: TargetReadiness,
+    target_damage: TargetDamageCoverage,
     capture_generation: CommitCounter,
+}
+
+#[derive(Debug, Default)]
+struct TargetDamageCoverage {
+    size: Option<Size<i32, Buffer>>,
+    damage: Vec<Rectangle<i32, Buffer>>,
+}
+
+/// Repaint evidence is not transaction authority.
+///
+/// Native clients such as Firefox routinely commit subsurfaces and stale root
+/// buffers before acknowledging a resize configure. Those commits can be
+/// candidates, but rendering must keep holding the outgoing snapshot until
+/// fullscreen/maximize explicitly authorizes the accepted resize commit.
+#[derive(Debug, Default)]
+struct TargetReadiness {
+    candidate: bool,
+    authorized: bool,
+}
+
+impl TargetReadiness {
+    fn observe_candidate(&mut self, ready: bool) {
+        self.candidate = ready;
+    }
+
+    fn authorize(&mut self) {
+        debug_assert!(self.candidate);
+        self.authorized = true;
+    }
+}
+
+impl TargetDamageCoverage {
+    fn observe(
+        &mut self,
+        size: Option<Size<i32, Buffer>>,
+        damage: &[Rectangle<i32, Buffer>],
+    ) -> bool {
+        if self.size != size {
+            self.size = size;
+            self.damage.clear();
+        }
+        let Some(size) = size.filter(|size| size.w > 0 && size.h > 0) else {
+            return false;
+        };
+        self.damage.extend_from_slice(damage);
+        damage_covers_buffer(size, &self.damage)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -92,22 +93,16 @@ pub enum TextureTransitionOwner {
     Maximize,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TargetRepaint {
+    pub owner: TextureTransitionOwner,
+    pub ready: bool,
+}
+
 #[derive(Default)]
 pub struct FullscreenTextureTransitions {
     windows: HashMap<WlSurface, TransitionTextures>,
-    program: Option<(ContextId<GlesTexture>, GlesTexProgram)>,
-}
-
-#[derive(Debug)]
-pub struct FullscreenBlendElement {
-    previous: TextureRenderElement<GlesTexture>,
-    previous_texture: GlesTexture,
-    next: GlesTexture,
-    program: GlesTexProgram,
-    progress: f32,
-    size: (f32, f32),
-    radii: super::window_decoration::CornerRadii,
-    commit: CommitCounter,
+    resize_renderer: super::resize::ResizeRenderer,
 }
 
 /// One window's crossfade between its captured and live textures.
@@ -128,6 +123,15 @@ pub struct BlendRequest<'a> {
 }
 
 impl FullscreenTextureTransitions {
+    /// The live surface is intentionally absent from the scene while the
+    /// outgoing snapshot is holding the resize transaction. Frame callbacks
+    /// must still reach that client so it can finish painting the new buffer.
+    pub fn awaiting_target(&self, surface: &WlSurface) -> bool {
+        self.windows
+            .get(surface)
+            .is_some_and(|entry| entry.next.is_none() && !entry.target_readiness.authorized)
+    }
+
     pub fn capture_previous(
         &mut self,
         renderer: &mut GlesRenderer,
@@ -139,18 +143,212 @@ impl FullscreenTextureTransitions {
             .ok_or("fullscreen snapshot window has no surface")?
             .into_owned();
         self.windows.remove(&surface);
-        let previous = super::window_texture::capture(renderer, window, None)?;
+        let previous = super::window_texture::capture_for_resize(renderer, window, None)?;
+        eventline::debug!(
+            "window transition: captured outgoing owner={owner:?} window={:?} surface={:?} opaque={}",
+            previous.window_size,
+            previous.surface_geometry,
+            previous.client_opaque,
+        );
+        let (last_surface_commit, outgoing_surface_size) =
+            with_renderer_surface_state(&surface, |state| {
+                (state.current_commit(), state.surface_size())
+            })
+            .unwrap_or_default();
         self.windows.insert(
             surface,
             TransitionTextures {
                 id: Id::new(),
                 previous,
-                current: None,
+                next: None,
+                prepared: None,
                 owner,
+                last_surface_commit,
+                outgoing_surface_size,
+                requires_fresh_damage: crate::xwayland::is_x11(window),
+                target_readiness: TargetReadiness::default(),
+                target_damage: TargetDamageCoverage::default(),
                 capture_generation: CommitCounter::default(),
             },
         );
         Ok(())
+    }
+
+    /// Records the damage boundary of each surface commit while a resize
+    /// transaction is pending.
+    ///
+    /// Xwayland can attach the correctly-sized allocation before the X11
+    /// client has painted it. Size alone therefore does not make a target
+    /// endpoint safe to capture. Updating the baseline on every commit also
+    /// prevents unrelated damage on the outgoing buffer from being mistaken
+    /// for the target repaint.
+    pub fn observe_surface_commit(&mut self, surface: &WlSurface) -> Option<TargetRepaint> {
+        let entry = self.windows.get_mut(surface)?;
+        if entry.target_readiness.authorized {
+            // The owning protocol transaction is complete. Later commits are
+            // ordinary live updates consumed by blend_element(); they must not
+            // re-enter or block fullscreen/maximize state settlement.
+            return None;
+        }
+        // A prepared endpoint belongs to one exact commit. If the protocol
+        // manager did not accept it, never carry it across a later commit.
+        entry.prepared = None;
+        let (current, damage, buffer_size, surface_size) =
+            with_renderer_surface_state(surface, |state| {
+                (
+                    state.current_commit(),
+                    state.damage_since(Some(entry.last_surface_commit)),
+                    state
+                        .buffer_size()
+                        .map(|size| size.to_buffer(state.buffer_scale(), state.buffer_transform())),
+                    state.surface_size(),
+                )
+            })
+            .unwrap_or((entry.last_surface_commit, Default::default(), None, None));
+        let advanced = commit_has_advanced(current, entry.last_surface_commit);
+        let candidate_ready = if !entry.requires_fresh_damage {
+            let committed_window_size = with_states(surface, |states| {
+                states
+                    .cached_state
+                    .get::<SurfaceCachedState>()
+                    .current()
+                    .geometry
+                    .map(|geometry| geometry.size)
+            });
+            let endpoint_ready = native_target_buffer_ready(
+                advanced,
+                entry.previous.window_size,
+                entry.outgoing_surface_size,
+                committed_window_size,
+                surface_size,
+            );
+            if advanced {
+                eventline::debug!(
+                    "window transition: native repaint candidate ready={endpoint_ready} outgoing-window={:?} outgoing-root={:?} committed-window={:?} current-root={:?}",
+                    entry.previous.window_size,
+                    entry.outgoing_surface_size,
+                    committed_window_size,
+                    surface_size,
+                );
+            }
+            // Firefox repaints its root and decoration/content subsurfaces in
+            // separate commits. Once a new root allocation is a candidate,
+            // keep retrying the complete surface-tree capture on subsequent
+            // child commits. Those commits re-enter with the root commit
+            // counter unchanged; revoking the candidate here left the
+            // fullscreen transaction holding its outgoing frame forever.
+            native_target_candidate_ready(
+                entry.target_readiness.candidate,
+                advanced,
+                endpoint_ready,
+            )
+        } else if advanced {
+            entry.target_damage.observe(buffer_size, &damage)
+        } else {
+            // Subsurface commits re-enter this root-surface observer without
+            // advancing the root commit counter. Do not revoke repaint
+            // evidence that was already complete for the current allocation.
+            entry.target_readiness.candidate
+        };
+        entry.last_surface_commit = current;
+        entry.target_readiness.observe_candidate(candidate_ready);
+        Some(TargetRepaint {
+            owner: entry.owner,
+            ready: entry.target_readiness.candidate,
+        })
+    }
+
+    /// Captures and validates the complete surface tree for the candidate
+    /// commit without yet making it renderable.
+    ///
+    /// Firefox commits its resized root buffer before all of its decoration
+    /// subsurfaces have retired the outgoing allocation. The root size and xdg
+    /// geometry are correct at that point, but a surface-tree snapshot is
+    /// still mostly the old fullscreen texture. Classify the complete extent
+    /// against both endpoints and keep holding the outgoing snapshot until it
+    /// is closer to the configured target than to the outgoing window.
+    pub fn prepare_target(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        window: &Window,
+        owner: TextureTransitionOwner,
+    ) -> Result<bool, Box<dyn Error>> {
+        let surface = window
+            .wl_surface()
+            .ok_or("resize target window has no surface")?;
+        let context = renderer.context_id();
+        let Some(entry) = self.windows.get_mut(surface.as_ref()) else {
+            return Ok(false);
+        };
+        if entry.owner != owner || !entry.target_readiness.candidate || entry.next.is_some() {
+            return Ok(false);
+        }
+        if entry.previous.context != context {
+            self.windows.remove(surface.as_ref());
+            return Ok(false);
+        }
+        let candidate = super::window_texture::capture_for_resize(renderer, window, None)?;
+        if !snapshot_matches_target_endpoint(&entry.previous, &candidate) {
+            eventline::debug!(
+                "window transition: rejected mixed surface-tree endpoint owner={owner:?} outgoing-window={:?} candidate-window={:?} candidate-surface={:?} opaque={}",
+                entry.previous.window_size,
+                candidate.window_size,
+                candidate.surface_geometry,
+                candidate.client_opaque,
+            );
+            return Ok(false);
+        }
+        entry.prepared = Some(candidate);
+        Ok(true)
+    }
+
+    /// Freezes the painted target while handling the authoritative surface
+    /// commit, before a later XWayland commit can replace its contents.
+    pub fn capture_target(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        window: &Window,
+        owner: TextureTransitionOwner,
+    ) -> Result<bool, Box<dyn Error>> {
+        let surface = window
+            .wl_surface()
+            .ok_or("resize target window has no surface")?
+            .into_owned();
+        let context = renderer.context_id();
+        let Some(entry) = self.windows.get(&surface) else {
+            return Ok(false);
+        };
+        if entry.owner != owner || !entry.target_readiness.candidate || entry.next.is_some() {
+            return Ok(false);
+        }
+        if entry.previous.context != context {
+            self.windows.remove(&surface);
+            return Ok(false);
+        }
+        if entry.prepared.is_none() && !self.prepare_target(renderer, window, owner)? {
+            return Ok(false);
+        }
+        let entry = self
+            .windows
+            .get_mut(&surface)
+            .expect("resize transition checked above");
+        let next = entry
+            .prepared
+            .take()
+            .expect("prepared target checked above");
+        // Rendering is allowed to sample the candidate only after the
+        // presentation state machine has accepted this exact commit.
+        if !entry.target_readiness.authorized {
+            entry.target_readiness.authorize();
+        }
+        eventline::debug!(
+            "window transition: accepted fully repainted target owner={owner:?} size={:?} opaque={}",
+            next.texture.size(),
+            next.client_opaque,
+        );
+        entry.next = Some(next);
+        entry.capture_generation.increment();
+        Ok(true)
     }
 
     pub fn remove(&mut self, surface: &WlSurface) {
@@ -165,7 +363,7 @@ impl FullscreenTextureTransitions {
         &mut self,
         renderer: &mut GlesRenderer,
         request: BlendRequest<'_>,
-    ) -> Result<Option<FullscreenBlendElement>, Box<dyn Error>> {
+    ) -> Result<Option<super::resize::ResizeRenderElement>, Box<dyn Error>> {
         let BlendRequest {
             window,
             destination,
@@ -186,80 +384,183 @@ impl FullscreenTextureTransitions {
             return Ok(None);
         }
 
-        let buffer_matches = transition_buffer_ready(
-            hold_previous_until_restored_buffer_matches,
-            with_renderer_surface_state(surface.as_ref(), |state| state.surface_size()).flatten(),
-            window.geometry().size,
-        );
-        let (current, texture_progress) = if buffer_matches {
-            let reusable = entry.current.take();
-            let current = match super::window_texture::capture(renderer, window, reusable) {
-                Ok(current) => current,
-                Err(err) => {
-                    self.windows.remove(surface.as_ref());
-                    return Err(err);
-                }
-            };
-            entry.capture_generation.increment();
-            (current, progress)
+        let buffer_matches = entry.target_readiness.authorized
+            && transition_buffer_ready(
+                hold_previous_until_restored_buffer_matches,
+                with_renderer_surface_state(surface.as_ref(), |state| state.surface_size())
+                    .flatten(),
+                window.geometry().size,
+            );
+        let (next, texture_progress) = if buffer_matches {
+            let reusable = entry.prepared.take().map(|candidate| candidate.texture);
+            let candidate =
+                match super::window_texture::capture_for_resize(renderer, window, reusable) {
+                    Ok(candidate) => candidate,
+                    Err(err) => {
+                        self.windows.remove(surface.as_ref());
+                        return Err(err);
+                    }
+                };
+            if snapshot_matches_target_endpoint(&entry.previous, &candidate) {
+                entry.prepared = entry.next.replace(candidate);
+                entry.capture_generation.increment();
+            } else {
+                eventline::debug!(
+                    "window transition: retained last complete endpoint owner={:?} candidate-window={:?} candidate-surface={:?}",
+                    entry.owner,
+                    candidate.window_size,
+                    candidate.surface_geometry,
+                );
+                entry.prepared = Some(candidate);
+            }
+            let next = entry
+                .next
+                .clone()
+                .expect("authorized resize transition has an accepted endpoint");
+            (next, progress)
         } else {
             (
-                WindowTexture {
+                ResizeWindowTexture {
                     texture: entry.previous.texture.clone(),
                     context: entry.previous.context.clone(),
+                    surface_geometry: entry.previous.surface_geometry,
+                    window_size: entry.previous.window_size,
+                    client_opaque: entry.previous.client_opaque,
+                    surface_layers: entry.previous.surface_layers.clone(),
                 },
                 0.0,
             )
         };
-        let previous = entry.previous.texture.clone();
         let id = entry.id.clone();
-        entry.current = Some(current.texture.clone());
-
-        let program = match self.program.as_ref() {
-            Some((program_context, program)) if program_context == &context => program.clone(),
-            _ => {
-                let program = renderer.compile_custom_texture_shader(
-                    FULLSCREEN_BLEND_SHADER,
-                    &[
-                        UniformName::new("halley_next_tex", UniformType::_1i),
-                        UniformName::new("halley_progress", UniformType::_1f),
-                        UniformName::new("halley_rect_size", UniformType::_2f),
-                        UniformName::new("halley_corner_radii", UniformType::_2f),
-                    ],
-                )?;
-                self.program = Some((context.clone(), program.clone()));
-                program
-            }
-        };
-        let previous_element = entry.previous.render_element(id, destination, alpha);
-        let commit = blend_commit(
-            previous_element.current_commit(),
-            entry.capture_generation,
-            texture_progress as f32,
+        Ok(Some(self.resize_renderer.element(
+            renderer,
+            id,
+            &entry.previous,
+            next,
             destination,
+            texture_progress as f32,
+            alpha,
             radii,
-        );
-
-        Ok(Some(FullscreenBlendElement {
-            previous: previous_element,
-            previous_texture: previous,
-            next: current.texture,
-            program,
-            progress: texture_progress.clamp(0.0, 1.0) as f32,
-            size: (destination.size.w as f32, destination.size.h as f32),
-            radii: super::window_decoration::CornerRadii {
-                top: radii
-                    .top
-                    .max(0.0)
-                    .min(destination.size.w.min(destination.size.h).max(0) as f32 * 0.5),
-                bottom: radii
-                    .bottom
-                    .max(0.0)
-                    .min(destination.size.w.min(destination.size.h).max(0) as f32 * 0.5),
-            },
-            commit,
-        }))
+            entry.capture_generation,
+        )?))
     }
+}
+
+fn snapshot_matches_target_endpoint(
+    outgoing: &ResizeWindowTexture,
+    candidate: &ResizeWindowTexture,
+) -> bool {
+    surface_tree_matches_target_endpoint(
+        outgoing.window_size,
+        candidate.surface_geometry.size,
+        candidate.window_size,
+    ) && persistent_endpoint_layers_cover_target(
+        outgoing.window_size,
+        &outgoing.surface_layers,
+        candidate.window_size,
+        &candidate.surface_layers,
+    )
+}
+
+/// A merged surface-tree extent is not sufficient resize evidence. Firefox
+/// can resize its decoration/shadow subsurface before its persistent content
+/// surface; the union then matches the target even though most of the target
+/// snapshot still contains the outgoing-sized client. Every persistent layer
+/// that covered the outgoing client must either be retired or cover the new
+/// client before the endpoint is frozen.
+fn persistent_endpoint_layers_cover_target<LayerId: Eq>(
+    outgoing_window_size: Size<i32, Physical>,
+    outgoing_layers: &[(LayerId, Rectangle<i32, Physical>)],
+    candidate_window_size: Size<i32, Physical>,
+    candidate_layers: &[(LayerId, Rectangle<i32, Physical>)],
+) -> bool {
+    let outgoing_client = Rectangle::from_size(outgoing_window_size);
+    let candidate_client = Rectangle::from_size(candidate_window_size);
+
+    outgoing_layers
+        .iter()
+        .filter(|(_, geometry)| rectangle_contains(*geometry, outgoing_client))
+        .all(|(id, _)| {
+            candidate_layers
+                .iter()
+                .find(|(candidate_id, _)| candidate_id == id)
+                .is_none_or(|(_, geometry)| rectangle_contains(*geometry, candidate_client))
+        })
+}
+
+fn rectangle_contains<Kind>(container: Rectangle<i32, Kind>, target: Rectangle<i32, Kind>) -> bool {
+    container.loc.x <= target.loc.x
+        && container.loc.y <= target.loc.y
+        && container.loc.x.saturating_add(container.size.w)
+            >= target.loc.x.saturating_add(target.size.w)
+        && container.loc.y.saturating_add(container.size.h)
+            >= target.loc.y.saturating_add(target.size.h)
+}
+
+fn surface_tree_matches_target_endpoint(
+    outgoing_window_size: Size<i32, Physical>,
+    candidate_surface_size: Size<i32, Physical>,
+    candidate_window_size: Size<i32, Physical>,
+) -> bool {
+    endpoint_extent_distance(candidate_surface_size, candidate_window_size)
+        <= endpoint_extent_distance(candidate_surface_size, outgoing_window_size)
+}
+
+fn endpoint_extent_distance(
+    surface_size: Size<i32, Physical>,
+    window_size: Size<i32, Physical>,
+) -> i64 {
+    i64::from((surface_size.w - window_size.w).abs())
+        + i64::from((surface_size.h - window_size.h).abs())
+}
+
+fn commit_has_advanced(current: CommitCounter, previous: CommitCounter) -> bool {
+    current
+        .distance(Some(previous))
+        .is_some_and(|distance| distance > 0)
+}
+
+/// A native configure acknowledgement is not enough to identify the resized
+/// endpoint. Firefox can commit the new xdg window geometry while continuing
+/// to present the old root buffer for another commit. Capturing at that point
+/// pairs the restored geometry with a fullscreen allocation, producing the
+/// large, faded crop seen during Field fullscreen exits.
+///
+/// A real resize therefore requires a new root allocation. A state-only edge
+/// whose configured window size did not change may legitimately reuse the
+/// existing allocation.
+fn native_target_buffer_ready(
+    advanced: bool,
+    outgoing_window_size: Size<i32, Physical>,
+    outgoing_surface_size: Option<Size<i32, Logical>>,
+    committed_window_size: Option<Size<i32, Logical>>,
+    surface_size: Option<Size<i32, Logical>>,
+) -> bool {
+    if !advanced {
+        return false;
+    }
+    if committed_window_size.map(|size| size.to_physical(1)) == Some(outgoing_window_size) {
+        return true;
+    }
+    surface_size.is_some() && surface_size != outgoing_surface_size
+}
+
+/// Root repaint evidence remains valid while Firefox finishes the matching
+/// subsurface tree. Only a newer root commit may replace or revoke it.
+fn native_target_candidate_ready(
+    previous_candidate: bool,
+    root_commit_advanced: bool,
+    endpoint_ready: bool,
+) -> bool {
+    if root_commit_advanced {
+        endpoint_ready
+    } else {
+        previous_candidate
+    }
+}
+
+fn damage_covers_buffer(size: Size<i32, Buffer>, damage: &[Rectangle<i32, Buffer>]) -> bool {
+    super::window_texture::rectangles_cover_size(size, damage)
 }
 
 fn transition_buffer_ready(
@@ -270,131 +571,16 @@ fn transition_buffer_ready(
     !hold_previous || buffer_size == Some(configured_size)
 }
 
-fn blend_commit(
-    base: CommitCounter,
-    generation: CommitCounter,
-    progress: f32,
-    destination: Rectangle<i32, Physical>,
-    radii: super::window_decoration::CornerRadii,
-) -> CommitCounter {
-    let mut hasher = DefaultHasher::new();
-    base.distance(Some(CommitCounter::default()))
-        .unwrap_or(usize::MAX)
-        .hash(&mut hasher);
-    generation
-        .distance(Some(CommitCounter::default()))
-        .unwrap_or(usize::MAX)
-        .hash(&mut hasher);
-    progress.to_bits().hash(&mut hasher);
-    destination.size.w.hash(&mut hasher);
-    destination.size.h.hash(&mut hasher);
-    radii.top.to_bits().hash(&mut hasher);
-    radii.bottom.to_bits().hash(&mut hasher);
-    CommitCounter::from(hasher.finish() as usize)
-}
-
-impl Element for FullscreenBlendElement {
-    fn id(&self) -> &Id {
-        self.previous.id()
-    }
-
-    fn current_commit(&self) -> CommitCounter {
-        self.commit
-    }
-
-    fn geometry(&self, scale: Scale<f64>) -> Rectangle<i32, Physical> {
-        self.previous.geometry(scale)
-    }
-
-    fn transform(&self) -> Transform {
-        self.previous.transform()
-    }
-
-    fn src(&self) -> Rectangle<f64, Buffer> {
-        self.previous.src()
-    }
-
-    fn opaque_regions(&self, _scale: Scale<f64>) -> OpaqueRegions<i32, Physical> {
-        OpaqueRegions::default()
-    }
-
-    fn alpha(&self) -> f32 {
-        self.previous.alpha()
-    }
-
-    fn kind(&self) -> Kind {
-        Kind::Unspecified
-    }
-}
-
-impl RenderElement<GlesRenderer> for FullscreenBlendElement {
-    fn draw(
-        &self,
-        frame: &mut GlesFrame<'_, '_>,
-        src: Rectangle<f64, Buffer>,
-        dst: Rectangle<i32, Physical>,
-        damage: &[Rectangle<i32, Physical>],
-        opaque_regions: &[Rectangle<i32, Physical>],
-        _cache: Option<&UserDataMap>,
-    ) -> Result<(), GlesError> {
-        let (previous_active_texture, previous_texture_1) = frame.with_context(|gl| unsafe {
-            let mut active_texture = 0_i32;
-            gl.GetIntegerv(ffi::ACTIVE_TEXTURE, &mut active_texture);
-            gl.ActiveTexture(ffi::TEXTURE1);
-            let mut texture_1 = 0_i32;
-            gl.GetIntegerv(ffi::TEXTURE_BINDING_2D, &mut texture_1);
-            gl.BindTexture(ffi::TEXTURE_2D, self.next.tex_id());
-            gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_MIN_FILTER, ffi::LINEAR as i32);
-            gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_MAG_FILTER, ffi::LINEAR as i32);
-            gl.TexParameteri(
-                ffi::TEXTURE_2D,
-                ffi::TEXTURE_WRAP_S,
-                ffi::CLAMP_TO_EDGE as i32,
-            );
-            gl.TexParameteri(
-                ffi::TEXTURE_2D,
-                ffi::TEXTURE_WRAP_T,
-                ffi::CLAMP_TO_EDGE as i32,
-            );
-            gl.ActiveTexture(active_texture as u32);
-            (active_texture, texture_1)
-        })?;
-
-        let result = frame.render_texture_from_to(
-            &self.previous_texture,
-            src,
-            dst,
-            damage,
-            opaque_regions,
-            self.transform(),
-            self.alpha(),
-            Some(&self.program),
-            &[
-                Uniform::new("halley_next_tex", 1_i32),
-                Uniform::new("halley_progress", self.progress),
-                Uniform::new("halley_rect_size", self.size),
-                Uniform::new("halley_corner_radii", (self.radii.top, self.radii.bottom)),
-            ],
-        );
-
-        frame.with_context(|gl| unsafe {
-            gl.ActiveTexture(ffi::TEXTURE1);
-            gl.BindTexture(ffi::TEXTURE_2D, previous_texture_1 as u32);
-            gl.ActiveTexture(previous_active_texture as u32);
-        })?;
-        result
-    }
-
-    fn underlying_storage(&self, _renderer: &mut GlesRenderer) -> Option<UnderlyingStorage<'_>> {
-        None
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{blend_commit, transition_buffer_ready};
+    use super::{
+        TargetDamageCoverage, TargetReadiness, commit_has_advanced, damage_covers_buffer,
+        native_target_buffer_ready, native_target_candidate_ready,
+        persistent_endpoint_layers_cover_target, surface_tree_matches_target_endpoint,
+        transition_buffer_ready,
+    };
     use smithay::backend::renderer::utils::CommitCounter;
-    use smithay::utils::{Physical, Rectangle};
+    use smithay::utils::{Buffer, Logical, Physical, Rectangle, Size};
 
     #[test]
     fn x11_fullscreen_exit_holds_previous_texture_until_restored_buffer_arrives() {
@@ -419,23 +605,177 @@ mod tests {
     }
 
     #[test]
-    fn blend_commits_follow_capture_generation_and_animation_progress() {
-        let destination = Rectangle::<i32, Physical>::new((0, 0).into(), (1920, 1080).into());
-        let radii = crate::render::window_decoration::CornerRadii::all(8.0);
-        let base = CommitCounter::from(7);
-        let first = blend_commit(base, CommitCounter::from(1), 0.25, destination, radii);
+    fn x11_target_requires_damage_after_the_last_observed_commit() {
+        let previous = CommitCounter::from(41);
 
-        assert_eq!(
-            first,
-            blend_commit(base, CommitCounter::from(1), 0.25, destination, radii)
-        );
-        assert_ne!(
-            first,
-            blend_commit(base, CommitCounter::from(2), 0.25, destination, radii)
-        );
-        assert_ne!(
-            first,
-            blend_commit(base, CommitCounter::from(1), 0.5, destination, radii)
-        );
+        assert!(!commit_has_advanced(previous, previous));
+        assert!(commit_has_advanced(CommitCounter::from(42), previous));
+    }
+
+    #[test]
+    fn repaint_candidate_cannot_be_sampled_before_transaction_authority() {
+        let mut readiness = TargetReadiness::default();
+
+        readiness.observe_candidate(true);
+        assert!(readiness.candidate);
+        assert!(!readiness.authorized);
+
+        readiness.authorize();
+        assert!(readiness.authorized);
+    }
+
+    #[test]
+    fn native_target_rejects_geometry_ack_with_the_outgoing_root_allocation() {
+        let outgoing_window = Size::<i32, Physical>::from((2560, 1440));
+        let outgoing_surface = Some(Size::<i32, Logical>::from((2560, 1440)));
+
+        assert!(!native_target_buffer_ready(
+            true,
+            outgoing_window,
+            outgoing_surface,
+            Some((996, 664).into()),
+            outgoing_surface,
+        ));
+    }
+
+    #[test]
+    fn native_target_accepts_the_resized_root_allocation() {
+        assert!(native_target_buffer_ready(
+            true,
+            (2560, 1440).into(),
+            Some((2560, 1440).into()),
+            Some((996, 664).into()),
+            Some((1036, 704).into()),
+        ));
+    }
+
+    #[test]
+    fn native_state_only_target_can_reuse_an_unchanged_allocation() {
+        assert!(native_target_buffer_ready(
+            true,
+            (996, 664).into(),
+            Some((1036, 704).into()),
+            Some((996, 664).into()),
+            Some((1036, 704).into()),
+        ));
+    }
+
+    #[test]
+    fn native_subsurface_commit_cannot_release_the_resize_transaction() {
+        assert!(!native_target_buffer_ready(
+            false,
+            (996, 664).into(),
+            Some((1036, 704).into()),
+            Some((2560, 1440).into()),
+            Some((2560, 1440).into()),
+        ));
+    }
+
+    #[test]
+    fn native_subsurface_commit_retains_a_root_repaint_candidate() {
+        assert!(native_target_candidate_ready(true, false, false));
+    }
+
+    #[test]
+    fn native_subsurface_commit_cannot_invent_a_root_repaint_candidate() {
+        assert!(!native_target_candidate_ready(false, false, false));
+    }
+
+    #[test]
+    fn newer_native_root_commit_can_revoke_a_stale_repaint_candidate() {
+        assert!(!native_target_candidate_ready(true, true, false));
+    }
+
+    #[test]
+    fn native_target_rejects_outgoing_sized_subsurfaces_after_root_resize() {
+        assert!(!surface_tree_matches_target_endpoint(
+            (1280, 800).into(),
+            (1300, 820).into(),
+            (500, 304).into(),
+        ));
+    }
+
+    #[test]
+    fn native_target_accepts_resized_surface_tree_with_csd_margins() {
+        assert!(surface_tree_matches_target_endpoint(
+            (1280, 800).into(),
+            (540, 344).into(),
+            (500, 304).into(),
+        ));
+    }
+
+    #[test]
+    fn native_target_rejects_mixed_persistent_surface_layers() {
+        let outgoing_layers = [
+            (1, Rectangle::new((0, 0).into(), (252, 304).into())),
+            (2, Rectangle::new((-20, -20).into(), (292, 344).into())),
+        ];
+        let mixed_target_layers = [
+            (1, Rectangle::new((0, 0).into(), (252, 304).into())),
+            (2, Rectangle::new((0, 0).into(), (1280, 800).into())),
+        ];
+
+        assert!(!persistent_endpoint_layers_cover_target(
+            (252, 304).into(),
+            &outgoing_layers,
+            (1280, 800).into(),
+            &mixed_target_layers,
+        ));
+    }
+
+    #[test]
+    fn native_target_accepts_fully_resized_persistent_surface_layers() {
+        let outgoing_layers = [
+            (1, Rectangle::new((0, 0).into(), (252, 304).into())),
+            (2, Rectangle::new((-20, -20).into(), (292, 344).into())),
+        ];
+        let target_layers = [
+            (1, Rectangle::new((0, 0).into(), (1320, 840).into())),
+            (2, Rectangle::new((0, 0).into(), (1280, 800).into())),
+        ];
+
+        assert!(persistent_endpoint_layers_cover_target(
+            (252, 304).into(),
+            &outgoing_layers,
+            (1280, 800).into(),
+            &target_layers,
+        ));
+    }
+
+    #[test]
+    fn x11_target_rejects_a_resized_buffer_with_only_the_old_area_painted() {
+        let target = Size::<i32, Buffer>::from((1450, 1252));
+        let old_area = Rectangle::new((0, 0).into(), (735, 611).into());
+
+        assert!(!damage_covers_buffer(target, &[old_area]));
+    }
+
+    #[test]
+    fn x11_target_accepts_tiled_damage_only_after_it_covers_the_buffer() {
+        let target = Size::<i32, Buffer>::from((100, 80));
+        let mut coverage = TargetDamageCoverage::default();
+
+        assert!(!coverage.observe(
+            Some(target),
+            &[Rectangle::new((0, 0).into(), (50, 80).into())]
+        ));
+        assert!(coverage.observe(
+            Some(target),
+            &[Rectangle::new((50, 0).into(), (50, 80).into())]
+        ));
+    }
+
+    #[test]
+    fn x11_target_discards_damage_when_the_buffer_size_changes() {
+        let mut coverage = TargetDamageCoverage::default();
+
+        assert!(coverage.observe(
+            Some((100, 80).into()),
+            &[Rectangle::new((0, 0).into(), (100, 80).into())]
+        ));
+        assert!(!coverage.observe(
+            Some((200, 160).into()),
+            &[Rectangle::new((0, 0).into(), (100, 80).into())]
+        ));
     }
 }

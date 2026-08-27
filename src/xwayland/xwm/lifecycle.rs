@@ -467,7 +467,26 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
                 if !fullscreen {
                     remember_normal_size(self, &surface, geometry.size);
                 }
-                if !animated {
+                if animated {
+                    // The Wayland buffer may have committed before X11's
+                    // matching ConfigureNotify. In that ordering the
+                    // configure is the second half of the transaction, so it
+                    // must authorize and freeze the endpoint here rather than
+                    // relying on render-time sampling of an unaccepted buffer.
+                    let textures = &mut self.render.fullscreen_textures;
+                    let capture = self.driver.with_renderer(|renderer| {
+                        textures.capture_target(
+                            renderer,
+                            &window,
+                            crate::render::fullscreen_texture::TextureTransitionOwner::Fullscreen,
+                        )
+                    });
+                    if let Err(err) = capture {
+                        eventline::warn!(
+                            "window transition: failed to freeze X11 configure target texture: {err}"
+                        );
+                    }
+                } else {
                     remove_fullscreen_snapshot(self, &window);
                 }
             }

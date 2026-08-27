@@ -360,6 +360,8 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                     super::sync_cluster_camera(app, &output_name, target_presentation_time);
                 let fullscreen_camera_changed =
                     app.sync_fullscreen_camera(&output, target_presentation_time);
+                let zoom_scale_before =
+                    app.cameras.get(&output_name).map(crate::input::zoom::scale);
                 let mut camera_animating = cluster_camera_changed;
                 for camera in app.cameras.iter_mut() {
                     camera_animating |= crate::input::zoom::tick(
@@ -369,6 +371,17 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                         dt,
                     )
                     .1;
+                }
+                let zoom_scale_after = app.cameras.get(&output_name).map(crate::input::zoom::scale);
+                if let (Some(before), Some(after)) = (zoom_scale_before, zoom_scale_after)
+                    && before != after
+                {
+                    app.shell.overlays.show_zoom_indicator(
+                        &output_name,
+                        after,
+                        &app.settings.overlays.zoom_indicator,
+                        target_presentation_time,
+                    );
                 }
                 if view_before != app.cameras.view(&output_name) {
                     super::pointer::update_client_state(
@@ -462,6 +475,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                         frame: FrameContext {
                             target_presentation_time,
                             vrr_auto_eligible: false,
+                            force_full_repaint: false,
                             clear: render::CLEAR_COLOR,
                         },
                         desktop: DesktopContext {
@@ -579,10 +593,16 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                         let window_member = window
                             .wl_surface()
                             .and_then(|surface| app.nodes.id_for_surface(surface.as_ref()));
+                        let compositor_snapshot = window.wl_surface().is_some_and(|surface| {
+                            app.render
+                                .fullscreen_textures
+                                .awaiting_target(surface.as_ref())
+                        });
                         let require_visible =
                             crate::wayland::frame_callbacks::requires_render_visibility(
                                 window_member,
                                 cluster_exclusive_member,
+                                compositor_snapshot,
                             );
                         window.send_frame(
                             &output,

@@ -5,18 +5,38 @@ use smithay::backend::renderer::element::surface::{
     WaylandSurfaceRenderElement, render_elements_from_surface_tree,
 };
 use smithay::backend::renderer::element::texture::TextureRenderElement;
-use smithay::backend::renderer::element::{Id, Kind};
+use smithay::backend::renderer::element::utils::{Relocate, RelocateRenderElement};
+use smithay::backend::renderer::element::{Element, Id, Kind};
 use smithay::backend::renderer::gles::{GlesRenderer, GlesTexture};
 use smithay::backend::renderer::utils::draw_render_elements;
 use smithay::backend::renderer::{Bind, Color32F, ContextId, Frame, Offscreen, Renderer, Texture};
 use smithay::desktop::Window;
-use smithay::utils::{Logical, Physical, Rectangle, Transform};
+use smithay::utils::{Logical, Physical, Rectangle, Scale, Size, Transform};
 use smithay::wayland::seat::WaylandFocus;
 
 #[derive(Clone, Debug)]
 pub struct WindowTexture {
     pub(crate) texture: GlesTexture,
     pub(crate) context: ContextId<GlesTexture>,
+}
+
+/// A window surface tree captured like Niri's resize snapshots: the texture
+/// contains the encompassing render-element rectangle rather than a cleared
+/// buffer forced to the configured window size. `surface_geometry` records
+/// where that texture belongs relative to `window_size`, allowing each side of
+/// a resize crossfade to be mapped independently in the shader.
+#[derive(Clone, Debug)]
+pub struct ResizeWindowTexture {
+    pub(crate) texture: GlesTexture,
+    pub(crate) context: ContextId<GlesTexture>,
+    pub(crate) surface_geometry: Rectangle<i32, Physical>,
+    pub(crate) window_size: Size<i32, Physical>,
+    pub(crate) client_opaque: bool,
+    /// Stable surface identities and their client-local bounds at capture
+    /// time. Resize transactions use this to reject a mixed surface tree in
+    /// which (for example) Firefox has resized its CSD surface but is still
+    /// presenting the outgoing content surface.
+    pub(crate) surface_layers: Vec<(Id, Rectangle<i32, Physical>)>,
 }
 
 impl WindowTexture {
@@ -72,6 +92,165 @@ pub fn capture(
             Kind::Unspecified,
         );
     capture_surface_elements(renderer, geometry, &elements, reusable)
+}
+
+pub fn capture_for_resize(
+    renderer: &mut GlesRenderer,
+    window: &Window,
+    reusable: Option<GlesTexture>,
+) -> Result<ResizeWindowTexture, Box<dyn Error>> {
+    let surface = window
+        .wl_surface()
+        .ok_or("window resize snapshot has no surface")?;
+    let geometry = window.geometry();
+    if geometry.size.w <= 0 || geometry.size.h <= 0 {
+        return Err("window resize snapshot has empty geometry".into());
+    }
+
+    let location = smithay::utils::Point::from((-geometry.loc.x, -geometry.loc.y)).to_physical(1);
+    let elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
+        render_elements_from_surface_tree(
+            renderer,
+            surface.as_ref(),
+            location,
+            1.0,
+            1.0,
+            Kind::Unspecified,
+        );
+    if elements.is_empty() {
+        return Err("window resize snapshot surface tree is empty".into());
+    }
+
+    let surface_geometry = elements
+        .iter()
+        .map(|element| element.geometry(Scale::from(1.0)))
+        .reduce(|bounds, geometry| bounds.merge(geometry))
+        .ok_or("window resize snapshot surface tree is empty")?;
+    if surface_geometry.size.w <= 0 || surface_geometry.size.h <= 0 {
+        return Err("window resize snapshot surface tree has empty geometry".into());
+    }
+    let surface_layers = elements
+        .iter()
+        .map(|element| (element.id().clone(), element.geometry(Scale::from(1.0))))
+        .collect::<Vec<_>>();
+    let client_rect = Rectangle::<i32, Physical>::from_size(geometry.size.to_physical(1));
+    let opaque_regions = elements
+        .iter()
+        .flat_map(|element| {
+            let element_geometry = element.geometry(Scale::from(1.0));
+            element
+                .opaque_regions(Scale::from(1.0))
+                .into_iter()
+                .map(move |opaque| Rectangle::new(element_geometry.loc + opaque.loc, opaque.size))
+        })
+        .collect::<Vec<_>>();
+    let client_opaque = rectangle_is_covered(client_rect, &opaque_regions);
+    let offset = surface_geometry.loc.upscale(-1);
+    let relocated = elements
+        .iter()
+        .map(|element| RelocateRenderElement::from_element(element, offset, Relocate::Relative))
+        .collect::<Vec<_>>();
+
+    let size = surface_geometry.size;
+    let buffer_size = size.to_logical(1).to_buffer(1, Transform::Normal);
+    let context = renderer.context_id();
+    let mut reusable = reusable;
+    let can_reuse = reusable
+        .as_mut()
+        .is_some_and(|texture| texture.size() == buffer_size && texture.is_unique_reference());
+    let mut texture = if can_reuse {
+        reusable.expect("reusable texture checked above")
+    } else {
+        <GlesRenderer as Offscreen<GlesTexture>>::create_buffer(
+            renderer,
+            Fourcc::Abgr8888,
+            buffer_size,
+        )?
+    };
+    let damage = Rectangle::<i32, Physical>::from_size(size);
+    {
+        let mut target = renderer.bind(&mut texture)?;
+        let mut frame = renderer.render(&mut target, size, Transform::Normal)?;
+        frame.clear(Color32F::TRANSPARENT, &[damage])?;
+        draw_render_elements(&mut frame, 1.0, &relocated, &[damage])?;
+        let _ = frame.finish()?;
+    }
+
+    Ok(ResizeWindowTexture {
+        texture,
+        context,
+        surface_geometry,
+        window_size: geometry.size.to_physical(1),
+        client_opaque,
+        surface_layers,
+    })
+}
+
+fn rectangle_is_covered(
+    target: Rectangle<i32, Physical>,
+    regions: &[Rectangle<i32, Physical>],
+) -> bool {
+    if target.size.w <= 0 || target.size.h <= 0 {
+        return false;
+    }
+    let normalized = regions
+        .iter()
+        .map(|region| Rectangle::new(region.loc - target.loc, region.size))
+        .collect::<Vec<_>>();
+    rectangles_cover_size(target.size, &normalized)
+}
+
+pub(crate) fn rectangles_cover_size<Kind>(
+    size: Size<i32, Kind>,
+    rectangles: &[Rectangle<i32, Kind>],
+) -> bool {
+    if size.w <= 0 || size.h <= 0 {
+        return false;
+    }
+
+    let clipped = rectangles
+        .iter()
+        .filter_map(|rect| {
+            let x1 = rect.loc.x.max(0).min(size.w);
+            let y1 = rect.loc.y.max(0).min(size.h);
+            let x2 = rect.loc.x.saturating_add(rect.size.w).max(0).min(size.w);
+            let y2 = rect.loc.y.saturating_add(rect.size.h).max(0).min(size.h);
+            (x2 > x1 && y2 > y1).then_some((x1, y1, x2, y2))
+        })
+        .collect::<Vec<_>>();
+    if clipped.is_empty() {
+        return false;
+    }
+
+    let mut x_edges = vec![0, size.w];
+    for &(x1, _, x2, _) in &clipped {
+        x_edges.extend([x1, x2]);
+    }
+    x_edges.sort_unstable();
+    x_edges.dedup();
+
+    x_edges.windows(2).all(|slab| {
+        let (left, right) = (slab[0], slab[1]);
+        if right <= left {
+            return true;
+        }
+        let mut intervals = clipped
+            .iter()
+            .filter_map(|&(x1, y1, x2, y2)| (x1 <= left && x2 >= right).then_some((y1, y2)))
+            .collect::<Vec<_>>();
+        intervals.sort_unstable();
+        let mut covered_to = 0;
+        for (start, end) in intervals {
+            if start > covered_to {
+                return false;
+            }
+            covered_to = covered_to.max(end);
+            if covered_to >= size.h {
+                return true;
+            }
+        }
+        false
+    })
 }
 
 fn capture_surface_elements(

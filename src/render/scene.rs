@@ -63,7 +63,7 @@ render_elements! {
     Rescaled=super::rescale::RescaledElement,
     Cropped=CropRenderElement<super::rescale::RescaledElement>,
     RoundedCropped=CropRenderElement<super::window_decoration::RoundedSurfaceElement>,
-    FullscreenBlend=super::fullscreen_texture::FullscreenBlendElement,
+    WindowResize=super::resize::ResizeRenderElement,
     WindowBorder=super::window_decoration::RoundedBorderElement,
     RoundedTexture=super::window_decoration::RoundedTextureElement,
     ClusterCore=crate::clusters::render::ClusterCoreElement,

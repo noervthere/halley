@@ -24,6 +24,12 @@ struct TextTexture {
     last_used: Instant,
 }
 
+#[derive(Default)]
+struct TextElementSizing {
+    font_size_px: Option<u16>,
+    destination_size: Option<smithay::utils::Size<i32, Physical>>,
+}
+
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct TextKey {
     text: String,
@@ -34,9 +40,9 @@ struct TextKey {
 
 /// Shared renderer for compositor-owned text.
 ///
-/// Size is intentionally absent from the measurement and element APIs. The
-/// live `font.size` setting is the single authority, so a new overlay cannot
-/// silently create another typography tier at its call site.
+/// The live `font.size` setting is the default authority. A small number of
+/// explicitly configurable widgets may request a per-element size; the cache
+/// key keeps those rasterizations independent from global typography.
 pub struct UiTextRenderer {
     context: Option<ContextId<GlesTexture>>,
     font_system: FontSystem,
@@ -105,7 +111,27 @@ impl UiTextRenderer {
         text: &str,
         rgb: [u8; 3],
     ) -> Result<Option<smithay::utils::Size<i32, Buffer>>, Box<dyn Error>> {
-        let Some(key) = self.prepare_key(renderer, text, rgb)? else {
+        self.measure_with_size(renderer, text, rgb, None)
+    }
+
+    pub fn measure_at_size(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        text: &str,
+        rgb: [u8; 3],
+        size_px: u16,
+    ) -> Result<Option<smithay::utils::Size<i32, Buffer>>, Box<dyn Error>> {
+        self.measure_with_size(renderer, text, rgb, Some(size_px))
+    }
+
+    fn measure_with_size(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        text: &str,
+        rgb: [u8; 3],
+        size_px: Option<u16>,
+    ) -> Result<Option<smithay::utils::Size<i32, Buffer>>, Box<dyn Error>> {
+        let Some(key) = self.prepare_key(renderer, text, rgb, size_px)? else {
             return Ok(None);
         };
         let entry = self.text.get_mut(&key).expect("text entry prepared");
@@ -121,7 +147,36 @@ impl UiTextRenderer {
         rgb: [u8; 3],
         alpha: f32,
     ) -> Result<Option<PreparedUiText>, Box<dyn Error>> {
-        self.element_with_size(renderer, origin, text, rgb, alpha, None)
+        self.element_with_options(
+            renderer,
+            origin,
+            text,
+            rgb,
+            alpha,
+            TextElementSizing::default(),
+        )
+    }
+
+    pub fn element_at_size(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        origin: Point<i32, Physical>,
+        text: &str,
+        rgb: [u8; 3],
+        alpha: f32,
+        size_px: u16,
+    ) -> Result<Option<PreparedUiText>, Box<dyn Error>> {
+        self.element_with_options(
+            renderer,
+            origin,
+            text,
+            rgb,
+            alpha,
+            TextElementSizing {
+                font_size_px: Some(size_px),
+                ..TextElementSizing::default()
+            },
+        )
     }
 
     pub fn element_scaled(
@@ -132,29 +187,32 @@ impl UiTextRenderer {
         rgb: [u8; 3],
         alpha: f32,
     ) -> Result<Option<PreparedUiText>, Box<dyn Error>> {
-        self.element_with_size(
+        self.element_with_options(
             renderer,
             destination.loc,
             text,
             rgb,
             alpha,
-            Some(destination.size),
+            TextElementSizing {
+                destination_size: Some(destination.size),
+                ..TextElementSizing::default()
+            },
         )
     }
 
-    fn element_with_size(
+    fn element_with_options(
         &mut self,
         renderer: &mut GlesRenderer,
         origin: Point<i32, Physical>,
         text: &str,
         rgb: [u8; 3],
         alpha: f32,
-        destination_size: Option<smithay::utils::Size<i32, Physical>>,
+        sizing: TextElementSizing,
     ) -> Result<Option<PreparedUiText>, Box<dyn Error>> {
         if alpha <= 0.001 {
             return Ok(None);
         }
-        let Some(key) = self.prepare_key(renderer, text, rgb)? else {
+        let Some(key) = self.prepare_key(renderer, text, rgb, sizing.font_size_px)? else {
             return Ok(None);
         };
         let context = self.context.as_ref().expect("context prepared").clone();
@@ -183,7 +241,7 @@ impl UiTextRenderer {
             Some(source),
             // Most callers keep the texture at its rasterized physical size;
             // titlebars may instead provide a camera-scaled destination.
-            Some(match destination_size {
+            Some(match sizing.destination_size {
                 Some(size) => size.to_logical(1),
                 None => entry.size.to_logical(1, Transform::Normal),
             }),
@@ -200,6 +258,7 @@ impl UiTextRenderer {
         renderer: &mut GlesRenderer,
         text: &str,
         rgb: [u8; 3],
+        size_px: Option<u16>,
     ) -> Result<Option<TextKey>, Box<dyn Error>> {
         if text.is_empty() {
             return Ok(None);
@@ -211,7 +270,7 @@ impl UiTextRenderer {
         let key = TextKey {
             text: text.to_string(),
             family: normalized_family(&self.font),
-            size_px: configured_font_size(&self.font),
+            size_px: effective_font_size(&self.font, size_px),
             rgb,
         };
         if !self.text.contains_key(&key) {
@@ -268,6 +327,12 @@ fn normalized_family(font: &halley_config::Font) -> String {
 
 fn configured_font_size(font: &halley_config::Font) -> u16 {
     font.size.max(1)
+}
+
+fn effective_font_size(font: &halley_config::Font, override_px: Option<u16>) -> u16 {
+    override_px
+        .unwrap_or_else(|| configured_font_size(font))
+        .max(1)
 }
 
 fn raster_text(
@@ -534,6 +599,9 @@ mod tests {
             }),
             1
         );
+        assert_eq!(effective_font_size(&font, None), 11);
+        assert_eq!(effective_font_size(&font, Some(18)), 18);
+        assert_eq!(effective_font_size(&font, Some(0)), 1);
     }
 
     #[test]

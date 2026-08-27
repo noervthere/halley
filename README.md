@@ -124,7 +124,6 @@ unchanged Field.
 | **Capture** | Native menu, region, screen, and window screenshots plus portal screencasting |
 | **IPC/API** | Persistent typed clients, capability discovery, subscriptions, and `halleyctl` |
 | **XWayland** | Native embedded XWayland and compositor-owned X11 window management |
-| **Gamescope** | Optional profiled launch wrapper through `halleyctl gamescope` |
 
 ### Rewrite boundaries
 
@@ -133,9 +132,9 @@ The rewrite intentionally does not carry every old policy forward.
 - Native embedded XWayland replaces `xwayland-satellite`; game input and
   pointer-lock bugs belong in the native path instead of a special game-mode
   exception layer.
-- Gamescope integration wraps launches and resolves per-game profiles, output
-  dimensions, refresh, and fullscreen/borderless flags. It does not revive the
-  old compositor-side game classifier or its satellite-specific workarounds.
+- The old compositor-side game classifier, special game-mode exception layer,
+  and Gamescope launch wrapper are not part of the rewritten compositor.
+  Launchers can invoke Gamescope directly when desired.
 - The supported `halley-api` is for external launchers, panels, automation,
   tests, and desktop components. Halley currently promises no in-process
   extension framework.
@@ -160,7 +159,6 @@ Optional desktop components:
 - The `Xwayland` executable for X11 applications; Halley manages it natively
 - `xdg-desktop-portal` and a settings/file-dialog backend such as
   `xdg-desktop-portal-gtk`
-- Gamescope when using `halleyctl gamescope run`
 
 Halley does not require systemd. The default build supports systemd user
 sessions, while dinit and direct init-agnostic launch paths are also packaged.
@@ -278,9 +276,8 @@ halleyctl reload
 ```
 
 `halleyctl` also exposes output and DPMS state, capture modes, node and cluster
-control, Trail, named-monitor focus, stack/tile navigation, Bearings, portal
-diagnostics, and Gamescope launch resolution. Run `halleyctl --help` for the
-current command surface.
+control, Trail, named-monitor focus, stack/tile navigation, Bearings, and portal
+diagnostics. Run `halleyctl --help` for the current command surface.
 
 ---
 
@@ -332,7 +329,7 @@ halleyctl portal status
 - [Animations](docs/animations.md)
 - [Window decorations](docs/decorations.md)
 - [Managed-window rules](docs/window-rules.md)
-- [Compositor backgrounds](docs/backgrounds.md)
+- [Wallpaper](docs/wallpaper.md)
 - [Screen sharing and the desktop portal](docs/portal.md)
 - [Wayland protocol support](docs/wayland-protocols.md)
 - [XWayland policy and conformance](docs/xwayland.md)

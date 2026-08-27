@@ -139,6 +139,16 @@ mod tests {
             "overlays:",
             "notifications:",
             "success-duration-ms 4000",
+            "zoom-indicator:",
+            "hold-duration-ms 750",
+            "fade-duration-ms 180",
+            "background true",
+            "opacity 1.0",
+            "# text-size 18",
+            "# text-colour \"auto\"",
+            "# background-colour \"auto\"",
+            "# borders true",
+            "# radius 8",
             "\"retract\" - reverse \"launch\"",
             "close-restore-nodes false",
             "maximize:",
@@ -163,8 +173,6 @@ mod tests {
             "XF86AudioRaiseVolume\" \"wpctl",
             "with repeat true",
             "overlay-fps false",
-            "halleyctl gamescope run -- %command%",
-            "output-width \"auto\"",
         ] {
             assert!(
                 DEFAULT_CONFIG.contains(expected),
@@ -173,6 +181,8 @@ mod tests {
         }
         assert!(!DEFAULT_CONFIG.contains("border-colour-hover"));
         assert!(!DEFAULT_CONFIG.contains("border-colour-inactive"));
+        assert!(!DEFAULT_CONFIG.contains("gaming:"));
+        assert!(!DEFAULT_CONFIG.contains("gamescope"));
     }
 
     #[test]

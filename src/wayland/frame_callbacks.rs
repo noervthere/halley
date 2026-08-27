@@ -47,8 +47,10 @@ pub fn cluster_exclusive_callback_member(
 pub fn requires_render_visibility(
     window_member: Option<NodeId>,
     cluster_exclusive_member: Option<NodeId>,
+    compositor_snapshot: bool,
 ) -> bool {
-    cluster_exclusive_member.is_none_or(|exclusive| window_member != Some(exclusive))
+    !compositor_snapshot
+        && cluster_exclusive_member.is_none_or(|exclusive| window_member != Some(exclusive))
 }
 
 #[derive(Default)]
@@ -113,13 +115,16 @@ mod tests {
 
         assert!(!requires_render_visibility(
             Some(exclusive),
-            Some(exclusive)
+            Some(exclusive),
+            false,
         ));
         assert!(requires_render_visibility(
             Some(NodeId::new(8)),
-            Some(exclusive)
+            Some(exclusive),
+            false,
         ));
-        assert!(requires_render_visibility(None, Some(exclusive)));
-        assert!(requires_render_visibility(Some(exclusive), None));
+        assert!(requires_render_visibility(None, Some(exclusive), false));
+        assert!(requires_render_visibility(Some(exclusive), None, false));
+        assert!(!requires_render_visibility(None, None, true));
     }
 }

@@ -186,6 +186,7 @@ pub(crate) fn dispatch<D: SessionDriver>(
     let camera = (!cluster_blocks_zoom)
         .then(|| output_name.and_then(|name| session.cameras.get_mut(name)))
         .flatten();
+    let zoom_camera_available = camera.is_some();
     match super::super::dispatch_action(
         action,
         session.keyboard.terminal_command(),
@@ -387,16 +388,30 @@ pub(crate) fn dispatch<D: SessionDriver>(
         }
     }
     if zoom_action
-        && !cluster_blocks_zoom
+        && zoom_camera_available
         && let Some(output_name) = output_name
     {
-        let scale = session
+        let target_scale = session
             .cameras
             .get(output_name)
             .map(crate::presentation::camera::target_scale);
-        if let Some(scale) = scale {
-            crate::nodes::reconcile_landmarks_at_scale(session, output_name, scale);
+        if let Some(target_scale) = target_scale {
+            crate::nodes::reconcile_landmarks_at_scale(session, output_name, target_scale);
         }
+        if session.settings.zoom.enabled
+            && let Some(live_scale) = session
+                .cameras
+                .get(output_name)
+                .map(crate::input::zoom::scale)
+        {
+            session.shell.overlays.show_zoom_indicator(
+                output_name,
+                live_scale,
+                &session.settings.overlays.zoom_indicator,
+                crate::frame_clock::monotonic_now(),
+            );
+        }
+        session.request_redraw();
     }
 }
 

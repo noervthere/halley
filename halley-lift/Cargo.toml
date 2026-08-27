@@ -1,6 +1,6 @@
 [package]
 name = "halley-lift"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Search and action launcher for the Halley Wayland compositor"
 license = "GPL-3.0-only"
@@ -11,7 +11,7 @@ calloop = "0.14.4"
 calloop-wayland-source = "0.4.1"
 fontdb = "0.23.0"
 freedesktop-icons = "0.4.0"
-halley-api = { path = "../halley-api" }
+halley-api = { version = "0.3.0", path = "../halley-api" }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 resvg = { version = "0.47", default-features = false }
 rune-cfg = "0.7.0"

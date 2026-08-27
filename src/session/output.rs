@@ -153,6 +153,7 @@ impl<D: SessionDriver> Session<D> {
                 self.wayland.space.unmap_output(output);
                 self.wayland.disable_output_global::<Self>(output);
                 self.cameras.remove(&output.name());
+                self.shell.overlays.remove_output(&output.name());
                 self.render
                     .backdrop_blur_renderer
                     .remove_output(&output.name());

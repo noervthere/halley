@@ -475,9 +475,16 @@ fn send_fallback_frame_callbacks<D: SessionDriver>(session: &mut Session<D>) {
                 let window_member = window
                     .wl_surface()
                     .and_then(|surface| session.nodes.id_for_surface(surface.as_ref()));
+                let compositor_snapshot = window.wl_surface().is_some_and(|surface| {
+                    session
+                        .render
+                        .fullscreen_textures
+                        .awaiting_target(surface.as_ref())
+                });
                 let require_visible = crate::wayland::frame_callbacks::requires_render_visibility(
                     window_member,
                     cluster_exclusive_member,
+                    compositor_snapshot,
                 );
                 window.send_frame(
                     &output,
@@ -822,6 +829,17 @@ fn toggle_focused_fullscreen<D: SessionDriver>(session: &mut Session<D>, output:
     cancel_grab_for_surface(session, &focused);
     let entering = !session.fullscreen.is_fullscreen_or_pending(&focused);
     let cluster_restore = cluster_presentation_restore(session, &focused, now, entering);
+    let entering_output_rect = entering
+        .then(|| {
+            session
+                .wayland
+                .space
+                .outputs()
+                .find(|output| output.name() == output_name)
+                .cloned()
+                .and_then(|output| presented_window_rect(session, &window, &output, now))
+        })
+        .flatten();
     if entering {
         displace_fullscreen_on_output(session, &output_name, &focused);
     }
@@ -846,7 +864,10 @@ fn toggle_focused_fullscreen<D: SessionDriver>(session: &mut Session<D>, output:
         );
     }
     if let Some(toplevel) = window.toplevel() {
-        if session.fullscreen.animations_enabled() {
+        if session
+            .fullscreen
+            .compositor_request_changes_visual(&focused, entering)
+        {
             let textures = &mut session.render.fullscreen_textures;
             let capture = session.driver.with_renderer(|renderer| {
                 textures.capture_previous(
@@ -856,20 +877,25 @@ fn toggle_focused_fullscreen<D: SessionDriver>(session: &mut Session<D>, output:
                 )
             });
             if let Err(err) = capture {
-                eventline::warn!("fullscreen: failed to capture previous window texture: {err}");
+                eventline::warn!("fullscreen: failed to capture outgoing window texture: {err}");
             }
         }
         if entering {
             session
                 .fullscreen
-                .request_compositor(&mut session.wayland, toplevel, now);
+                .request_compositor(&mut session.wayland, toplevel);
         } else {
             session
                 .fullscreen
-                .unrequest_compositor(&session.wayland, toplevel, now);
+                .unrequest_compositor(&session.wayland, toplevel);
         }
     } else {
         crate::xwayland::set_window_fullscreen(session, &window, entering);
+    }
+    if let Some(presentation_output) = entering_output_rect {
+        session
+            .fullscreen
+            .override_presentation_output(&focused, presentation_output);
     }
     if entering && let Some(restore) = cluster_restore {
         session.fullscreen.override_restore_from_cluster(
@@ -1283,6 +1309,14 @@ fn toggle_field_maximize<D: SessionDriver>(
         .is_fullscreen_or_pending(&record.surface)
         .then(|| presented_window_rect(session, &record.window, &target_output, now))
         .flatten();
+    let presentation_output = cluster_restore
+        .as_ref()
+        .and_then(|restore| restore.presentation_output)
+        .or_else(|| {
+            entering
+                .then(|| presented_window_rect(session, &record.window, &target_output, now))
+                .flatten()
+        });
     if session.maximize.animations_enabled() {
         let textures = &mut session.render.fullscreen_textures;
         let capture = session.driver.with_renderer(|renderer| {
@@ -1341,7 +1375,7 @@ fn toggle_field_maximize<D: SessionDriver>(
             output: restore_output,
         },
         target,
-        cluster_restore.and_then(|restore| restore.presentation_output),
+        presentation_output,
         now,
     );
     if let Some(handoff_geometry) = handoff_geometry {

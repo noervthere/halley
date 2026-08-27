@@ -116,6 +116,7 @@ fn save_region_inner<D: SessionDriver>(
                         frame: FrameContext {
                             target_presentation_time: target_time,
                             vrr_auto_eligible: false,
+                            force_full_repaint: false,
                             clear: render::CLEAR_COLOR,
                         },
                         desktop: DesktopContext {
@@ -364,6 +365,7 @@ where
                 frame: FrameContext {
                     target_presentation_time: target_time,
                     vrr_auto_eligible: false,
+                    force_full_repaint: false,
                     clear: render::CLEAR_COLOR,
                 },
                 desktop: DesktopContext {

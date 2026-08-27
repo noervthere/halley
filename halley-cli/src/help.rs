@@ -14,7 +14,6 @@ Commands:
   stack          Cycle an active stacking cluster
   tile           Focus or swap cluster tiles
   portal         Inspect the desktop portal backend
-  gamescope      Wrap a game launch using per-game profiles
   config         Edit, migrate, or verify the selected configuration
   quit           Open Halley's exit confirmation
 
@@ -120,15 +119,6 @@ pub const PORTAL_HELP: &str = "\
 Usage:
   halleyctl portal status [--json]
   halleyctl portal version [--json]
-";
-
-pub const GAMESCOPE_HELP: &str = "\
-Usage:
-  halleyctl gamescope run [--app-id ID] -- COMMAND [ARG...]
-  halleyctl gamescope print [--app-id ID] -- COMMAND [ARG...]
-
-`run` replaces halleyctl with the resolved command. `print` shows that command.
-For Steam launch options, use: halleyctl gamescope run -- %command%
 ";
 
 pub const DPMS_HELP: &str = "\

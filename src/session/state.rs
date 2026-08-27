@@ -361,6 +361,10 @@ impl<D: SessionDriver> Session<D> {
             .reload(config, crate::frame_clock::monotonic_now());
         self.trail.reload(config.trail);
         let bearings_redraw = self.shell.bearings.reload(config.bearings);
+        let zoom_indicator_redraw = self
+            .shell
+            .overlays
+            .reload_zoom_indicator(&config.overlays.zoom_indicator);
         let clusters_redraw = self
             .clusters
             .reload(config.clusters, config.animations.cluster);
@@ -397,6 +401,7 @@ impl<D: SessionDriver> Session<D> {
         if redraw
             || nodes_redraw
             || bearings_redraw
+            || zoom_indicator_redraw
             || clusters_redraw
             || font_redraw
             || fullscreen_redraw

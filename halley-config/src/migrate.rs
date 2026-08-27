@@ -8,7 +8,7 @@ use rune_cfg::RuneConfig;
 
 use crate::{Action, BindingScope, Keybind, ModifierKey};
 
-pub const CONFIG_VERSION: u32 = 1;
+pub const CONFIG_VERSION: u32 = 2;
 
 const VERSION_PREFIX: &str = "# halley-config-version:";
 
@@ -244,38 +244,47 @@ pub fn migrate_config_at(
             "existing configuration is invalid; leaving it unchanged: {error}"
         ))
     })?;
-    let mut known_binds = runtime.keybinds.binds;
-    let modifier = runtime.keybinds.modifier;
     let mut accepted = Vec::new();
     let mut applied = Vec::new();
     let mut skipped = Vec::new();
 
-    for candidate in VERSION_1_BINDINGS {
-        let binding = parse_candidate(modifier, candidate.line)?;
-        if known_binds
-            .iter()
-            .any(|existing| existing.action == binding.action)
-        {
-            continue;
+    if from_version < 1 {
+        let mut known_binds = runtime.keybinds.binds;
+        let modifier = runtime.keybinds.modifier;
+        for candidate in VERSION_1_BINDINGS {
+            let binding = parse_candidate(modifier, candidate.line)?;
+            if known_binds
+                .iter()
+                .any(|existing| existing.action == binding.action)
+            {
+                continue;
+            }
+            if let Some(conflict) = known_binds
+                .iter()
+                .find(|existing| bindings_conflict(existing, &binding))
+            {
+                skipped.push(format!(
+                    "{}: chord is already occupied in {:?} scope",
+                    candidate.name, conflict.scope
+                ));
+                continue;
+            }
+            known_binds.push(binding);
+            accepted.push(*candidate);
+            applied.push(candidate.name.to_string());
         }
-        if let Some(conflict) = known_binds
-            .iter()
-            .find(|existing| bindings_conflict(existing, &binding))
-        {
-            skipped.push(format!(
-                "{}: chord is already occupied in {:?} scope",
-                candidate.name, conflict.scope
-            ));
-            continue;
-        }
-        known_binds.push(binding);
-        accepted.push(*candidate);
-        applied.push(candidate.name.to_string());
     }
 
     let mut updated = source;
     if !accepted.is_empty() {
         updated = insert_bindings(&updated, &accepted)?;
+    }
+    if from_version < 2 {
+        let (backfilled, changed) = backfill_zoom_indicator(&updated)?;
+        updated = backfilled;
+        if changed {
+            applied.push("zoom indicator overlay".to_string());
+        }
     }
     updated = set_config_version(&updated, CONFIG_VERSION)?;
     validate_candidate(path, &updated)?;
@@ -421,29 +430,99 @@ fn insert_bindings(source: &str, bindings: &[BindingCandidate]) -> Result<String
 }
 
 fn keybind_end_offset(source: &str) -> Option<usize> {
+    block_offsets(source, &["keybinds"]).map(|(_, end)| end)
+}
+
+fn block_offsets(source: &str, path: &[&str]) -> Option<(usize, usize)> {
     let mut offset = 0usize;
-    let mut depth = 0usize;
-    let mut in_keybinds = false;
+    let mut stack = Vec::<&str>::new();
+    let mut body_start = None;
     for line in source.split_inclusive('\n') {
         let trimmed = line.trim();
-        if !in_keybinds {
-            if trimmed == "keybinds:" {
-                in_keybinds = true;
-                depth = 1;
-            }
-        } else if !trimmed.is_empty() && !trimmed.starts_with('#') {
+        if !trimmed.is_empty() && !trimmed.starts_with('#') {
             if trimmed == "end" {
-                depth = depth.saturating_sub(1);
-                if depth == 0 {
-                    return Some(offset);
+                if stack.as_slice() == path {
+                    return body_start.map(|start| (start, offset));
                 }
-            } else if trimmed.ends_with(':') {
-                depth += 1;
+                stack.pop();
+            } else if let Some(name) = trimmed.strip_suffix(':') {
+                stack.push(name);
+                if stack.as_slice() == path {
+                    body_start = Some(offset + line.len());
+                }
             }
         }
         offset += line.len();
     }
     None
+}
+
+fn backfill_zoom_indicator(source: &str) -> Result<(String, bool), MigrationError> {
+    if let Some((body_start, end)) = block_offsets(source, &["overlays", "zoom-indicator"]) {
+        let body = &source[body_start..end];
+        let mut additions = String::new();
+        if !has_assignment(body, "background") {
+            additions.push_str("    background true\n");
+        }
+        if !has_assignment(body, "opacity") {
+            additions.push_str("    opacity 1.0\n");
+        }
+        if additions.is_empty() {
+            return Ok((source.to_string(), false));
+        }
+        let mut updated = String::with_capacity(source.len() + additions.len());
+        updated.push_str(&source[..end]);
+        updated.push_str(&additions);
+        updated.push_str(&source[end..]);
+        return Ok((updated, true));
+    }
+
+    let zoom_block = concat!(
+        "  zoom-indicator:\n",
+        "    enabled true\n",
+        "    position \"bottom-center\"\n",
+        "    hold-duration-ms 750\n",
+        "    fade-duration-ms 180\n",
+        "    background true\n",
+        "    opacity 1.0\n",
+        "  end\n",
+    );
+    if let Some((_, end)) = block_offsets(source, &["overlays"]) {
+        let mut insertion = String::new();
+        if !source[..end].ends_with("\n\n") {
+            insertion.push('\n');
+        }
+        insertion.push_str("  # Added by Halley config migration 2.\n");
+        insertion.push_str(zoom_block);
+        let mut updated = String::with_capacity(source.len() + insertion.len());
+        updated.push_str(&source[..end]);
+        updated.push_str(&insertion);
+        updated.push_str(&source[end..]);
+        return Ok((updated, true));
+    }
+
+    let mut updated = source.to_string();
+    if !updated.is_empty() && !updated.ends_with('\n') {
+        updated.push('\n');
+    }
+    if !updated.is_empty() && !updated.ends_with("\n\n") {
+        updated.push('\n');
+    }
+    updated.push_str("# Added by Halley config migration 2.\n");
+    updated.push_str("overlays:\n");
+    updated.push_str(zoom_block);
+    updated.push_str("end\n");
+    Ok((updated, true))
+}
+
+fn has_assignment(block: &str, key: &str) -> bool {
+    block.lines().any(|line| {
+        let line = line.trim_start();
+        !line.starts_with('#')
+            && line
+                .strip_prefix(key)
+                .is_some_and(|rest| rest.chars().next().is_some_and(char::is_whitespace))
+    })
 }
 
 fn set_config_version(source: &str, version: u32) -> Result<String, MigrationError> {
@@ -624,8 +703,11 @@ mod tests {
         let backup = report.backup.expect("backup path");
         assert_eq!(fs::read_to_string(backup).unwrap(), original);
         let updated = fs::read_to_string(&path).unwrap();
-        assert!(updated.contains("# halley-config-version: 1"));
+        assert!(updated.contains("# halley-config-version: 2"));
         assert!(updated.contains("\"$var.mod+comma\" \"trail-prev\""));
+        assert!(updated.contains("zoom-indicator:"));
+        assert!(updated.contains("background true"));
+        assert!(updated.contains("opacity 1.0"));
         crate::load_runtime_config_at(&path).expect("migrated config validates");
 
         assert_eq!(
@@ -674,6 +756,69 @@ mod tests {
     }
 
     #[test]
+    fn version_one_config_gets_the_zoom_indicator_without_binding_backfill() {
+        let scratch = ScratchDir::new("zoom-section");
+        let path = scratch.config();
+        fs::write(
+            &path,
+            concat!(
+                "# halley-config-version: 1\n",
+                "keybinds:\n",
+                "  mod \"super\"\n",
+                "end\n\n",
+                "overlays:\n",
+                "  radius 14\n",
+                "end\n",
+            ),
+        )
+        .unwrap();
+
+        let report = migrate_config_at(&path, MigrationMode::Explicit, false).unwrap();
+        let updated = fs::read_to_string(&path).unwrap();
+
+        assert_eq!(report.applied, vec!["zoom indicator overlay"]);
+        assert!(updated.contains("# halley-config-version: 2"));
+        assert!(updated.contains("  radius 14"));
+        assert!(updated.contains("  zoom-indicator:"));
+        assert!(updated.contains("    background true"));
+        assert!(updated.contains("    opacity 1.0"));
+        assert!(!updated.contains("Added by Halley config migration 1"));
+        crate::load_runtime_config_at(&path).expect("migrated config validates");
+    }
+
+    #[test]
+    fn version_two_backfill_preserves_existing_zoom_customization() {
+        let scratch = ScratchDir::new("zoom-existing");
+        let path = scratch.config();
+        fs::write(
+            &path,
+            concat!(
+                "# halley-config-version: 1\n",
+                "keybinds:\n",
+                "  mod \"super\"\n",
+                "end\n\n",
+                "overlays:\n",
+                "  zoom-indicator:\n",
+                "    enabled false\n",
+                "    background false\n",
+                "    text-size 18\n",
+                "  end\n",
+                "end\n",
+            ),
+        )
+        .unwrap();
+
+        migrate_config_at(&path, MigrationMode::Explicit, false).unwrap();
+        let updated = fs::read_to_string(&path).unwrap();
+
+        assert_eq!(updated.matches("background false").count(), 1);
+        assert_eq!(updated.matches("opacity 1.0").count(), 1);
+        assert!(updated.contains("text-size 18"));
+        assert!(updated.contains("enabled false"));
+        crate::load_runtime_config_at(&path).expect("migrated config validates");
+    }
+
+    #[test]
     fn automatic_migration_skips_gathered_configs() {
         let scratch = ScratchDir::new("gather");
         let path = scratch.config();
@@ -714,7 +859,7 @@ mod tests {
         );
         let updated = set_config_version(&source, CONFIG_VERSION).unwrap();
         assert!(updated.starts_with(
-            "@author \"Dustin\"\n@description \"Halley\"\n# halley-config-version: 1\n"
+            "@author \"Dustin\"\n@description \"Halley\"\n# halley-config-version: 2\n"
         ));
     }
 

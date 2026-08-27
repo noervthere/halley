@@ -10,7 +10,11 @@ use super::TtyDrmOutput;
 use crate::backend::dmabuf::{SurfaceDmabufFeedback, scanout_formats};
 
 pub fn frame_flags() -> FrameFlags {
-    FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT_ANY | FrameFlags::ALLOW_CURSOR_PLANE_SCANOUT
+    // Keep cursor elements in the primary composition. Client cursor surfaces
+    // can switch size and storage while moving across a window, and the AMD
+    // cursor-plane path has produced stale black damage during those switches.
+    // Niri exposes the same policy as its `disable-cursor-plane` workaround.
+    FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT_ANY
 }
 
 pub fn surface_feedback(
@@ -45,10 +49,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn direct_scanout_policy_excludes_overlay_planes() {
+    fn direct_scanout_policy_uses_only_the_primary_plane() {
         let flags = frame_flags();
         assert!(flags.contains(FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT_ANY));
-        assert!(flags.contains(FrameFlags::ALLOW_CURSOR_PLANE_SCANOUT));
+        assert!(!flags.contains(FrameFlags::ALLOW_CURSOR_PLANE_SCANOUT));
         assert!(!flags.contains(FrameFlags::ALLOW_OVERLAY_PLANE_SCANOUT));
     }
 }

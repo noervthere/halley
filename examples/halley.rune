@@ -1,4 +1,4 @@
-# halley-config-version: 1
+# halley-config-version: 2
 # Halley compositor configuration.
 #
 # The default location is:
@@ -40,38 +40,6 @@ autostart:
   # once "dms run"
 
   # on-reload "notify-send 'Halley configuration reloaded'"
-end
-
-# Optional gamescope launch integration. Halley does not wrap games
-# automatically: put `halleyctl gamescope run -- %command%` in a Steam game's
-# launch options (or use the same wrapper from another launcher). `print`
-# resolves the command without starting it.
-gaming:
-  gamescope:
-    enabled true
-
-    # "focused", "cursor", "primary", or an exact output connector. Values
-    # set to "auto" are read live from that output when the game launches.
-    monitor "focused"
-    output-width "auto"
-    output-height "auto"
-    game-width "auto"
-    game-height "auto"
-    refresh "auto"
-
-    # Fullscreen wins, with a diagnostic, if both modes are enabled.
-    fullscreen true
-    borderless false
-
-    # Repeat game blocks for exact app-id overrides. SteamAppId and
-    # SteamGameId are normalized to `steam_app_ID`; `enabled false` opts out.
-    # game:
-    #   name "Example game"
-    #   app-id "steam_app_12345"
-    #   game-width 1920
-    #   game-height 1080
-    # end
-  end
 end
 
 # `view` groups settings by physical output. Repeat `output:` inside this one
@@ -356,8 +324,8 @@ font:
 end
 
 # Shared compositor-owned UI. This styles Apogee, Alt+Tab, Bearings,
-# configuration notices, and the exit confirmation. Window decorations and
-# node labels keep their own existing configuration.
+# configuration notices, the zoom indicator, and the exit confirmation.
+# Window decorations and node labels keep their own existing configuration.
 overlays:
   background-colour "auto"
   text-colour "auto"
@@ -369,6 +337,25 @@ overlays:
     position "top-center"
     success-duration-ms 4000
     error-duration-ms 9000
+  end
+
+  # Per-monitor camera scale shown while zooming. Activity keeps the card
+  # visible; the hold begins only after input and smooth motion stop.
+  zoom-indicator:
+    enabled true
+    position "bottom-center"
+    hold-duration-ms 750
+    fade-duration-ms 180
+    background true
+    opacity 1.0
+
+    # Optional per-indicator visual overrides. Leave these commented to
+    # inherit the shared font, palette, border, and radius above.
+    # text-size 18
+    # text-colour "auto"
+    # background-colour "auto"
+    # borders true
+    # radius 8
   end
 end
 
@@ -425,11 +412,11 @@ effects:
   end
 end
 
-# The compositor background is the absolute back of the scene: protocol
+# The compositor wallpaper is the absolute back of the scene: protocol
 # background-layer surfaces, windows, panels, overlays, and the cursor all draw
-# above it. "none" creates no background and leaves empty pixels plain black.
-background:
-  mode "none" # no background; also "classic" or "field-shader"
+# above it. "none" creates no wallpaper and leaves empty pixels plain black.
+wallpaper:
+  mode "none" # no wallpaper; also "classic" or "field-shader"
 
   # Classic image example. Relative paths resolve beside this config file.
   # mode "classic"

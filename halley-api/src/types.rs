@@ -115,14 +115,6 @@ pub enum CaptureOutcome {
     Cancelled,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct GamescopeTarget {
-    pub output: String,
-    pub width: u32,
-    pub height: u32,
-    pub refresh_hz: Option<f64>,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TrailTarget {
     Index(usize),

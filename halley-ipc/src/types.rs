@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 /// the end of `Request`/`Response` silently breaks wire-compatibility with
 /// a differently-versioned build - worth remembering as this grows, not
 /// solved here (this first pass has nothing to negotiate against yet).
-pub const HALLEY_IPC_VERSION: u32 = 19;
+pub const HALLEY_IPC_VERSION: u32 = 20;
 pub const HALLEY_API_VERSION: u32 = 1;
 
 /// A request from `halleyctl`, the portal backend, or another local client.
@@ -46,9 +46,6 @@ pub enum Request {
     Trail(TrailRequest),
     LocalCapture(LocalCaptureRequest),
     Control(ControlRequest),
-    GamescopeTarget {
-        selector: String,
-    },
 }
 
 /// The compositor's reply to a `Request`.
@@ -74,7 +71,6 @@ pub enum Response {
     ApiError(ServerError),
     ClusterDraftStarted { id: u64 },
     TrailList(TrailListResponse),
-    GamescopeTarget(GamescopeTargetResponse),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -561,14 +557,6 @@ pub enum ControlRequest {
         direction: ControlDirection,
         output: Option<String>,
     },
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct GamescopeTargetResponse {
-    pub output: String,
-    pub width: u32,
-    pub height: u32,
-    pub refresh_hz: Option<f64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

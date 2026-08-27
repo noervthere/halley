@@ -217,6 +217,10 @@ fn split_example_config_parses_end_to_end() {
     assert_eq!(runtime.cursor.theme, "Adwaita");
     assert!(runtime.cursor.hide_on_keyboard_nav);
     assert_eq!(
+        runtime.overlays.zoom_indicator,
+        halley_config::ZoomIndicator::default()
+    );
+    assert_eq!(
         runtime.field.pins.color,
         OverlayColorMode::Fixed {
             r: 0xd6 as f32 / 255.0,
@@ -249,16 +253,6 @@ fn split_example_config_parses_end_to_end() {
             .iter()
             .any(|binding| binding.action == Action::Reload)
     );
-}
-
-#[test]
-fn example_config_has_gamescope_launch_defaults() {
-    let runtime =
-        halley_config::load_runtime_config_at(std::path::Path::new(EXAMPLE_PATH)).unwrap();
-    assert!(runtime.gaming.gamescope.enabled);
-    assert_eq!(runtime.gaming.gamescope.monitor, "focused");
-    assert_eq!(runtime.gaming.gamescope.output_width, "auto");
-    assert!(runtime.gaming.gamescope.fullscreen);
 }
 
 #[test]
@@ -308,7 +302,7 @@ fn example_config_keeps_environment_and_autostart_inactive() {
 }
 
 #[test]
-fn example_config_keeps_background_and_window_rules_inert() {
+fn example_config_keeps_wallpaper_and_window_rules_inert() {
     let config = RuneConfig::from_file(EXAMPLE_PATH).expect("example config parses");
     let runtime = halley_config::parse_runtime_config(&config).expect("runtime config parses");
 
@@ -361,6 +355,10 @@ fn example_config_overlay_section_is_the_bootstrap_style() {
     );
     assert_eq!(overlays.notifications.success_duration_ms, 4_000);
     assert_eq!(overlays.notifications.error_duration_ms, 9_000);
+    assert_eq!(
+        overlays.zoom_indicator,
+        halley_config::ZoomIndicator::default()
+    );
 }
 
 #[test]

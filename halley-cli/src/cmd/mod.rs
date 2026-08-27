@@ -1,7 +1,6 @@
 mod capture;
 mod cluster;
 mod control;
-pub mod gamescope;
 mod node;
 pub mod portal;
 mod trail;
@@ -12,7 +11,6 @@ use halley_api::DpmsCommand;
 use halley_api::{CaptureMode, Direction, MonitorTarget, StackCycleDirection};
 
 pub use cluster::ClusterCommand;
-pub use gamescope::GamescopeInvocation;
 pub use node::NodeCommand;
 pub use portal::PortalCommand;
 pub use trail::TrailCommand;
@@ -74,8 +72,6 @@ pub enum Action {
         json: bool,
     },
     PortalHelp,
-    Gamescope(GamescopeInvocation),
-    GamescopeHelp,
     ConfigEdit(Option<PathBuf>),
     ConfigMigrate {
         path: Option<PathBuf>,
@@ -129,7 +125,6 @@ pub fn parse(args: &[String]) -> Result<Action, String> {
         Some("stack") => return control::parse_stack(&args[1..]),
         Some("tile") => return control::parse_tile(&args[1..]),
         Some("portal") => return portal::parse(&args[1..]),
-        Some("gamescope") => return gamescope::parse(&args[1..]),
         Some("config") => return parse_config(&args[1..]),
         Some("quit") => Action::Quit,
         Some(other) => return Err(format!("unknown command {other:?}")),

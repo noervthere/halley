@@ -8,7 +8,7 @@ window area, prevents tile overlap, and reserves the original upper core band.
 `max-rows` is limited to the old supported range of 1 through 5.
 
 Apogee replaces the desktop scene while it is visible. The only scene behind
-its tiles is the wallpaper/background layer: normal windows, nodes, panels,
+its tiles is the wallpaper layer: normal windows, nodes, panels,
 and other desktop layers never poke through the dimming backdrop.
 Its tile title bands and Alt+Tab's cards use the shared
 [`overlays:`](overlays.md) shape, palette, and border settings.

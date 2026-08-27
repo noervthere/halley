@@ -57,6 +57,8 @@ Camera zoom is always smooth and never magnifies beyond native scale 1.0.
 `field.zoom` or `field.gap` value wins independently when both spellings are
 present. `field.zoom.max`, `smooth`, `filter`, and `sharpen` are deliberately
 unsupported and produce a configuration verification error.
+The transient live-scale display is configured separately under
+[`overlays.zoom-indicator`](overlays.md#zoom-indicator).
 
 ## Field maximize
 

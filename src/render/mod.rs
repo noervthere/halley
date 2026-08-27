@@ -8,6 +8,7 @@ pub mod node;
 pub mod overlays;
 pub mod pin;
 pub mod rescale;
+pub mod resize;
 pub mod resources;
 pub mod scene;
 pub mod text;
@@ -36,7 +37,7 @@ use crate::cursor::CursorManager;
 
 /// Opaque black used only to clear pixels with no scene content.
 ///
-/// `background.mode "none"` contributes no render element, so this is the
+/// `wallpaper.mode "none"` contributes no render element, so this is the
 /// resulting empty desktop rather than a compositor-enforced wallpaper.
 pub const CLEAR_COLOR: Color32F = Color32F::new(0.0, 0.0, 0.0, 1.0);
 /// Fail-closed backdrop used for every output while ext-session-lock-v1 owns
@@ -193,6 +194,10 @@ pub struct FrameContext {
     /// True only when the output has a committed, fully settled fullscreen
     /// window and no compositor or layer-shell overlay is visible.
     pub vrr_auto_eligible: bool,
+    /// Discard incremental buffer-age history for this frame. The DRM backend
+    /// uses this while scene geometry is animated so every scan-out buffer is
+    /// repainted from the same complete scene.
+    pub force_full_repaint: bool,
     pub clear: Color32F,
 }
 
