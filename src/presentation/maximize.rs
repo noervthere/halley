@@ -322,6 +322,20 @@ impl FieldMaximizeManager {
             .any(|entry| &entry.surface == surface && entry.desired)
     }
 
+    /// Whether maximize still owns this surface's Space geometry.
+    ///
+    /// `contains` follows the logical maximized edge, which drops as soon as
+    /// unmaximize is requested. Native clients often ack that configure before
+    /// attaching the restored buffer, and Space still reports the maximized
+    /// rectangle in that window. Cluster floating sync and workspace layout
+    /// must keep treating the presentation as owned until `handle_commit`
+    /// settles, matching `FullscreenManager::is_fullscreen_or_pending`.
+    pub fn is_maximized_or_pending(&self, surface: &WlSurface) -> bool {
+        self.entries.values().any(|entry| {
+            &entry.surface == surface && owns_client_geometry(entry.desired, entry.active)
+        })
+    }
+
     pub fn output_for_surface(&self, surface: &WlSurface) -> Option<&str> {
         self.entries.iter().find_map(|(scope, entry)| {
             (&entry.surface == surface && entry.desired).then_some(scope.output.as_str())
@@ -590,6 +604,10 @@ fn authoritative_restore(
     existing.unwrap_or(requested)
 }
 
+fn owns_client_geometry(desired: bool, active: bool) -> bool {
+    active || desired
+}
+
 fn accepted_resize_buffer_size(
     observed: Option<Size<i32, Logical>>,
     target: Size<i32, Logical>,
@@ -658,6 +676,14 @@ mod tests {
         let from = Rectangle::new((100, 80).into(), (800, 600).into());
         let to = Rectangle::new((20, 20).into(), (1880, 1040).into());
         assert_eq!(interpolate_rect(from, to, 1.0), to);
+    }
+
+    #[test]
+    fn unmaximize_handshake_still_owns_client_geometry() {
+        assert!(owns_client_geometry(true, false));
+        assert!(owns_client_geometry(true, true));
+        assert!(owns_client_geometry(false, true));
+        assert!(!owns_client_geometry(false, false));
     }
 
     #[test]

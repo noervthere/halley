@@ -571,7 +571,7 @@ pub(crate) fn reconcile_cluster_surfaces<D: SessionDriver>(
             continue;
         };
         if session.fullscreen.is_fullscreen_or_pending(&surface)
-            || session.maximize.contains(&surface)
+            || session.maximize.is_maximized_or_pending(&surface)
         {
             continue;
         }
@@ -627,6 +627,14 @@ pub(crate) fn reconcile_cluster_surfaces<D: SessionDriver>(
 /// cluster-local floating layer. Clients may quantize the requested size, so
 /// the committed Space geometry is authoritative rather than the last pointer
 /// target sent to them.
+///
+/// Fullscreen and maximize own Space for the duration of their presentation,
+/// including the enter commit that remaps the window to the output and the
+/// unmaximize/unfullscreen handshake whose first commits still carry the
+/// output-sized buffer. Copying that rectangle here would replace the
+/// remembered windowed size, so exit would restore to an output-sized float
+/// and skip the shrink. The same boundary keeps `reconcile_cluster_surfaces`
+/// from driving those windows.
 pub(crate) fn sync_cluster_floating_geometry<D: SessionDriver>(
     session: &mut Session<D>,
     surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
@@ -654,6 +662,16 @@ pub(crate) fn sync_cluster_floating_geometry<D: SessionDriver>(
     else {
         return;
     };
+    let now = crate::frame_clock::monotonic_now();
+    if session.fullscreen.is_fullscreen_or_pending(surface)
+        || session.maximize.is_maximized_or_pending(surface)
+        || session.fullscreen.awaits_external_configure(surface)
+        || session
+            .xwayland
+            .client_geometry_guarded_for_window(&window, now)
+    {
+        return;
+    }
     let Some(output) = session
         .wayland
         .space

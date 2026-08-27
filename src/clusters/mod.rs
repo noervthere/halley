@@ -1743,6 +1743,27 @@ mod tests {
     }
 
     #[test]
+    fn floating_member_surface_target_is_the_remembered_windowed_rect() {
+        let (_field, mut system, _cluster, members) =
+            active_test_cluster(2, ClusterWorkspaceLayoutKind::Tiling);
+        let work_area = Rectangle::new((0, 0).into(), (1_000, 700).into());
+        let output_geometry = Rectangle::new((0, 0).into(), (1_920, 1_080).into());
+        let floating = Rectangle::new((240, 160).into(), (460, 340).into());
+
+        assert_eq!(
+            system.toggle_member_floating("DP-1", members[0], work_area, floating, Duration::ZERO,),
+            Some(true)
+        );
+        assert_eq!(
+            system.workspace_surface_target_for(members[0], "DP-1", work_area, output_geometry),
+            Some(surfaces::WorkspaceSurfaceTarget {
+                node_id: members[0],
+                geometry: floating,
+            })
+        );
+    }
+
+    #[test]
     fn member_float_is_scoped_to_the_active_cluster() {
         let (_field, mut system, _cluster, members) =
             active_test_cluster(2, ClusterWorkspaceLayoutKind::Stacking);
