@@ -272,7 +272,13 @@ impl ClusterSystem {
         output: &str,
         policy: halley_config::NodeDisplayPolicy,
     ) -> bool {
-        let core_animating = if policy == halley_config::NodeDisplayPolicy::Hover {
+        // The field's cluster cores (and their labels) are not part of the
+        // scene while a cluster workspace owns this output. Do not keep the
+        // output's redraw loop alive for a hover mix that cannot advance until
+        // the field scene becomes visible again.
+        let core_animating = if policy == halley_config::NodeDisplayPolicy::Hover
+            && self.active_on(output).is_none()
+        {
             let states = self.label_hover.borrow();
             self.clusters_for_output(output).any(|(_, id, _)| {
                 let mix = states.get(&id).copied().unwrap_or(0.0);
@@ -1786,6 +1792,11 @@ mod tests {
         assert!(system.set_hovered_core(Some(id), Duration::ZERO));
         assert!(system.labels_animating_on_output("DP-1", halley_config::NodeDisplayPolicy::Hover));
         assert!(system.label_hover_mix(id, true) > 0.0);
+        system.active.insert("DP-1".into(), id);
+        assert!(!system.labels_animating_on_output(
+            "DP-1",
+            halley_config::NodeDisplayPolicy::Hover
+        ));
     }
 
     #[test]
