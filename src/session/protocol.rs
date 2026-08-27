@@ -687,6 +687,19 @@ impl<D: SessionDriver> XdgShellHandler for Session<D> {
         }
         let cluster_restore =
             super::cluster_presentation_restore(self, surface.wl_surface(), now, true);
+        let field_output_rect = cluster_restore
+            .is_none()
+            .then(|| {
+                let window = window.as_ref()?;
+                let output_name = crate::wayland::window_output_name(window)?;
+                self.wayland
+                    .space
+                    .outputs()
+                    .find(|output| output.name() == output_name)
+                    .cloned()
+                    .and_then(|output| super::presented_window_rect(self, window, &output, now))
+            })
+            .flatten();
         let maximize_output = window.as_ref().and_then(crate::wayland::window_output_name);
         let fullscreen_output = output
             .as_ref()
@@ -716,6 +729,9 @@ impl<D: SessionDriver> XdgShellHandler for Session<D> {
                 restore.output,
                 restore.presentation_output,
             );
+        } else if let Some(rect) = field_output_rect {
+            self.fullscreen
+                .override_presentation_output(surface.wl_surface(), rect);
         }
         if let Some(handoff) = field_handoff {
             handoff.apply(&mut self.fullscreen, surface.wl_surface());

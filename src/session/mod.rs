@@ -1486,7 +1486,7 @@ pub(crate) fn cluster_presentation_restore<D: SessionDriver>(
     })
 }
 
-fn presented_window_rect<D: SessionDriver>(
+pub(crate) fn presented_window_rect<D: SessionDriver>(
     session: &Session<D>,
     window: &smithay::desktop::Window,
     output: &smithay::output::Output,

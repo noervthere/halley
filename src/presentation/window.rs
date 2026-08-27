@@ -93,6 +93,13 @@ impl WindowVisualState {
     }
 }
 
+fn output_local_zoom_scale(space: PresentationSpace, view_scale: f32) -> f32 {
+    match space {
+        PresentationSpace::OutputLocal => 1.0,
+        PresentationSpace::Field => view_scale,
+    }
+}
+
 fn inherited_visual_rects(
     source: Rectangle<i32, Physical>,
     owner_source: Rectangle<i32, Physical>,
@@ -299,11 +306,12 @@ pub(crate) fn window_visual_state_with_cluster_presentation(
         PresentationSpace::Field
     };
     let mut inherited_camera_center = camera_center;
-    let mut inherited_zoom_scale = if cluster_rect.is_some() {
-        1.0
-    } else {
-        view.scale
-    };
+    // Cluster tiles already live in output-local space at scale 1.0, so their
+    // maximize/fullscreen crossfade interpolates a stable rectangle. Field
+    // windows must do the same once they take that presentation: leaving the
+    // live camera scale on decorations and surface mapping fights the
+    // output-local resize blend and is what made field transitions jumpy.
+    let mut inherited_zoom_scale = output_local_zoom_scale(presentation_space, view.scale);
     let mut inherited_cluster_depth = cluster_depth.filter(|_| !cluster_exclusive);
     let mut inherited_cluster_floating = window_node
         .is_some_and(|node| clusters.is_some_and(|clusters| clusters.is_member_floating(node)));
@@ -666,6 +674,15 @@ mod tests {
         visual: Rectangle<i32, Logical>,
     ) -> (Rectangle<f64, Logical>, Rectangle<f64, Logical>) {
         (source.to_f64(), visual.to_f64())
+    }
+
+    #[test]
+    fn output_local_presentations_ignore_field_camera_zoom() {
+        assert_eq!(
+            output_local_zoom_scale(PresentationSpace::OutputLocal, 0.5),
+            1.0
+        );
+        assert_eq!(output_local_zoom_scale(PresentationSpace::Field, 0.5), 0.5);
     }
 
     #[test]
