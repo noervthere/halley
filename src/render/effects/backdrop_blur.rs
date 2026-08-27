@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -60,12 +60,17 @@ struct BlurTextures {
     size: Size<i32, Physical>,
     accum: GlesTexture,
     chain: Vec<GlesTexture>,
+}
+
+struct ElementBlur {
     result: GlesTexture,
-    dirty: bool,
+    captured: Cell<bool>,
+    ready: Cell<bool>,
 }
 
 struct OutputResources {
     textures: Option<Rc<RefCell<BlurTextures>>>,
+    results: HashMap<BlurIdentity, Rc<ElementBlur>>,
     retry: Rc<RefCell<RetryState>>,
     size: Size<i32, Physical>,
     levels: u32,
@@ -126,6 +131,7 @@ pub struct BackdropBlurElement {
     size: Size<i32, Physical>,
     patches: Vec<BlurPatch>,
     textures: Rc<RefCell<BlurTextures>>,
+    element: Rc<ElementBlur>,
     retry: Rc<RefCell<RetryState>>,
     down: RawPassProgram,
     up: RawPassProgram,
@@ -200,6 +206,7 @@ impl BackdropBlurRenderer {
             .entry(output.to_string())
             .or_insert_with(|| OutputResources {
                 textures: None,
+                results: HashMap::new(),
                 retry: Rc::new(RefCell::new(RetryState::default())),
                 size: physical_size,
                 levels,
@@ -215,6 +222,7 @@ impl BackdropBlurRenderer {
             resources.levels = levels;
             resources.config_fingerprint = config_fingerprint;
             resources.textures = None;
+            resources.results.clear();
             resources.retry.borrow_mut().recover();
         }
         if resources.retry.borrow().blocked(now) {
@@ -248,9 +256,33 @@ impl BackdropBlurRenderer {
         }
         let id = resources
             .ids
-            .entry(identity)
+            .entry(identity.clone())
             .or_insert_with(Id::new)
             .clone();
+        let element = if let Some(existing) = resources.results.get(&identity) {
+            existing.captured.set(false);
+            Rc::clone(existing)
+        } else {
+            match create_texture(renderer, physical_size) {
+                Ok(result) => {
+                    let element = Rc::new(ElementBlur {
+                        result,
+                        captured: Cell::new(false),
+                        ready: Cell::new(false),
+                    });
+                    resources.results.insert(identity, Rc::clone(&element));
+                    element
+                }
+                Err(error) => {
+                    let delay = resources.retry.borrow_mut().fail(now);
+                    eventline::warn!(
+                        "backdrop-blur: result allocation failed on {output}; retrying in {} ms: {error}",
+                        delay.as_millis()
+                    );
+                    return Ok(None);
+                }
+            }
+        };
         let commit = blur_commit(&patches, config, presentation_epoch);
         Ok(Some(BackdropBlurElement {
             // Each stack position keeps a stable identity. Smithay can then
@@ -261,6 +293,7 @@ impl BackdropBlurRenderer {
             size: physical_size,
             patches,
             textures: Rc::clone(resources.textures.as_ref().expect("allocated above")),
+            element,
             retry: Rc::clone(&resources.retry),
             down: programs.down,
             up: programs.up,
@@ -399,8 +432,6 @@ fn create_textures(
         size,
         accum: create_texture(renderer, size)?,
         chain,
-        result: create_texture(renderer, size)?,
-        dirty: true,
     })
 }
 
@@ -483,6 +514,7 @@ unsafe fn clear_gl_errors(gl: &ffi::Gles2) {
 fn run_blur(
     frame: &mut GlesFrame<'_, '_>,
     textures: &mut BlurTextures,
+    result: &GlesTexture,
     down: RawPassProgram,
     up: RawPassProgram,
     offset: f32,
@@ -601,7 +633,7 @@ fn run_blur(
             render_pass(
                 &textures.chain[0],
                 level_size(size, 0),
-                &textures.result,
+                result,
                 size,
                 up,
             )?;
@@ -678,7 +710,7 @@ impl RenderElement<GlesRenderer> for BackdropBlurElement {
         if self.retry.borrow().blocked(now) {
             return Ok(());
         }
-        let mut textures = self.textures.borrow_mut();
+        let textures = self.textures.borrow();
         let size = textures.size;
         let capture = frame.with_context(|gl| unsafe {
             let mut current_draw_fbo = 0_i32;
@@ -687,6 +719,10 @@ impl RenderElement<GlesRenderer> for BackdropBlurElement {
             gl.GetIntegerv(ffi::READ_FRAMEBUFFER_BINDING, &mut current_read_fbo);
             let scissor_was_enabled = gl.IsEnabled(ffi::SCISSOR_TEST) == ffi::TRUE;
             clear_gl_errors(gl);
+            // Finish prior scene draws before sampling the output FBO. Tile
+            // GPUs otherwise blit an incomplete frame, which flickers worst
+            // on startup and any time the command stream is still in flight.
+            gl.Flush();
             gl.Disable(ffi::SCISSOR_TEST);
             let mut fbo = 0;
             gl.GenFramebuffers(1, &mut fbo);
@@ -742,7 +778,7 @@ impl RenderElement<GlesRenderer> for BackdropBlurElement {
             suspend_blur(&self.retry, "framebuffer capture", &error);
             return Ok(());
         }
-        textures.dirty = true;
+        self.element.captured.set(true);
         Ok(())
     }
 
@@ -759,19 +795,30 @@ impl RenderElement<GlesRenderer> for BackdropBlurElement {
         if self.retry.borrow().blocked(now) {
             return Ok(());
         }
-        let mut textures = self.textures.borrow_mut();
-        if textures.dirty {
-            if let Err(error) = run_blur(frame, &mut textures, self.down, self.up, self.offset) {
+        if self.element.captured.get() {
+            let mut textures = self.textures.borrow_mut();
+            if let Err(error) = run_blur(
+                frame,
+                &mut textures,
+                &self.element.result,
+                self.down,
+                self.up,
+                self.offset,
+            ) {
                 suspend_blur(&self.retry, "render passes", &error);
                 return Ok(());
             }
-            textures.dirty = false;
+            self.element.captured.set(false);
+            self.element.ready.set(true);
             self.retry.borrow_mut().recover();
+        }
+        if !self.element.ready.get() {
+            return Ok(());
         }
         for patch in &self.patches {
             if let Err(error) = composite_patch(
                 frame,
-                &textures.result,
+                &self.element.result,
                 &self.composite,
                 *patch,
                 damage,

@@ -79,7 +79,10 @@ impl Element for RescaledElement {
     }
 
     fn kind(&self) -> Kind {
-        self.inner.kind()
+        // A hardware plane would bypass zoom and any backdrop blur behind
+        // the window, which shows up as the surface flickering between
+        // scan-out and composition.
+        Kind::Unspecified
     }
 
     // `damage_since` uses `Element`'s default impl, which derives from
@@ -110,7 +113,7 @@ impl RenderElement<GlesRenderer> for RescaledElement {
             .draw(frame, src, dst, damage, opaque_regions, cache)
     }
 
-    fn underlying_storage(&self, renderer: &mut GlesRenderer) -> Option<UnderlyingStorage<'_>> {
-        self.inner.underlying_storage(renderer)
+    fn underlying_storage(&self, _renderer: &mut GlesRenderer) -> Option<UnderlyingStorage<'_>> {
+        None
     }
 }

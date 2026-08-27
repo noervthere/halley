@@ -75,19 +75,24 @@ fn compositor_chrome_visible(logical_fullscreen: bool, x11_fullscreen: bool) -> 
     !logical_fullscreen && !x11_fullscreen
 }
 
+fn quantized_f32(value: f32) -> i32 {
+    (value * 256.0).round() as i32
+}
+
 fn window_blur_epoch(visual: &crate::presentation::window::WindowVisualState) -> u64 {
     use std::hash::{Hash, Hasher};
 
+    // Quantize so idle float noise does not recapture every frame.
     let mut hash = std::collections::hash_map::DefaultHasher::new();
-    visual.zoom_scale.to_bits().hash(&mut hash);
-    visual.camera_center.x.to_bits().hash(&mut hash);
-    visual.camera_center.y.to_bits().hash(&mut hash);
-    visual.opening_alpha.to_bits().hash(&mut hash);
+    quantized_f32(visual.zoom_scale).hash(&mut hash);
+    (visual.camera_center.x.round() as i32).hash(&mut hash);
+    (visual.camera_center.y.round() as i32).hash(&mut hash);
+    quantized_f32(visual.opening_alpha).hash(&mut hash);
     if let Some(presentation) = visual.fullscreen {
-        presentation.transition_completion.to_bits().hash(&mut hash);
+        quantized_f32(presentation.transition_completion as f32).hash(&mut hash);
     }
     if let Some(presentation) = visual.maximize {
-        presentation.transition_completion.to_bits().hash(&mut hash);
+        quantized_f32(presentation.transition_completion as f32).hash(&mut hash);
     }
     hash.finish()
 }
@@ -960,9 +965,15 @@ mod tests {
     use smithay::utils::{Buffer, Size};
 
     use super::{
-        active_crossfade_completion, compositor_chrome_visible, scaled_title_size,
+        active_crossfade_completion, compositor_chrome_visible, quantized_f32, scaled_title_size,
         should_hold_x11_fullscreen_exit,
     };
+
+    #[test]
+    fn camera_epoch_quantization_ignores_idle_float_noise() {
+        assert_eq!(quantized_f32(1.0), quantized_f32(1.0 + f32::EPSILON));
+        assert_ne!(quantized_f32(1.0), quantized_f32(0.75));
+    }
 
     #[test]
     fn accepted_endpoint_stays_offscreen_until_motion_exactly_finishes() {

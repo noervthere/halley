@@ -1109,7 +1109,11 @@ impl Renderable for TtyBackend {
             &mut self.renderer,
             &elements,
             clear,
-            dmabuf::frame_flags(),
+            dmabuf::frame_flags_for_scene(
+                elements
+                    .iter()
+                    .any(smithay::backend::renderer::element::Element::is_framebuffer_effect),
+            ),
         )?;
 
         let element_states = result.states.clone();

@@ -17,6 +17,19 @@ pub fn frame_flags() -> FrameFlags {
     FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT_ANY
 }
 
+pub fn frame_flags_for_scene(has_framebuffer_effect: bool) -> FrameFlags {
+    let mut flags = frame_flags();
+    if has_framebuffer_effect {
+        // Direct scan-out of a window skips the backdrop blur behind it, so
+        // the surface flickers between the client buffer and the composed
+        // frosted scene. Disable primary-plane scan-out while any
+        // framebuffer effect is in the output list.
+        flags.remove(FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT);
+        flags.remove(FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT_ANY);
+    }
+    flags
+}
+
 pub fn surface_feedback(
     output: &TtyDrmOutput,
     renderer_formats: FormatSet,
@@ -54,5 +67,13 @@ mod tests {
         assert!(flags.contains(FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT_ANY));
         assert!(!flags.contains(FrameFlags::ALLOW_CURSOR_PLANE_SCANOUT));
         assert!(!flags.contains(FrameFlags::ALLOW_OVERLAY_PLANE_SCANOUT));
+    }
+
+    #[test]
+    fn framebuffer_effects_disable_primary_scanout() {
+        let flags = frame_flags_for_scene(true);
+        assert!(!flags.contains(FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT));
+        assert!(!flags.contains(FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT_ANY));
+        assert!(frame_flags_for_scene(false).contains(FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT_ANY));
     }
 }
