@@ -741,6 +741,17 @@ impl<D: SessionDriver> XdgShellHandler for Session<D> {
     }
 
     fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
+        // Fullscreen temporarily retires field maximize so the two camera
+        // owners cannot fight. If this client fullscreen replaced a maximized
+        // presentation, hand it directly back to maximize instead of restoring
+        // the older floating geometry.
+        if self
+            .fullscreen
+            .client_unfullscreen_restores_maximize(surface.wl_surface())
+            && super::set_surface_field_maximized(self, surface.wl_surface(), true)
+        {
+            return;
+        }
         let capture_outgoing = self
             .fullscreen
             .client_request_changes_visual(surface.wl_surface(), false);

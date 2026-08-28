@@ -42,7 +42,15 @@ struct FullscreenWindow {
     snapshot_serials: Vec<Serial>,
     origin: FullscreenOrigin,
     native: Option<NativeFullscreenState>,
+    restore_kind: FullscreenRestoreKind,
     preserve_stack: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum FullscreenRestoreKind {
+    #[default]
+    Windowed,
+    FieldMaximized,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -348,6 +356,7 @@ impl FullscreenManager {
                 snapshot_serials: Vec::new(),
                 origin,
                 native: Some(NativeFullscreenState::default()),
+                restore_kind: FullscreenRestoreKind::Windowed,
                 preserve_stack: false,
             });
         let transition_requested = !entry.active;
@@ -560,6 +569,7 @@ impl FullscreenManager {
                 snapshot_serials: Vec::new(),
                 origin,
                 native: None,
+                restore_kind: FullscreenRestoreKind::Windowed,
                 preserve_stack: false,
             });
         super::set_window_output(&window, &target);
@@ -676,6 +686,7 @@ impl FullscreenManager {
                 snapshot_serials: Vec::new(),
                 origin,
                 native: None,
+                restore_kind: FullscreenRestoreKind::Windowed,
                 preserve_stack: false,
             });
         entry.origin = origin;
@@ -1239,6 +1250,15 @@ impl FullscreenManager {
             .collect()
     }
 
+    /// Whether releasing the client's fullscreen request should hand the
+    /// window back to the field-maximize presentation it replaced on entry.
+    /// A concurrent Mod+F owner keeps fullscreen instead.
+    pub(crate) fn client_unfullscreen_restores_maximize(&self, surface: &WlSurface) -> bool {
+        self.windows
+            .get(surface)
+            .is_some_and(client_release_restores_field_maximize)
+    }
+
     pub(crate) fn restore_placement(
         &self,
         surface: &WlSurface,
@@ -1271,6 +1291,7 @@ impl FullscreenManager {
             });
             entry.presentation_windowed = Some(field_geometry);
             entry.presentation_output = field_output_rect;
+            entry.restore_kind = FullscreenRestoreKind::FieldMaximized;
         }
     }
 
@@ -1413,6 +1434,17 @@ pub struct FullscreenCleanup {
 
 fn animations_enabled(animations: Animations) -> bool {
     animations.enabled && animations.fullscreen.enabled
+}
+
+fn client_release_restores_field_maximize(entry: &FullscreenWindow) -> bool {
+    if entry.restore_kind != FullscreenRestoreKind::FieldMaximized {
+        return false;
+    }
+    entry
+        .native
+        .map_or(entry.origin == FullscreenOrigin::Client, |native| {
+            native.client_requested && !native.compositor_requested
+        })
 }
 
 fn protocol_presentation_state(origin: FullscreenOrigin) -> State {
@@ -1892,6 +1924,7 @@ mod tests {
                 protocol_desired: active,
                 protocol_active: active,
             }),
+            restore_kind: FullscreenRestoreKind::Windowed,
             preserve_stack: false,
         }
     }
@@ -1962,6 +1995,29 @@ mod tests {
 
         assert!(state.states.contains(State::Fullscreen));
         assert!(!state.states.contains(State::Maximized));
+    }
+
+    #[test]
+    fn client_fullscreen_restores_the_field_maximize_it_replaced() {
+        let mut entry = test_entry(true);
+        entry.restore_kind = FullscreenRestoreKind::FieldMaximized;
+        assert!(client_release_restores_field_maximize(&entry));
+
+        entry.native.as_mut().unwrap().compositor_requested = true;
+        assert!(
+            !client_release_restores_field_maximize(&entry),
+            "Mod+F must keep ownership when nested client fullscreen exits"
+        );
+
+        entry.native = None;
+        entry.origin = FullscreenOrigin::Client;
+        assert!(
+            client_release_restores_field_maximize(&entry),
+            "X11 client fullscreen follows the same restore policy"
+        );
+
+        entry.restore_kind = FullscreenRestoreKind::Windowed;
+        assert!(!client_release_restores_field_maximize(&entry));
     }
 
     #[test]
