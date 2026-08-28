@@ -932,8 +932,9 @@ fn toggle_focused_fullscreen<D: SessionDriver>(session: &mut Session<D>, output:
 
 pub(crate) struct FieldMaximizeFullscreenHandoff {
     restore: crate::presentation::maximize::FieldRestore,
+    restore_output_rect: Option<Rectangle<i32, smithay::utils::Physical>>,
     geometry: Rectangle<i32, Logical>,
-    output_rect: Option<Rectangle<i32, smithay::utils::Physical>>,
+    field_output_rect: Option<Rectangle<i32, smithay::utils::Physical>>,
 }
 
 pub(crate) fn presentation_workspace_for_surface<D: SessionDriver>(
@@ -953,8 +954,9 @@ impl FieldMaximizeFullscreenHandoff {
             surface,
             self.restore.geometry,
             self.restore.output,
+            self.restore_output_rect,
             self.geometry,
-            self.output_rect,
+            self.field_output_rect,
         );
     }
 }
@@ -975,7 +977,7 @@ pub(crate) fn prepare_field_maximize_fullscreen_handoff<D: SessionDriver>(
 ) -> Option<FieldMaximizeFullscreenHandoff> {
     let workspace = presentation_workspace_for_surface(session, surface);
     let same_surface = session.maximize.contains(surface);
-    let output_rect = (same_surface && maximize_output == fullscreen_output)
+    let field_output_rect = (same_surface && maximize_output == fullscreen_output)
         .then(|| {
             session
                 .wayland
@@ -986,6 +988,7 @@ pub(crate) fn prepare_field_maximize_fullscreen_handoff<D: SessionDriver>(
                 .and_then(|output| presented_window_rect(session, window, &output, now))
         })
         .flatten();
+    let restore_output_rect = session.maximize.restore_presentation_output(surface);
     let restore = session
         .maximize
         .take_scope_restore(maximize_output, workspace)?;
@@ -1013,8 +1016,9 @@ pub(crate) fn prepare_field_maximize_fullscreen_handoff<D: SessionDriver>(
 
     geometry.map(|geometry| FieldMaximizeFullscreenHandoff {
         restore,
+        restore_output_rect,
         geometry,
-        output_rect,
+        field_output_rect,
     })
 }
 
@@ -1302,6 +1306,9 @@ fn toggle_field_maximize<D: SessionDriver>(
     let tracked_restore = session.maximize.restore(&record.surface);
     let cluster_restore = cluster_presentation_restore(session, &record.surface, now, entering);
     let inherited_restore = session.fullscreen.restore_placement(&record.surface);
+    let inherited_restore_output_rect = session
+        .fullscreen
+        .restore_presentation_output(&record.surface);
     let Some(restore_geometry) = tracked_restore
         .as_ref()
         .map(|restore| restore.geometry)
@@ -1330,6 +1337,7 @@ fn toggle_field_maximize<D: SessionDriver>(
     let presentation_output = cluster_restore
         .as_ref()
         .and_then(|restore| restore.presentation_output)
+        .or(inherited_restore_output_rect)
         .or_else(|| {
             entering
                 .then(|| presented_window_rect(session, &record.window, &target_output, now))

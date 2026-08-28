@@ -54,11 +54,14 @@ struct Entry {
     /// window will eventually restore to. Mirrors
     /// `FullscreenManager::presentation_windowed`.
     presentation_windowed: Option<Rectangle<i32, Logical>>,
-    /// Exact output-local rectangle occupied by a retiring fullscreen
-    /// presentation. Unlike `presentation_windowed`, this has already passed
-    /// through the old camera and must not be projected through the maximize
-    /// camera again.
+    /// Canonical output-local rectangle of the real live windowed endpoint.
+    /// This stays stable for the whole maximize cycle so the restore animation
+    /// and the first post-animation live frame use the same rectangle.
     presentation_output: Option<Rectangle<i32, Physical>>,
+    /// Output-local rectangle occupied by a retiring fullscreen presentation.
+    /// This is only the maximize-entry source; it must not replace the live
+    /// windowed endpoint used by a later unmaximize.
+    handoff_output: Option<Rectangle<i32, Physical>>,
     desired: bool,
     active: bool,
     window_timeline: Option<MotionTimeline>,
@@ -137,6 +140,7 @@ impl FieldMaximizeManager {
                 entry.restore_geometry = restore_geometry;
                 entry.restore_output = restore_output;
                 entry.presentation_windowed = None;
+                entry.handoff_output = None;
                 // Field maximize parks the field camera while the client grows.
                 // Keep the output-local endpoint captured on entry so the
                 // window does not get projected through that moving camera on
@@ -165,7 +169,14 @@ impl FieldMaximizeManager {
                 entry.restore_output = restore_output;
                 entry.target_rect = target_rect;
                 entry.presentation_windowed = None;
-                entry.presentation_output = presentation_output.or(entry.presentation_output);
+                entry.handoff_output = None;
+                // This is the output-local form of the original windowed
+                // endpoint. A rapid re-entry may currently be displayed at an
+                // intermediate rectangle; replacing the endpoint with that
+                // rectangle makes the next restore animate there and then snap
+                // to the real live window.
+                entry.presentation_output =
+                    canonical_presentation_output(entry.presentation_output, presentation_output);
                 entry.window_timeline = None;
                 entry.camera_timeline = None;
                 entry.pending_window_motion = (window_progress, window_velocity);
@@ -191,6 +202,7 @@ impl FieldMaximizeManager {
                     target_rect,
                     presentation_windowed: None,
                     presentation_output,
+                    handoff_output: None,
                     desired: true,
                     active: false,
                     window_timeline: None,
@@ -214,6 +226,7 @@ impl FieldMaximizeManager {
                         target_rect,
                         presentation_windowed: None,
                         presentation_output,
+                        handoff_output: None,
                         desired: true,
                         active: false,
                         window_timeline: None,
@@ -264,7 +277,10 @@ impl FieldMaximizeManager {
                 windowed_rect: entry
                     .presentation_windowed
                     .unwrap_or(entry.restore_geometry),
-                windowed_output_rect: entry.presentation_output,
+                windowed_output_rect: maximize_windowed_output(
+                    entry.handoff_output,
+                    entry.presentation_output,
+                ),
                 target_rect: Rectangle::new(
                     (entry.target_rect.loc - output_geometry.loc).to_physical(1),
                     entry.target_rect.size.to_physical(1),
@@ -291,7 +307,7 @@ impl FieldMaximizeManager {
             .find(|entry| &entry.surface == surface && entry.desired)
         {
             entry.presentation_windowed = Some(fullscreen_geometry);
-            entry.presentation_output = fullscreen_output_rect;
+            entry.handoff_output = fullscreen_output_rect;
         }
     }
 
@@ -377,6 +393,16 @@ impl FieldMaximizeManager {
                 output: entry.restore_output.clone(),
             })
         })
+    }
+
+    pub(crate) fn restore_presentation_output(
+        &self,
+        surface: &WlSurface,
+    ) -> Option<Rectangle<i32, Physical>> {
+        self.entries
+            .values()
+            .find(|entry| &entry.surface == surface)
+            .and_then(|entry| entry.presentation_output)
     }
 
     pub fn remove_output(&mut self, output: &str) -> bool {
@@ -597,6 +623,20 @@ fn motion_state(timeline: Option<MotionTimeline>, active: bool, now: Duration) -
         .unwrap_or_else(|| (if active { 1.0 } else { 0.0 }, 0.0))
 }
 
+fn maximize_windowed_output(
+    handoff: Option<Rectangle<i32, Physical>>,
+    restore: Option<Rectangle<i32, Physical>>,
+) -> Option<Rectangle<i32, Physical>> {
+    handoff.or(restore)
+}
+
+fn canonical_presentation_output(
+    existing: Option<Rectangle<i32, Physical>>,
+    requested: Option<Rectangle<i32, Physical>>,
+) -> Option<Rectangle<i32, Physical>> {
+    existing.or(requested)
+}
+
 fn authoritative_restore(
     existing: Option<(Rectangle<i32, Logical>, String)>,
     requested: (Rectangle<i32, Logical>, String),
@@ -668,6 +708,35 @@ mod tests {
         assert_eq!(
             reverse.value_at(reversed_at + Duration::from_millis(400)),
             0.0
+        );
+    }
+
+    #[test]
+    fn rapid_reentry_keeps_the_original_live_restore_rectangle() {
+        let original = Rectangle::new((120, 90).into(), (800, 600).into());
+        let intermediate = Rectangle::new((70, 55).into(), (1200, 800).into());
+
+        assert_eq!(
+            canonical_presentation_output(Some(original), Some(intermediate)),
+            Some(original),
+            "an intermediate reversal frame is not the post-animation live endpoint"
+        );
+    }
+
+    #[test]
+    fn fullscreen_handoff_source_does_not_replace_unmaximize_restore_endpoint() {
+        let floating = Rectangle::new((120, 90).into(), (800, 600).into());
+        let fullscreen = Rectangle::new((0, 0).into(), (1920, 1080).into());
+
+        assert_eq!(
+            maximize_windowed_output(Some(fullscreen), Some(floating)),
+            Some(fullscreen),
+            "maximize entry starts where fullscreen left the window"
+        );
+        assert_eq!(
+            maximize_windowed_output(None, Some(floating)),
+            Some(floating),
+            "unmaximize restores to the real live windowed rectangle"
         );
     }
 

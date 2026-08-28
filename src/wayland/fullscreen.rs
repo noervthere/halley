@@ -36,6 +36,11 @@ struct FullscreenWindow {
     /// rectangle already includes the outgoing camera and must not be projected
     /// through the incoming camera again.
     presentation_output: Option<Rectangle<i32, Physical>>,
+    /// Output-local rectangle of the real post-fullscreen live endpoint.
+    /// This can differ from `presentation_output` during a maximize-to-
+    /// fullscreen handoff, where entry starts at the maximized rectangle but
+    /// exit restores the earlier windowed rectangle.
+    restore_presentation_output: Option<Rectangle<i32, Physical>>,
     fullscreen_size: Size<i32, Logical>,
     transition: Option<MotionTimeline>,
     external_pending: Option<ExternalPending>,
@@ -350,6 +355,7 @@ impl FullscreenManager {
                 }),
                 presentation_windowed: None,
                 presentation_output: None,
+                restore_presentation_output: None,
                 fullscreen_size: output_geometry.size,
                 transition: None,
                 external_pending: None,
@@ -472,8 +478,7 @@ impl FullscreenManager {
                 if let Some(window) = find_window(wayland, toplevel.wl_surface()) {
                     entry.fullscreen_size = window.geometry().size;
                 }
-                entry.presentation_windowed =
-                    entry.restore.as_ref().map(|restore| restore.geometry);
+                select_restore_presentation_endpoint(entry);
                 (
                     entry.restore.as_ref().map(|restore| restore.geometry.size),
                     entry.active,
@@ -563,6 +568,7 @@ impl FullscreenManager {
                 }),
                 presentation_windowed: None,
                 presentation_output: None,
+                restore_presentation_output: None,
                 fullscreen_size: output_geometry.size,
                 transition: None,
                 external_pending: None,
@@ -680,6 +686,7 @@ impl FullscreenManager {
                 restore: restore.clone(),
                 presentation_windowed: None,
                 presentation_output: None,
+                restore_presentation_output: None,
                 fullscreen_size: output_geometry.size,
                 transition: None,
                 external_pending: None,
@@ -1275,11 +1282,21 @@ impl FullscreenManager {
         Some((restore.location, restore.output.clone()))
     }
 
+    pub(crate) fn restore_presentation_output(
+        &self,
+        surface: &WlSurface,
+    ) -> Option<Rectangle<i32, Physical>> {
+        self.windows
+            .get(surface)
+            .and_then(|entry| entry.restore_presentation_output)
+    }
+
     pub(crate) fn override_restore_from_field(
         &mut self,
         surface: &WlSurface,
         restore_geometry: Rectangle<i32, Logical>,
         restore_output: String,
+        restore_output_rect: Option<Rectangle<i32, Physical>>,
         field_geometry: Rectangle<i32, Logical>,
         field_output_rect: Option<Rectangle<i32, Physical>>,
     ) {
@@ -1291,6 +1308,7 @@ impl FullscreenManager {
             });
             entry.presentation_windowed = Some(field_geometry);
             entry.presentation_output = field_output_rect;
+            entry.restore_presentation_output = restore_output_rect;
             entry.restore_kind = FullscreenRestoreKind::FieldMaximized;
         }
     }
@@ -1303,8 +1321,13 @@ impl FullscreenManager {
         surface: &WlSurface,
         presentation_output: Rectangle<i32, Physical>,
     ) {
-        if let Some(entry) = self.windows.get_mut(surface) {
-            entry.presentation_output = Some(presentation_output);
+        if let Some(entry) = self.windows.get_mut(surface)
+            && entry.restore_presentation_output.is_none()
+        {
+            // The first output-local windowed rectangle is the canonical live
+            // restore endpoint. A reversal may be visibly between endpoints;
+            // never replace the canonical endpoint with that transient frame.
+            retain_restore_presentation_output(entry, presentation_output);
         }
     }
 
@@ -1323,6 +1346,7 @@ impl FullscreenManager {
             });
             entry.presentation_windowed = Some(restore_geometry);
             entry.presentation_output = presentation_output;
+            entry.restore_presentation_output = presentation_output;
             entry.preserve_stack = true;
         }
     }
@@ -1607,6 +1631,21 @@ fn entry_covers_top(entry: &FullscreenWindow, output: &str, now: Duration) -> bo
 
 fn desired_matches(entry: Option<&FullscreenWindow>, desired: bool) -> bool {
     entry.is_some_and(|entry| entry.desired == desired)
+}
+
+fn retain_restore_presentation_output(
+    entry: &mut FullscreenWindow,
+    presentation_output: Rectangle<i32, Physical>,
+) {
+    if entry.restore_presentation_output.is_none() {
+        entry.presentation_output = Some(presentation_output);
+        entry.restore_presentation_output = Some(presentation_output);
+    }
+}
+
+fn select_restore_presentation_endpoint(entry: &mut FullscreenWindow) {
+    entry.presentation_windowed = entry.restore.as_ref().map(|restore| restore.geometry);
+    entry.presentation_output = entry.restore_presentation_output;
 }
 
 fn prefer_seeded_restore(
@@ -1913,6 +1952,7 @@ mod tests {
             restore: None,
             presentation_windowed: None,
             presentation_output: None,
+            restore_presentation_output: None,
             fullscreen_size: (1920, 1080).into(),
             transition: None,
             external_pending: None,
@@ -2538,6 +2578,42 @@ mod tests {
         assert_eq!(fallback.geometry, buffered_geometry);
         assert_eq!(restore.geometry, seeded_geometry);
         assert_eq!(restore.location, seeded_geometry.loc);
+    }
+
+    #[test]
+    fn rapid_fullscreen_reentry_keeps_the_original_live_restore_rectangle() {
+        let original = Rectangle::new((120, 90).into(), (800, 600).into());
+        let intermediate = Rectangle::new((70, 55).into(), (1200, 800).into());
+        let mut entry = test_entry(false);
+
+        retain_restore_presentation_output(&mut entry, original);
+        retain_restore_presentation_output(&mut entry, intermediate);
+
+        assert_eq!(entry.presentation_output, Some(original));
+        assert_eq!(entry.restore_presentation_output, Some(original));
+    }
+
+    #[test]
+    fn maximize_to_fullscreen_exit_selects_the_real_windowed_endpoint() {
+        let floating_world = Rectangle::<i32, Logical>::new((120, 90).into(), (800, 600).into());
+        let floating_output = Rectangle::<i32, Physical>::new((120, 90).into(), (800, 600).into());
+        let maximized_world = Rectangle::<i32, Logical>::new((20, 20).into(), (1880, 1040).into());
+        let maximized_output =
+            Rectangle::<i32, Physical>::new((20, 20).into(), (1880, 1040).into());
+        let mut entry = test_entry(true);
+        entry.restore = Some(WindowedPlacement {
+            location: floating_world.loc,
+            geometry: floating_world,
+            output: Some("DP-1".to_string()),
+        });
+        entry.presentation_windowed = Some(maximized_world);
+        entry.presentation_output = Some(maximized_output);
+        entry.restore_presentation_output = Some(floating_output);
+
+        select_restore_presentation_endpoint(&mut entry);
+
+        assert_eq!(entry.presentation_windowed, Some(floating_world));
+        assert_eq!(entry.presentation_output, Some(floating_output));
     }
 
     #[test]
