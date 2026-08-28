@@ -95,6 +95,26 @@ impl OutputCameras {
         self.cameras.get_mut(output_name)
     }
 
+    /// Queue an exact Field center without disturbing fullscreen or maximize
+    /// camera ownership. A closing cluster still parks the Field camera, but
+    /// navigation may prepare its destination underneath that transition so
+    /// it begins easing as soon as the Field becomes visible again.
+    pub fn center_field_on(&mut self, output_name: &str, center: Vec2) -> bool {
+        if self.fullscreen.contains_key(output_name)
+            || self.field_maximize.contains_key(output_name)
+        {
+            return false;
+        }
+        let Some(camera) = self.cameras.get_mut(output_name) else {
+            return false;
+        };
+        let changed =
+            camera.target_center != center || camera.pan_vel.x != 0.0 || camera.pan_vel.y != 0.0;
+        camera.target_center = center;
+        camera.pan_vel = Vec2 { x: 0.0, y: 0.0 };
+        changed
+    }
+
     pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut Camera> {
         let Self {
             cameras,
@@ -637,6 +657,26 @@ mod tests {
         let camera = cameras.get("DP-1").unwrap();
         assert_eq!(camera.center, restore.center);
         assert_eq!(camera.view_size, restore.view_size);
+    }
+
+    #[test]
+    fn field_center_can_be_queued_while_a_cluster_parks_the_camera() {
+        let mut cameras = OutputCameras::default();
+        cameras.insert("DP-1".into(), Size::from((1920, 1080)));
+        let live_center = cameras.get("DP-1").unwrap().center;
+        let target = Vec2 {
+            x: live_center.x + 640.0,
+            y: live_center.y - 240.0,
+        };
+
+        cameras.set_cluster_active("DP-1", true);
+        assert!(cameras.get_mut("DP-1").is_none());
+        assert!(cameras.center_field_on("DP-1", target));
+        assert_eq!(cameras.get("DP-1").unwrap().center, live_center);
+        assert_eq!(cameras.get("DP-1").unwrap().target_center, target);
+
+        cameras.set_cluster_active("DP-1", false);
+        assert!(cameras.get_mut("DP-1").is_some());
     }
 
     #[test]

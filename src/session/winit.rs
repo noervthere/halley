@@ -261,7 +261,6 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
             runtime_config.animations.cluster,
         ),
         api_subscriptions: crate::ipc::ApiSubscriptions::default(),
-        pending_pointer_warp: None,
         window_rules: crate::window::rules::WindowRulesState::new(
             runtime_config.window_rules.clone(),
         ),
@@ -393,7 +392,6 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                             .is_animating(surface.as_ref(), target_presentation_time)
                     })
                 });
-                let _ = crate::shell::focus_cycle::finish_pending_pointer_warp(app);
                 let presentation_workspace = crate::presentation::active_workspace_on_output(
                     &app.clusters,
                     &output.name(),

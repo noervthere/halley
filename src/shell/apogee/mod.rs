@@ -712,11 +712,9 @@ fn activate_target<D: crate::session::SessionDriver>(
     if let Some(active) = session.clusters.active_on(&record.output) {
         let _ = session.clusters.activate(&record.output, active, now);
     }
-    if record.collapsed {
-        let _ = crate::nodes::restore(session, target, serial);
-    } else {
-        crate::session::focus_window(session, &record.window, serial);
-    }
+    // Explicit focus raises the selected window; camera movement is shared
+    // with Alt+Tab and intentionally leaves the pointer where the user put it.
+    let _ = crate::nodes::focus_and_center_node(session, target, serial);
 }
 
 fn cluster_needs_activation(active: Option<ClusterId>, selected: ClusterId) -> bool {

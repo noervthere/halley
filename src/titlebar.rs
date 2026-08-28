@@ -171,6 +171,7 @@ pub struct DecorationLayout<K> {
     pub outer: Rectangle<i32, K>,
     pub controls: Vec<ControlGeometry<K>>,
     pub identity_area: Rectangle<i32, K>,
+    identity_center_x2: i32,
     pub border_width: i32,
     pub titlebar_height: i32,
 }
@@ -234,6 +235,9 @@ impl<K> DecorationLayout<K> {
             outer,
             controls,
             identity_area,
+            identity_center_x2: identity_x
+                .saturating_mul(2)
+                .saturating_add(identity_area.size.w),
             border_width,
             titlebar_height,
         }
@@ -306,7 +310,14 @@ impl<K> DecorationLayout<K> {
         let group_x = match position {
             TitlebarContentPosition::Left => self.identity_area.loc.x,
             TitlebarContentPosition::Center => {
-                self.identity_area.loc.x + (self.identity_area.size.w - group_width) / 2
+                // A titlebar pin reserves space after the base layout is
+                // created. Keep centered identity anchored to the same
+                // control-aware center it had without the pin, only clamping
+                // when a genuinely narrow titlebar would overlap the badge.
+                let desired = (self.identity_center_x2 - group_width) / 2;
+                let minimum = self.identity_area.loc.x;
+                let maximum = minimum + self.identity_area.size.w.saturating_sub(group_width);
+                desired.clamp(minimum, maximum.max(minimum))
             }
             TitlebarContentPosition::Right => {
                 self.identity_area.loc.x + self.identity_area.size.w - group_width
@@ -809,6 +820,37 @@ mod tests {
         right.reserve_opposite_controls(TitlebarButtonPosition::Right);
         assert_eq!(right.identity_area.loc.x, right_before.loc.x + 32);
         assert_eq!(right.identity_area.size.w, right_before.size.w - 32);
+    }
+
+    #[test]
+    fn titlebar_pin_does_not_move_centered_title() {
+        let content = Rectangle::new((0, 32).into(), (500, 200).into());
+        for button_position in [TitlebarButtonPosition::Left, TitlebarButtonPosition::Right] {
+            let config = Titlebars {
+                button_position,
+                ..Titlebars::default()
+            };
+            let mut layout = DecorationLayout::<Logical>::new(content, 0, 32, &config);
+            let before = layout.identity_layout_scaled(
+                TitlebarContentPosition::Center,
+                Some((120, 18)),
+                true,
+                1.0,
+            );
+            layout.reserve_opposite_controls(button_position);
+            let after = layout.identity_layout_scaled(
+                TitlebarContentPosition::Center,
+                Some((120, 18)),
+                true,
+                1.0,
+            );
+
+            assert_eq!(after.title.unwrap().loc.x, before.title.unwrap().loc.x);
+            assert_eq!(
+                after.app_icon.unwrap().loc.x,
+                before.app_icon.unwrap().loc.x
+            );
+        }
     }
 
     #[test]

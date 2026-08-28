@@ -136,7 +136,6 @@ pub struct Session<D: SessionDriver> {
     pub(crate) trail: crate::trail::TrailState,
     pub clusters: crate::clusters::ClusterSystem,
     pub(crate) api_subscriptions: crate::ipc::ApiSubscriptions,
-    pub pending_pointer_warp: Option<WlSurface>,
     pub window_rules: crate::window::rules::WindowRulesState,
     pub(crate) presentation_close_size_recovery:
         crate::window::recovery::PresentationCloseSizeRecovery,

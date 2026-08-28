@@ -2,7 +2,6 @@ use std::time::Duration;
 
 use halley_config::FocusCycleDirection;
 use halley_core::field::NodeId;
-use smithay::wayland::seat::WaylandFocus;
 
 pub const OPEN_MS: u64 = 140;
 pub const STEP_MS: u64 = 130;
@@ -242,10 +241,6 @@ fn ease_in_out_cubic(value: f32) -> f32 {
     }
 }
 
-fn target_needs_pointer_warp(origin_focus: Option<NodeId>, target: NodeId) -> bool {
-    origin_focus != Some(target)
-}
-
 pub fn start_or_step<D: crate::session::SessionDriver>(
     session: &mut crate::session::Session<D>,
     direction: FocusCycleDirection,
@@ -305,11 +300,6 @@ pub fn commit<D: crate::session::SessionDriver>(
     session: &mut crate::session::Session<D>,
     serial: smithay::utils::Serial,
 ) -> bool {
-    let origin_focus = session
-        .shell
-        .focus_cycle
-        .session()
-        .and_then(|cycle| cycle.origin_focus);
     let Some(target) = session
         .shell
         .focus_cycle
@@ -317,68 +307,19 @@ pub fn commit<D: crate::session::SessionDriver>(
     else {
         return false;
     };
-    let Some(record) = session.nodes.record(target).cloned() else {
-        session.request_redraw();
-        return true;
-    };
-    if record.collapsed {
-        let _ = crate::nodes::restore(session, target, serial);
-    } else {
-        crate::session::focus_window(session, &record.window, serial);
-    }
-    crate::nodes::reveal_for_focus_cycle(session, target);
-    if target_needs_pointer_warp(origin_focus, target) {
-        session.pending_pointer_warp = Some(record.surface);
-        let _ = finish_pending_pointer_warp(session);
-    } else {
-        // Wrapping Alt+Tab back to the already focused window is not a new
-        // focus placement. In particular, releasing and rebuilding a game's
-        // pointer lock here would restore its old anchor and visibly jump the
-        // cursor even though focus never actually changed.
-        session.pending_pointer_warp = None;
-    }
+    // Explicit focus raises the selected window. The shared navigation path
+    // also queues an exact camera target, so Alt+Tab eases to the window center
+    // just like Apogee without moving the pointer.
+    let _ = crate::nodes::focus_and_center_node(session, target, serial);
     session.request_redraw();
     true
 }
 
-pub fn finish_pending_pointer_warp<D: crate::session::SessionDriver>(
-    session: &mut crate::session::Session<D>,
-) -> bool {
-    let Some(surface) = session.pending_pointer_warp.clone() else {
-        return false;
-    };
-    let now = crate::frame_clock::monotonic_now();
-    if session.window_open_animations.is_animating(&surface, now) {
-        return false;
-    }
-    let window = session
-        .wayland
-        .space
-        .elements()
-        .find(|window| {
-            window
-                .wl_surface()
-                .is_some_and(|candidate| candidate.as_ref() == &surface)
-        })
-        .cloned();
-    session.pending_pointer_warp = None;
-    window.is_some_and(|window| crate::session::warp_pointer_to_window_center(session, &window))
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{FocusCycleState, Session, target_needs_pointer_warp};
+    use super::{FocusCycleState, Session};
     use halley_core::field::NodeId;
     use std::time::Duration;
-
-    #[test]
-    fn wrapping_back_to_the_origin_does_not_warp_the_pointer() {
-        let game = NodeId::new(7);
-
-        assert!(!target_needs_pointer_warp(Some(game), game));
-        assert!(target_needs_pointer_warp(Some(NodeId::new(8)), game));
-        assert!(target_needs_pointer_warp(None, game));
-    }
 
     #[test]
     fn visible_slots_do_not_duplicate_small_candidate_sets() {

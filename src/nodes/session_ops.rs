@@ -840,6 +840,62 @@ pub fn pan_after_close_restore<D: crate::session::SessionDriver>(
     }
 }
 
+/// Focus and raise a presentation-navigation target, then smoothly place its
+/// center at the output center. Apogee and Alt+Tab are explicit spatial jumps:
+/// they should land on the chosen window rather than merely reveal an edge.
+pub fn focus_and_center_node<D: crate::session::SessionDriver>(
+    session: &mut crate::session::Session<D>,
+    id: NodeId,
+    serial: smithay::utils::Serial,
+) -> bool {
+    let Some(record) = session.nodes.record(id).cloned() else {
+        return false;
+    };
+    let Some(node) = session.nodes.field.node(id).cloned() else {
+        return false;
+    };
+    let activated = if record.collapsed {
+        restore_with_centering(
+            session,
+            id,
+            serial,
+            Some(halley_config::RestoreCentering::Always),
+        )
+    } else if record.attached {
+        crate::session::focus_window(session, &record.window, serial);
+        true
+    } else {
+        false
+    };
+    if !activated {
+        return false;
+    }
+
+    // Presentation owners already place their window at the output center.
+    // Rewriting the parked Field camera underneath them would make their later
+    // restore jump to an unrelated Apogee selection.
+    if !session.fullscreen.is_fullscreen_or_pending(&record.surface)
+        && !session.maximize.contains(&record.surface)
+        && let Some(output) = session
+            .wayland
+            .space
+            .outputs()
+            .find(|output| output.name() == record.output)
+            .cloned()
+        && let Some(output_geometry) = session.wayland.space.output_geometry(&output)
+    {
+        let _ = session.cameras.center_field_on(
+            &record.output,
+            Vec2 {
+                x: node.pos.x - output_geometry.loc.x as f32,
+                y: node.pos.y - output_geometry.loc.y as f32,
+            },
+        );
+    }
+    session.request_redraw();
+    true
+}
+
 /// Activate a node and make it visible in one operation. Collapsed nodes
 /// follow the configured restore-centering policy; live windows are focused
 /// immediately and the camera only moves far enough to reveal their bounds.
@@ -959,59 +1015,6 @@ pub fn reveal_cluster_core<D: crate::session::SessionDriver>(
     }
     session.request_redraw();
     true
-}
-
-/// Makes an Alt+Tab target visible without adding a second animation track.
-/// The camera snaps only by the minimum reveal delta; the focus-cycle overlay
-/// already owns the visible close transition.
-pub fn reveal_for_focus_cycle<D: crate::session::SessionDriver>(
-    session: &mut crate::session::Session<D>,
-    id: NodeId,
-) {
-    let Some(record) = session.nodes.record(id).cloned() else {
-        return;
-    };
-    if session.fullscreen.is_fullscreen_or_pending(&record.surface)
-        || session.maximize.contains(&record.surface)
-    {
-        return;
-    }
-    let Some(output) = session
-        .wayland
-        .space
-        .outputs()
-        .find(|output| output.name() == record.output)
-        .cloned()
-    else {
-        return;
-    };
-    let Some(output_geometry) = session.wayland.space.output_geometry(&output) else {
-        return;
-    };
-    let Some(view) = session.cameras.view(&record.output) else {
-        return;
-    };
-    let geometry = session
-        .wayland
-        .space
-        .element_geometry(&record.window)
-        .unwrap_or(record.geometry);
-    let delta = minimal_reveal_delta(
-        crate::presentation::camera::world_viewport(view, output_geometry),
-        geometry,
-        24,
-    );
-    if delta.x == 0.0 && delta.y == 0.0 {
-        return;
-    }
-    if let Some(camera) = session.cameras.get_mut(&record.output) {
-        camera.center = Vec2 {
-            x: camera.center.x + delta.x,
-            y: camera.center.y + delta.y,
-        };
-        camera.target_center = camera.center;
-        camera.pan_vel = Vec2 { x: 0.0, y: 0.0 };
-    }
 }
 
 pub(super) fn minimal_reveal_delta(

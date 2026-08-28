@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+- Make Apogee and Alt-Tab use the same smooth camera path to center the selected
+  window while leaving the pointer in place.
+
+### Fixed
+- Restore a distinct, high-contrast keyboard focus indicator in Apogee without
+  making pointer hover look selected.
+- Explicitly raise Apogee and Alt-Tab selections to the front when activating
+  them.
+- Keep the titlebar pin from shifting an otherwise centered window title.
+
 ## [v0.6.1] - 2026-08-28
 
 ### Changed

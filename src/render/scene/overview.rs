@@ -147,6 +147,42 @@ fn push_live_preview(
     Ok(true)
 }
 
+const APOGEE_SELECTION_BORDER_PX: f32 = 4.0;
+const APOGEE_SELECTION_ACCENT_MIX: f32 = 0.55;
+
+fn apogee_window_chrome(
+    mut visuals: crate::render::overlays::shell::OverlayVisuals,
+    selected: bool,
+    hovered: bool,
+) -> (
+    crate::render::overlays::shell::OverlayVisuals,
+    crate::render::overlays::shell::OverlayRgb,
+    crate::render::overlays::shell::OverlayRgb,
+) {
+    // Keyboard navigation clears `hovered` while retaining `selected`. Restore
+    // old Halley's strong accent band and add an always-visible focus frame so
+    // that selection remains obvious even when decorative overlay borders are
+    // disabled.
+    if selected {
+        visuals.border_px = visuals.border_px.max(APOGEE_SELECTION_BORDER_PX);
+    }
+    let caption_fill = if selected {
+        visuals
+            .fill
+            .mix(visuals.border, APOGEE_SELECTION_ACCENT_MIX)
+    } else if hovered {
+        visuals.fill.mix(visuals.border, 0.32)
+    } else {
+        visuals.fill
+    };
+    let card_fill = if selected || hovered {
+        visuals.fill.mix(visuals.border, 0.12)
+    } else {
+        visuals.fill
+    };
+    (visuals, caption_fill, card_fill)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn apogee_elements(
     renderer: &mut GlesRenderer,
@@ -280,11 +316,13 @@ pub(super) fn apogee_elements(
         let body = lerp_rect(source, target, progress);
         let selected = session.selected == Some(tile.id);
         let hovered = session.hovered == Some(tile.id);
+        let (card_visuals, caption_fill, card_fill) =
+            apogee_window_chrome(overlay_visuals, selected, hovered);
         let chrome_alpha = visuals.chrome_alpha;
         // Old Halley kept the caption inside the preview. Growing the card by
         // a fixed footer made its backing look like an enlarged second window,
         // especially for short and wide Apogee tiles.
-        let card = preview_card_rect(body, overlay_visuals.border_px);
+        let card = preview_card_rect(body, card_visuals.border_px);
         let caption = apogee_caption_rect(body);
         if let Some(caption) = caption {
             let (title, size) = fit_ui_text(
@@ -309,18 +347,13 @@ pub(super) fn apogee_elements(
             {
                 elements.push(SceneElement::UiText(text.element));
             }
-            let fill = if selected || hovered {
-                overlay_visuals.fill.mix(overlay_visuals.border, 0.16)
-            } else {
-                overlay_visuals.fill
-            };
             elements.push(SceneElement::NodeLabel(
                 crate::render::overlays::shell::label_card_element(
                     renderer,
                     node_renderer,
                     caption,
                     overlay_visuals,
-                    fill,
+                    caption_fill,
                     if selected || hovered {
                         0.96 * chrome_alpha
                     } else {
@@ -412,17 +445,12 @@ pub(super) fn apogee_elements(
                 }
             }
         }
-        let card_fill = if selected || hovered {
-            overlay_visuals.fill.mix(overlay_visuals.border, 0.12)
-        } else {
-            overlay_visuals.fill
-        };
         elements.push(SceneElement::NodeLabel(
             crate::render::overlays::shell::card_element(
                 renderer,
                 node_renderer,
                 card,
-                overlay_visuals,
+                card_visuals,
                 card_fill,
                 0.96 * visuals.overlay_alpha,
             )?,
@@ -1118,5 +1146,77 @@ pub(super) fn truncate_chars(text: &str, max: usize) -> String {
         format!("{prefix}…")
     } else {
         prefix
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{APOGEE_SELECTION_ACCENT_MIX, APOGEE_SELECTION_BORDER_PX, apogee_window_chrome};
+    use crate::render::overlays::shell::{OverlayRgb, OverlayVisuals};
+
+    fn visuals(border_px: f32) -> OverlayVisuals {
+        OverlayVisuals {
+            fill: OverlayRgb {
+                r: 0.1,
+                g: 0.2,
+                b: 0.3,
+                a: 1.0,
+            },
+            text: OverlayRgb {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 1.0,
+            },
+            error: OverlayRgb {
+                r: 1.0,
+                g: 0.0,
+                b: 0.0,
+                a: 1.0,
+            },
+            subtext: OverlayRgb {
+                r: 0.8,
+                g: 0.8,
+                b: 0.8,
+                a: 1.0,
+            },
+            key_fill: OverlayRgb {
+                r: 0.2,
+                g: 0.2,
+                b: 0.2,
+                a: 1.0,
+            },
+            border: OverlayRgb {
+                r: 0.4,
+                g: 0.7,
+                b: 1.0,
+                a: 1.0,
+            },
+            border_px,
+            radius: 8.0,
+        }
+    }
+
+    #[test]
+    fn keyboard_selection_restores_accent_band_and_focus_frame() {
+        let base = visuals(0.0);
+        let (selected, caption_fill, card_fill) = apogee_window_chrome(base, true, false);
+
+        assert_eq!(selected.border_px, APOGEE_SELECTION_BORDER_PX);
+        assert_eq!(
+            caption_fill,
+            base.fill.mix(base.border, APOGEE_SELECTION_ACCENT_MIX)
+        );
+        assert_eq!(card_fill, base.fill.mix(base.border, 0.12));
+    }
+
+    #[test]
+    fn idle_window_keeps_configured_chrome() {
+        let base = visuals(2.0);
+        let (idle, caption_fill, card_fill) = apogee_window_chrome(base, false, false);
+
+        assert_eq!(idle.border_px, base.border_px);
+        assert_eq!(caption_fill, base.fill);
+        assert_eq!(card_fill, base.fill);
     }
 }

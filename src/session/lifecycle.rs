@@ -282,9 +282,6 @@ pub(crate) fn finish_window_unmap<D: SessionDriver>(
         .presentation_close_size_recovery
         .forget_surface(&surface);
     session.opening_origins.forget(&surface);
-    if session.pending_pointer_warp.as_ref() == Some(&surface) {
-        session.pending_pointer_warp = None;
-    }
     session.window_open_animations.remove(&surface);
     session.fullscreen.remove(&surface);
     if session.maximize.remove(&surface)
