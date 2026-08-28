@@ -519,10 +519,33 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
         let apogee_preview_commit = self.settings.apogee.live_previews
             && self.shell.apogee.accepts_live_previews()
             && preview_node.is_some_and(|id| self.shell.apogee.contains(id));
+        let focus_cycle_preview_commit = self.shell.focus_cycle.accepts_live_previews()
+            && preview_node.is_some_and(|id| self.shell.focus_cycle.contains_preview(id));
         if dnd_icon_commit {
             self.request_redraw();
+        } else if focus_cycle_preview_commit {
+            // Focus-cycle cards are mirrored on every output. A commit from
+            // any visible card therefore damages every copy, not just the
+            // window's home output.
+            self.request_redraw();
         } else if apogee_preview_commit {
-            self.shell.apogee.mark_preview_dirty();
+            // Apogee cards only exist on their home output. Queue that output
+            // and let its native vblank cadence coalesce client commits.
+            let preview_output = preview_node
+                .and_then(|id| self.nodes.record(id))
+                .map(|record| record.output.clone())
+                .and_then(|name| {
+                    self.wayland
+                        .space
+                        .outputs()
+                        .find(|output| output.name() == name)
+                        .cloned()
+                });
+            if let Some(output) = preview_output {
+                self.request_output_redraw(&output);
+            } else {
+                self.request_redraw();
+            }
         } else {
             self.request_redraw();
         }

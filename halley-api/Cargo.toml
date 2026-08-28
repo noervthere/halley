@@ -12,5 +12,5 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-halley-ipc = { version = "0.6.0", path = "../halley-ipc" }
+halley-ipc = { version = "0.6.1", path = "../halley-ipc" }
 serde = { version = "1", features = ["derive"] }

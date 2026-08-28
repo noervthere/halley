@@ -89,7 +89,11 @@ impl NativeFullscreenState {
             }
             FullscreenOrigin::Compositor => {
                 self.compositor_requested = true;
-                self.protocol_desired = true;
+                // Mod+F owns the output presentation, not the client's
+                // fullscreen state. Keeping this protocol-windowed gives
+                // Firefox a real state edge when HTML video later enters
+                // fullscreen, which is required for correct 16:10 reflow.
+                self.protocol_desired = self.client_requested;
             }
             FullscreenOrigin::Maximize => {}
         }
@@ -103,7 +107,7 @@ impl NativeFullscreenState {
                 // retains the output presentation. Firefox uses this edge to
                 // reflow HTML fullscreen content when the toplevel was already
                 // fullscreen before the video entered fullscreen.
-                self.protocol_desired = self.compositor_requested;
+                self.protocol_desired = false;
             }
             FullscreenOrigin::Compositor => {
                 self.compositor_requested = false;
@@ -1512,10 +1516,10 @@ fn fullscreen_entry_suppresses_chrome(entry: &FullscreenWindow) -> bool {
 
 /// Protocol state used for a native presentation.
 ///
-/// Fullscreen ownership always advertises the real fullscreen protocol state.
-/// This matches Niri's transaction model and, importantly, gives clients one
-/// stable state to acknowledge across repeated enter/exit cycles. Field
-/// maximize is the only path which advertises maximized.
+/// Client ownership advertises fullscreen. Compositor-only Mod+F deliberately
+/// remains protocol-windowed while still configuring the output-sized buffer,
+/// so a later client fullscreen request produces the state edge applications
+/// use to reflow nested content. Field maximize advertises maximized.
 fn native_protocol_origin(entry: &FullscreenWindow) -> FullscreenOrigin {
     match entry.native {
         Some(native) if native.client_requested => FullscreenOrigin::Client,
@@ -2086,7 +2090,7 @@ mod tests {
     }
 
     #[test]
-    fn compositor_fullscreen_uses_the_fullscreen_protocol_state() {
+    fn compositor_fullscreen_stays_protocol_windowed_for_nested_client_reflow() {
         let mut entry = test_entry(false);
         let target = entry.target_output.clone();
         let fullscreen_size = entry.fullscreen_size;
@@ -2095,12 +2099,12 @@ mod tests {
         let compositor_only = entry.native.expect("native state");
         assert!(compositor_only.compositor_requested);
         assert!(!compositor_only.client_requested);
-        assert!(compositor_only.protocol_desired);
+        assert!(!compositor_only.protocol_desired);
         assert!(entry.desired);
         assert_eq!(entry.origin, FullscreenOrigin::Compositor);
         assert_eq!(native_protocol_origin(&entry), FullscreenOrigin::Compositor);
         assert_eq!(
-            fullscreen_commit_action(&entry, true),
+            fullscreen_commit_action(&entry, false),
             FullscreenCommitAction::Visual(true)
         );
         let mut pending = ToplevelState::default();
@@ -2109,7 +2113,7 @@ mod tests {
             native_protocol_origin(&entry),
             compositor_only.protocol_desired,
         );
-        assert!(pending.states.contains(State::Fullscreen));
+        assert!(!pending.states.contains(State::Fullscreen));
         assert!(!pending.states.contains(State::Maximized));
 
         entry.active = true;
@@ -2141,7 +2145,7 @@ mod tests {
         let nested_unset = entry.native.expect("native state");
         assert!(nested_unset.compositor_requested);
         assert!(!nested_unset.client_requested);
-        assert!(nested_unset.protocol_desired);
+        assert!(!nested_unset.protocol_desired);
         assert!(entry.desired);
         assert!(entry.active);
         assert!(entry.presented);
@@ -2150,9 +2154,16 @@ mod tests {
         assert_eq!(entry.target_output, target);
         assert_eq!(entry.fullscreen_size, fullscreen_size);
         assert_eq!(
-            fullscreen_commit_action(&entry, true),
+            fullscreen_commit_action(&entry, false),
             FullscreenCommitAction::ProtocolOnly
         );
+        apply_protocol_presentation_state(
+            &mut pending,
+            native_protocol_origin(&entry),
+            nested_unset.protocol_desired,
+        );
+        assert!(!pending.states.contains(State::Fullscreen));
+        assert!(!pending.states.contains(State::Maximized));
     }
 
     #[test]

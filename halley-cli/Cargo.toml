@@ -1,6 +1,6 @@
 [package]
 name = "halley-cli"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2024"
 description = "Command-line interface for interacting with and controlling the Halley Wayland compositor"
 authors.workspace = true
@@ -16,7 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 halley-api = { version = "0.3.0", path = "../halley-api" }
-halley-config = { version = "0.6.0", path = "../halley-config" }
+halley-config = { version = "0.6.1", path = "../halley-config" }
 serde = "1"
 serde_json = "1"
 shlex = "1.3"

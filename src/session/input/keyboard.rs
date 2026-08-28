@@ -29,23 +29,23 @@ enum KeyboardOutcome {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum CaptureKeyRouting {
+pub(super) enum ModalKeyRouting {
     Evaluate,
     RetireUnfocusedRelease,
     SuppressRelease,
 }
 
-pub(super) fn capture_key_routing(
-    capture_active: bool,
+pub(super) fn modal_key_routing(
+    modal_active: bool,
     state: KeyState,
     release_is_suppressed: bool,
-) -> CaptureKeyRouting {
+) -> ModalKeyRouting {
     if state == KeyState::Released && release_is_suppressed {
-        CaptureKeyRouting::SuppressRelease
-    } else if capture_active && state == KeyState::Released {
-        CaptureKeyRouting::RetireUnfocusedRelease
+        ModalKeyRouting::SuppressRelease
+    } else if modal_active && state == KeyState::Released {
+        ModalKeyRouting::RetireUnfocusedRelease
     } else {
-        CaptureKeyRouting::Evaluate
+        ModalKeyRouting::Evaluate
     }
 }
 
@@ -144,7 +144,18 @@ pub(super) fn handle<D, B>(
             if data.shell.apogee.accepts_input() {
                 let sym = handle.raw_latin_sym_or_raw_current_sym();
                 if state == KeyState::Released {
-                    return FilterResult::Intercept(KeyboardOutcome::ApogeeIntercept);
+                    // Mod was pressed before Apogee opened and was forwarded to
+                    // the focused client. Forward its release while swallowing
+                    // releases for keys whose presses Apogee intercepted; this
+                    // prevents clients from being left in a stuck modifier or
+                    // terminal keyboard-protocol state after Mod+O closes.
+                    return match modal_key_routing(true, state, release_is_suppressed) {
+                        ModalKeyRouting::SuppressRelease => {
+                            FilterResult::Intercept(KeyboardOutcome::ApogeeIntercept)
+                        }
+                        ModalKeyRouting::RetireUnfocusedRelease => FilterResult::Forward,
+                        ModalKeyRouting::Evaluate => unreachable!("release routing was requested"),
+                    };
                 }
                 let outcome = match sym {
                     Some(Keysym::Escape) => KeyboardOutcome::ApogeeCancel,
@@ -210,17 +221,17 @@ pub(super) fn handle<D, B>(
             if accessibility == crate::accessibility::KeyboardDisposition::Intercept {
                 return FilterResult::Intercept(KeyboardOutcome::AccessibilityIntercept);
             }
-            match capture_key_routing(data.capture.is_active(), state, release_is_suppressed) {
-                CaptureKeyRouting::SuppressRelease => {
+            match modal_key_routing(data.capture.is_active(), state, release_is_suppressed) {
+                ModalKeyRouting::SuppressRelease => {
                     return FilterResult::Intercept(KeyboardOutcome::CaptureIntercept);
                 }
-                CaptureKeyRouting::RetireUnfocusedRelease => {
+                ModalKeyRouting::RetireUnfocusedRelease => {
                     // Focus is cleared for the lifetime of the overlay. Forwarding
                     // releases here reaches no client, but lets Smithay retire keys
                     // whose presses were forwarded before the modal opened.
                     return FilterResult::Forward;
                 }
-                CaptureKeyRouting::Evaluate => {}
+                ModalKeyRouting::Evaluate => {}
             }
             if data.capture.is_active() {
                 return match handle.raw_latin_sym_or_raw_current_sym() {

@@ -328,9 +328,6 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
     if let Err(err) = super::install_node_decay_timer(&event_loop.handle()) {
         eventline::warn!("nodes: failed to start decay timer: {err}");
     }
-    if let Err(err) = super::install_apogee_preview_timer(&event_loop.handle()) {
-        eventline::warn!("apogee: failed to start preview timer: {err}");
-    }
     if let Err(err) = super::install_overlay_timer(&event_loop.handle()) {
         eventline::warn!("overlays: failed to start lifecycle timer: {err}");
     }
@@ -565,19 +562,21 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                         );
                     }
                 } else if app.shell.apogee.is_active() {
-                    if app.shell.apogee.take_callback_due(
-                        &output.name(),
-                        target_presentation_time,
-                        app.settings.apogee.preview_max_fps,
-                    ) {
-                        crate::shell::apogee::send_preview_frames(
-                            &app.shell.apogee,
-                            &app.nodes,
-                            &output,
-                            elapsed,
-                            frame_callback_sequence,
-                        );
-                    }
+                    crate::shell::apogee::send_preview_frames(
+                        &app.shell.apogee,
+                        &app.nodes,
+                        &output,
+                        elapsed,
+                        frame_callback_sequence,
+                    );
+                } else if app.shell.focus_cycle.is_active() {
+                    crate::shell::focus_cycle::send_preview_frames(
+                        &app.shell.focus_cycle,
+                        &app.nodes,
+                        &output,
+                        elapsed,
+                        frame_callback_sequence,
+                    );
                 } else {
                     let cluster_exclusive_member =
                         crate::wayland::frame_callbacks::cluster_exclusive_callback_member(

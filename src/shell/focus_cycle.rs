@@ -101,6 +101,23 @@ impl FocusCycleState {
             .is_some_and(|session| session.closing_started_at.is_none())
     }
 
+    pub fn is_active(&self) -> bool {
+        self.session.is_some()
+    }
+
+    pub fn accepts_live_previews(&self) -> bool {
+        self.is_open()
+    }
+
+    pub fn contains_preview(&self, id: NodeId) -> bool {
+        self.session.as_ref().is_some_and(|session| {
+            session
+                .visible_slots(VISIBLE_RADIUS)
+                .iter()
+                .any(|(_, preview)| *preview == id)
+        })
+    }
+
     pub fn start_or_step(
         &mut self,
         nodes: &crate::nodes::NodesState,
@@ -244,6 +261,35 @@ pub fn start_or_step<D: crate::session::SessionDriver>(
     changed
 }
 
+pub fn send_preview_frames(
+    state: &FocusCycleState,
+    nodes: &crate::nodes::NodesState,
+    output: &smithay::output::Output,
+    elapsed: Duration,
+    sequence: u32,
+) {
+    let Some(session) = state.session() else {
+        return;
+    };
+    for (_, id) in session.visible_slots(VISIBLE_RADIUS) {
+        let Some(record) = nodes.record(id).filter(|record| {
+            record.attached && !record.collapsed && record.output == output.name()
+        }) else {
+            continue;
+        };
+        record.window.send_frame(
+            output,
+            elapsed,
+            crate::wayland::frame_callbacks::FALLBACK_THROTTLE,
+            |surface, states| {
+                crate::wayland::frame_callbacks::callback_output(
+                    surface, states, output, sequence, false,
+                )
+            },
+        );
+    }
+}
+
 pub fn cancel<D: crate::session::SessionDriver>(session: &mut crate::session::Session<D>) -> bool {
     let changed = session
         .shell
@@ -321,7 +367,7 @@ pub fn finish_pending_pointer_warp<D: crate::session::SessionDriver>(
 
 #[cfg(test)]
 mod tests {
-    use super::{Session, target_needs_pointer_warp};
+    use super::{FocusCycleState, Session, target_needs_pointer_warp};
     use halley_core::field::NodeId;
     use std::time::Duration;
 
@@ -350,6 +396,28 @@ mod tests {
         assert_eq!(slots.len(), 2);
         assert!(slots.iter().any(|(_, id)| *id == NodeId::new(1)));
         assert!(slots.iter().any(|(_, id)| *id == NodeId::new(2)));
+    }
+
+    #[test]
+    fn all_visible_cards_are_live_preview_members() {
+        let state = FocusCycleState {
+            session: Some(Session {
+                candidates: (1..=7).map(NodeId::new).collect(),
+                preview_index: 3,
+                opened_at: Duration::ZERO,
+                step_from_visual_index: 3.0,
+                step_to_visual_index: 3.0,
+                step_started_at: Duration::ZERO,
+                closing_started_at: None,
+                origin_focus: Some(NodeId::new(1)),
+            }),
+        };
+
+        assert!(state.contains_preview(NodeId::new(4)));
+        assert!(state.contains_preview(NodeId::new(2)));
+        assert!(state.contains_preview(NodeId::new(6)));
+        assert!(!state.contains_preview(NodeId::new(1)));
+        assert!(!state.contains_preview(NodeId::new(7)));
     }
 
     #[test]

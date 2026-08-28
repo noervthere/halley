@@ -2,8 +2,8 @@ use super::apogee_clusters::{ApogeeCoreTileContext, apogee_core_tile_elements};
 use super::nodes::{ease_in_out_cubic, fit_ui_text};
 use super::*;
 
-pub(super) fn preview_content_radius(decorations: &halley_config::Decorations) -> f32 {
-    decorations.border_radius_px.max(0) as f32
+pub(super) fn preview_content_radius(overlay_radius: f32) -> f32 {
+    overlay_radius.max(0.0)
 }
 
 fn push_preview_texture(
@@ -15,9 +15,9 @@ fn push_preview_texture(
     >,
     texture: smithay::backend::renderer::gles::GlesTexture,
     destination: Rectangle<i32, Physical>,
-    decorations: &halley_config::Decorations,
+    overlay_radius: f32,
 ) {
-    let radius = preview_content_radius(decorations);
+    let radius = preview_content_radius(overlay_radius);
     if radius > 0.0 && window_decoration_renderer.available(renderer) {
         let preview = window_decoration_renderer
             .texture_element(renderer, preview, texture, destination, radius)
@@ -26,6 +26,125 @@ fn push_preview_texture(
     } else {
         elements.push(SceneElement::Closing(preview));
     }
+}
+
+/// Render a mapped preview from the client's surface tree, the same approach
+/// Niri uses for its MRU switcher. This avoids two full-window offscreen passes
+/// for every live update and preserves Smithay's real surface damage instead
+/// of trying to infer damage after mutating a cached texture.
+#[allow(clippy::too_many_arguments)]
+fn push_live_preview(
+    elements: &mut Vec<SceneElement>,
+    renderer: &mut GlesRenderer,
+    window: &smithay::desktop::Window,
+    destination: Rectangle<i32, Physical>,
+    alpha: f32,
+    overlay_radius: f32,
+    decorations: &halley_config::Decorations,
+    font: &halley_config::Font,
+    chrome_visible: bool,
+    maximized: bool,
+    titlebar_renderer: &mut crate::render::titlebar::TitlebarRenderer,
+    window_decoration_renderer: &mut crate::render::window_decoration::WindowDecorationRenderer,
+    node_renderer: &mut crate::render::node::NodeRenderer,
+    ui_text: &mut crate::render::text::UiTextRenderer,
+) -> Result<bool, Box<dyn Error>> {
+    let Some(surface) = window.wl_surface() else {
+        return Ok(false);
+    };
+    let geometry = window.geometry();
+    if geometry.size.w <= 0 || geometry.size.h <= 0 {
+        return Ok(false);
+    }
+
+    let native_client = Rectangle::<i32, Physical>::from_size(geometry.size.to_physical(1));
+    let chrome = crate::titlebar::WindowChrome::for_window(window, decorations, font);
+    let native_outer = if chrome_visible {
+        chrome
+            .outer_rect(Rectangle::<i32, Logical>::from_size(geometry.size))
+            .to_physical(1)
+    } else {
+        native_client
+    };
+    let content = crate::animation::map_rect(native_client, native_outer, destination);
+    if content.size.w <= 0 || content.size.h <= 0 {
+        return Ok(false);
+    }
+
+    let location = smithay::utils::Point::from((-geometry.loc.x, -geometry.loc.y)).to_physical(1);
+    let surface_elements: Vec<
+        smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement<GlesRenderer>,
+    > = smithay::backend::renderer::element::surface::render_elements_from_surface_tree(
+        renderer,
+        surface.as_ref(),
+        location,
+        1.0,
+        alpha,
+        Kind::Unspecified,
+    );
+    if surface_elements.is_empty() {
+        return Ok(false);
+    }
+
+    let server_titlebar = chrome_visible && chrome.has_server_titlebar();
+    let scale = content.size.h as f32 / native_client.size.h.max(1) as f32;
+    // The preview is framed by overlay chrome, so its mask must use the
+    // overlay's radius in output pixels. Scaling the window's native radius
+    // down with the thumbnail made the texture visibly squarer than its card.
+    let content_radius = preview_content_radius(overlay_radius);
+    let rounded = content_radius > 0.0 && window_decoration_renderer.available(renderer);
+
+    if server_titlebar {
+        let metrics = crate::titlebar::rendered_metrics(&decorations.titlebars, font.size, scale);
+        append_titlebar_elements(
+            renderer,
+            window,
+            Some("live-preview"),
+            content,
+            metrics.height,
+            crate::titlebar::glyph_size(metrics.height),
+            scale,
+            maximized,
+            crate::render::window_decoration::scaled_metric(chrome.border_width, scale),
+            content_radius,
+            false,
+            alpha,
+            decorations,
+            None,
+            None,
+            false,
+            titlebar_renderer,
+            window_decoration_renderer,
+            node_renderer,
+            ui_text,
+            elements,
+        )?;
+    }
+
+    for surface_element in surface_elements {
+        let native_geometry = surface_element.geometry(Scale::from(1.0));
+        let target = crate::animation::map_rect(native_geometry, native_client, content);
+        if rounded {
+            let radii = if server_titlebar {
+                crate::render::window_decoration::CornerRadii::bottom(content_radius)
+            } else {
+                crate::render::window_decoration::CornerRadii::all(content_radius)
+            };
+            let rounded = window_decoration_renderer
+                .surface_element_with_radii(renderer, surface_element, target, content, radii)
+                .expect("rounded resources were checked above");
+            if let Some(cropped) = CropRenderElement::from_element(rounded, 1.0, content) {
+                elements.push(SceneElement::RoundedCropped(cropped));
+            }
+        } else {
+            let rescaled = crate::render::rescale::RescaledElement::new(surface_element, target);
+            if let Some(cropped) = CropRenderElement::from_element(rescaled, 1.0, content) {
+                elements.push(SceneElement::Cropped(cropped));
+            }
+        }
+    }
+
+    Ok(true)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -226,49 +345,70 @@ pub(super) fn apogee_elements(
         }
 
         let chrome_visible = preview_chrome_visible(&record.window, fullscreen);
-        match overlay_previews.element_with_texture(
-            renderer,
-            crate::render::overlays::preview::OverlayPreviewRequest {
-                id: tile.id,
-                window: &record.window,
-                destination: body,
-                alpha: visuals.preview_alpha,
-                allow_refresh: !record.collapsed,
-                live: config.live_previews && !record.collapsed,
+        let maximized = record
+            .window
+            .wl_surface()
+            .is_some_and(|surface| maximize.contains(surface.as_ref()));
+        let direct = config.live_previews
+            && !record.collapsed
+            && push_live_preview(
+                &mut elements,
+                renderer,
+                &record.window,
+                body,
+                visuals.preview_alpha,
+                overlay_visuals.radius,
                 decorations,
                 font,
                 chrome_visible,
-                maximized: record
-                    .window
-                    .wl_surface()
-                    .is_some_and(|surface| maximize.contains(surface.as_ref())),
-            },
-            crate::render::overlays::preview::OverlayPreviewRenderers {
-                titlebar: titlebar_renderer,
-                decoration: window_decoration_renderer,
-                node: node_renderer,
-                text: ui_text,
-            },
-        ) {
-            Ok((preview, texture)) => push_preview_texture(
-                &mut elements,
-                renderer,
+                maximized,
+                titlebar_renderer,
                 window_decoration_renderer,
-                preview,
-                texture,
-                body,
-                decorations,
-            ),
-            Err(_) => {
-                if let Some(app_id) = record.app_id.as_deref()
-                    && let Some(icon) = node_renderer.app_icon_element(
-                        renderer,
-                        app_id,
-                        body,
-                        visuals.preview_alpha,
-                    )
-                {
-                    elements.push(SceneElement::NodeTexture(icon));
+                node_renderer,
+                ui_text,
+            )?;
+        if !direct {
+            match overlay_previews.element_with_texture(
+                renderer,
+                crate::render::overlays::preview::OverlayPreviewRequest {
+                    id: tile.id,
+                    window: &record.window,
+                    destination: body,
+                    alpha: visuals.preview_alpha,
+                    allow_refresh: !record.collapsed,
+                    live: false,
+                    decorations,
+                    font,
+                    chrome_visible,
+                    maximized,
+                },
+                crate::render::overlays::preview::OverlayPreviewRenderers {
+                    titlebar: titlebar_renderer,
+                    decoration: window_decoration_renderer,
+                    node: node_renderer,
+                    text: ui_text,
+                },
+            ) {
+                Ok((preview, texture)) => push_preview_texture(
+                    &mut elements,
+                    renderer,
+                    window_decoration_renderer,
+                    preview,
+                    texture,
+                    body,
+                    overlay_visuals.radius,
+                ),
+                Err(_) => {
+                    if let Some(app_id) = record.app_id.as_deref()
+                        && let Some(icon) = node_renderer.app_icon_element(
+                            renderer,
+                            app_id,
+                            body,
+                            visuals.preview_alpha,
+                        )
+                    {
+                        elements.push(SceneElement::NodeTexture(icon));
+                    }
                 }
             }
         }
@@ -600,45 +740,65 @@ pub(super) fn focus_cycle_elements(
             )?,
         ));
 
-        match overlay_previews.element_with_texture(
-            renderer,
-            crate::render::overlays::preview::OverlayPreviewRequest {
-                id,
-                window: &record.window,
-                destination: body,
-                alpha,
-                allow_refresh: !record.collapsed,
-                live: selected && !record.collapsed,
-                decorations: context.decorations,
-                font: context.font,
-                chrome_visible,
-                maximized: record
-                    .window
-                    .wl_surface()
-                    .is_some_and(|surface| context.maximize.contains(surface.as_ref())),
-            },
-            crate::render::overlays::preview::OverlayPreviewRenderers {
-                titlebar: titlebar_renderer,
-                decoration: window_decoration_renderer,
-                node: node_renderer,
-                text: ui_text,
-            },
-        ) {
-            Ok((preview, texture)) => push_preview_texture(
+        let maximized = record
+            .window
+            .wl_surface()
+            .is_some_and(|surface| context.maximize.contains(surface.as_ref()));
+        let direct = !record.collapsed
+            && push_live_preview(
                 &mut elements,
                 renderer,
-                window_decoration_renderer,
-                preview,
-                texture,
+                &record.window,
                 body,
+                alpha,
+                overlay_visuals.radius,
                 context.decorations,
-            ),
-            Err(_) => {
-                if let Some(app_id) = record.app_id.as_deref()
-                    && let Some(icon) =
-                        node_renderer.app_icon_element(renderer, app_id, body, alpha)
-                {
-                    elements.push(SceneElement::NodeTexture(icon));
+                context.font,
+                chrome_visible,
+                maximized,
+                titlebar_renderer,
+                window_decoration_renderer,
+                node_renderer,
+                ui_text,
+            )?;
+        if !direct {
+            match overlay_previews.element_with_texture(
+                renderer,
+                crate::render::overlays::preview::OverlayPreviewRequest {
+                    id,
+                    window: &record.window,
+                    destination: body,
+                    alpha,
+                    allow_refresh: !record.collapsed,
+                    live: false,
+                    decorations: context.decorations,
+                    font: context.font,
+                    chrome_visible,
+                    maximized,
+                },
+                crate::render::overlays::preview::OverlayPreviewRenderers {
+                    titlebar: titlebar_renderer,
+                    decoration: window_decoration_renderer,
+                    node: node_renderer,
+                    text: ui_text,
+                },
+            ) {
+                Ok((preview, texture)) => push_preview_texture(
+                    &mut elements,
+                    renderer,
+                    window_decoration_renderer,
+                    preview,
+                    texture,
+                    body,
+                    overlay_visuals.radius,
+                ),
+                Err(_) => {
+                    if let Some(app_id) = record.app_id.as_deref()
+                        && let Some(icon) =
+                            node_renderer.app_icon_element(renderer, app_id, body, alpha)
+                    {
+                        elements.push(SceneElement::NodeTexture(icon));
+                    }
                 }
             }
         }
@@ -809,7 +969,7 @@ pub(super) fn hover_preview_elements(
             preview,
             texture,
             body,
-            decorations,
+            visuals.radius,
         ),
         Err(_) => elements.push(SceneElement::Border(crate::render::solid_color_element(
             node_renderer.active_slot_id(crate::render::node::NodeSlot::HoverPreviewFallback),

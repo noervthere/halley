@@ -3074,7 +3074,7 @@ mod tests {
     use smithay::utils::{Logical, Point, Size};
 
     use super::actions::{cluster_blocks_zoom, window_action_output};
-    use super::keyboard::{CaptureKeyRouting, capture_key_routing};
+    use super::keyboard::{ModalKeyRouting, modal_key_routing};
     use super::{BTN_LEFT, BTN_RIGHT, PendingWindowMoveMotion};
     use super::{
         bloom_drag_handoff, drag_threshold_reached, forward_pointer_button,
@@ -3277,16 +3277,16 @@ mod tests {
     #[test]
     fn modal_releases_retire_preexisting_forwarded_keys() {
         assert_eq!(
-            capture_key_routing(true, KeyState::Released, false),
-            CaptureKeyRouting::RetireUnfocusedRelease
+            modal_key_routing(true, KeyState::Released, false),
+            ModalKeyRouting::RetireUnfocusedRelease
         );
         assert_eq!(
-            capture_key_routing(false, KeyState::Released, true),
-            CaptureKeyRouting::SuppressRelease
+            modal_key_routing(false, KeyState::Released, true),
+            ModalKeyRouting::SuppressRelease
         );
         assert_eq!(
-            capture_key_routing(true, KeyState::Pressed, false),
-            CaptureKeyRouting::Evaluate
+            modal_key_routing(true, KeyState::Pressed, false),
+            ModalKeyRouting::Evaluate
         );
     }
 }

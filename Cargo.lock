@@ -1219,7 +1219,7 @@ checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
 
 [[package]]
 name = "halley"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "calloop 0.14.4",
  "cgmath",
@@ -1256,7 +1256,7 @@ dependencies = [
 
 [[package]]
 name = "halley-cli"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "halley-api",
  "halley-config",
@@ -1267,7 +1267,7 @@ dependencies = [
 
 [[package]]
 name = "halley-config"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "regex",
  "rune-cfg",
@@ -1275,11 +1275,11 @@ dependencies = [
 
 [[package]]
 name = "halley-core"
-version = "0.6.0"
+version = "0.6.1"
 
 [[package]]
 name = "halley-ipc"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "libc",
  "postcard",

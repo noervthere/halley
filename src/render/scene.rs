@@ -1060,14 +1060,10 @@ mod tests {
     }
 
     #[test]
-    fn preview_rounding_uses_the_exact_configured_window_border_radius() {
-        let mut decorations = halley_config::Decorations {
-            border_radius_px: 7,
-            ..halley_config::Decorations::default()
-        };
-        assert_eq!(preview_content_radius(&decorations), 7.0);
-        decorations.border_radius_px = 0;
-        assert_eq!(preview_content_radius(&decorations), 0.0);
+    fn preview_rounding_uses_the_overlay_radius_in_output_pixels() {
+        assert_eq!(preview_content_radius(14.0), 14.0);
+        assert_eq!(preview_content_radius(0.0), 0.0);
+        assert_eq!(preview_content_radius(-4.0), 0.0);
     }
 
     #[test]
