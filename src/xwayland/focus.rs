@@ -38,6 +38,21 @@ impl KeyboardFocusTarget {
         }
     }
 
+    pub fn globally_active_x11_window_id(&self) -> Option<u32> {
+        match self {
+            Self::Wayland(_) => None,
+            #[cfg(feature = "xwayland")]
+            Self::X11(surface)
+                if surface.input_model()
+                    == smithay::xwayland::xwm::WmInputModel::GloballyActive =>
+            {
+                Some(surface.window_id())
+            }
+            #[cfg(feature = "xwayland")]
+            Self::X11(_) => None,
+        }
+    }
+
     pub fn acknowledge_attention(&self) {
         #[cfg(not(feature = "xwayland"))]
         let _ = self;

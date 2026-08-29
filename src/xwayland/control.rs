@@ -2,17 +2,17 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::error::Error;
 
-use x11rb::NONE;
 use x11rb::connection::Connection;
 use x11rb::errors::ReplyError;
 use x11rb::protocol::ErrorKind;
 use x11rb::protocol::xkb::{self, ConnectionExt as _};
 use x11rb::protocol::xproto::{
     AtomEnum, AutoRepeatMode, ChangeKeyboardControlAux, ConnectionExt as _, GetGeometryReply,
-    PropMode, Window,
+    InputFocus, PropMode, Window,
 };
 use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as _;
+use x11rb::{CURRENT_TIME, NONE};
 
 fn is_destroyed_window(error: &ReplyError) -> bool {
     matches!(error, ReplyError::X11Error(error) if error.error_kind == ErrorKind::Window)
@@ -82,12 +82,12 @@ impl Default for AllowedActions {
     }
 }
 
-/// A property-only connection to the X server managed by Smithay's XWM.
+/// An auxiliary control connection to the X server managed by Smithay's XWM.
 ///
 /// Smithay remains the sole owner of `WM_S0`, substructure redirection, and the
-/// X11 event stream. This connection only fills protocol state that Smithay's
-/// public API does not currently expose, keeping that compatibility policy in
-/// Halley without modifying the pinned dependency.
+/// X11 event stream. This connection fills protocol state and focus behavior
+/// that Smithay's public API does not currently expose, keeping that
+/// compatibility policy in Halley without modifying the pinned dependency.
 pub struct X11Control {
     connection: RustConnection,
     atoms: Atoms,
@@ -265,12 +265,18 @@ impl X11Control {
         Ok(())
     }
 
-    /// Reads the X server's actual core keyboard focus.
+    /// Gives a globally-active client deterministic core X focus.
     ///
-    /// Globally-active ICCCM clients receive `WM_TAKE_FOCUS` and set this
-    /// themselves, so compositor selection alone is not an acknowledgment.
-    pub fn input_focus(&self) -> Result<Window, Box<dyn Error>> {
-        Ok(self.connection.get_input_focus()?.reply()?.focus)
+    /// Smithay sends `WM_TAKE_FOCUS` for these clients but otherwise waits for
+    /// them to focus themselves. Xwayland-satellite instead performs a checked
+    /// `SetInputFocus`; doing the same here prevents a following pointer enter
+    /// from racing Wine's fullscreen grab setup.
+    pub fn focus_window(&self, window: Window) -> Result<(), Box<dyn Error>> {
+        self.connection
+            .set_input_focus(InputFocus::NONE, window, CURRENT_TIME)?
+            .check()?;
+        self.connection.flush()?;
+        Ok(())
     }
 
     pub fn set_allowed_actions(

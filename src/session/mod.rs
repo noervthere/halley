@@ -1573,6 +1573,9 @@ pub(crate) fn sync_keyboard_focus<D: SessionDriver>(
     let active_x11_window = focused
         .as_ref()
         .and_then(crate::xwayland::KeyboardFocusTarget::x11_window_id);
+    let globally_active_x11_window = focused
+        .as_ref()
+        .and_then(crate::xwayland::KeyboardFocusTarget::globally_active_x11_window_id);
     if let Some(focused) = focused.as_ref() {
         focused.acknowledge_attention();
     }
@@ -1584,6 +1587,9 @@ pub(crate) fn sync_keyboard_focus<D: SessionDriver>(
     // these two operations.
     keyboard.set_focus(session, focused, serial);
     session.xwayland.sync_active_window(active_x11_window);
+    session
+        .xwayland
+        .focus_globally_active_window(globally_active_x11_window);
     pointer::prepare_keyboard_focus_change(session, next_constraint_root.as_ref());
     // Map, unmap, destroy and raise all funnel through here, so this is the one
     // place the X server's stack can drift from the compositor's.

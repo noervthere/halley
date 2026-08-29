@@ -892,13 +892,7 @@ pub fn focus_and_center_node<D: crate::session::SessionDriver>(
             },
         );
     }
-    if !session.xwayland.defer_pointer_center_until_focus(
-        &record.window,
-        &record.surface,
-        &record.output,
-    ) {
-        let _ = crate::session::center_pointer_on_output(session, &record.output);
-    }
+    let _ = crate::session::center_pointer_on_output(session, &record.output);
     session.request_redraw();
     true
 }

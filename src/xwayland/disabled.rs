@@ -42,14 +42,7 @@ impl<D: SessionDriver> State<D> {
 
     pub fn sync_active_window(&self, _window: Option<u32>) {}
 
-    pub(crate) fn defer_pointer_center_until_focus(
-        &self,
-        _window: &Window,
-        _target: &WlSurface,
-        _output_name: &str,
-    ) -> bool {
-        false
-    }
+    pub fn focus_globally_active_window(&self, _window: Option<u32>) {}
 
     pub fn sync_frame_extents(
         &self,

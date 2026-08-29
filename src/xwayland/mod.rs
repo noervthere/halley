@@ -7,7 +7,6 @@ mod xwm;
 use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::process::Stdio;
-use std::time::{Duration, Instant};
 
 use calloop::timer::{TimeoutAction, Timer};
 use calloop::{LoopHandle, RegistrationToken};
@@ -272,77 +271,13 @@ impl<D: SessionDriver> State<D> {
         }
     }
 
-    /// Defers pointer entry into a globally-active X11 window until that client
-    /// has acknowledged `WM_TAKE_FOCUS` by setting the X server's core focus.
-    ///
-    /// Entering earlier races Wine's fullscreen grab-proxy setup: its initial
-    /// root grab can observe the old focus owner, then the proxy never remaps.
-    /// Passive and locally-active clients are focused synchronously by Smithay
-    /// and do not need this boundary.
-    pub(crate) fn defer_pointer_center_until_focus(
-        &self,
-        window: &Window,
-        target: &WlSurface,
-        output_name: &str,
-    ) -> bool {
-        const POLL_INTERVAL: Duration = Duration::from_millis(2);
-        const ACK_TIMEOUT: Duration = Duration::from_millis(250);
-
-        let Some(surface) = window.x11_surface() else {
-            return false;
+    pub fn focus_globally_active_window(&self, window: Option<u32>) {
+        let (Some(control), Some(window)) = (self.control.as_ref(), window) else {
+            return;
         };
-        if surface.input_model() != smithay::xwayland::xwm::WmInputModel::GloballyActive
-            || self.control.is_none()
-        {
-            return false;
+        if let Err(err) = control.focus_window(window) {
+            eventline::warn!("xwayland: failed to focus globally-active xid={window}: {err}");
         }
-
-        let xid = surface.window_id();
-        let target = target.clone();
-        let output_name = output_name.to_string();
-        let deadline = Instant::now() + ACK_TIMEOUT;
-        let inserted = self.loop_handle.insert_source(
-            Timer::from_duration(POLL_INTERVAL),
-            move |_, _, session| {
-                if session.wayland.focused_window.as_ref() != Some(&target) {
-                    return TimeoutAction::Drop;
-                }
-                let Some(control) = session.xwayland.control.as_ref() else {
-                    return TimeoutAction::Drop;
-                };
-                match control.input_focus() {
-                    Ok(focused) if focused == xid => {
-                        eventline::debug!(
-                            "xwayland: focus acknowledged before pointer enter xid={xid}"
-                        );
-                        let _ = crate::session::center_pointer_on_output(session, &output_name);
-                        TimeoutAction::Drop
-                    }
-                    Ok(_) if Instant::now() < deadline => {
-                        TimeoutAction::ToDuration(POLL_INTERVAL)
-                    }
-                    Ok(focused) => {
-                        eventline::warn!(
-                            "xwayland: timed out awaiting focus before pointer enter xid={xid} actual={focused}"
-                        );
-                        TimeoutAction::Drop
-                    }
-                    Err(err) => {
-                        eventline::warn!(
-                            "xwayland: failed to read focus before pointer enter xid={xid}: {err}"
-                        );
-                        TimeoutAction::Drop
-                    }
-                }
-            },
-        );
-        if let Err(err) = inserted {
-            eventline::warn!(
-                "xwayland: failed to defer pointer enter for focus acknowledgment xid={xid}: {err}"
-            );
-            return false;
-        }
-        true
     }
 
     pub fn configure_key_repeat(&self, delay: i32, rate: i32) {
