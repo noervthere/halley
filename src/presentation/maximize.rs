@@ -132,10 +132,20 @@ impl FieldMaximizeManager {
         );
         match self.entries.get_mut(&scope) {
             Some(entry) if entry.surface == surface && entry.desired => {
-                let (window_progress, window_velocity) =
-                    motion_state(entry.window_timeline, entry.active, now);
-                let (camera_progress, camera_velocity) =
-                    motion_state(entry.camera_timeline, entry.active, now);
+                let (window_progress, window_velocity) = pending_aware_motion_state(
+                    entry.window_timeline,
+                    entry.pending_window_motion,
+                    entry.desired != entry.active,
+                    entry.active,
+                    now,
+                );
+                let (camera_progress, camera_velocity) = pending_aware_motion_state(
+                    entry.camera_timeline,
+                    entry.pending_camera_motion,
+                    entry.desired != entry.active,
+                    entry.active,
+                    now,
+                );
                 entry.desired = false;
                 entry.restore_geometry = restore_geometry;
                 entry.restore_output = restore_output;
@@ -160,10 +170,20 @@ impl FieldMaximizeManager {
                 }
             }
             Some(entry) if entry.surface == surface => {
-                let (window_progress, window_velocity) =
-                    motion_state(entry.window_timeline, entry.active, now);
-                let (camera_progress, camera_velocity) =
-                    motion_state(entry.camera_timeline, entry.active, now);
+                let (window_progress, window_velocity) = pending_aware_motion_state(
+                    entry.window_timeline,
+                    entry.pending_window_motion,
+                    entry.desired != entry.active,
+                    entry.active,
+                    now,
+                );
+                let (camera_progress, camera_velocity) = pending_aware_motion_state(
+                    entry.camera_timeline,
+                    entry.pending_camera_motion,
+                    entry.desired != entry.active,
+                    entry.active,
+                    now,
+                );
                 entry.desired = true;
                 entry.restore_geometry = restore_geometry;
                 entry.restore_output = restore_output;
@@ -623,6 +643,20 @@ fn motion_state(timeline: Option<MotionTimeline>, active: bool, now: Duration) -
         .unwrap_or_else(|| (if active { 1.0 } else { 0.0 }, 0.0))
 }
 
+fn pending_aware_motion_state(
+    timeline: Option<MotionTimeline>,
+    pending_motion: (f64, f64),
+    configure_pending: bool,
+    active: bool,
+    now: Duration,
+) -> (f64, f64) {
+    if configure_pending {
+        pending_motion
+    } else {
+        motion_state(timeline, active, now)
+    }
+}
+
 fn maximize_windowed_output(
     handoff: Option<Rectangle<i32, Physical>>,
     restore: Option<Rectangle<i32, Physical>>,
@@ -708,6 +742,20 @@ mod tests {
         assert_eq!(
             reverse.value_at(reversed_at + Duration::from_millis(400)),
             0.0
+        );
+    }
+
+    #[test]
+    fn rapid_reversal_before_commit_keeps_the_frozen_motion_sample() {
+        let frozen = (0.62, -1.4);
+        assert_eq!(
+            pending_aware_motion_state(None, frozen, true, true, Duration::from_secs(2)),
+            frozen,
+            "a re-toggle before the restore commit must not jump to the active endpoint"
+        );
+        assert_eq!(
+            pending_aware_motion_state(None, frozen, false, true, Duration::from_secs(2)),
+            (1.0, 0.0),
         );
     }
 

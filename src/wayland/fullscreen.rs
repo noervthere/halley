@@ -43,6 +43,10 @@ struct FullscreenWindow {
     restore_presentation_output: Option<Rectangle<i32, Physical>>,
     fullscreen_size: Size<i32, Logical>,
     transition: Option<MotionTimeline>,
+    /// Motion sample held while the matching client configure/repaint is
+    /// pending. Rapid reversals reuse this sample instead of snapping back to
+    /// the last committed endpoint before the new timeline can begin.
+    pending_motion: (f64, f64),
     external_pending: Option<ExternalPending>,
     snapshot_serials: Vec<Serial>,
     origin: FullscreenOrigin,
@@ -219,6 +223,7 @@ impl FullscreenManager {
             entry.transition = None;
             entry.snapshot_serials.clear();
             entry.presented = entry.desired;
+            entry.pending_motion = (if entry.desired { 1.0 } else { 0.0 }, 0.0);
             entry.active || entry.desired || entry.presented
         });
         true
@@ -362,6 +367,7 @@ impl FullscreenManager {
                 restore_presentation_output: None,
                 fullscreen_size: output_geometry.size,
                 transition: None,
+                pending_motion: (0.0, 0.0),
                 external_pending: None,
                 snapshot_serials: Vec::new(),
                 origin,
@@ -369,8 +375,15 @@ impl FullscreenManager {
                 restore_kind: FullscreenRestoreKind::Windowed,
                 preserve_stack: false,
             });
-        let transition_requested = !entry.active;
+        let now = crate::frame_clock::monotonic_now();
+        let visual_before = entry.desired;
+        let motion_before = visual_motion_state(entry, now);
         request_native_owner(entry, origin);
+        let transition_requested = visual_before != entry.desired;
+        if transition_requested {
+            entry.pending_motion = motion_before;
+            entry.transition = None;
+        }
         entry.target_output = target.name();
         // The destination is the size we are about to configure, decided once
         // here, exactly like field maximize decides its target rect at toggle
@@ -406,13 +419,18 @@ impl FullscreenManager {
             .windows
             .get_mut(toplevel.wl_surface())
             .and_then(|entry| {
-                release_native_owner(entry, FullscreenOrigin::Client);
-                entry.native?.compositor_requested.then_some((
-                    entry.target_output.clone(),
-                    entry.fullscreen_size,
-                    native_protocol_origin(entry),
-                    entry.native?.protocol_desired,
-                ))
+                entry.native?.compositor_requested.then(|| {
+                    release_native_owner(entry, FullscreenOrigin::Client);
+                    (
+                        entry.target_output.clone(),
+                        entry.fullscreen_size,
+                        native_protocol_origin(entry),
+                        entry
+                            .native
+                            .expect("native owner checked above")
+                            .protocol_desired,
+                    )
+                })
             });
         if let Some((target_output, fullscreen_size, origin, protocol_desired)) = nested {
             let bounds = output_by_name(wayland, &target_output)
@@ -447,13 +465,15 @@ impl FullscreenManager {
             .windows
             .get_mut(toplevel.wl_surface())
             .and_then(|entry| {
-                let had_compositor = entry.native?.compositor_requested;
-                release_native_owner(entry, FullscreenOrigin::Compositor);
-                (had_compositor && entry.native?.client_requested).then_some((
-                    entry.target_output.clone(),
-                    entry.fullscreen_size,
-                    native_protocol_origin(entry),
-                ))
+                let native = entry.native?;
+                (native.compositor_requested && native.client_requested).then(|| {
+                    release_native_owner(entry, FullscreenOrigin::Compositor);
+                    (
+                        entry.target_output.clone(),
+                        entry.fullscreen_size,
+                        native_protocol_origin(entry),
+                    )
+                })
             });
         if let Some((target_output, fullscreen_size, origin)) = retained_client {
             let bounds = output_by_name(wayland, &target_output)
@@ -478,14 +498,22 @@ impl FullscreenManager {
             .windows
             .get_mut(toplevel.wl_surface())
             .map(|entry| {
+                let now = crate::frame_clock::monotonic_now();
+                let visual_before = entry.desired;
+                let motion_before = visual_motion_state(entry, now);
                 release_all_native_owners(entry);
+                let transition_requested = visual_before != entry.desired;
+                if transition_requested {
+                    entry.pending_motion = motion_before;
+                    entry.transition = None;
+                }
                 if let Some(window) = find_window(wayland, toplevel.wl_surface()) {
                     entry.fullscreen_size = window.geometry().size;
                 }
                 select_restore_presentation_endpoint(entry);
                 (
                     entry.restore.as_ref().map(|restore| restore.geometry.size),
-                    entry.active,
+                    transition_requested,
                     entry.origin,
                 )
             })
@@ -575,6 +603,7 @@ impl FullscreenManager {
                 restore_presentation_output: None,
                 fullscreen_size: output_geometry.size,
                 transition: None,
+                pending_motion: (0.0, 0.0),
                 external_pending: None,
                 snapshot_serials: Vec::new(),
                 origin,
@@ -693,6 +722,7 @@ impl FullscreenManager {
                 restore_presentation_output: None,
                 fullscreen_size: output_geometry.size,
                 transition: None,
+                pending_motion: (0.0, 0.0),
                 external_pending: None,
                 snapshot_serials: Vec::new(),
                 origin,
@@ -712,6 +742,7 @@ impl FullscreenManager {
             true,
             output_geometry,
             presentation,
+            crate::frame_clock::monotonic_now(),
         ))
     }
 
@@ -743,6 +774,7 @@ impl FullscreenManager {
             false,
             geometry,
             presentation,
+            crate::frame_clock::monotonic_now(),
         ))
     }
 
@@ -1022,11 +1054,7 @@ impl FullscreenManager {
         if entry.target_output != output.name() {
             return None;
         }
-        let progress = entry
-            .transition
-            .map(|transition| transition.value_at(now))
-            .unwrap_or_else(|| if entry.presented { 1.0 } else { 0.0 })
-            .clamp(0.0, 1.0);
+        let progress = visual_motion_state(entry, now).0.clamp(0.0, 1.0);
         let transition_completion = entry
             .transition
             .map(|transition| transition.completion_at(now))
@@ -1081,11 +1109,7 @@ impl FullscreenManager {
                     || entry.transition.is_some()
                     || entry.external_pending.is_some())
         })?;
-        let progress = entry
-            .transition
-            .map(|transition| transition.value_at(now))
-            .unwrap_or_else(|| if entry.presented { 1.0 } else { 0.0 })
-            .clamp(0.0, 1.0) as f32;
+        let progress = visual_motion_state(entry, now).0.clamp(0.0, 1.0) as f32;
         let center = entry
             .restore
             .as_ref()
@@ -1709,6 +1733,7 @@ fn settle_external_fullscreen(
     entry.target_output = target_output.to_string();
     entry.fullscreen_size = fullscreen_size;
     entry.transition = None;
+    entry.pending_motion = (1.0, 0.0);
     entry.external_pending = None;
 }
 
@@ -1717,10 +1742,12 @@ fn begin_external_transaction(
     desired: bool,
     geometry: Rectangle<i32, Logical>,
     presentation: ExternalPresentationKind,
+    now: Duration,
 ) -> ExternalTransactionRequest {
     if entry.desired == desired {
         return ExternalTransactionRequest::NoChange;
     }
+    freeze_visual_for_configure(entry, now);
     entry.desired = desired;
     entry.external_pending = Some(ExternalPending {
         geometry,
@@ -1804,6 +1831,7 @@ fn finish_external_transition(entry: &mut FullscreenWindow) {
     entry.active = entry.desired;
     entry.presented = entry.desired;
     entry.transition = None;
+    entry.pending_motion = (if entry.desired { 1.0 } else { 0.0 }, 0.0);
 }
 
 fn relocate_external_window(
@@ -1838,16 +1866,29 @@ fn relocate_external_window(
     true
 }
 
+fn visual_motion_state(entry: &FullscreenWindow, now: Duration) -> (f64, f64) {
+    if entry.desired != entry.active || entry.external_pending.is_some() {
+        entry.pending_motion
+    } else {
+        entry
+            .transition
+            .map(|transition| (transition.value_at(now), transition.velocity_at(now)))
+            .unwrap_or_else(|| (if entry.presented { 1.0 } else { 0.0 }, 0.0))
+    }
+}
+
+fn freeze_visual_for_configure(entry: &mut FullscreenWindow, now: Duration) {
+    entry.pending_motion = visual_motion_state(entry, now);
+    entry.transition = None;
+}
+
 fn retarget_visual(
     entry: &mut FullscreenWindow,
     animations: Animations,
     now: Duration,
     presented: bool,
 ) {
-    let (current, velocity) = entry
-        .transition
-        .map(|transition| (transition.value_at(now), transition.velocity_at(now)))
-        .unwrap_or_else(|| (if entry.presented { 1.0 } else { 0.0 }, 0.0));
+    let (current, velocity) = visual_motion_state(entry, now);
     if animations_enabled(animations) {
         entry.transition = Some(MotionTimeline::between(
             animations.fullscreen.motion,
@@ -1959,6 +2000,7 @@ mod tests {
             restore_presentation_output: None,
             fullscreen_size: (1920, 1080).into(),
             transition: None,
+            pending_motion: (if active { 1.0 } else { 0.0 }, 0.0),
             external_pending: None,
             snapshot_serials: Vec::new(),
             origin: FullscreenOrigin::Client,
@@ -2283,6 +2325,40 @@ mod tests {
     }
 
     #[test]
+    fn rapid_fullscreen_reversal_before_commit_preserves_motion() {
+        let mut animations = Animations::default();
+        animations.fullscreen.motion = AnimationMotion::Easing(EasingMotion {
+            duration_ms: 400,
+            curve: AnimationCurve::Linear,
+        });
+        let started = Duration::from_secs(1);
+        let reversed_at = started + Duration::from_millis(100);
+        let mut entry = test_entry(true);
+        entry.desired = false;
+        entry.pending_motion = (1.0, 0.0);
+        settle_visual_commit(&mut entry, animations, started, false);
+
+        let value_before_reverse = visual_motion_state(&entry, reversed_at).0;
+        freeze_visual_for_configure(&mut entry, reversed_at);
+        entry.desired = true;
+
+        assert!(entry.transition.is_none());
+        assert_eq!(
+            visual_motion_state(&entry, reversed_at).0,
+            value_before_reverse,
+            "waiting for the reversal configure must hold the current rectangle"
+        );
+
+        settle_visual_commit(&mut entry, animations, reversed_at, true);
+        let reverse = entry.transition.expect("reverse transition");
+        assert_eq!(reverse.value_at(reversed_at), value_before_reverse);
+        assert_eq!(
+            reverse.value_at(reversed_at + Duration::from_millis(400)),
+            1.0
+        );
+    }
+
+    #[test]
     fn compositor_fullscreen_remains_commit_gated() {
         let animations = Animations::default();
         let mut entry = test_entry(false);
@@ -2395,6 +2471,7 @@ mod tests {
                 true,
                 target,
                 ExternalPresentationKind::Animated,
+                Duration::ZERO,
             ),
             ExternalTransactionRequest::Configure(target)
         );
@@ -2439,7 +2516,13 @@ mod tests {
     fn duplicate_external_request_preserves_the_active_transaction() {
         let mut entry = test_entry(false);
         let target = Rectangle::new((0, 0).into(), (1920, 1080).into());
-        begin_external_transaction(&mut entry, true, target, ExternalPresentationKind::Animated);
+        begin_external_transaction(
+            &mut entry,
+            true,
+            target,
+            ExternalPresentationKind::Animated,
+            Duration::ZERO,
+        );
         let pending = entry.external_pending;
 
         assert!(desired_matches(Some(&entry), true));
@@ -2498,18 +2581,21 @@ mod tests {
             true,
             fullscreen,
             ExternalPresentationKind::Opening,
+            Duration::ZERO,
         );
         begin_external_transaction(
             &mut entry,
             false,
             restore,
             ExternalPresentationKind::Opening,
+            Duration::ZERO,
         );
         begin_external_transaction(
             &mut entry,
             true,
             fullscreen,
             ExternalPresentationKind::Opening,
+            Duration::ZERO,
         );
 
         assert_eq!(
@@ -2531,7 +2617,13 @@ mod tests {
         let mut entry = test_entry(false);
         let target = Rectangle::new((0, 0).into(), (1920, 1080).into());
 
-        begin_external_transaction(&mut entry, true, target, ExternalPresentationKind::Opening);
+        begin_external_transaction(
+            &mut entry,
+            true,
+            target,
+            ExternalPresentationKind::Opening,
+            Duration::ZERO,
+        );
 
         assert_eq!(
             acknowledge_external_geometry(&mut entry, target, animations, Duration::ZERO),
@@ -2549,7 +2641,13 @@ mod tests {
         let animations = Animations::default();
         let mut entry = test_entry(false);
         let target = Rectangle::new((0, 0).into(), (1920, 1080).into());
-        begin_external_transaction(&mut entry, true, target, ExternalPresentationKind::Animated);
+        begin_external_transaction(
+            &mut entry,
+            true,
+            target,
+            ExternalPresentationKind::Animated,
+            Duration::ZERO,
+        );
         acknowledge_external_geometry(&mut entry, target, animations, Duration::from_secs(1));
         acknowledge_external_surface(
             &mut entry,

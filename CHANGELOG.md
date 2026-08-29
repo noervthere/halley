@@ -17,6 +17,9 @@ All notable changes to this project will be documented in this file.
   behind the maximize presentation, while later user raises remain effective.
 - Allow pinned field windows to maximize and fullscreen without giving up their
   locked field placement.
+- Preserve the current motion sample across rapid fullscreen and maximize
+  reversals while client configure/repaint work is pending, preventing endpoint
+  jumps and avoiding unnecessary transition frames.
 - Keep the titlebar pin from shifting an otherwise centered window title.
 
 ## [v0.6.1] - 2026-08-28
