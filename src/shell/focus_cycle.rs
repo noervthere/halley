@@ -307,9 +307,8 @@ pub fn commit<D: crate::session::SessionDriver>(
     else {
         return false;
     };
-    // Explicit focus raises the selected window. The shared navigation path
-    // also queues an exact camera target and centers the pointer on its output,
-    // so Alt+Tab lands on the same monitor while the camera eases into place.
+    // The shared focus path commits keyboard/X focus before releasing the old
+    // pointer constraint, then centers the pointer on the selected output.
     let _ = crate::nodes::focus_and_center_node(session, target, serial);
     session.request_redraw();
     true

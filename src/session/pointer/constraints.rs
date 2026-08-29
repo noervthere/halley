@@ -458,6 +458,14 @@ fn constraint_kind_of(constraint: &PointerConstraint) -> ConstraintKind {
     }
 }
 
+fn deactivation_applies_position_hint(reason: DeactivationReason) -> bool {
+    // A keyboard focus change already has a compositor-selected destination.
+    // Letting the old client move the pointer during that handoff creates an
+    // intermediate Xwayland anchor which the unfocused game can consume when
+    // its lock is released.
+    reason != DeactivationReason::RequestedKeyboardFocusChange
+}
+
 fn deactivate_tracked<D: SessionDriver>(
     session: &mut Session<D>,
     pointer: &PointerHandle<Session<D>>,
@@ -477,9 +485,16 @@ fn deactivate_tracked<D: SessionDriver>(
         reason,
     );
     let state = descriptor(&tracked.surface, pointer);
-    let position_hint = tracked
-        .position_hint
-        .or_else(|| state.as_ref().and_then(|state| state.position_hint));
+    // A focus switch already has a compositor-selected destination. Applying
+    // the old client's unlock hint first produces an intermediate cursor snap
+    // and can rebuild XWayland capture around the stale anchor.
+    let position_hint = deactivation_applies_position_hint(reason)
+        .then(|| {
+            tracked
+                .position_hint
+                .or_else(|| state.as_ref().and_then(|state| state.position_hint))
+        })
+        .flatten();
     if let Some(position_hint) = position_hint {
         let geometry = owner_context(session, &tracked.surface)
             .and_then(|context| {
@@ -1120,6 +1135,16 @@ mod tests {
             owner_state_loss(true, false, true, false, false),
             Some(DeactivationReason::OwnerUnmapped)
         );
+    }
+
+    #[test]
+    fn keyboard_focus_switch_skips_the_old_client_position_hint() {
+        assert!(!deactivation_applies_position_hint(
+            DeactivationReason::RequestedKeyboardFocusChange
+        ));
+        assert!(deactivation_applies_position_hint(
+            DeactivationReason::RequestedPointerFocusChange
+        ));
     }
 
     #[test]

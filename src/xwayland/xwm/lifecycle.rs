@@ -595,11 +595,17 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
             .and_then(|wl_surface| self.nodes.id_for_surface(&wl_surface))
             .is_some_and(|id| crate::nodes::collapse(self, id, SERIAL_COUNTER.next_serial()));
         if !changed {
-            // Keep EWMH state truthful when a minimize cannot be honored
-            // (for example, while another fullscreen transition owns it).
+            // Keep both EWMH and ICCCM state truthful when a minimize cannot
+            // be honored (for example, while fullscreen owns the window).
+            // Some clients stop presenting as soon as they send
+            // WM_CHANGE_STATE(IconicState) and wait for WM_STATE to confirm or
+            // reject the request. Re-publish NormalState even when it was
+            // already our tracked state so the client receives that rejection.
             if let Err(err) = surface.set_hidden(false) {
                 eventline::warn!("xwayland: failed to reject minimize request: {err}");
             }
+            self.xwayland
+                .transition_surface(&surface, WindowState::Normal);
         }
         self.request_redraw();
     }

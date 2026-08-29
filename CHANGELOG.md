@@ -9,6 +9,13 @@ All notable changes to this project will be documented in this file.
   window and place the pointer at the center of its output.
 
 ### Fixed
+- Prevent fullscreen XWayland games from consuming Steam/UI pointer motion
+  after Alt-Tab by pairing X11 absolute updates with zero relative samples,
+  focusing the destination before retiring the old constraint, ignoring stale
+  unlock hints, and waiting for globally-active clients to acknowledge
+  `WM_TAKE_FOCUS` before routing the pointer into them.
+- Re-publish ICCCM `NormalState` when an X11 minimize request cannot be honored,
+  so clients do not stop presenting while waiting for a rejected state change.
 - Restore a distinct, high-contrast keyboard focus indicator in Apogee without
   making pointer hover look selected.
 - Explicitly raise Apogee and Alt-Tab selections to the front when activating

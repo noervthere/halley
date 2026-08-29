@@ -1794,15 +1794,17 @@ where
         && !super::pointer::constraint_suspended_for_grab(session)
     {
         let route = super::pointer::route_for_motion(session, time_msec);
-        pointer_handle.relative_motion(
-            session,
-            route.as_ref().and_then(|route| route.focus.clone()),
-            &RelativeMotionEvent {
-                delta,
-                delta_unaccel,
-                utime: time,
-            },
-        );
+        if super::pointer::relative_motion_allowed(session, route.as_ref()) {
+            pointer_handle.relative_motion(
+                session,
+                route.as_ref().and_then(|route| route.focus.clone()),
+                &RelativeMotionEvent {
+                    delta,
+                    delta_unaccel,
+                    utime: time,
+                },
+            );
+        }
         super::pointer::finish_frame(session, &pointer_handle);
         if let Some(route) = route.as_ref() {
             super::focus::update_hover(session, route, SERIAL_COUNTER.next_serial());

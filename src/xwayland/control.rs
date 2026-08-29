@@ -265,6 +265,14 @@ impl X11Control {
         Ok(())
     }
 
+    /// Reads the X server's actual core keyboard focus.
+    ///
+    /// Globally-active ICCCM clients receive `WM_TAKE_FOCUS` and set this
+    /// themselves, so compositor selection alone is not an acknowledgment.
+    pub fn input_focus(&self) -> Result<Window, Box<dyn Error>> {
+        Ok(self.connection.get_input_focus()?.reply()?.focus)
+    }
+
     pub fn set_allowed_actions(
         &self,
         window: Window,

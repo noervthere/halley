@@ -2,7 +2,7 @@ mod constraints;
 
 pub(super) use constraints::PointerConstraintLifecycle;
 
-use smithay::input::pointer::{MotionEvent, PointerHandle};
+use smithay::input::pointer::{MotionEvent, PointerHandle, RelativeMotionEvent};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point, SERIAL_COUNTER};
 use smithay::wayland::seat::WaylandFocus;
@@ -139,6 +139,90 @@ pub(super) fn route_client<D: SessionDriver>(
     Some(route)
 }
 
+fn xwayland_relative_motion_allowed(
+    routed_is_x11: bool,
+    routed_is_immersive: bool,
+    foreign_immersive_x11: bool,
+) -> bool {
+    // Xwayland exposes one relative-pointer object for the whole X server.
+    // Forwarding relative motion while the pointer is on one X11 window
+    // therefore becomes XI_RawMotion for every X11 client that selected it,
+    // including an unfocused fullscreen game on another output. Absolute
+    // wl_pointer motion still reaches the routed X11 window, so shield the
+    // foreign immersive client without breaking ordinary Steam/UI input.
+    !routed_is_x11 || routed_is_immersive || !foreign_immersive_x11
+}
+
+fn immersive_x11_window<D: SessionDriver>(
+    session: &Session<D>,
+    window: &smithay::desktop::Window,
+) -> bool {
+    crate::xwayland::is_x11(window)
+        && (crate::xwayland::is_fullscreen(window)
+            || window.wl_surface().is_some_and(|surface| {
+                session
+                    .fullscreen
+                    .is_fullscreen_or_pending(surface.as_ref())
+            }))
+}
+
+pub(super) fn relative_motion_allowed<D: SessionDriver>(
+    session: &Session<D>,
+    route: Option<&crate::input::pointer::PointerRoute>,
+) -> bool {
+    let Some(route) = route else {
+        // PointerHandle::relative_motion ignores its supplied focus and uses
+        // the handle's current focus. Do not let a failed hit test reuse a
+        // stale client focus.
+        return false;
+    };
+    let routed_window = match &route.target {
+        crate::input::pointer::PointerTarget::Window(window)
+        | crate::input::pointer::PointerTarget::Decoration { window, .. } => Some(window),
+        crate::input::pointer::PointerTarget::Layer(_)
+        | crate::input::pointer::PointerTarget::Background => None,
+    };
+    let routed_is_x11 = routed_window.is_some_and(|window| crate::xwayland::is_x11(window));
+    if !routed_is_x11 {
+        return true;
+    }
+    let routed_is_immersive =
+        routed_window.is_some_and(|window| immersive_x11_window(session, window));
+    let foreign_immersive_x11 = session.wayland.space.elements().any(|window| {
+        routed_window.is_none_or(|routed| routed != window) && immersive_x11_window(session, window)
+    });
+    xwayland_relative_motion_allowed(routed_is_x11, routed_is_immersive, foreign_immersive_x11)
+}
+
+/// Xwayland coalesces `wl_pointer.motion` and relative-pointer motion until the
+/// pointer frame. When absolute motion arrives alone it emits XI_RawMotion from
+/// its absolute device; Wine games can consume that even while another X11
+/// window owns focus. Pair the absolute update with a zero relative delta so
+/// Xwayland marks the absolute half `POINTER_NORAW` while Steam still receives
+/// its normal core pointer motion.
+fn pair_xwayland_ui_absolute_motion<D: SessionDriver>(
+    session: &mut Session<D>,
+    pointer: &PointerHandle<Session<D>>,
+    route: &crate::input::pointer::PointerRoute,
+    time: u32,
+) {
+    if relative_motion_allowed(session, Some(route)) {
+        return;
+    }
+    let Some(focus) = route.focus.clone() else {
+        return;
+    };
+    pointer.relative_motion(
+        session,
+        Some(focus),
+        &RelativeMotionEvent {
+            delta: Point::from((0.0, 0.0)),
+            delta_unaccel: Point::from((0.0, 0.0)),
+            utime: u64::from(time) * 1_000,
+        },
+    );
+}
+
 pub(super) fn has_active_constraint<D: SessionDriver>(session: &Session<D>) -> bool {
     session
         .seat
@@ -215,6 +299,7 @@ fn route_and_update_client_focus<D: SessionDriver>(
                 time,
             },
         );
+        pair_xwayland_ui_absolute_motion(session, &pointer, &route, time);
         session.interactions.client_pointer_route = Some(routed_state);
     }
     Some(route)
@@ -354,13 +439,14 @@ pub(crate) fn refresh_desktop_client_focus<D: SessionDriver>(session: &mut Sessi
     }
     pointer.motion(
         session,
-        route.focus,
+        route.focus.clone(),
         &MotionEvent {
             location: route.location,
             serial: SERIAL_COUNTER.next_serial(),
             time,
         },
     );
+    pair_xwayland_ui_absolute_motion(session, &pointer, &route, time);
     session.interactions.client_pointer_route = Some(routed_state);
     finish_frame(session, &pointer);
 }
@@ -520,6 +606,7 @@ fn refresh_new_constraint_focus<D: SessionDriver>(
         return;
     }
 
+    let time = session.start_time.elapsed().as_millis() as u32;
     reset_client_cursor_image(session);
     constraints::deactivate_before_pointer_focus_change(session, routed_surface);
     pointer.motion(
@@ -528,9 +615,10 @@ fn refresh_new_constraint_focus<D: SessionDriver>(
         &MotionEvent {
             location: route.location,
             serial: SERIAL_COUNTER.next_serial(),
-            time: session.start_time.elapsed().as_millis() as u32,
+            time,
         },
     );
+    pair_xwayland_ui_absolute_motion(session, pointer, &route, time);
     session.interactions.client_pointer_route = Some(ClientPointerRoute::from_route(&route));
     eventline::debug!("pointer-constraint: refreshed focus from fresh route surface={surface:?}");
 }
@@ -561,6 +649,7 @@ mod tests {
         constraints, cursor_presentation_visible, desktop_refresh_allowed,
         interactive_overlay_cursor_override, interactive_overlay_forces_cursor,
         should_emit_absolute_motion, should_refresh_constraint_focus,
+        xwayland_relative_motion_allowed,
     };
 
     #[test]
@@ -620,6 +709,14 @@ mod tests {
             false,
             false
         ));
+    }
+
+    #[test]
+    fn foreign_fullscreen_x11_client_uses_a_zero_relative_pair_for_ui_motion() {
+        assert!(!xwayland_relative_motion_allowed(true, false, true));
+        assert!(xwayland_relative_motion_allowed(true, true, true));
+        assert!(xwayland_relative_motion_allowed(true, false, false));
+        assert!(xwayland_relative_motion_allowed(false, false, true));
     }
 
     #[test]

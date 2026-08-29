@@ -1576,9 +1576,15 @@ pub(crate) fn sync_keyboard_focus<D: SessionDriver>(
     if let Some(focused) = focused.as_ref() {
         focused.acknowledge_attention();
     }
-    pointer::prepare_keyboard_focus_change(session, next_constraint_root.as_ref());
+    // Commit keyboard/X focus before retiring the old pointer constraint.
+    // Xwayland releases a locked X pointer when it receives `unlocked`; doing
+    // that while the old game still owns core X focus lets its final cursor
+    // re-anchor affect the camera. The seat update is synchronous from the
+    // compositor's perspective, so no input can reach the new target between
+    // these two operations.
     keyboard.set_focus(session, focused, serial);
     session.xwayland.sync_active_window(active_x11_window);
+    pointer::prepare_keyboard_focus_change(session, next_constraint_root.as_ref());
     // Map, unmap, destroy and raise all funnel through here, so this is the one
     // place the X server's stack can drift from the compositor's.
     session.xwayland.sync_stacking_order(&session.wayland.space);
