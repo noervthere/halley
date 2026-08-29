@@ -70,33 +70,30 @@ pub fn elements(
                 Scale::from(output.current_scale().fractional_scale()),
                 Kind::Cursor,
             )?;
-            // A cursor surface can remain alive while losing its committed
-            // buffer across a lock, VT switch, suspend, or client teardown.
-            // Treat that as stale client state and draw the themed arrow for
-            // this frame instead of allowing an empty surface tree to make the
-            // cursor disappear indefinitely.
-            if elements.is_empty() {
-                let frame = manager.default_frame(output.current_scale().integer_scale(), time);
-                let Some(position) =
-                    named_cursor_origin(output, output_geometry, pointer_position, &frame)
-                else {
-                    return Ok(Vec::new());
-                };
-                return Ok(vec![
-                    MemoryRenderBufferRenderElement::from_buffer(
-                        renderer,
-                        position,
-                        &frame.buffer,
-                        None,
-                        None,
-                        None,
-                        Kind::Cursor,
-                    )?
-                    .into(),
-                ]);
+            // A live, bufferless cursor surface is a valid client request for
+            // an invisible cursor. Firefox uses this while video controls are
+            // hidden. Session resume and surface destruction already reset
+            // genuinely stale cursor state, so synthesizing an arrow here
+            // overrides the client's visibility decision.
+            match client_surface_presentation(elements) {
+                ClientSurfacePresentation::Hidden => Ok(Vec::new()),
+                ClientSurfacePresentation::Visible(elements) => Ok(elements),
             }
-            Ok(elements)
         }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ClientSurfacePresentation<T> {
+    Hidden,
+    Visible(Vec<T>),
+}
+
+fn client_surface_presentation<T>(elements: Vec<T>) -> ClientSurfacePresentation<T> {
+    if elements.is_empty() {
+        ClientSurfacePresentation::Hidden
+    } else {
+        ClientSurfacePresentation::Visible(elements)
     }
 }
 
@@ -261,6 +258,22 @@ mod tests {
             Some((0, 0).into()),
         );
         output
+    }
+
+    #[test]
+    fn bufferless_client_cursor_surface_remains_invisible() {
+        assert_eq!(
+            client_surface_presentation::<()>(Vec::new()),
+            ClientSurfacePresentation::Hidden
+        );
+    }
+
+    #[test]
+    fn buffered_client_cursor_surface_remains_visible() {
+        assert_eq!(
+            client_surface_presentation(vec!["cursor-element"]),
+            ClientSurfacePresentation::Visible(vec!["cursor-element"])
+        );
     }
 
     #[test]

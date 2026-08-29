@@ -20,6 +20,9 @@ All notable changes to this project will be documented in this file.
 - Preserve the current motion sample across rapid fullscreen and maximize
   reversals while client configure/repaint work is pending, preventing endpoint
   jumps and avoiding unnecessary transition frames.
+- Respect bufferless client cursor surfaces as hidden instead of replacing them
+  with the themed arrow, allowing browser video controls to hide the pointer
+  independently of Halley's global inactivity timeout.
 - Keep the titlebar pin from shifting an otherwise centered window title.
 
 ## [v0.6.1] - 2026-08-28
