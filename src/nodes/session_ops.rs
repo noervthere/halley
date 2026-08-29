@@ -892,6 +892,7 @@ pub fn focus_and_center_node<D: crate::session::SessionDriver>(
             },
         );
     }
+    let _ = crate::session::center_pointer_on_output(session, &record.output);
     session.request_redraw();
     true
 }

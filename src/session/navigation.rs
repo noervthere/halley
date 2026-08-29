@@ -20,6 +20,44 @@ fn output_local_center(world: Vec2, output_origin: (i32, i32)) -> Vec2 {
     }
 }
 
+fn output_geometry_center(
+    geometry: smithay::utils::Rectangle<i32, smithay::utils::Logical>,
+) -> (f64, f64) {
+    (
+        f64::from(geometry.loc.x) + f64::from(geometry.size.w) * 0.5,
+        f64::from(geometry.loc.y) + f64::from(geometry.size.h) * 0.5,
+    )
+}
+
+/// Moves the compositor pointer to the center of a named output. Presentation
+/// navigation uses this after activation so a cross-output jump never leaves
+/// the pointer behind on a different monitor.
+pub(crate) fn center_pointer_on_output<D: SessionDriver>(
+    session: &mut Session<D>,
+    output_name: &str,
+) -> bool {
+    let Some(output) = session
+        .wayland
+        .space
+        .outputs()
+        .find(|output| output.name() == output_name)
+        .cloned()
+    else {
+        return false;
+    };
+    let Some(geometry) = session.wayland.space.output_geometry(&output) else {
+        return false;
+    };
+    super::pointer::release_for_compositor_warp(session);
+    session
+        .pointer
+        .set_position(output_geometry_center(geometry));
+    session.cursor_policy.pointer_activity();
+    super::pointer::update_client_state(session, session.start_time.elapsed().as_millis() as u32);
+    session.request_output_redraw(&output);
+    true
+}
+
 /// Selects a directional neighbour in the output's Field. Cluster members are
 /// deliberately excluded: while a cluster is closed their Field geometry is
 /// only storage, and while it is open cluster navigation owns the action.
@@ -151,6 +189,13 @@ mod tests {
             portal_direction(halley_config::Direction::Down),
             PortalDir::S
         );
+    }
+
+    #[test]
+    fn output_pointer_center_uses_global_layout_coordinates() {
+        let secondary = smithay::utils::Rectangle::new((2560, -120).into(), (1920, 1200).into());
+
+        assert_eq!(output_geometry_center(secondary), (3520.0, 480.0));
     }
 
     #[test]

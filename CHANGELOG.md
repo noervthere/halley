@@ -6,7 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 - Make Apogee and Alt-Tab use the same smooth camera path to center the selected
-  window while leaving the pointer in place.
+  window and place the pointer at the center of its output.
 
 ### Fixed
 - Restore a distinct, high-contrast keyboard focus indicator in Apogee without

@@ -701,6 +701,7 @@ fn activate_target<D: crate::session::SessionDriver>(
         if let Some(output) = output {
             crate::session::sync_cluster_activation_focus(session, &output, cluster, false, serial);
         }
+        let _ = crate::session::center_pointer_on_output(session, &output_name);
         return;
     }
     let Some(record) = session.nodes.record(target).cloned() else {
@@ -712,8 +713,8 @@ fn activate_target<D: crate::session::SessionDriver>(
     if let Some(active) = session.clusters.active_on(&record.output) {
         let _ = session.clusters.activate(&record.output, active, now);
     }
-    // Explicit focus raises the selected window; camera movement is shared
-    // with Alt+Tab and intentionally leaves the pointer where the user put it.
+    // Explicit focus raises the selected window; camera and pointer placement
+    // share the same path as Alt+Tab.
     let _ = crate::nodes::focus_and_center_node(session, target, serial);
 }
 

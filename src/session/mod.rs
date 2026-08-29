@@ -42,6 +42,7 @@ pub mod winit;
 
 pub(crate) use focus::{focus_window, focus_window_after_close};
 pub use interaction::InteractionState;
+pub(crate) use navigation::center_pointer_on_output;
 pub use settings::RuntimeSettings;
 pub use state::{OutputDriver, RenderDriver, Session, SessionDriver};
 

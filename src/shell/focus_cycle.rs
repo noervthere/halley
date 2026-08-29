@@ -308,8 +308,8 @@ pub fn commit<D: crate::session::SessionDriver>(
         return false;
     };
     // Explicit focus raises the selected window. The shared navigation path
-    // also queues an exact camera target, so Alt+Tab eases to the window center
-    // just like Apogee without moving the pointer.
+    // also queues an exact camera target and centers the pointer on its output,
+    // so Alt+Tab lands on the same monitor while the camera eases into place.
     let _ = crate::nodes::focus_and_center_node(session, target, serial);
     session.request_redraw();
     true
