@@ -34,10 +34,12 @@ windows can still overlap each other.
 ## Pinning
 
 The default `Mod+P` binding runs `toggle-focused-pin`. A pinned field window
-or collapsed node stays fixed in field space: pointer and IPC movement,
-interactive resize, and field maximize are rejected until it is unpinned.
-Focus, fullscreen, collapse, restore, and close continue to work. Pin state is
-runtime-only and is reported by `halleyctl node list` and `node info`.
+or collapsed node stays fixed in field space: pointer and IPC movement and
+interactive resize are rejected, and landmark collisions treat it as an
+immovable anchor. Focus, field maximize, fullscreen, collapse, restore, and
+close continue to work. Maximize and fullscreen are temporary presentations;
+leaving either returns the window to the same pinned field placement. Pin state
+is runtime-only and is reported by `halleyctl node list` and `node info`.
 
 Cluster members cannot be pinned. A collapsed cluster's core is the one
 cluster object that can be pinned, anchoring that collapsed cluster in place.

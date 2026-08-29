@@ -1198,9 +1198,6 @@ fn toggle_field_maximize<D: SessionDriver>(
     session: &mut Session<D>,
     record: crate::nodes::NodeRecord,
 ) -> bool {
-    if node_user_pinned(session, record.id) {
-        return false;
-    }
     let output_name =
         crate::wayland::window_output_name(&record.window).unwrap_or_else(|| record.output.clone());
     let Some(target_output) = session
@@ -1354,6 +1351,14 @@ fn toggle_field_maximize<D: SessionDriver>(
             .fullscreen_textures
             .remove(&displaced.surface);
         configure_field_geometry(session, displaced);
+    }
+    if entering {
+        // Maximize takes the top stack slot once, matching fullscreen entry.
+        // This keeps windows that were already in front from riding over the
+        // maximize transition, without creating an always-on-top layer: any
+        // later explicit raise can still move another window above it.
+        crate::window::raise_managed(&mut session.wayland, &record.window);
+        session.xwayland.raise_window(&record.window);
     }
     configure_field_geometry(
         session,

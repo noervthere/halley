@@ -18,10 +18,14 @@ pub struct ManagedWindowStack {
     order: Vec<WlSurface>,
 }
 
+fn raise_in_order<T: Eq>(order: &mut Vec<T>, item: T) {
+    order.retain(|candidate| candidate != &item);
+    order.push(item);
+}
+
 impl ManagedWindowStack {
     pub fn raise(&mut self, surface: WlSurface) {
-        self.remove(&surface);
-        self.order.push(surface);
+        raise_in_order(&mut self.order, surface);
     }
 
     pub fn remove(&mut self, surface: &WlSurface) {
@@ -119,5 +123,16 @@ mod tests {
     fn override_redirect_cannot_start_a_compositor_grab() {
         assert!(!super::compositor_grab_policy(true));
         assert!(super::compositor_grab_policy(false));
+    }
+
+    #[test]
+    fn presentation_entry_raise_is_one_shot_not_always_on_top() {
+        let mut order = vec!["maximize-target", "existing-foreground"];
+
+        super::raise_in_order(&mut order, "maximize-target");
+        assert_eq!(order, ["existing-foreground", "maximize-target"]);
+
+        super::raise_in_order(&mut order, "existing-foreground");
+        assert_eq!(order, ["maximize-target", "existing-foreground"]);
     }
 }

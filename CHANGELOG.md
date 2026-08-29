@@ -13,6 +13,10 @@ All notable changes to this project will be documented in this file.
   making pointer hover look selected.
 - Explicitly raise Apogee and Alt-Tab selections to the front when activating
   them.
+- Raise a window once when maximize begins so windows already in front stay
+  behind the maximize presentation, while later user raises remain effective.
+- Allow pinned field windows to maximize and fullscreen without giving up their
+  locked field placement.
 - Keep the titlebar pin from shifting an otherwise centered window title.
 
 ## [v0.6.1] - 2026-08-28
