@@ -9,6 +9,10 @@ All notable changes to this project will be documented in this file.
   window and place the pointer at the center of its output.
 
 ### Fixed
+- Keep automatic node decay from stalling input across outputs by reusing
+  current GPU preview snapshots, avoiding the second full-window capture pass
+  for client-decorated windows, and collapsing only one overdue node per timer
+  tick.
 - Prevent fullscreen XWayland games from consuming Steam/UI pointer motion
   after Alt-Tab by pairing X11 absolute updates with zero relative samples,
   focusing the destination before retiring the old constraint, ignoring stale

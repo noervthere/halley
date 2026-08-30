@@ -549,6 +549,23 @@ pub fn collapse<D: crate::session::SessionDriver>(
     id: NodeId,
     serial: smithay::utils::Serial,
 ) -> bool {
+    collapse_inner(session, id, serial, false)
+}
+
+fn collapse_for_decay<D: crate::session::SessionDriver>(
+    session: &mut crate::session::Session<D>,
+    id: NodeId,
+    serial: smithay::utils::Serial,
+) -> bool {
+    collapse_inner(session, id, serial, true)
+}
+
+fn collapse_inner<D: crate::session::SessionDriver>(
+    session: &mut crate::session::Session<D>,
+    id: NodeId,
+    serial: smithay::utils::Serial,
+    decay: bool,
+) -> bool {
     // Cluster workspaces own member visibility as a unit.  Collapsing one
     // member would tear it out of the workspace without updating cluster
     // membership, so minimize requests (server-titlebar, xdg-shell, or X11)
@@ -585,7 +602,11 @@ pub fn collapse<D: crate::session::SessionDriver>(
     let logical_focus =
         logical_focus_after_collapse(session.nodes.focused(), id, client_was_focused);
 
-    let _ = crate::session::closing::capture_window(session, &record.window);
+    let _ = if decay {
+        crate::session::closing::capture_window_for_decay(session, &record.window)
+    } else {
+        crate::session::closing::capture_window(session, &record.window)
+    };
     if let Some(restore) = session.maximize.take_restore(&record.surface) {
         session.render.fullscreen_textures.remove(&restore.surface);
         crate::session::configure_field_geometry(session, &restore);
@@ -1125,8 +1146,11 @@ pub fn tick_decay<D: crate::session::SessionDriver>(
         now_ms,
     );
     let mut changed = false;
-    for id in ready {
-        changed |= collapse(session, id, smithay::utils::SERIAL_COUNTER.next_serial());
+    // Snapshotting and collapsing several full-size windows in one calloop
+    // callback blocks keyboard dispatch across all outputs. Deadlines are
+    // already checked once per second, so drain overdue nodes incrementally.
+    for id in ready.into_iter().take(1) {
+        changed |= collapse_for_decay(session, id, smithay::utils::SERIAL_COUNTER.next_serial());
     }
     changed
 }

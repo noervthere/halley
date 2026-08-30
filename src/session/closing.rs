@@ -1,3 +1,4 @@
+use smithay::backend::renderer::Renderer;
 use smithay::desktop::Window;
 use smithay::output::Output;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
@@ -56,7 +57,39 @@ pub(crate) fn capture_native_toplevel_before_unmap<D: SessionDriver>(
 }
 
 pub(crate) fn capture_window<D: SessionDriver>(session: &mut Session<D>, window: &Window) -> bool {
-    capture_window_inner(session, window, false)
+    capture_window_inner(session, window, false, CaptureKind::Decorated)
+}
+
+/// Automatic decay runs from the compositor event loop, where a two-pass
+/// full-window capture can delay unrelated input on every output. Prefer an
+/// existing overview snapshot and otherwise use the single-pass client
+/// capture for windows without a server-side titlebar.
+pub(crate) fn capture_window_for_decay<D: SessionDriver>(
+    session: &mut Session<D>,
+    window: &Window,
+) -> bool {
+    capture_window_inner(session, window, false, CaptureKind::Decay)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CaptureKind {
+    Decorated,
+    Decay,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CapturePath {
+    Cached,
+    Client,
+    Decorated,
+}
+
+fn capture_path(kind: CaptureKind, has_clean_cache: bool, server_titlebar: bool) -> CapturePath {
+    match (kind, has_clean_cache, server_titlebar) {
+        (CaptureKind::Decay, true, _) => CapturePath::Cached,
+        (CaptureKind::Decay, false, false) => CapturePath::Client,
+        _ => CapturePath::Decorated,
+    }
 }
 
 fn captures_before_client_decision(is_x11: bool) -> bool {
@@ -81,7 +114,7 @@ pub(crate) fn capture_close_control<D: SessionDriver>(
     if !captures_before_client_decision(crate::xwayland::is_x11(window)) {
         return false;
     }
-    capture_window_inner(session, window, true)
+    capture_window_inner(session, window, true, CaptureKind::Decorated)
 }
 
 /// Starts the visual close immediately for Steam's client-owned X11 control.
@@ -100,7 +133,7 @@ pub(crate) fn start_steam_client_close_control<D: SessionDriver>(
     // client buffer is still attached. The capture copies those pixels into
     // a compositor-owned texture and drops every client buffer guard before
     // Steam can begin teardown.
-    if !capture_window_inner(session, window, false) {
+    if !capture_window_inner(session, window, false, CaptureKind::Decorated) {
         return false;
     }
     if !session
@@ -119,6 +152,7 @@ fn capture_window_inner<D: SessionDriver>(
     session: &mut Session<D>,
     window: &Window,
     provisional: bool,
+    kind: CaptureKind,
 ) -> bool {
     if crate::xwayland::is_override_redirect(window) {
         return false;
@@ -162,6 +196,13 @@ fn capture_window_inner<D: SessionDriver>(
     let chrome_visible =
         !session.fullscreen.suppresses_chrome(&surface) && !crate::xwayland::is_fullscreen(window);
     let maximized = session.maximize.contains(&surface);
+    let server_titlebar = chrome_visible
+        && crate::titlebar::WindowChrome::for_window(
+            window,
+            &session.settings.decorations,
+            &session.settings.font,
+        )
+        .has_server_titlebar();
     let initial_destination = closing_destination(
         window,
         visual,
@@ -192,7 +233,7 @@ fn capture_window_inner<D: SessionDriver>(
                 )),
             )
         });
-    let metadata = crate::render::close::CloseSnapshotMetadata {
+    let decorated_metadata = crate::render::close::CloseSnapshotMetadata {
         output_name: output.name(),
         initial_destination,
         anchor,
@@ -203,6 +244,31 @@ fn capture_window_inner<D: SessionDriver>(
         // closing scene must not synthesize a second border or clip pass.
         border: None,
         content_radius: 0.0,
+        collapse_target: None,
+    };
+    let border_width = crate::render::window_decoration::scaled_metric(
+        session.settings.decorations.border_width_px,
+        visual.zoom_scale,
+    );
+    let client_metadata = crate::render::close::CloseSnapshotMetadata {
+        output_name: output.name(),
+        initial_destination: visual.animated_rect,
+        anchor,
+        stack_index,
+        start_alpha: visual.opening_alpha * session.window_rules.opacity(&surface),
+        retract_origin,
+        border: (chrome_visible && border_width > 0).then(|| crate::render::close::CloseBorder {
+            width: border_width,
+            color: crate::render::window_border_color(&session.settings.decorations, focused),
+        }),
+        content_radius: if chrome_visible {
+            crate::render::window_decoration::scaled_metric(
+                session.settings.decorations.border_radius_px,
+                visual.zoom_scale,
+            ) as f32
+        } else {
+            0.0
+        },
         collapse_target: None,
     };
     let decorations = session.settings.decorations;
@@ -216,24 +282,49 @@ fn capture_window_inner<D: SessionDriver>(
     let window_close_animations = &mut render.window_close_animations;
     let overlay_previews = &mut render.overlay_previews;
     let capture = session.driver.with_renderer(|renderer| {
-        let texture = crate::render::window_texture::capture_decorated(
-            renderer,
-            window,
-            None,
-            &decorations,
-            &font,
-            focused,
-            chrome_visible,
-            maximized,
-            titlebar_renderer,
-            window_decoration_renderer,
-            node_renderer,
-            ui_text,
-        )?;
-        if let Some(id) = preview_id {
-            overlay_previews.store_last_good(id, texture.clone(), maximized);
+        let cached = (kind == CaptureKind::Decay)
+            .then(|| {
+                preview_id
+                    .and_then(|id| overlay_previews.clean_texture(id, maximized))
+                    .filter(|texture| texture.context == renderer.context_id())
+            })
+            .flatten();
+        match capture_path(kind, cached.is_some(), server_titlebar) {
+            CapturePath::Cached => window_close_animations.capture(
+                window,
+                cached.expect("cached capture path requires a texture"),
+                decorated_metadata,
+            ),
+            CapturePath::Client => {
+                let texture = crate::render::window_texture::capture(renderer, window, None)?;
+                if let Some(id) = preview_id {
+                    // A current client snapshot remains a useful fallback for
+                    // the now-unmapped node. Overlay chrome supplies its frame.
+                    overlay_previews.store_last_good(id, texture.clone(), maximized);
+                }
+                window_close_animations.capture(window, texture, client_metadata)
+            }
+            CapturePath::Decorated => {
+                let texture = crate::render::window_texture::capture_decorated(
+                    renderer,
+                    window,
+                    None,
+                    &decorations,
+                    &font,
+                    focused,
+                    chrome_visible,
+                    maximized,
+                    titlebar_renderer,
+                    window_decoration_renderer,
+                    node_renderer,
+                    ui_text,
+                )?;
+                if let Some(id) = preview_id {
+                    overlay_previews.store_last_good(id, texture.clone(), maximized);
+                }
+                window_close_animations.capture(window, texture, decorated_metadata)
+            }
         }
-        window_close_animations.capture(window, texture, metadata)
     });
     match capture {
         Ok(captured) => {
@@ -338,7 +429,7 @@ pub(crate) fn capture_and_activate_before_unmap<D: SessionDriver>(
             .confirm_unmapped(&surface);
         return true;
     }
-    let captured = capture_window_inner(session, window, false);
+    let captured = capture_window_inner(session, window, false, CaptureKind::Decorated);
     if !captured {
         return false;
     }
@@ -404,11 +495,39 @@ fn output_for_window(
 
 #[cfg(test)]
 mod tests {
-    use super::captures_before_client_decision;
+    use super::{CaptureKind, CapturePath, capture_path, captures_before_client_decision};
 
     #[test]
     fn only_x11_captures_before_an_advisory_close_can_be_rejected() {
         assert!(captures_before_client_decision(true));
         assert!(!captures_before_client_decision(false));
+    }
+
+    #[test]
+    fn decay_reuses_a_current_gpu_preview_before_capturing_again() {
+        assert_eq!(
+            capture_path(CaptureKind::Decay, true, false),
+            CapturePath::Cached
+        );
+        assert_eq!(
+            capture_path(CaptureKind::Decay, true, true),
+            CapturePath::Cached
+        );
+    }
+
+    #[test]
+    fn uncached_decay_avoids_the_second_pass_without_a_server_titlebar() {
+        assert_eq!(
+            capture_path(CaptureKind::Decay, false, false),
+            CapturePath::Client
+        );
+        assert_eq!(
+            capture_path(CaptureKind::Decay, false, true),
+            CapturePath::Decorated
+        );
+        assert_eq!(
+            capture_path(CaptureKind::Decorated, true, false),
+            CapturePath::Decorated
+        );
     }
 }

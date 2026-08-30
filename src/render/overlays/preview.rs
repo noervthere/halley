@@ -60,6 +60,18 @@ fn needs_refresh(
 }
 
 impl OverlayPreviewCache {
+    /// Reuse an already-current GPU snapshot for compositor-driven handoffs.
+    ///
+    /// A dirty entry predates the client's latest commit and must not replace
+    /// the live window during a close/collapse animation.
+    pub fn clean_texture(&self, id: NodeId, maximized: bool) -> Option<WindowTexture> {
+        (!self.dirty.contains(&id))
+            .then(|| self.entries.get(&id))
+            .flatten()
+            .filter(|entry| entry.maximized == maximized)
+            .map(|entry| entry.texture.clone())
+    }
+
     /// Preserve a compositor-owned last-good frame for a window that is about
     /// to leave the mapped scene. Collapsed nodes keep their client surface
     /// hidden, so trying to create their first preview later can otherwise
