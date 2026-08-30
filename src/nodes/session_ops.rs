@@ -706,6 +706,22 @@ pub fn restore_for_close<D: crate::session::SessionDriver>(
     id: NodeId,
     serial: smithay::utils::Serial,
 ) -> bool {
+    restore_without_centering(session, id, serial)
+}
+
+pub(crate) fn restore_for_cluster_join<D: crate::session::SessionDriver>(
+    session: &mut crate::session::Session<D>,
+    id: NodeId,
+    serial: smithay::utils::Serial,
+) -> bool {
+    restore_without_centering(session, id, serial)
+}
+
+fn restore_without_centering<D: crate::session::SessionDriver>(
+    session: &mut crate::session::Session<D>,
+    id: NodeId,
+    serial: smithay::utils::Serial,
+) -> bool {
     restore_with_centering(
         session,
         id,

@@ -9,7 +9,7 @@ use smithay::input::keyboard::{FilterResult, Keysym};
 use smithay::input::pointer::{ButtonEvent, RelativeMotionEvent};
 use smithay::output::Output;
 use smithay::reexports::wayland_server::Resource;
-use smithay::utils::{Logical, Point, Rectangle, SERIAL_COUNTER};
+use smithay::utils::{Logical, Point, Rectangle, SERIAL_COUNTER, Size};
 use smithay::wayland::keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitorSeat;
 use smithay::wayland::seat::WaylandFocus;
 
@@ -46,6 +46,21 @@ fn sampled_drag_velocity(
         x: previous_velocity.x * 0.35 + clamp((current.x - previous.x) / dt) * 0.65,
         y: previous_velocity.y * 0.35 + clamp((current.y - previous.y) / dt) * 0.65,
     }
+}
+
+fn collapsed_node_drop_origin(
+    center: halley_core::field::Vec2,
+    size: Size<i32, Logical>,
+    output_geometry: Rectangle<i32, Logical>,
+) -> Rectangle<i32, Logical> {
+    Rectangle::new(
+        (
+            (center.x - size.w as f32 * 0.5).round() as i32 - output_geometry.loc.x,
+            (center.y - size.h as f32 * 0.5).round() as i32 - output_geometry.loc.y,
+        )
+            .into(),
+        size,
+    )
 }
 
 fn drag_threshold_reached(press: Point<f64, Logical>, current: (f64, f64)) -> bool {
@@ -1709,27 +1724,10 @@ where
                 let now = crate::frame_clock::monotonic_now();
                 let sampled =
                     sampled_drag_velocity(previous, desired, previous_velocity, last_update, now);
-                let camera_scale = crate::presentation::camera::scale(camera).max(0.05);
                 crate::nodes::set_collapsed_output(session, id, &output);
                 if !session.nodes.physics.enabled {
                     let _ = crate::nodes::move_grabbed_body_rigid(session, id, desired);
                 }
-                let marker_radius = crate::nodes::NODE_DIAMETER_PX * 0.5 / camera_scale;
-                let join_candidate_changed = session.clusters.update_join_candidate(
-                    &session.nodes.field,
-                    &output.name(),
-                    id,
-                    crate::clusters::JoinContact {
-                        center: desired,
-                        member_left: marker_radius,
-                        member_right: marker_radius,
-                        member_top: marker_radius,
-                        member_bottom: marker_radius,
-                        core_radius: crate::clusters::CORE_DIAMETER_PX * 0.5 / camera_scale,
-                        gap: session.nodes.landmarks.gap_px / camera_scale,
-                    },
-                    now,
-                );
                 if let crate::input::grab::Grab::MoveNode {
                     last_world,
                     last_update,
@@ -1741,7 +1739,7 @@ where
                     *last_update = now;
                     *velocity = sampled;
                 }
-                if session.nodes.physics.enabled || join_candidate_changed {
+                if session.nodes.physics.enabled {
                     session.request_redraw();
                 }
             }
@@ -2068,29 +2066,50 @@ where
                 }
                 crate::input::grab::Grab::MoveNode { id, .. } => {
                     let id = *id;
+                    let now = crate::frame_clock::monotonic_now();
                     if session.nodes.physics.enabled {
-                        let _ = crate::nodes::tick_physics(
-                            session,
-                            crate::frame_clock::monotonic_now(),
-                        );
+                        let _ = crate::nodes::tick_physics(session, now);
                     }
-                    let join_ready = session
-                        .nodes
-                        .record(id)
-                        .is_some_and(|record| session.clusters.join_ready_for(id, &record.output));
+                    let active_workspace_release = (|| {
+                        let (output, output_geometry) =
+                            output_at_pointer(&session.wayland.space, session.pointer.position())?;
+                        session.clusters.active_on(&output.name())?;
+                        let work_area =
+                            smithay::desktop::layer_map_for_output(&output).non_exclusive_zone();
+                        let global_work_area =
+                            Rectangle::new(output_geometry.loc + work_area.loc, work_area.size);
+                        if !global_work_area
+                            .to_f64()
+                            .contains(Point::<f64, Logical>::from(session.pointer.position()))
+                        {
+                            return None;
+                        }
+                        let center = session.nodes.field.node(id)?.pos;
+                        let size = session.nodes.record(id)?.geometry.size;
+                        let origin = collapsed_node_drop_origin(center, size, output_geometry);
+                        Some((output, work_area, origin))
+                    })();
                     session.interactions.grab = crate::input::grab::Grab::None;
                     session
                         .cursor
                         .set_override(crate::cursor::OverrideSource::Grab, None);
                     session.nodes.clear_direct_motion(id);
-                    let joined = join_ready
-                        && crate::nodes::restore(session, id, serial)
-                        && session
-                            .clusters
-                            .commit_join_candidate(&mut session.nodes.field, id)
-                            .is_some();
-                    if !joined {
-                        session.clusters.cancel_join_candidate();
+                    session.clusters.cancel_join_candidate();
+                    if let Some((output, work_area, origin)) = active_workspace_release {
+                        let output_name = output.name();
+                        crate::nodes::set_collapsed_output(session, id, &output);
+                        if crate::nodes::restore_for_cluster_join(session, id, serial)
+                            && session.clusters.join_active_member_front(
+                                &mut session.nodes.field,
+                                &output_name,
+                                id,
+                                work_area,
+                                origin,
+                                now,
+                            )
+                        {
+                            super::reconcile_cluster_surfaces(session, &output_name);
+                        }
                     }
                     session.request_redraw();
                     super::pointer::finish_frame(session, &pointer_handle);
@@ -3111,14 +3130,14 @@ mod tests {
 
     use halley_core::field::Vec2;
     use smithay::backend::input::KeyState;
-    use smithay::utils::{Logical, Point, Size};
+    use smithay::utils::{Logical, Point, Rectangle, Size};
 
     use super::actions::{cluster_blocks_zoom, window_action_output};
     use super::keyboard::{ModalKeyRouting, modal_key_routing};
     use super::{BTN_LEFT, BTN_RIGHT, PendingWindowMoveMotion};
     use super::{
-        bloom_drag_handoff, drag_threshold_reached, forward_pointer_button,
-        pending_window_move_motion, plain_background_press_dismisses_bloom,
+        bloom_drag_handoff, collapsed_node_drop_origin, drag_threshold_reached,
+        forward_pointer_button, pending_window_move_motion, plain_background_press_dismisses_bloom,
         pointer_move_falls_back_to_field_pan, preferred_cluster_navigation_focus,
         releases_pending_window_move, sampled_drag_velocity, shortcut_policy_allows_bindings,
         stacking_cycle_direction, typing_abandons_bloom,
@@ -3139,6 +3158,23 @@ mod tests {
             last = now;
         }
         velocity
+    }
+
+    #[test]
+    fn collapsed_node_drop_origin_is_local_to_the_destination_output() {
+        let output = Rectangle::<i32, Logical>::new((1_920, 0).into(), (2_560, 1_440).into());
+
+        assert_eq!(
+            collapsed_node_drop_origin(
+                Vec2 {
+                    x: 2_400.0,
+                    y: 500.0
+                },
+                Size::from((800, 600)),
+                output,
+            ),
+            Rectangle::new((80, 200).into(), (800, 600).into())
+        );
     }
 
     #[test]

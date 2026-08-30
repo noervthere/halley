@@ -16,12 +16,9 @@ impl ClusterSystem {
         contact: JoinContact,
         now: Duration,
     ) -> bool {
-        let eligible_surface = field.node(member).is_some_and(|node| {
-            matches!(
-                node.state,
-                NodeState::Active | NodeState::Drifting | NodeState::Node
-            )
-        });
+        let eligible_surface = field
+            .node(member)
+            .is_some_and(|node| matches!(node.state, NodeState::Active | NodeState::Drifting));
         if !eligible_surface
             || self.registry.is_cluster_member(member)
             || self.active_on(output).is_some()
@@ -240,32 +237,6 @@ mod tests {
             HOLD_DURATION
         ));
         assert!(system.join_candidate.is_none());
-    }
-
-    #[test]
-    fn collapsed_node_can_arm_and_complete_a_bloom_join_after_restore() {
-        let (mut system, mut field, cluster, joining) = clustered_system();
-        assert!(field.set_state(joining, NodeState::Node));
-        open_bloom(&mut system, cluster);
-        let core = system.metadata(cluster).unwrap().core_position;
-
-        assert!(update_at(
-            &mut system,
-            &field,
-            joining,
-            core,
-            Duration::from_millis(2_000)
-        ));
-        assert!(system.tick_join_candidate_ready(Duration::from_millis(2_500)));
-
-        // Session restores the real surface before committing membership.
-        assert!(field.touch(joining, 2_500));
-        assert_eq!(
-            system.commit_join_candidate(&mut field, joining),
-            Some(cluster)
-        );
-        assert_eq!(field.node(joining).unwrap().state, NodeState::Active);
-        assert!(system.registry().is_cluster_member(joining));
     }
 
     #[test]

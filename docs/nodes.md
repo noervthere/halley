@@ -163,14 +163,20 @@ grab cancels the dwell and closes the hover UI. A grab keeps labels and
 previews suppressed until later pointer motion deliberately targets a node
 again.
 
+## Active cluster drop admission
+
+While a cluster workspace is open on an output, Mod+left-drag an ordinary Field
+window or a collapsed node into that output's work area and release it to add it
+to the open cluster. The drop may cross outputs. A collapsed node is restored
+before admission, then enters the cluster's current tiling or stacking layout
+using the same insertion and reflow behavior as an ordinary window.
+
 ## Cluster bloom joining
 
 Rest the pointer on a collapsed cluster core to open its member bloom. While
 the bloom is open, its core is temporarily fixed in place. Mod+left-drag a
-normal Field window or collapsed node against the core: it docks at the same
-non-overlap distance used by `field.gap` instead of pushing the core away. A
-collapsed node is restored automatically when the completed drop admits it to
-the cluster.
+normal Field window against the core: the window docks at the same non-overlap
+distance used by `field.gap` instead of pushing the core away.
 
 Hold the window there for `clusters.join-dwell-ms`. When the dwell completes,
 the core's original border changes to the focused colour and thickens to five

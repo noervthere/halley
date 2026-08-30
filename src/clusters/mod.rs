@@ -2062,6 +2062,51 @@ mod tests {
     }
 
     #[test]
+    fn restored_collapsed_node_joins_an_open_workspace_in_both_layouts() {
+        for layout in [
+            ClusterWorkspaceLayoutKind::Tiling,
+            ClusterWorkspaceLayoutKind::Stacking,
+        ] {
+            let (mut field, mut system, cluster, _) = active_test_cluster(2, layout);
+            let work_area = Rectangle::new((0, 0).into(), (1_000, 700).into());
+            let joining = field.spawn_surface(
+                "joining",
+                Vec2 { x: 500.0, y: 350.0 },
+                Vec2 { x: 400.0, y: 300.0 },
+            );
+            assert!(field.set_state(joining, halley_core::field::NodeState::Node));
+
+            // Session restores the real surface before active-workspace admission.
+            assert!(field.touch(joining, 2_000));
+            assert!(system.join_active_member_front(
+                &mut field,
+                "DP-1",
+                joining,
+                work_area,
+                Rectangle::new((300, 200).into(), (400, 300).into()),
+                Duration::from_secs(2),
+            ));
+
+            assert_eq!(
+                field.node(joining).unwrap().state,
+                halley_core::field::NodeState::Active
+            );
+            assert_eq!(system.cluster_for_member(joining), Some(cluster));
+            assert_eq!(system.first_member(cluster), Some(joining));
+            assert!(matches!(
+                system.window_presentation(
+                    joining,
+                    "DP-1",
+                    work_area,
+                    None,
+                    Duration::from_secs(2)
+                ),
+                WindowPresentation::Workspace { .. }
+            ));
+        }
+    }
+
+    #[test]
     fn field_window_stays_visible_while_dragged_over_an_active_workspace() {
         let (mut field, mut system, _cluster, _members) =
             active_test_cluster(2, ClusterWorkspaceLayoutKind::Stacking);
