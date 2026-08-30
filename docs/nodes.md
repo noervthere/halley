@@ -167,8 +167,10 @@ again.
 
 Rest the pointer on a collapsed cluster core to open its member bloom. While
 the bloom is open, its core is temporarily fixed in place. Mod+left-drag a
-normal Field window against the core: the window docks at the same non-overlap
-distance used by `field.gap` instead of pushing the core away.
+normal Field window or collapsed node against the core: it docks at the same
+non-overlap distance used by `field.gap` instead of pushing the core away. A
+collapsed node is restored automatically when the completed drop admits it to
+the cluster.
 
 Hold the window there for `clusters.join-dwell-ms`. When the dwell completes,
 the core's original border changes to the focused colour and thickens to five

@@ -1273,6 +1273,14 @@ where
         && let Some((delta, delta_unaccel, time, _)) = motion
     {
         session.pointer.set_position(position_before);
+        crate::session::trace::surface_sampled_event(
+            session,
+            surface,
+            "locked-relative-motion",
+            format_args!(
+                "delta={delta:?} delta_unaccel={delta_unaccel:?} anchor={position_before:?} origin={origin:?}"
+            ),
+        );
         pointer_handle.relative_motion(
             session,
             Some((surface.clone(), *origin)),
@@ -1701,10 +1709,27 @@ where
                 let now = crate::frame_clock::monotonic_now();
                 let sampled =
                     sampled_drag_velocity(previous, desired, previous_velocity, last_update, now);
+                let camera_scale = crate::presentation::camera::scale(camera).max(0.05);
                 crate::nodes::set_collapsed_output(session, id, &output);
                 if !session.nodes.physics.enabled {
                     let _ = crate::nodes::move_grabbed_body_rigid(session, id, desired);
                 }
+                let marker_radius = crate::nodes::NODE_DIAMETER_PX * 0.5 / camera_scale;
+                let join_candidate_changed = session.clusters.update_join_candidate(
+                    &session.nodes.field,
+                    &output.name(),
+                    id,
+                    crate::clusters::JoinContact {
+                        center: desired,
+                        member_left: marker_radius,
+                        member_right: marker_radius,
+                        member_top: marker_radius,
+                        member_bottom: marker_radius,
+                        core_radius: crate::clusters::CORE_DIAMETER_PX * 0.5 / camera_scale,
+                        gap: session.nodes.landmarks.gap_px / camera_scale,
+                    },
+                    now,
+                );
                 if let crate::input::grab::Grab::MoveNode {
                     last_world,
                     last_update,
@@ -1716,7 +1741,7 @@ where
                     *last_update = now;
                     *velocity = sampled;
                 }
-                if session.nodes.physics.enabled {
+                if session.nodes.physics.enabled || join_candidate_changed {
                     session.request_redraw();
                 }
             }
@@ -2049,11 +2074,24 @@ where
                             crate::frame_clock::monotonic_now(),
                         );
                     }
+                    let join_ready = session
+                        .nodes
+                        .record(id)
+                        .is_some_and(|record| session.clusters.join_ready_for(id, &record.output));
                     session.interactions.grab = crate::input::grab::Grab::None;
                     session
                         .cursor
                         .set_override(crate::cursor::OverrideSource::Grab, None);
                     session.nodes.clear_direct_motion(id);
+                    let joined = join_ready
+                        && crate::nodes::restore(session, id, serial)
+                        && session
+                            .clusters
+                            .commit_join_candidate(&mut session.nodes.field, id)
+                            .is_some();
+                    if !joined {
+                        session.clusters.cancel_join_candidate();
+                    }
                     session.request_redraw();
                     super::pointer::finish_frame(session, &pointer_handle);
                     return;

@@ -203,21 +203,46 @@ pub(crate) fn surface_event<D: SessionDriver>(
     if !session.window_trace.enabled() {
         return;
     }
+    let x11 = x11_for_surface_or_constraint_proxy(session, surface);
+    if let Some(x11) = x11 {
+        x11_event(session, &x11, event, details);
+    }
+}
+
+pub(crate) fn surface_sampled_event<D: SessionDriver>(
+    session: &mut Session<D>,
+    surface: &WlSurface,
+    event: &'static str,
+    details: fmt::Arguments<'_>,
+) {
+    if !session.window_trace.enabled() {
+        return;
+    }
+    let x11 = x11_for_surface_or_constraint_proxy(session, surface);
+    if let Some(x11) = x11 {
+        x11_sampled_event(session, &x11, event, details);
+    }
+}
+
+fn x11_for_surface_or_constraint_proxy<D: SessionDriver>(
+    session: &Session<D>,
+    surface: &WlSurface,
+) -> Option<X11Surface> {
     let root = crate::wayland::compositor::root_surface(surface);
-    let x11 = session
+    let authority =
+        crate::xwayland::pointer_constraint_proxy_authority(&session.wayland.space, surface);
+    session
         .wayland
         .space
         .elements()
         .find(|window| {
-            window
-                .wl_surface()
-                .is_some_and(|candidate| candidate.as_ref() == &root)
+            window.wl_surface().is_some_and(|candidate| {
+                let candidate = crate::wayland::compositor::root_surface(candidate.as_ref());
+                candidate == root || authority.as_ref() == Some(&candidate)
+            })
         })
         .and_then(Window::x11_surface)
-        .cloned();
-    if let Some(x11) = x11 {
-        x11_event(session, &x11, event, details);
-    }
+        .cloned()
 }
 
 pub(crate) fn snapshot<D: SessionDriver>(session: &mut Session<D>) {

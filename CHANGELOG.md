@@ -7,8 +7,12 @@ All notable changes to this project will be documented in this file.
 ### Changed
 - Make Apogee and Alt-Tab use the same smooth camera path to center the selected
   window and place the pointer at the center of its output.
+- Attribute sampled locked-pointer motion to the owning X11 window even when an
+  XWayland constraint proxy surface delivered it, improving input trace detail.
 
 ### Fixed
+- Restore collapsed Field nodes automatically when a completed bloom drop adds
+  them to a cluster, so they enter its tiling or stacking layout immediately.
 - Keep automatic node decay from stalling input across outputs by reusing
   current GPU preview snapshots, avoiding the second full-window capture pass
   for client-decorated windows, and collapsing only one overdue node per timer
