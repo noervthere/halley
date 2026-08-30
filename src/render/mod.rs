@@ -11,6 +11,7 @@ pub mod rescale;
 pub mod resize;
 pub mod resources;
 pub mod scene;
+mod selection_check;
 pub mod text;
 pub mod titlebar;
 pub mod window_decoration;
@@ -235,6 +236,7 @@ pub struct OverlayContext<'a> {
     pub bearings: &'a crate::shell::bearings::BearingsState,
     pub focus_cycle: &'a crate::shell::focus_cycle::FocusCycleState,
     pub apogee: &'a crate::shell::apogee::ApogeeState,
+    pub cluster_composer: &'a crate::shell::cluster_composer::ClusterComposerState,
     pub apogee_config: halley_config::Apogee,
     pub overlays: &'a crate::shell::overlay::OverlayManager,
     pub overlay_config: &'a halley_config::Overlays,

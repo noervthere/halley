@@ -24,6 +24,8 @@ enum KeyboardOutcome {
     ClusterDelete,
     ClusterMoveLeft,
     ClusterMoveRight,
+    ClusterComposerToggle,
+    ClusterComposerMove(crate::shell::cluster_composer::Direction),
     ClusterCharacter(char),
     ClusterIntercept,
 }
@@ -123,18 +125,49 @@ pub(super) fn handle<D, B>(
                         FilterResult::Forward
                     };
                 }
+                if data.shell.cluster_composer.is_active()
+                    && !data.shell.cluster_composer.accepts_input()
+                {
+                    return FilterResult::Intercept(KeyboardOutcome::ClusterIntercept);
+                }
                 let sym = handle.modified_sym();
-                let outcome = match sym {
-                    Keysym::Escape => KeyboardOutcome::ClusterCancel,
-                    Keysym::Return | Keysym::KP_Enter => KeyboardOutcome::ClusterAccept,
-                    Keysym::BackSpace => KeyboardOutcome::ClusterBackspace,
-                    Keysym::Delete => KeyboardOutcome::ClusterDelete,
-                    Keysym::Left => KeyboardOutcome::ClusterMoveLeft,
-                    Keysym::Right => KeyboardOutcome::ClusterMoveRight,
-                    _ => sym
-                        .key_char()
-                        .map(KeyboardOutcome::ClusterCharacter)
-                        .unwrap_or(KeyboardOutcome::ClusterIntercept),
+                let composer_selection = data.shell.cluster_composer.accepts_input()
+                    && data
+                        .clusters
+                        .creation()
+                        .is_some_and(|creation| !creation.naming);
+                let outcome = if composer_selection {
+                    match sym {
+                        Keysym::Escape => KeyboardOutcome::ClusterCancel,
+                        Keysym::Return | Keysym::KP_Enter => KeyboardOutcome::ClusterAccept,
+                        Keysym::space => KeyboardOutcome::ClusterComposerToggle,
+                        Keysym::Left => KeyboardOutcome::ClusterComposerMove(
+                            crate::shell::cluster_composer::Direction::Left,
+                        ),
+                        Keysym::Right => KeyboardOutcome::ClusterComposerMove(
+                            crate::shell::cluster_composer::Direction::Right,
+                        ),
+                        Keysym::Up => KeyboardOutcome::ClusterComposerMove(
+                            crate::shell::cluster_composer::Direction::Up,
+                        ),
+                        Keysym::Down => KeyboardOutcome::ClusterComposerMove(
+                            crate::shell::cluster_composer::Direction::Down,
+                        ),
+                        _ => KeyboardOutcome::ClusterIntercept,
+                    }
+                } else {
+                    match sym {
+                        Keysym::Escape => KeyboardOutcome::ClusterCancel,
+                        Keysym::Return | Keysym::KP_Enter => KeyboardOutcome::ClusterAccept,
+                        Keysym::BackSpace => KeyboardOutcome::ClusterBackspace,
+                        Keysym::Delete => KeyboardOutcome::ClusterDelete,
+                        Keysym::Left => KeyboardOutcome::ClusterMoveLeft,
+                        Keysym::Right => KeyboardOutcome::ClusterMoveRight,
+                        _ => sym
+                            .key_char()
+                            .map(KeyboardOutcome::ClusterCharacter)
+                            .unwrap_or(KeyboardOutcome::ClusterIntercept),
+                    }
                 };
                 return FilterResult::Intercept(outcome);
             }
@@ -324,7 +357,21 @@ pub(super) fn handle<D, B>(
         Some(KeyboardOutcome::ClusterCancel) => {
             session.interactions.suppressed_keys.suppress(keycode);
             let draft_id = session.clusters.creation_draft_id();
-            if session.clusters.back_or_cancel_creation() {
+            let naming = session
+                .clusters
+                .creation()
+                .is_some_and(|creation| creation.naming);
+            if session.shell.cluster_composer.is_active()
+                && !session.shell.cluster_composer.accepts_input()
+            {
+                // Commit, endpoint hold, and reveal are atomic modal phases.
+            } else if session.shell.cluster_composer.accepts_input() && !naming {
+                session
+                    .shell
+                    .cluster_composer
+                    .close(session.settings.apogee, crate::frame_clock::monotonic_now());
+                session.request_redraw();
+            } else if session.clusters.back_or_cancel_creation() {
                 session
                     .cursor
                     .set_override(crate::cursor::OverrideSource::Modal, None);
@@ -348,7 +395,11 @@ pub(super) fn handle<D, B>(
                 .creation()
                 .is_some_and(|creation| creation.naming)
             {
-                finish_cluster_creation(session);
+                if session.shell.cluster_composer.is_active() {
+                    begin_cluster_commit(session);
+                } else {
+                    finish_cluster_creation(session);
+                }
             } else if !session.clusters.begin_naming()
                 && let Some(output) = session
                     .clusters
@@ -389,6 +440,27 @@ pub(super) fn handle<D, B>(
                     session.settings.input.repeat_delay,
                     session.settings.input.repeat_rate,
                 );
+                session.request_redraw();
+            }
+        }
+        Some(KeyboardOutcome::ClusterComposerToggle) => {
+            session.interactions.suppressed_keys.suppress(keycode);
+            if let (Some(id), Some(output)) = (
+                session.shell.cluster_composer.focused(),
+                session
+                    .shell
+                    .cluster_composer
+                    .target_output()
+                    .map(str::to_string),
+            ) && session.clusters.toggle_creation_member(id, &output)
+            {
+                session.request_redraw();
+            }
+        }
+        Some(KeyboardOutcome::ClusterComposerMove(direction)) => {
+            session.interactions.suppressed_keys.suppress(keycode);
+            if session.shell.cluster_composer.move_focus(direction) {
+                session.cursor_policy.keyboard_navigation();
                 session.request_redraw();
             }
         }

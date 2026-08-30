@@ -630,13 +630,7 @@ fn run_blur(
                     up,
                 )?;
             }
-            render_pass(
-                &textures.chain[0],
-                level_size(size, 0),
-                result,
-                size,
-                up,
-            )?;
+            render_pass(&textures.chain[0], level_size(size, 0), result, size, up)?;
             Ok(())
         })();
         gl.DeleteFramebuffers(1, &fbo);

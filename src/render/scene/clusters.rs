@@ -14,6 +14,29 @@ fn core_visual_flags(focused: bool, hovered: bool, join_ready: bool) -> CoreVisu
     }
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct CollapsedCoreVisuals {
+    pub(super) ring: (f32, f32, f32),
+    pub(super) fill: (f32, f32, f32),
+    pub(super) icon_colors: [[u8; 4]; 2],
+}
+
+pub(super) fn collapsed_core_visuals(
+    decorations: &halley_config::Decorations,
+    nodes: halley_config::Nodes,
+    highlighted: bool,
+) -> CollapsedCoreVisuals {
+    let ring = node_ring_color(decorations, highlighted);
+    CollapsedCoreVisuals {
+        ring,
+        fill: node_fill_color(nodes, ring),
+        icon_colors: [
+            rgba(decorations.border_color_unfocused),
+            rgba(decorations.border_color_focused),
+        ],
+    }
+}
+
 pub(super) struct ClusterElementContext<'a> {
     pub(super) output: &'a Output,
     pub(super) output_geometry: Rectangle<i32, Logical>,
@@ -63,10 +86,6 @@ pub(super) fn cluster_elements(
     let focused_node = nodes.focused();
     let output_name = output.name();
     let join_readiness = clusters.join_readiness_on_output(&output_name);
-    let icon_colors = [
-        rgba(decorations.border_color_unfocused),
-        rgba(decorations.border_color_focused),
-    ];
     let mut groups = Vec::new();
     for (_, id, metadata) in clusters.clusters_for_output(&output.name()) {
         let focused = focused_node.is_some_and(|node| {
@@ -92,14 +111,15 @@ pub(super) fn cluster_elements(
             (local.x - side / 2, local.y - side / 2).into(),
             (side, side).into(),
         );
-        let ring = node_ring_color(decorations, highlighted);
+        let visual = collapsed_core_visuals(decorations, nodes.config, highlighted);
+        let ring = visual.ring;
         let core_border = if visual_flags.join_border_ready {
             let focused = decorations.border_color_focused;
             (focused.r, focused.g, focused.b)
         } else {
             ring
         };
-        let fill = node_fill_color(nodes.config, ring);
+        let fill = visual.fill;
         let mut elements = Vec::new();
         if clusters
             .registry()
@@ -158,7 +178,7 @@ pub(super) fn cluster_elements(
                     (icon_side, icon_side).into(),
                 ),
                 highlighted,
-                icon_colors,
+                visual.icon_colors,
                 nodes.config.opacity,
             )?));
         }

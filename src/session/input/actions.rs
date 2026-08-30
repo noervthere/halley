@@ -289,10 +289,42 @@ pub(crate) fn dispatch<D: SessionDriver>(
             }
         }
         super::super::SessionControl::ClusterMode => {
-            if let Some(output) = action_output
-                && session.clusters.begin_creation(output)
-            {
-                session.request_redraw();
+            if let Some(output) = action_output {
+                let conflicts = session.capture.is_active()
+                    || session.shell.apogee.is_active()
+                    || session.shell.focus_cycle.is_open()
+                    || session.shell.cluster_composer.is_active()
+                    || !matches!(session.interactions.grab, crate::input::grab::Grab::None)
+                    || session.clusters.active_on(&output).is_some();
+                if !conflicts {
+                    session.nodes.sync_from_space(&session.wayland.space);
+                    let now = crate::frame_clock::monotonic_now();
+                    if session.clusters.begin_creation(output.clone()) {
+                        if session.shell.cluster_composer.open(
+                            &session.wayland.space,
+                            &session.nodes,
+                            &session.clusters,
+                            &output,
+                            session.settings.apogee,
+                            now,
+                        ) {
+                            session.cursor.set_override(
+                                crate::cursor::OverrideSource::Modal,
+                                Some(smithay::input::pointer::CursorIcon::Default),
+                            );
+                            session.request_redraw();
+                        } else {
+                            session.clusters.cancel_creation();
+                            session.shell.overlays.show_error(
+                                output,
+                                "No windows available\nOpen or restore a window first",
+                                3_000,
+                                now,
+                            );
+                            session.request_redraw();
+                        }
+                    }
+                }
             }
         }
         super::super::SessionControl::ClusterLayoutCycle => {

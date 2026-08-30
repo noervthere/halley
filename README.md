@@ -92,10 +92,14 @@ because an arbitrary global window count was exceeded.
 
 Clusters are deliberate workspaces assembled from ordinary windows.
 
-Enter cluster mode, select the windows you want, and confirm the draft. The
-result becomes a core on the Field. Hovering a core can bloom member previews
-around it; opening it enters a monitor-local workspace while leaving the Field
-geometry intact behind it.
+Enter cluster mode to open the Cluster Composer on the selected monitor.
+Eligible windows and collapsed nodes animate into a stable, non-overlapping
+mosaic. Use the arrow keys or pointer to focus a card, `Space` or left click to
+toggle membership, `Enter` to name the draft, and `Escape` to step back or
+cancel. Selected cards keep a persistent tint and checkmark distinct from the
+focus frame. Confirming creates a core on the Field; hovering a core can bloom
+member previews around it, and opening it enters a monitor-local workspace
+while leaving the Field geometry intact behind it.
 
 Two layouts are available:
 

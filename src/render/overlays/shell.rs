@@ -55,7 +55,6 @@ pub struct OverlayVisuals {
     pub border_px: f32,
     pub radius: f32,
 }
-
 impl OverlayVisuals {
     pub(crate) fn label_chrome(mut self) -> Self {
         self.border_px = 0.0;

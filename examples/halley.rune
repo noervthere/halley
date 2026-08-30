@@ -565,8 +565,9 @@ debug:
 end
 
 # Clusters group related windows behind one circular desktop icon. Press the
-# cluster-mode binding, click each window you want to include, press Enter,
-# type a name, then press Enter again. Escape cancels at either step.
+# cluster-mode binding to open a non-overlapping composer. Use arrows or the
+# pointer to focus, Space or click to select, Enter to name, and Escape to back
+# out or cancel.
 clusters:
   # New clusters open in "stacking" (overlapping cards) or "tiling" (one
   # master window beside a vertical stack). Mod+L changes the active cluster.

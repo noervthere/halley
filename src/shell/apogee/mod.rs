@@ -6,8 +6,6 @@ use halley_core::field::NodeId;
 use smithay::desktop::{Space, Window};
 use smithay::utils::{Logical, Point, Rectangle};
 
-mod layout;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Direction {
     Left,
@@ -422,7 +420,7 @@ fn layout_output(
                 *id,
                 *source_stack_index,
                 *source_stack_order,
-                layout::Item {
+                super::mosaic::Item {
                     x: node.pos.x,
                     y: node.pos.y,
                     aspect: (width / height).clamp(0.25, 4.5),
@@ -436,7 +434,7 @@ fn layout_output(
     // present. Keeping the same band is part of Apogee's recognizable layout.
     let upper_band = (bounds.size.h.max(1) as f32 * 0.215).clamp(140.0, 236.0);
     let mosaic_height = (bounds.size.h as f32 - upper_band).round().max(64.0) as i32;
-    let slots = layout::mosaic(
+    let slots = super::mosaic::mosaic(
         &entries
             .iter()
             .map(|(_, _, _, item)| *item)

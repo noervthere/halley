@@ -642,9 +642,7 @@ mod tests {
         let windowed = Size::<i32, Physical>::from((1155, 910));
         let maximized = Size::<i32, Physical>::from((1920, 1200));
 
-        assert!(incoming_paint_is_ready(
-            windowed, 0, maximized, false, 0
-        ));
+        assert!(incoming_paint_is_ready(windowed, 0, maximized, false, 0));
     }
 
     #[test]

@@ -1,7 +1,7 @@
 use std::cmp::Ordering;
 
 #[derive(Clone, Copy, Debug)]
-pub(super) struct Item {
+pub(crate) struct Item {
     pub x: f32,
     pub y: f32,
     pub aspect: f32,
@@ -10,7 +10,7 @@ pub(super) struct Item {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
-pub(super) struct Rect {
+pub(crate) struct Rect {
     pub cx: f32,
     pub cy: f32,
     pub w: f32,
@@ -20,7 +20,7 @@ pub(super) struct Rect {
 /// The original Halley Apogee mosaic packer. Items retain field-space reading
 /// order while larger/aspect-heavy windows are placed first into a MaxRects
 /// atlas, allowing small previews to fill cuts without overlapping.
-pub(super) fn mosaic(
+pub(crate) fn mosaic(
     items: &[Item],
     screen_w: i32,
     screen_h: i32,

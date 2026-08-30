@@ -17,6 +17,9 @@ use smithay::utils::{Buffer, Logical, Physical, Point, Rectangle, Scale, Transfo
 
 const TEXT_CACHE_TTL: Duration = Duration::from_secs(30);
 const HINTING_MAX_SIZE_PX: u16 = 16;
+// Keep antialiased pixels off the texture boundary. Some GLES sampling paths
+// otherwise lose the final column of the trailing glyph.
+const RASTER_TRAILING_PAD_PX: i32 = 2;
 
 struct TextTexture {
     texture: GlesTexture,
@@ -374,8 +377,22 @@ fn raster_text(
     for run in buffer.layout_runs() {
         width = width.max(run.line_w.ceil() as i32);
         height = height.max((run.line_top + run.line_height).ceil() as i32);
+        for glyph in run.glyphs {
+            let physical = glyph.physical((0.0, run.line_y), 1.0);
+            if let Some(image) = swash_cache
+                .get_image(font_system, physical.cache_key)
+                .as_ref()
+            {
+                let glyph_width = i32::try_from(image.placement.width).unwrap_or(i32::MAX);
+                let right = physical
+                    .x
+                    .saturating_add(image.placement.left)
+                    .saturating_add(glyph_width);
+                width = width.max(right);
+            }
+        }
     }
-    width = width.max(1);
+    width = width.max(1).saturating_add(RASTER_TRAILING_PAD_PX);
     height = height.max((font_size * 1.25).ceil() as i32).max(1);
 
     let mut pixels = vec![0_u8; width as usize * height as usize * 4];
@@ -632,6 +649,35 @@ mod tests {
                 pixel[0] <= pixel[3] && pixel[1] <= pixel[3] && pixel[2] <= pixel[3]
             })
         );
+    }
+
+    #[test]
+    fn raster_keeps_trailing_glyphs_off_the_texture_boundary() {
+        let mut fonts = FontSystem::new();
+        let mut swash = SwashCache::new();
+        for text in [
+            "Build a cluster",
+            "1 selected",
+            "Space select  ·  Enter name  ·  Esc cancel",
+        ] {
+            let (pixels, (width, height)) = raster_text(
+                &mut fonts,
+                &mut swash,
+                text,
+                11,
+                [255, 255, 255],
+                "monospace",
+            )
+            .unwrap();
+            let right = (0..width)
+                .rev()
+                .find(|x| (0..height).any(|y| pixels[((y * width + x) * 4 + 3) as usize] > 0))
+                .expect("raster contains visible pixels");
+            assert!(
+                right < width - 1,
+                "{text:?} touched the trailing texture boundary: width={width} right={right}"
+            );
+        }
     }
 
     #[test]

@@ -5,12 +5,20 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Changed
+- Replace loose in-Field cluster selection with a monitor-local Cluster Composer
+  that presents eligible windows and collapsed nodes in a stable,
+  non-overlapping mosaic, supports pointer and directional keyboard selection,
+  distinguishes focus from persistent membership, and animates confirmed
+  members continuously into the exact future cluster core while unselected
+  windows return to the Field and the restored Field is revealed behind it.
 - Make Apogee and Alt-Tab use the same smooth camera path to center the selected
   window and place the pointer at the center of its output.
 - Attribute sampled locked-pointer motion to the owning X11 window even when an
   XWayland constraint proxy surface delivered it, improving input trace detail.
 
 ### Fixed
+- Keep the newly created cluster core continuously visible through the restored
+  Field reveal, preventing its three-circle icon from appearing a frame late.
 - Restore collapsed Field nodes dropped into an open cluster workspace, including
   across outputs, so they enter its tiling or stacking layout immediately.
 - Keep automatic node decay from stalling input across outputs by reusing
@@ -39,6 +47,8 @@ All notable changes to this project will be documented in this file.
   with the themed arrow, allowing browser video controls to hide the pointer
   independently of Halley's global inactivity timeout.
 - Keep the titlebar pin from shifting an otherwise centered window title.
+- Size compositor-owned text textures from the rasterized glyph bounds so the
+  final glyph remains visible, including in Cluster Composer instructions.
 
 ## [v0.6.1] - 2026-08-28
 

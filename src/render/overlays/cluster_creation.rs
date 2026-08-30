@@ -13,18 +13,13 @@ use crate::render::text::UiTextRenderer;
 
 use super::shell::{OverlayRgb, OverlayVisuals, card_element, label_card_element, resolve_visuals};
 
-const BANNER_PAD_X: i32 = 14;
-const BANNER_PAD_Y: i32 = 10;
 const BANNER_GAP: i32 = 6;
-const BANNER_EDGE_PAD: i32 = 18;
 const ACTION_ROW_GAP_Y: i32 = 10;
 const ACTION_ITEM_GAP: i32 = 18;
 const ACTION_LABEL_GAP: i32 = 8;
 const ACTION_KEY_PAD_X: i32 = 8;
 const ACTION_KEY_PAD_Y: i32 = 6;
 const ACTION_KEY_MIN_W: i32 = 48;
-const SELECT_MARKER_PAD_X: i32 = 8;
-const SELECT_MARKER_PAD_Y: i32 = 4;
 const CLUSTER_DIALOG_PAD_X: i32 = 18;
 const CLUSTER_DIALOG_PAD_Y: i32 = 16;
 const CLUSTER_DIALOG_INPUT_PAD_X: i32 = 12;
@@ -93,40 +88,28 @@ pub(crate) fn elements(
     output: &Output,
     output_geometry: Rectangle<i32, Logical>,
     creation: Option<&CreationState>,
-    nodes: &crate::nodes::NodesState,
-    cameras: &crate::presentation::camera::OutputCameras,
     pointer_position: (f64, f64),
+    alpha: f32,
     config: &halley_config::Overlays,
     decorations: &halley_config::Decorations,
     node_renderer: &mut NodeRenderer,
     ui_text: &mut UiTextRenderer,
 ) -> Result<Vec<SceneElement>, Box<dyn Error>> {
     let output_name = output.name();
-    let Some(creation) = creation.filter(|creation| creation.output == output_name) else {
+    if alpha <= 0.0 {
+        state.naming_layouts.remove(&output_name);
+        state.confirm_hover.remove(&output_name);
+        return Ok(Vec::new());
+    }
+    let Some(creation) =
+        creation.filter(|creation| creation.output == output_name && creation.naming)
+    else {
         state.naming_layouts.remove(&output_name);
         state.confirm_hover.remove(&output_name);
         return Ok(Vec::new());
     };
     let visuals = resolve_visuals(config, decorations);
     let screen = Rectangle::<i32, Physical>::from_size(output_geometry.size.to_physical(1));
-    let mut banner = banner_elements(renderer, creation.naming, visuals, node_renderer, ui_text)?;
-    let markers = selection_marker_elements(
-        renderer,
-        creation,
-        nodes,
-        cameras,
-        output,
-        output_geometry,
-        visuals,
-        node_renderer,
-        ui_text,
-    )?;
-    if !creation.naming {
-        state.naming_layouts.remove(&output_name);
-        state.confirm_hover.remove(&output_name);
-        banner.extend(markers);
-        return Ok(banner);
-    }
 
     let (mut dialog, layout) = naming_dialog_elements(
         renderer,
@@ -136,6 +119,7 @@ pub(crate) fn elements(
         screen,
         creation,
         pointer_position,
+        alpha,
         visuals,
         node_renderer,
         ui_text,
@@ -144,10 +128,8 @@ pub(crate) fn elements(
     dialog.push(SceneElement::Border(crate::render::solid_color_element(
         node_renderer.active_slot_id(crate::render::node::NodeSlot::ClusterCreationBackdrop),
         screen,
-        Color32F::new(0.0, 0.0, 0.0, 0.14),
+        Color32F::new(0.0, 0.0, 0.0, 0.14 * alpha),
     )));
-    dialog.extend(banner);
-    dialog.extend(markers);
     Ok(dialog)
 }
 
@@ -178,147 +160,6 @@ fn push_text(
     Ok(())
 }
 
-fn banner_elements(
-    renderer: &mut GlesRenderer,
-    naming: bool,
-    visuals: OverlayVisuals,
-    node_renderer: &mut NodeRenderer,
-    ui_text: &mut UiTextRenderer,
-) -> Result<Vec<SceneElement>, Box<dyn Error>> {
-    let title = "Cluster mode";
-    let subtitle = if naming {
-        "Name new cluster"
-    } else {
-        "Select windows"
-    };
-    let actions = if naming {
-        [("Enter", "confirm"), ("Esc", "back")]
-    } else {
-        [("Enter", "name cluster"), ("Esc", "cancel")]
-    };
-    let title_size = text_size(renderer, ui_text, title, visuals.text.bytes())?;
-    let subtitle_size = text_size(renderer, ui_text, subtitle, visuals.subtext.bytes())?;
-    let action_size = action_row_size(renderer, ui_text, &actions, visuals)?;
-    let width = title_size.w.max(subtitle_size.w).max(action_size.w) + BANNER_PAD_X * 2;
-    let height = BANNER_PAD_Y * 2
-        + title_size.h
-        + BANNER_GAP
-        + subtitle_size.h
-        + ACTION_ROW_GAP_Y
-        + action_size.h;
-    let card = Rectangle::new(
-        (BANNER_EDGE_PAD, BANNER_EDGE_PAD).into(),
-        (width.max(80), height.max(30)).into(),
-    );
-    let mut elements = Vec::new();
-    let mut y = card.loc.y + BANNER_PAD_Y;
-    push_text(
-        renderer,
-        ui_text,
-        &mut elements,
-        (card.loc.x + BANNER_PAD_X, y).into(),
-        title,
-        visuals.text.bytes(),
-        1.0,
-    )?;
-    y += title_size.h + BANNER_GAP;
-    push_text(
-        renderer,
-        ui_text,
-        &mut elements,
-        (card.loc.x + BANNER_PAD_X, y).into(),
-        subtitle,
-        visuals.subtext.bytes(),
-        0.96,
-    )?;
-    y += subtitle_size.h + ACTION_ROW_GAP_Y;
-    push_action_row(
-        renderer,
-        ui_text,
-        node_renderer,
-        &mut elements,
-        (card.loc.x + BANNER_PAD_X, y).into(),
-        &actions,
-        visuals,
-    )?;
-    elements.push(SceneElement::NodeLabel(card_element(
-        renderer,
-        node_renderer,
-        card,
-        OverlayVisuals {
-            radius: 18.0,
-            ..visuals
-        },
-        visuals.fill,
-        0.97,
-    )?));
-    Ok(elements)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn selection_marker_elements(
-    renderer: &mut GlesRenderer,
-    creation: &CreationState,
-    nodes: &crate::nodes::NodesState,
-    cameras: &crate::presentation::camera::OutputCameras,
-    output: &Output,
-    output_geometry: Rectangle<i32, Logical>,
-    visuals: OverlayVisuals,
-    node_renderer: &mut NodeRenderer,
-    ui_text: &mut UiTextRenderer,
-) -> Result<Vec<SceneElement>, Box<dyn Error>> {
-    let Some(camera) = cameras.get(&output.name()) else {
-        return Ok(Vec::new());
-    };
-    let label = "SEL";
-    let text_size = text_size(renderer, ui_text, label, visuals.text.bytes())?;
-    let mut elements = Vec::new();
-    for id in &creation.selected {
-        let Some(node) = nodes.field.node(*id) else {
-            continue;
-        };
-        let center = crate::nodes::screen_from_world(node.pos, camera, output_geometry)
-            - output_geometry.loc;
-        let card = Rectangle::<i32, Physical>::new(
-            (
-                center.x - (text_size.w + SELECT_MARKER_PAD_X * 2) / 2,
-                center.y - (text_size.h + SELECT_MARKER_PAD_Y * 2) / 2,
-            )
-                .into(),
-            (
-                text_size.w + SELECT_MARKER_PAD_X * 2,
-                text_size.h + SELECT_MARKER_PAD_Y * 2,
-            )
-                .into(),
-        );
-        push_text(
-            renderer,
-            ui_text,
-            &mut elements,
-            (
-                card.loc.x + (card.size.w - text_size.w) / 2,
-                card.loc.y + (card.size.h - text_size.h) / 2,
-            )
-                .into(),
-            label,
-            visuals.text.bytes(),
-            1.0,
-        )?;
-        elements.push(SceneElement::NodeLabel(label_card_element(
-            renderer,
-            node_renderer,
-            card,
-            OverlayVisuals {
-                radius: 10.0,
-                ..visuals
-            },
-            visuals.key_fill,
-            0.96,
-        )?));
-    }
-    Ok(elements)
-}
-
 #[allow(clippy::too_many_arguments)]
 fn naming_dialog_elements(
     renderer: &mut GlesRenderer,
@@ -328,6 +169,7 @@ fn naming_dialog_elements(
     screen: Rectangle<i32, Physical>,
     creation: &CreationState,
     pointer_position: (f64, f64),
+    alpha: f32,
     visuals: OverlayVisuals,
     node_renderer: &mut NodeRenderer,
     ui_text: &mut UiTextRenderer,
@@ -445,7 +287,7 @@ fn naming_dialog_elements(
             .into(),
         title,
         visuals.text.bytes(),
-        1.0,
+        alpha,
     )?;
     push_text(
         renderer,
@@ -458,7 +300,7 @@ fn naming_dialog_elements(
             .into(),
         subtitle,
         visuals.subtext.bytes(),
-        0.98,
+        0.98 * alpha,
     )?;
     push_text(
         renderer,
@@ -467,7 +309,7 @@ fn naming_dialog_elements(
         (text_x, text_y).into(),
         &visible_text,
         visuals.text.bytes(),
-        1.0,
+        alpha,
     )?;
     if let Some((start, end)) = selection {
         let start_prefix = char_slice(&creation.name_buffer, visible_start, start);
@@ -483,7 +325,7 @@ fn naming_dialog_elements(
                 (selection_x, input.loc.y + 7).into(),
                 (selection_width, (input.size.h - 14).max(1)).into(),
             ),
-            rgb_color(accent_fill(visuals), 1.0),
+            rgb_color(accent_fill(visuals), alpha),
         )));
     } else {
         elements.push(SceneElement::Border(crate::render::solid_color_element(
@@ -492,7 +334,7 @@ fn naming_dialog_elements(
                 (caret_x, input.loc.y + 7).into(),
                 (2, (input.size.h - 14).max(1)).into(),
             ),
-            rgb_color(visuals.text, 0.94),
+            rgb_color(visuals.text, 0.94 * alpha),
         )));
     }
     elements.push(SceneElement::NodeLabel(card_element(
@@ -504,7 +346,7 @@ fn naming_dialog_elements(
             ..visuals
         },
         visuals.key_fill,
-        1.0,
+        alpha,
     )?));
     let confirm_fill = visuals.fill.mix(visuals.border, *hover);
     push_text(
@@ -518,7 +360,7 @@ fn naming_dialog_elements(
             .into(),
         "Confirm",
         visuals.text.bytes(),
-        1.0,
+        alpha,
     )?;
     elements.push(SceneElement::NodeLabel(card_element(
         renderer,
@@ -529,7 +371,7 @@ fn naming_dialog_elements(
             ..visuals
         },
         confirm_fill,
-        1.0,
+        alpha,
     )?));
     push_action_row(
         renderer,
@@ -543,6 +385,7 @@ fn naming_dialog_elements(
             .into(),
         &actions,
         visuals,
+        alpha,
     )?;
     elements.push(SceneElement::NodeLabel(card_element(
         renderer,
@@ -553,7 +396,7 @@ fn naming_dialog_elements(
             ..visuals
         },
         visuals.fill,
-        0.98,
+        0.98 * alpha,
     )?));
 
     Ok((
@@ -654,6 +497,7 @@ fn push_action_row(
     origin: Point<i32, Physical>,
     actions: &[(&str, &str)],
     visuals: OverlayVisuals,
+    alpha: f32,
 ) -> Result<(), Box<dyn Error>> {
     let row_size = action_row_size(renderer, ui_text, actions, visuals)?;
     let mut x = origin.x;
@@ -673,7 +517,7 @@ fn push_action_row(
                 .into(),
             key,
             visuals.text.bytes(),
-            1.0,
+            alpha,
         )?;
         elements.push(SceneElement::NodeLabel(label_card_element(
             renderer,
@@ -684,7 +528,7 @@ fn push_action_row(
                 ..visuals
             },
             visuals.key_fill,
-            0.96,
+            0.96 * alpha,
         )?));
         x += key_width + ACTION_LABEL_GAP;
         push_text(
@@ -694,7 +538,7 @@ fn push_action_row(
             (x, origin.y + (row_size.h - label_size.h) / 2).into(),
             label,
             visuals.subtext.bytes(),
-            1.0,
+            alpha,
         )?;
         x += label_size.w;
         if index + 1 < actions.len() {
@@ -728,6 +572,7 @@ mod tests {
             selection_focus_char: 2,
             scroll_char: 0,
             dragging_selection: true,
+            prepared: None,
             name_repeat: None,
             draft: None,
         };

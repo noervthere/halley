@@ -806,6 +806,19 @@ fn send_output_frame_callbacks(app: &mut TtyApp, output: &Output) {
             elapsed,
             frame_callback_sequence,
         );
+    } else if app
+        .shell
+        .cluster_composer
+        .target_output()
+        .is_some_and(|name| name == output.name())
+    {
+        crate::shell::cluster_composer::send_preview_frames(
+            &app.shell.cluster_composer,
+            &app.nodes,
+            output,
+            elapsed,
+            frame_callback_sequence,
+        );
     } else if app.shell.apogee.is_active() {
         // Direct surface previews are damage tracked by Smithay, so let the
         // output's own vblank cadence drive every visible client. Static
@@ -1115,6 +1128,12 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
         .bearings
         .tick(&output.name(), target_presentation_time);
     let focus_cycle_animating = app.shell.focus_cycle.tick(target_presentation_time);
+    let composer_animating = app
+        .shell
+        .cluster_composer
+        .target_output()
+        .is_some_and(|name| name == output.name())
+        && crate::shell::cluster_composer::tick_session(app, target_presentation_time);
     let apogee_animating = crate::shell::apogee::tick(app, target_presentation_time);
     let background_animating = app.background_animates_on_output(output, target_presentation_time);
     let overlay_animating = app.shell.overlays.animating(target_presentation_time);
@@ -1159,6 +1178,7 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
         || node_animating
         || bearings_animating
         || focus_cycle_animating
+        || composer_animating
         || apogee_animating
         || background_animating
         || overlay_animating
@@ -1220,6 +1240,7 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
                 bearings: &app.shell.bearings,
                 focus_cycle: &app.shell.focus_cycle,
                 apogee: &app.shell.apogee,
+                cluster_composer: &app.shell.cluster_composer,
                 apogee_config: app.settings.apogee,
                 overlays: &app.shell.overlays,
                 overlay_config: &app.settings.overlays,
@@ -1303,6 +1324,11 @@ fn auto_vrr_eligible(app: &TtyApp, output: &Output, now: Duration) -> bool {
     if app.session_lock.active()
         || app.capture.is_active()
         || app.settings.debug.overlay_fps
+        || app
+            .shell
+            .cluster_composer
+            .target_output()
+            .is_some_and(|name| name == output.name())
         || app.shell.apogee.is_active()
         || app.shell.focus_cycle.session().is_some()
         || app.shell.bearings.mix(&output.name()) > 0.002

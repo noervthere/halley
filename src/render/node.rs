@@ -28,9 +28,11 @@ pub enum NodeSlot {
     NodeLabel(u32),
     OverlayCard(u32),
     AppIcon(u32),
+    SelectionCheck(u32),
     SessionLockBackdrop,
     ClusterExclusiveBackdrop,
     ApogeeBackdrop,
+    ClusterComposerBackdrop,
     FocusCycleBackdrop,
     HoverPreviewFallback,
     ShellBackdrop,
@@ -208,6 +210,7 @@ struct Resources {
 pub struct NodeRenderer {
     resources: Option<Resources>,
     icons: super::app_icon::AppIconCache,
+    selection_check: super::selection_check::SelectionCheckRenderer,
     ids: super::ids::OutputElementIds<NodeSlot>,
     active_output: String,
     occurrences: HashMap<u8, u32>,
@@ -427,6 +430,7 @@ impl NodeRenderer {
             1 => NodeSlot::NodeLabel(index),
             2 => NodeSlot::OverlayCard(index),
             3 => NodeSlot::AppIcon(index),
+            4 => NodeSlot::SelectionCheck(index),
             _ => unreachable!("unknown node render slot kind"),
         };
         self.ids.for_output(&self.active_output).id(slot)
@@ -711,6 +715,27 @@ impl NodeRenderer {
 
     pub fn request_app_icon(&mut self, renderer: &mut GlesRenderer, app_id: &str) {
         self.icons.request(renderer, app_id);
+    }
+
+    pub fn selection_check_element(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        destination: Rectangle<i32, Physical>,
+        rgb: [u8; 3],
+        alpha: f32,
+    ) -> Option<NodeTextureElement> {
+        let id = self.dynamic_id(4);
+        let base = self
+            .selection_check
+            .element(renderer, id, destination, rgb, alpha)?;
+        let mut hasher = DefaultHasher::new();
+        destination.size.w.hash(&mut hasher);
+        destination.size.h.hash(&mut hasher);
+        rgb.hash(&mut hasher);
+        Some(NodeTextureElement {
+            base,
+            commit: finish_commit(hasher),
+        })
     }
 
     /// Advances this renderer's stable-identity generation for `output`, so

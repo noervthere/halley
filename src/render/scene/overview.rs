@@ -2,6 +2,8 @@ use super::apogee_clusters::{ApogeeCoreTileContext, apogee_core_tile_elements};
 use super::nodes::{ease_in_out_cubic, fit_ui_text};
 use super::*;
 
+pub(super) const CLUSTER_MEMBER_BORDER_PX: f32 = 7.0;
+
 pub(super) fn preview_content_radius(overlay_radius: f32) -> f32 {
     overlay_radius.max(0.0)
 }
@@ -256,36 +258,80 @@ pub(super) fn apogee_elements(
             )?);
             continue;
         }
-        let Some(record) = nodes.record(tile.id) else {
-            continue;
-        };
-        let target = Rectangle::<i32, Physical>::new(
-            (tile.target.loc - output_geometry.loc).to_physical(1),
-            tile.target.size.to_physical(1),
-        );
-        let source = if record.collapsed {
-            let Some(camera) = cameras.get(&output.name()) else {
-                continue;
-            };
-            let Some(node) = nodes.field.node(tile.id) else {
-                continue;
-            };
-            let center = crate::nodes::screen_from_world(node.pos, camera, output_geometry)
-                - output_geometry.loc;
-            Rectangle::new(
-                (
-                    center.x - crate::nodes::NODE_DIAMETER_PX.round() as i32 / 2,
-                    center.y - crate::nodes::NODE_DIAMETER_PX.round() as i32 / 2,
-                )
-                    .into(),
-                (
-                    crate::nodes::NODE_DIAMETER_PX.round() as i32,
-                    crate::nodes::NODE_DIAMETER_PX.round() as i32,
-                )
-                    .into(),
-            )
-        } else {
-            let chrome_visible = preview_chrome_visible(&record.window, fullscreen);
+        push_overview_window(
+            &mut elements,
+            renderer,
+            output,
+            output_geometry,
+            tile.id,
+            tile.target,
+            None,
+            progress,
+            session.selected == Some(tile.id),
+            false,
+            session.hovered == Some(tile.id),
+            config,
+            overlay_visuals,
+            visuals,
+            decorations,
+            font,
+            space,
+            cameras,
+            nodes,
+            node_renderer,
+            titlebar_renderer,
+            window_decoration_renderer,
+            ui_text,
+            window_open_animations,
+            fullscreen,
+            maximize,
+            overlay_previews,
+            now,
+        )?;
+    }
+    let backdrop_color = smithay::backend::renderer::Color32F::new(
+        0.01,
+        0.018,
+        0.03,
+        config.background_dim * visuals.overlay_alpha,
+    );
+    elements.push(SceneElement::Border(crate::render::solid_color_element(
+        node_renderer.active_slot_id(crate::render::node::NodeSlot::ApogeeBackdrop),
+        output_local,
+        backdrop_color,
+    )));
+    Ok(elements)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn overview_window_source_rect(
+    output: &Output,
+    output_geometry: Rectangle<i32, Logical>,
+    id: halley_core::field::NodeId,
+    decorations: &halley_config::Decorations,
+    font: &halley_config::Font,
+    space: &smithay::desktop::Space<smithay::desktop::Window>,
+    cameras: &crate::presentation::camera::OutputCameras,
+    nodes: &crate::nodes::NodesState,
+    window_open_animations: &crate::animation::WindowOpenAnimations,
+    fullscreen: &crate::wayland::fullscreen::FullscreenManager,
+    maximize: &crate::presentation::maximize::FieldMaximizeManager,
+    now: std::time::Duration,
+) -> Option<Rectangle<i32, Physical>> {
+    let record = nodes.record(id)?;
+    if record.collapsed {
+        let camera = cameras.get(&output.name())?;
+        let node = nodes.field.node(id)?;
+        let center = crate::nodes::screen_from_world(node.pos, camera, output_geometry)
+            - output_geometry.loc;
+        let side = crate::nodes::NODE_DIAMETER_PX.round() as i32;
+        Some(Rectangle::new(
+            (center.x - side / 2, center.y - side / 2).into(),
+            (side, side).into(),
+        ))
+    } else {
+        let chrome_visible = preview_chrome_visible(&record.window, fullscreen);
+        Some(
             window_visual_state(
                 space,
                 cameras,
@@ -311,163 +357,218 @@ pub(super) fn apogee_elements(
                     font,
                     chrome_visible,
                 )
-            })
-        };
-        let body = lerp_rect(source, target, progress);
-        let selected = session.selected == Some(tile.id);
-        let hovered = session.hovered == Some(tile.id);
-        let (card_visuals, caption_fill, card_fill) =
-            apogee_window_chrome(overlay_visuals, selected, hovered);
-        let chrome_alpha = visuals.chrome_alpha;
-        // Old Halley kept the caption inside the preview. Growing the card by
-        // a fixed footer made its backing look like an enlarged second window,
-        // especially for short and wide Apogee tiles.
-        let card = preview_card_rect(body, card_visuals.border_px);
-        let caption = apogee_caption_rect(body);
-        if let Some(caption) = caption {
-            let (title, size) = fit_ui_text(
-                renderer,
-                ui_text,
-                &record.title,
-                overlay_visuals.text.bytes(),
-                caption.size.w - 16,
-            )?;
-            if !title.is_empty()
-                && let Some(text) = ui_text.element(
-                    renderer,
-                    (
-                        caption.loc.x + (caption.size.w - size.w).max(0) / 2,
-                        caption.loc.y + (caption.size.h - size.h).max(0) / 2,
-                    )
-                        .into(),
-                    &title,
-                    overlay_visuals.text.bytes(),
-                    chrome_alpha,
-                )?
-            {
-                elements.push(SceneElement::UiText(text.element));
-            }
-            elements.push(SceneElement::NodeLabel(
-                crate::render::overlays::shell::label_card_element(
-                    renderer,
-                    node_renderer,
-                    caption,
-                    overlay_visuals,
-                    caption_fill,
-                    if selected || hovered {
-                        0.96 * chrome_alpha
-                    } else {
-                        0.88 * chrome_alpha
-                    },
-                )?,
-            ));
-        }
-        if record.collapsed {
-            let badge = "NODE";
-            if let Some(size) = ui_text.measure(renderer, badge, [151, 205, 255])?
-                && let Some(text) = ui_text.element(
-                    renderer,
-                    (card.loc.x + card.size.w - size.w - 10, card.loc.y + 8).into(),
-                    badge,
-                    [151, 205, 255],
-                    chrome_alpha,
-                )?
-            {
-                elements.push(SceneElement::UiText(text.element));
-            }
-        }
+            }),
+        )
+    }
+}
 
-        let chrome_visible = preview_chrome_visible(&record.window, fullscreen);
-        let maximized = record
-            .window
-            .wl_surface()
-            .is_some_and(|surface| maximize.contains(surface.as_ref()));
-        let direct = config.live_previews
-            && !record.collapsed
-            && push_live_preview(
-                &mut elements,
+#[allow(clippy::too_many_arguments)]
+pub(super) fn push_overview_window(
+    elements: &mut Vec<SceneElement>,
+    renderer: &mut GlesRenderer,
+    output: &Output,
+    output_geometry: Rectangle<i32, Logical>,
+    id: halley_core::field::NodeId,
+    target_global: Rectangle<i32, Logical>,
+    body_override: Option<Rectangle<i32, Physical>>,
+    progress: f32,
+    focused: bool,
+    member_selected: bool,
+    hovered: bool,
+    config: halley_config::Apogee,
+    overlay_visuals: crate::render::overlays::shell::OverlayVisuals,
+    visuals: ApogeeTransitionVisuals,
+    decorations: &halley_config::Decorations,
+    font: &halley_config::Font,
+    space: &smithay::desktop::Space<smithay::desktop::Window>,
+    cameras: &crate::presentation::camera::OutputCameras,
+    nodes: &crate::nodes::NodesState,
+    node_renderer: &mut crate::render::node::NodeRenderer,
+    titlebar_renderer: &mut crate::render::titlebar::TitlebarRenderer,
+    window_decoration_renderer: &mut crate::render::window_decoration::WindowDecorationRenderer,
+    ui_text: &mut crate::render::text::UiTextRenderer,
+    window_open_animations: &crate::animation::WindowOpenAnimations,
+    fullscreen: &crate::wayland::fullscreen::FullscreenManager,
+    maximize: &crate::presentation::maximize::FieldMaximizeManager,
+    overlay_previews: &mut crate::render::overlays::preview::OverlayPreviewCache,
+    now: std::time::Duration,
+) -> Result<(), Box<dyn Error>> {
+    let Some(record) = nodes.record(id) else {
+        return Ok(());
+    };
+    let target = Rectangle::<i32, Physical>::new(
+        (target_global.loc - output_geometry.loc).to_physical(1),
+        target_global.size.to_physical(1),
+    );
+    let Some(source) = overview_window_source_rect(
+        output,
+        output_geometry,
+        id,
+        decorations,
+        font,
+        space,
+        cameras,
+        nodes,
+        window_open_animations,
+        fullscreen,
+        maximize,
+        now,
+    ) else {
+        return Ok(());
+    };
+    let body = body_override.unwrap_or_else(|| lerp_rect(source, target, progress));
+    let (mut card_visuals, mut caption_fill, mut card_fill) =
+        apogee_window_chrome(overlay_visuals, focused, hovered);
+    let mut caption_text = overlay_visuals.text;
+    // Membership uses an inverted card treatment rather than another shade of
+    // the focus accent. Both colors come from the resolved overlay palette, so
+    // this remains high-contrast in light, dark, and explicitly themed modes.
+    if member_selected {
+        let selection_fill = overlay_visuals.text;
+        card_visuals.border = selection_fill;
+        card_visuals.border_px = card_visuals.border_px.max(CLUSTER_MEMBER_BORDER_PX);
+        caption_fill = selection_fill;
+        caption_text = overlay_visuals.fill;
+        card_fill = card_fill.mix(selection_fill, 0.22);
+    }
+    let chrome_alpha = visuals.chrome_alpha;
+    // Old Halley kept the caption inside the preview. Growing the card by
+    // a fixed footer made its backing look like an enlarged second window,
+    // especially for short and wide Apogee tiles.
+    let card = preview_card_rect(body, card_visuals.border_px);
+    let caption = apogee_caption_rect(body);
+    if let Some(caption) = caption {
+        let (title, size) = fit_ui_text(
+            renderer,
+            ui_text,
+            &record.title,
+            caption_text.bytes(),
+            caption.size.w - 16,
+        )?;
+        if !title.is_empty()
+            && let Some(text) = ui_text.element(
                 renderer,
-                &record.window,
-                body,
-                visuals.preview_alpha,
-                overlay_visuals.radius,
+                (
+                    caption.loc.x + (caption.size.w - size.w).max(0) / 2,
+                    caption.loc.y + (caption.size.h - size.h).max(0) / 2,
+                )
+                    .into(),
+                &title,
+                caption_text.bytes(),
+                chrome_alpha,
+            )?
+        {
+            elements.push(SceneElement::UiText(text.element));
+        }
+        elements.push(SceneElement::NodeLabel(
+            crate::render::overlays::shell::label_card_element(
+                renderer,
+                node_renderer,
+                caption,
+                overlay_visuals,
+                caption_fill,
+                if focused || hovered {
+                    0.96 * chrome_alpha
+                } else {
+                    0.88 * chrome_alpha
+                },
+            )?,
+        ));
+    }
+    if record.collapsed {
+        let badge = "NODE";
+        if let Some(size) = ui_text.measure(renderer, badge, [151, 205, 255])?
+            && let Some(text) = ui_text.element(
+                renderer,
+                (card.loc.x + card.size.w - size.w - 10, card.loc.y + 8).into(),
+                badge,
+                [151, 205, 255],
+                chrome_alpha,
+            )?
+        {
+            elements.push(SceneElement::UiText(text.element));
+        }
+    }
+
+    let chrome_visible = preview_chrome_visible(&record.window, fullscreen);
+    let maximized = record
+        .window
+        .wl_surface()
+        .is_some_and(|surface| maximize.contains(surface.as_ref()));
+    let direct = config.live_previews
+        && !record.collapsed
+        && push_live_preview(
+            elements,
+            renderer,
+            &record.window,
+            body,
+            visuals.preview_alpha,
+            overlay_visuals.radius,
+            decorations,
+            font,
+            chrome_visible,
+            maximized,
+            titlebar_renderer,
+            window_decoration_renderer,
+            node_renderer,
+            ui_text,
+        )?;
+    if !direct {
+        match overlay_previews.element_with_texture(
+            renderer,
+            crate::render::overlays::preview::OverlayPreviewRequest {
+                id,
+                window: &record.window,
+                destination: body,
+                alpha: visuals.preview_alpha,
+                allow_refresh: !record.collapsed,
+                live: false,
                 decorations,
                 font,
                 chrome_visible,
                 maximized,
-                titlebar_renderer,
-                window_decoration_renderer,
-                node_renderer,
-                ui_text,
-            )?;
-        if !direct {
-            match overlay_previews.element_with_texture(
+            },
+            crate::render::overlays::preview::OverlayPreviewRenderers {
+                titlebar: titlebar_renderer,
+                decoration: window_decoration_renderer,
+                node: node_renderer,
+                text: ui_text,
+            },
+        ) {
+            Ok((preview, texture)) => push_preview_texture(
+                elements,
                 renderer,
-                crate::render::overlays::preview::OverlayPreviewRequest {
-                    id: tile.id,
-                    window: &record.window,
-                    destination: body,
-                    alpha: visuals.preview_alpha,
-                    allow_refresh: !record.collapsed,
-                    live: false,
-                    decorations,
-                    font,
-                    chrome_visible,
-                    maximized,
-                },
-                crate::render::overlays::preview::OverlayPreviewRenderers {
-                    titlebar: titlebar_renderer,
-                    decoration: window_decoration_renderer,
-                    node: node_renderer,
-                    text: ui_text,
-                },
-            ) {
-                Ok((preview, texture)) => push_preview_texture(
-                    &mut elements,
-                    renderer,
-                    window_decoration_renderer,
-                    preview,
-                    texture,
-                    body,
-                    overlay_visuals.radius,
-                ),
-                Err(_) => {
-                    if let Some(app_id) = record.app_id.as_deref()
-                        && let Some(icon) = node_renderer.app_icon_element(
-                            renderer,
-                            app_id,
-                            body,
-                            visuals.preview_alpha,
-                        )
-                    {
-                        elements.push(SceneElement::NodeTexture(icon));
-                    }
+                window_decoration_renderer,
+                preview,
+                texture,
+                body,
+                overlay_visuals.radius,
+            ),
+            Err(_) => {
+                if let Some(app_id) = record.app_id.as_deref()
+                    && let Some(icon) = node_renderer.app_icon_element(
+                        renderer,
+                        app_id,
+                        body,
+                        visuals.preview_alpha,
+                    )
+                {
+                    elements.push(SceneElement::NodeTexture(icon));
                 }
             }
         }
-        elements.push(SceneElement::NodeLabel(
-            crate::render::overlays::shell::card_element(
-                renderer,
-                node_renderer,
-                card,
-                card_visuals,
-                card_fill,
-                0.96 * visuals.overlay_alpha,
-            )?,
-        ));
     }
-    let backdrop_color = smithay::backend::renderer::Color32F::new(
-        0.01,
-        0.018,
-        0.03,
-        config.background_dim * visuals.overlay_alpha,
-    );
-    elements.push(SceneElement::Border(crate::render::solid_color_element(
-        node_renderer.active_slot_id(crate::render::node::NodeSlot::ApogeeBackdrop),
-        output_local,
-        backdrop_color,
-    )));
-    Ok(elements)
+    elements.push(SceneElement::NodeLabel(
+        crate::render::overlays::shell::card_element(
+            renderer,
+            node_renderer,
+            card,
+            card_visuals,
+            card_fill,
+            0.96 * visuals.overlay_alpha,
+        )?,
+    ));
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
