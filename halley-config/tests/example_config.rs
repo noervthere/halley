@@ -20,13 +20,20 @@ fn example_config_parses_end_to_end() {
     assert_eq!(keybinds.modifier, ModifierKey::Super);
     assert_eq!(keybinds.binds.len(), 60);
 
-    let lift = keybinds
+    let launcher = keybinds
         .binds
         .iter()
-        .find(|bind| bind.action == Action::Spawn("halley-lift".into()))
-        .expect("Lift launcher bind present");
-    assert_eq!(lift.key, "d");
-    assert!(lift.modifiers.super_key);
+        .find(|bind| bind.action == Action::Spawn("fuzzel".into()))
+        .expect("Fuzzel launcher bind present");
+    assert_eq!(launcher.key, "d");
+    assert!(launcher.modifiers.super_key);
+    assert!(
+        keybinds
+            .binds
+            .iter()
+            .all(|bind| bind.action != Action::Spawn("halley-lift".into())),
+        "the commented Halley Lift alternative must not become active"
+    );
 
     let quit = keybinds
         .binds

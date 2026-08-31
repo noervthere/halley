@@ -15,10 +15,9 @@ const VERSION_PREFIX: &str = "# halley-config-version:";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MigrationMode {
-    /// Startup migration of the canonical user config. Pre-0.6 files, including
-    /// split trees, are replaced with the current default. Versioned 0.6 split
-    /// configs are left alone because the root file may not own the keybind
-    /// section.
+    /// Startup migration of the canonical user config. Legacy pre-0.6 files
+    /// and split trees are left untouched because startup must never replace a
+    /// user's existing configuration.
     Automatic,
     /// A migration explicitly requested through `halleyctl config migrate`.
     Explicit,
@@ -257,6 +256,12 @@ pub fn migrate_config_at(
         )));
     }
     if from_version == 0 && looks_like_pre_06_tree(path, &source) {
+        if mode == MigrationMode::Automatic {
+            return Ok(MigrationReport::skipped(
+                from_version,
+                "pre-0.6 configuration was left unchanged; run `halleyctl config migrate --dry-run` to inspect the explicit replacement",
+            ));
+        }
         return replace_pre_06_config(path, dry_run);
     }
     if mode == MigrationMode::Automatic && contains_gather(&source) {
@@ -871,7 +876,7 @@ mod tests {
         let original = pre_06_root();
         fs::write(&path, &original).unwrap();
 
-        let report = migrate_config_at(&path, MigrationMode::Automatic, true).unwrap();
+        let report = migrate_config_at(&path, MigrationMode::Explicit, true).unwrap();
 
         assert_eq!(report.status, MigrationStatus::WouldUpdate);
         assert_eq!(report.from_version, 0);
@@ -882,13 +887,31 @@ mod tests {
     }
 
     #[test]
+    fn automatic_migration_leaves_pre_06_config_untouched() {
+        let scratch = ScratchDir::new("pre06-auto");
+        let path = scratch.config();
+        let original = pre_06_root();
+        fs::write(&path, &original).unwrap();
+
+        let report = migrate_config_at(&path, MigrationMode::Automatic, false).unwrap();
+
+        assert_eq!(report.status, MigrationStatus::Skipped);
+        assert_eq!(report.from_version, 0);
+        assert_eq!(report.to_version, 0);
+        assert!(report.reason.unwrap().contains("left unchanged"));
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+        assert!(report.backup.is_none());
+        assert_eq!(fs::read_dir(&scratch.0).unwrap().count(), 1);
+    }
+
+    #[test]
     fn pre_06_config_is_backed_up_and_replaced_with_the_bootstrap_template() {
         let scratch = ScratchDir::new("pre06-write");
         let path = scratch.config();
         let original = pre_06_root();
         fs::write(&path, &original).unwrap();
 
-        let report = migrate_config_at(&path, MigrationMode::Automatic, false).unwrap();
+        let report = migrate_config_at(&path, MigrationMode::Explicit, false).unwrap();
 
         assert_eq!(report.status, MigrationStatus::Replaced);
         let backup = report.backup.expect("backup path");
@@ -941,7 +964,7 @@ mod tests {
     }
 
     #[test]
-    fn automatic_migration_replaces_gathered_pre_06_trees() {
+    fn automatic_migration_leaves_gathered_pre_06_trees_untouched() {
         let scratch = ScratchDir::new("pre06-gather");
         let path = scratch.config();
         let keys = scratch.0.join("keys.rune");
@@ -964,9 +987,11 @@ mod tests {
 
         let report = migrate_config_at(&path, MigrationMode::Automatic, false).unwrap();
 
-        assert_eq!(report.status, MigrationStatus::Replaced);
-        assert_eq!(fs::read_to_string(&path).unwrap(), DEFAULT_CONFIG);
+        assert_eq!(report.status, MigrationStatus::Skipped);
+        assert!(report.reason.unwrap().contains("left unchanged"));
+        assert_eq!(fs::read_to_string(&path).unwrap(), "gather \"keys.rune\"\n");
         assert!(fs::read_to_string(&keys).unwrap().contains("viewport:"));
+        assert!(report.backup.is_none());
     }
 
     #[test]

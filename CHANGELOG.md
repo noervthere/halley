@@ -5,6 +5,8 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Changed
+- Make Fuzzel the default `Super+D` launcher in new configurations while
+  retaining Halley Lift as a commented alternative.
 - Show a compact edit button beside a collapsed cluster core when its hover bloom
   opens; activating it edits only that cluster's name.
 - Replace loose in-Field cluster selection with a monitor-local Cluster Composer
@@ -19,6 +21,9 @@ All notable changes to this project will be documented in this file.
   XWayland constraint proxy surface delivered it, improving input trace detail.
 
 ### Fixed
+- Never replace an existing pre-0.6 configuration during compositor startup;
+  the backup-and-replacement migration now requires an explicit `halleyctl`
+  command.
 - Keep the newly created cluster core continuously visible through the restored
   Field reveal, preventing its three-circle icon from appearing a frame late.
 - Restore collapsed Field nodes dropped into an open cluster workspace, including

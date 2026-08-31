@@ -239,7 +239,7 @@ swipe, and hold actions.
 | Clusters | `Super+0..9` | Open a per-monitor cluster slot |
 | Bearings | `Super+Z` / `Super+Shift+Z` | Hold or toggle Bearings |
 | Launch | `Super+T` | Open the first supported terminal |
-| Launch | `Super+D` | Toggle Halley Lift |
+| Launch | `Super+D` | Open Fuzzel (Halley Lift is a commented alternative) |
 | Reload | `Super+Shift+R` | Reload the selected configuration |
 | Zoom | `Super+-` / `Super+=` / `Super+Shift+0` | Zoom out, in, or reset |
 | Pointer | `Super+Left Mouse` | Move a window |
@@ -259,12 +259,13 @@ bindings rather than hardcoded mouse policy.
 On first launch Halley creates
 `$XDG_CONFIG_HOME/halley/halley.rune`, falling back to
 `~/.config/halley/halley.rune`, from the canonical
-[`examples/halley.rune`](examples/halley.rune) template. A pre-0.6 file is
-backed up beside the original and replaced with that template; later 0.6
-compatibility changes use guarded, versioned backfill instead of rewriting
-the whole file. Backfill adds a finite set of missing bindings, skips
-conflicting custom chords, validates the complete candidate, writes
-atomically, and retains a timestamped backup. Split 0.6 configs using
+[`examples/halley.rune`](examples/halley.rune) template. Existing pre-0.6
+files are left untouched during startup. Use `halleyctl config migrate
+--dry-run` to inspect the explicit backup-and-replacement operation before
+applying it. Later 0.6 compatibility changes use guarded, versioned backfill
+instead of rewriting the whole file. Backfill adds a finite set of missing
+bindings, skips conflicting custom chords, validates the complete candidate,
+writes atomically, and retains a timestamped backup. Split 0.6 configs using
 `gather` are not backfilled automatically.
 
 Pass `-c PATH` or `--config PATH` to select another file. Valid edits reload as

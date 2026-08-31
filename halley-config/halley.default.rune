@@ -6,10 +6,11 @@
 # or, when XDG_CONFIG_HOME is unset:
 #   $HOME/.config/halley/halley.rune
 #
-# Halley creates this file when it does not already exist. A pre-0.6 file is
-# backed up and replaced with this template; later 0.6 configs receive only
-# guarded, versioned compatibility migrations. Split 0.6 configs are migrated
-# explicitly with `halleyctl config migrate`. While Halley is running, valid
+# Halley creates this file when it does not already exist. Existing pre-0.6
+# files are never replaced during startup; inspect and apply that replacement
+# explicitly with `halleyctl config migrate --dry-run` and then `halleyctl
+# config migrate`. Later 0.6 configs receive only guarded, versioned
+# compatibility migrations. While Halley is running, valid
 # saves are applied automatically. A syntactically invalid or incomplete save
 # is rejected as one unit and the last valid configuration remains active.
 #
@@ -863,8 +864,11 @@ keybinds:
   # one command explicitly.
   "$var.mod+t" "default-terminal"
 
-  # Toggle Halley's bundled search and action launcher.
-  "$var.mod+d" "halley-lift"
+  # Open Fuzzel, the default application launcher.
+  "$var.mod+d" "fuzzel"
+
+  # Use Halley's bundled search and action launcher instead.
+  # "$var.mod+d" "halley-lift"
 
   # Any action string that is not a built-in action is executed as a command
   # line. These bindings control the default PipeWire sink through `wpctl`.

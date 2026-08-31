@@ -23,9 +23,9 @@ Verify the complete gathered configuration with:
 halleyctl config verify --config examples/split-config/halley.rune
 ```
 
-A pre-0.6 split configuration is still replaced automatically: Halley backs up
-the root file and installs the current default. Split 0.6 configurations are
-not automatically rewritten by compatibility backfill. Run
-`halleyctl config migrate --dry-run --config PATH` against the file that owns
-the section being migrated, then run it again without `--dry-run` after
-reviewing the result.
+A pre-0.6 split configuration is never replaced automatically. Inspect the
+explicit migration with `halleyctl config migrate --dry-run --config PATH`
+before choosing to replace the root file with the current single-file default.
+Split 0.6 configurations are not automatically rewritten by compatibility
+backfill. Run the same command against the file that owns the section being
+migrated, then run it again without `--dry-run` after reviewing the result.

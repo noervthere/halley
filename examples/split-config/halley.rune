@@ -56,7 +56,8 @@ keybinds:
 
   "$var.mod+shift+r" "reload"
   "$var.mod+t" "default-terminal"
-  "$var.mod+d" "halley-lift"
+  "$var.mod+d" "fuzzel"
+  # "$var.mod+d" "halley-lift"
   "Print" "screenshot"
 
   # Compositor pointer grabs are ordinary remappable actions. Starting the

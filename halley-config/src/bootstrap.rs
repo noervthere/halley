@@ -136,7 +136,9 @@ mod tests {
     #[test]
     fn template_contains_overview_and_old_halley_controls() {
         for expected in [
-            "A pre-0.6 file is",
+            "Existing pre-0.6",
+            "\"$var.mod+d\" \"fuzzel\"",
+            "# \"$var.mod+d\" \"halley-lift\"",
             "\"$var.mod+n\" \"toggle-state\"",
             "\"$var.mod+o\" \"apogee\"",
             "\"alt+tab\" \"cycle-focus\"",
