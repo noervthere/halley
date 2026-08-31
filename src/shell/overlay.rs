@@ -50,31 +50,6 @@ impl Notification {
 }
 
 #[derive(Clone, Debug)]
-struct ExitConfirmation {
-    opened_at: Duration,
-    closing: Option<(Duration, f32)>,
-}
-
-impl ExitConfirmation {
-    fn mix(&self, now: Duration) -> f32 {
-        self.closing.map_or_else(
-            || transition_progress(now.saturating_sub(self.opened_at)),
-            |(closed_at, from)| from * (1.0 - transition_progress(now.saturating_sub(closed_at))),
-        )
-    }
-
-    fn finished(&self, now: Duration) -> bool {
-        self.closing
-            .is_some_and(|(at, _)| now >= at + TRANSITION_DURATION)
-    }
-
-    fn animating(&self, now: Duration) -> bool {
-        !self.finished(now)
-            && (now < self.opened_at + TRANSITION_DURATION || self.closing.is_some())
-    }
-}
-
-#[derive(Clone, Debug)]
 struct ZoomIndicator {
     scale: f32,
     shown_at: Duration,
@@ -108,7 +83,7 @@ impl ZoomIndicator {
 
 #[derive(Clone, Debug, Default)]
 pub struct OverlayManager {
-    exit: Option<ExitConfirmation>,
+    exit: bool,
     notification: Option<Notification>,
     zoom_indicators: HashMap<String, ZoomIndicator>,
 }
@@ -136,30 +111,18 @@ pub struct OverlaySnapshot {
 impl OverlayManager {
     pub fn exit_modal_active(&self) -> bool {
         self.exit
-            .as_ref()
-            .is_some_and(|confirmation| confirmation.closing.is_none())
     }
 
-    pub fn show_exit(&mut self, now: Duration) -> bool {
-        if self.exit_modal_active() {
+    pub fn show_exit(&mut self, _now: Duration) -> bool {
+        if self.exit {
             return false;
         }
-        self.exit = Some(ExitConfirmation {
-            opened_at: now,
-            closing: None,
-        });
+        self.exit = true;
         true
     }
 
-    pub fn cancel_exit(&mut self, now: Duration) -> bool {
-        let Some(exit) = self.exit.as_mut() else {
-            return false;
-        };
-        if exit.closing.is_some() {
-            return false;
-        }
-        exit.closing = Some((now, exit.mix(now)));
-        true
+    pub fn cancel_exit(&mut self, _now: Duration) -> bool {
+        std::mem::take(&mut self.exit)
     }
 
     pub fn show_config_success(
@@ -309,11 +272,7 @@ impl OverlayManager {
 
     pub fn snapshot(&self, output: &str, now: Duration) -> OverlaySnapshot {
         OverlaySnapshot {
-            exit_mix: self
-                .exit
-                .as_ref()
-                .map(|confirmation| confirmation.mix(now))
-                .filter(|mix| *mix > 0.001),
+            exit_mix: self.exit.then_some(1.0),
             notification: self.notification.as_ref().and_then(|notification| {
                 (notification.output == output && !notification.finished(now)).then(|| {
                     NotificationSnapshot {
@@ -333,13 +292,9 @@ impl OverlayManager {
     }
 
     pub fn animating(&self, now: Duration) -> bool {
-        self.exit
+        self.notification
             .as_ref()
-            .is_some_and(|confirmation| confirmation.animating(now))
-            || self
-                .notification
-                .as_ref()
-                .is_some_and(|notification| notification.animating(now))
+            .is_some_and(|notification| notification.animating(now))
             || self
                 .zoom_indicators
                 .values()
@@ -364,14 +319,6 @@ impl OverlayManager {
             .is_some_and(|notification| notification.finished(now))
         {
             self.notification = None;
-            redraw = true;
-        }
-        if self
-            .exit
-            .as_ref()
-            .is_some_and(|confirmation| confirmation.finished(now))
-        {
-            self.exit = None;
             redraw = true;
         }
         for indicator in self.zoom_indicators.values_mut() {
@@ -456,13 +403,26 @@ mod tests {
     }
 
     #[test]
-    fn exit_confirmation_is_idempotent_and_modal_only_while_open() {
+    fn exit_confirmation_is_instant_and_idempotent() {
         let mut overlays = OverlayManager::default();
         assert!(overlays.show_exit(Duration::ZERO));
+        assert_eq!(
+            overlays.snapshot("DP-1", Duration::ZERO).exit_mix,
+            Some(1.0)
+        );
+        assert!(!overlays.animating(Duration::ZERO));
         assert!(!overlays.show_exit(Duration::from_millis(1)));
         assert!(overlays.exit_modal_active());
+
         assert!(overlays.cancel_exit(Duration::from_millis(20)));
+        assert_eq!(
+            overlays
+                .snapshot("DP-1", Duration::from_millis(20))
+                .exit_mix,
+            None
+        );
         assert!(!overlays.exit_modal_active());
+        assert!(!overlays.cancel_exit(Duration::from_millis(21)));
     }
 
     #[test]

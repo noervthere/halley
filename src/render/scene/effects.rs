@@ -103,6 +103,16 @@ pub(super) fn layer_surface_scene_elements(
     let mut elements = Vec::new();
 
     for surface in map.layers_on(layer).rev() {
+        // A layer-shell object remains in Smithay's map after a null-buffer
+        // commit so it can be configured and mapped again. Its cached surface
+        // size also remains available, so without this mapped-state check we
+        // would keep emitting the backdrop blur after the client disappeared.
+        let has_buffer =
+            with_renderer_surface_state(surface.wl_surface(), |state| state.buffer().is_some())
+                .unwrap_or(false);
+        if !has_buffer {
+            continue;
+        }
         let Some(geometry) = map.layer_geometry(surface) else {
             continue;
         };
