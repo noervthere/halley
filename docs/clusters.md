@@ -54,6 +54,12 @@ Fields:
 At most ten clusters can occupy an output. Startup cores are arranged as a
 centered row near the top of each output, in declaration order.
 
+A freshly bootstrapped config and both shipped config examples declare twelve
+empty numbered workspaces: `1` through `6` initially on the sample `DP-1`
+output, and `7` through `12` on `DP-2`. They launch no applications. Replace
+the sample connector names, rename the workspaces, or remove declarations to
+match the machine. Existing user configs are never rewritten by bootstrap.
+
 ### Launch attribution
 
 On a real TTY session, Halley launches every member command with an XDG

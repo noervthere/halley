@@ -221,6 +221,7 @@ fn split_example_config_parses_end_to_end() {
         .expect("split example and its gathered files parse");
 
     assert_eq!(runtime.keybinds.modifier, ModifierKey::Super);
+    assert_default_startup_workspaces(&runtime.autostart);
     assert_eq!(
         runtime.decorations.titlebars.button_position,
         halley_config::TitlebarButtonPosition::Right
@@ -338,14 +339,30 @@ fn example_config_keeps_fps_overlay_disabled() {
     assert!(!runtime.debug.overlay_fps);
 }
 
+fn assert_default_startup_workspaces(autostart: &halley_config::Autostart) {
+    assert!(autostart.once.is_empty());
+    assert!(autostart.on_reload.is_empty());
+    assert_eq!(autostart.clusters.len(), 12);
+
+    for (index, cluster) in autostart.clusters.iter().enumerate() {
+        let number = index + 1;
+        assert_eq!(cluster.name, number.to_string());
+        assert!(cluster.members.is_empty());
+        assert_eq!(cluster.layout, None);
+        assert_eq!(
+            cluster.output.as_deref(),
+            Some(if number <= 6 { "DP-1" } else { "DP-2" })
+        );
+    }
+}
+
 #[test]
-fn example_config_keeps_environment_and_autostart_inactive() {
+fn example_config_keeps_environment_and_application_autostart_inactive() {
     let config = RuneConfig::from_file(EXAMPLE_PATH).expect("example config parses");
     let runtime = halley_config::parse_runtime_config(&config).expect("runtime config parses");
 
     assert!(runtime.env.is_empty());
-    assert!(runtime.autostart.once.is_empty());
-    assert!(runtime.autostart.on_reload.is_empty());
+    assert_default_startup_workspaces(&runtime.autostart);
 }
 
 #[test]

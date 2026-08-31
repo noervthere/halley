@@ -13,21 +13,70 @@ autostart:
   # once "mako"
   # on-reload "notify-send 'Halley configuration reloaded'"
 
-  # Startup clusters reserve persistent named slots along the top of the Field.
-  # `members` is only an array of commands; use [] to create an empty cluster.
-  # `layout` and `output` are optional. Changes take effect after restarting the
-  # real TTY session; nested Winit sessions create the cores without launching.
-  # cluster:
-  #   name "Work"
-  #   members ["foot" "firefox"]
-  #   layout "tiling"
-  #   output "DP-1"
-  # end
-  # cluster:
-  #   name "Inbox"
-  #   members []
-  #   output "DP-2" # Initial connector; the core can be moved after startup.
-  # end
+  # Fresh configs start with six empty numbered workspaces on each of the two
+  # sample outputs. Replace DP-1/DP-2 with names from `halleyctl outputs`, and
+  # rename or remove these declarations to suit your setup. Empty members launch
+  # no applications; output only controls initial placement.
+  cluster:
+    name "1"
+    members []
+    output "DP-1"
+  end
+  cluster:
+    name "2"
+    members []
+    output "DP-1"
+  end
+  cluster:
+    name "3"
+    members []
+    output "DP-1"
+  end
+  cluster:
+    name "4"
+    members []
+    output "DP-1"
+  end
+  cluster:
+    name "5"
+    members []
+    output "DP-1"
+  end
+  cluster:
+    name "6"
+    members []
+    output "DP-1"
+  end
+  cluster:
+    name "7"
+    members []
+    output "DP-2"
+  end
+  cluster:
+    name "8"
+    members []
+    output "DP-2"
+  end
+  cluster:
+    name "9"
+    members []
+    output "DP-2"
+  end
+  cluster:
+    name "10"
+    members []
+    output "DP-2"
+  end
+  cluster:
+    name "11"
+    members []
+    output "DP-2"
+  end
+  cluster:
+    name "12"
+    members []
+    output "DP-2"
+  end
 end
 
 keybinds:

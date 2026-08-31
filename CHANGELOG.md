@@ -13,6 +13,8 @@ All notable changes to this project will be documented in this file.
   Explicit layout changes still flash the updated name and layout.
 
 ### Changed
+- Seed fresh and example configs with six empty numbered workspaces on each of
+  the two sample outputs, without launching applications.
 - Keep clusters and their core identity after the final member closes so named
   empty workspaces remain available for later windows.
 - Add `decorations.titlebars.text-size` so window-title text can use a size

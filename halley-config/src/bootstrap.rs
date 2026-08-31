@@ -207,6 +207,26 @@ mod tests {
     }
 
     #[test]
+    fn template_starts_with_six_empty_workspaces_per_sample_output() {
+        let config = RuneConfig::from_str(DEFAULT_CONFIG).expect("bootstrap template parses");
+        let autostart = crate::parse_autostart(&config).expect("bootstrap autostart parses");
+
+        assert!(autostart.once.is_empty());
+        assert!(autostart.on_reload.is_empty());
+        assert_eq!(autostart.clusters.len(), 12);
+        for (index, cluster) in autostart.clusters.iter().enumerate() {
+            let number = index + 1;
+            assert_eq!(cluster.name, number.to_string());
+            assert!(cluster.members.is_empty());
+            assert_eq!(cluster.layout, None);
+            assert_eq!(
+                cluster.output.as_deref(),
+                Some(if number <= 6 { "DP-1" } else { "DP-2" })
+            );
+        }
+    }
+
+    #[test]
     fn template_uses_ring_only_view_entries() {
         let config = RuneConfig::from_str(DEFAULT_CONFIG).expect("bootstrap template parses");
         let view = crate::parse_view_checked(&config).expect("bootstrap view parses");
