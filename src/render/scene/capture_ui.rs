@@ -8,9 +8,9 @@ pub(super) fn capture_overlay_elements(
     overlay: crate::capture::CaptureOverlay<'_>,
     node_renderer: &mut crate::render::node::NodeRenderer,
     overlay_config: &halley_config::Overlays,
-    decorations: &halley_config::Decorations,
+    _decorations: &halley_config::Decorations,
 ) -> Result<Vec<SceneElement>, Box<dyn Error>> {
-    let visuals = crate::render::overlays::shell::resolve_visuals(overlay_config, decorations);
+    let visuals = crate::render::overlays::shell::resolve_visuals(overlay_config);
     match overlay {
         crate::capture::CaptureOverlay::None => Ok(Vec::new()),
         crate::capture::CaptureOverlay::Region(region) => {

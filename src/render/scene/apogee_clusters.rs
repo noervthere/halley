@@ -10,7 +10,6 @@ pub(super) struct ApogeeCoreTileContext<'a> {
     pub(super) chrome_alpha: f32,
     pub(super) highlighted: bool,
     pub(super) overlay_visuals: crate::render::overlays::shell::OverlayVisuals,
-    pub(super) decorations: &'a halley_config::Decorations,
     pub(super) cameras: &'a crate::presentation::camera::OutputCameras,
     pub(super) nodes: &'a crate::nodes::NodesState,
     pub(super) clusters: &'a crate::clusters::ClusterSystem,
@@ -35,7 +34,6 @@ pub(super) fn apogee_core_tile_elements(
         chrome_alpha,
         highlighted,
         overlay_visuals,
-        decorations,
         cameras,
         nodes,
         clusters,
@@ -66,11 +64,11 @@ pub(super) fn apogee_core_tile_elements(
         tile.target.size.to_physical(1),
     );
     let body = lerp_rect(source, target, progress);
-    let ring = node_ring_color(decorations, highlighted);
+    let ring = node_ring_color(nodes.config, highlighted);
     let fill = node_fill_color(nodes.config, ring);
     let icon_colors = [
-        rgba(decorations.border_color_unfocused),
-        rgba(decorations.border_color_focused),
+        rgba(nodes.config.border_color),
+        rgba(nodes.config.border_color_highlighted),
     ];
     let mut elements = Vec::new();
 

@@ -91,7 +91,7 @@ pub(crate) fn elements(
     pointer_position: (f64, f64),
     alpha: f32,
     config: &halley_config::Overlays,
-    decorations: &halley_config::Decorations,
+    _decorations: &halley_config::Decorations,
     node_renderer: &mut NodeRenderer,
     ui_text: &mut UiTextRenderer,
 ) -> Result<Vec<SceneElement>, Box<dyn Error>> {
@@ -108,7 +108,7 @@ pub(crate) fn elements(
         state.confirm_hover.remove(&output_name);
         return Ok(Vec::new());
     };
-    let visuals = resolve_visuals(config, decorations);
+    let visuals = resolve_visuals(config);
     let screen = Rectangle::<i32, Physical>::from_size(output_geometry.size.to_physical(1));
 
     let (mut dialog, layout) = naming_dialog_elements(

@@ -90,6 +90,7 @@ pub enum RestoreCentering {
 pub enum NodeBackgroundColor {
     #[default]
     Auto,
+    System,
     Light,
     Dark,
     Fixed(f32, f32, f32),
@@ -105,6 +106,8 @@ pub struct Nodes {
     pub opacity: f32,
     pub restore_centering: RestoreCentering,
     pub background_color: NodeBackgroundColor,
+    pub border_color: crate::BorderColor,
+    pub border_color_highlighted: crate::BorderColor,
 }
 
 impl Default for Nodes {
@@ -118,6 +121,16 @@ impl Default for Nodes {
             opacity: 1.0,
             restore_centering: RestoreCentering::Never,
             background_color: NodeBackgroundColor::Auto,
+            border_color: crate::BorderColor {
+                r: 0x47 as f32 / 255.0,
+                g: 0x4d as f32 / 255.0,
+                b: 0x59 as f32 / 255.0,
+            },
+            border_color_highlighted: crate::BorderColor {
+                r: 0xd6 as f32 / 255.0,
+                g: 0x5d as f32 / 255.0,
+                b: 0x26 as f32 / 255.0,
+            },
         }
     }
 }
@@ -125,6 +138,19 @@ impl Default for Nodes {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LandmarkPlacement {
     pub gap_px: f32,
+}
+
+impl Nodes {
+    pub fn resolved_for_system(mut self, scheme: crate::SystemColorScheme) -> Self {
+        if self.background_color == NodeBackgroundColor::System {
+            self.background_color = match scheme {
+                crate::SystemColorScheme::PreferDark => NodeBackgroundColor::Dark,
+                crate::SystemColorScheme::PreferLight => NodeBackgroundColor::Light,
+                crate::SystemColorScheme::NoPreference => NodeBackgroundColor::Auto,
+            };
+        }
+        self
+    }
 }
 
 impl Default for LandmarkPlacement {
@@ -208,6 +234,19 @@ pub fn parse_nodes(config: &RuneConfig) -> Nodes {
             })
             .unwrap_or(defaults.restore_centering),
         background_color: parse_background_color(config, defaults.background_color),
+        border_color: parse_node_color(
+            config,
+            &["node.border-colour", "node.border-color"],
+            defaults.border_color,
+        ),
+        border_color_highlighted: parse_node_color(
+            config,
+            &[
+                "node.border-colour-highlighted",
+                "node.border-color-highlighted",
+            ],
+            defaults.border_color_highlighted,
+        ),
     }
 }
 
@@ -285,12 +324,29 @@ fn parse_background_color(
     };
     match value.to_ascii_lowercase().as_str() {
         "auto" | "theme" => NodeBackgroundColor::Auto,
+        "system" => NodeBackgroundColor::System,
         "light" => NodeBackgroundColor::Light,
         "dark" => NodeBackgroundColor::Dark,
         _ => parse_hex_rgb(&value)
             .map(|[r, g, b]| NodeBackgroundColor::Fixed(r, g, b))
             .unwrap_or(default),
     }
+}
+
+fn parse_node_color(
+    config: &RuneConfig,
+    paths: &[&str],
+    default: crate::BorderColor,
+) -> crate::BorderColor {
+    let value = paths
+        .iter()
+        .find_map(|path| config.get_optional::<String>(path).ok().flatten());
+    let Some(value) = value else {
+        return default;
+    };
+    parse_hex_rgb(&value)
+        .map(|[r, g, b]| crate::BorderColor { r, g, b })
+        .unwrap_or(default)
 }
 
 fn parse_hex_rgb(value: &str) -> Option<[f32; 3]> {
@@ -468,6 +524,8 @@ node:
   shape "square"
   label-shape "square"
   background-colour "#102030"
+  border-colour "#112233"
+  border-color-highlighted "#aabbcc"
   click-collapsed-pan "always"
 end
 "##,
@@ -482,6 +540,47 @@ end
             nodes.background_color,
             NodeBackgroundColor::Fixed(_, _, _)
         ));
+        assert_eq!(
+            nodes.border_color,
+            crate::BorderColor {
+                r: 0x11 as f32 / 255.0,
+                g: 0x22 as f32 / 255.0,
+                b: 0x33 as f32 / 255.0,
+            }
+        );
+        assert_eq!(
+            nodes.border_color_highlighted,
+            crate::BorderColor {
+                r: 0xaa as f32 / 255.0,
+                g: 0xbb as f32 / 255.0,
+                b: 0xcc as f32 / 255.0,
+            }
+        );
+    }
+
+    #[test]
+    fn system_node_background_resolves_without_changing_owned_border_colours() {
+        let config = RuneConfig::from_str(
+            "node:\n  background-colour \"system\"\n  border-colour \"#102030\"\n  border-colour-highlighted \"#abcdef\"\nend\n",
+        )
+        .unwrap();
+        let nodes = parse_nodes(&config);
+        assert_eq!(nodes.background_color, NodeBackgroundColor::System);
+
+        let dark = nodes.resolved_for_system(crate::SystemColorScheme::PreferDark);
+        assert_eq!(dark.background_color, NodeBackgroundColor::Dark);
+        assert_eq!(dark.border_color, nodes.border_color);
+        assert_eq!(
+            dark.border_color_highlighted,
+            nodes.border_color_highlighted
+        );
+
+        assert_eq!(
+            nodes
+                .resolved_for_system(crate::SystemColorScheme::NoPreference)
+                .background_color,
+            NodeBackgroundColor::Auto
+        );
     }
 
     #[test]

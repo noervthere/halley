@@ -83,7 +83,7 @@ pub use overlays::{
     DEFAULT_ERROR_DURATION_MS, DEFAULT_SUCCESS_DURATION_MS,
     DEFAULT_ZOOM_INDICATOR_FADE_DURATION_MS, DEFAULT_ZOOM_INDICATOR_HOLD_DURATION_MS,
     NotificationPosition, Notifications, OverlayColorMode, OverlayParseError, Overlays,
-    ZoomIndicator, parse_overlays_checked,
+    SystemColorScheme, ZoomIndicator, parse_overlays_checked,
 };
 pub use parse::{ParseError, parse_keybinds};
 pub use physics::{Physics, parse_physics};

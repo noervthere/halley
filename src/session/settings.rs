@@ -6,6 +6,8 @@
 /// state.
 pub struct RuntimeSettings {
     pub overlays: halley_config::Overlays,
+    configured_overlays: halley_config::Overlays,
+    system_color_scheme: halley_config::SystemColorScheme,
     pub apogee: halley_config::Apogee,
     pub input: halley_config::Input,
     pub animations: halley_config::Animations,
@@ -22,8 +24,22 @@ pub struct RuntimeSettings {
 
 impl RuntimeSettings {
     pub fn new(config: &halley_config::RuntimeConfig, applied_input: halley_config::Input) -> Self {
+        Self::new_with_color_scheme(
+            config,
+            applied_input,
+            halley_config::SystemColorScheme::NoPreference,
+        )
+    }
+
+    pub fn new_with_color_scheme(
+        config: &halley_config::RuntimeConfig,
+        applied_input: halley_config::Input,
+        system_color_scheme: halley_config::SystemColorScheme,
+    ) -> Self {
         Self {
-            overlays: config.overlays,
+            overlays: config.overlays.resolved_for_system(system_color_scheme),
+            configured_overlays: config.overlays,
+            system_color_scheme,
             apogee: config.apogee,
             input: applied_input,
             animations: config.animations,
@@ -47,7 +63,7 @@ impl RuntimeSettings {
             || self.background != config.background
             || self.zoom != config.field.zoom
             || self.field.pins != config.field.pins
-            || self.overlays != config.overlays
+            || self.configured_overlays != config.overlays
             || self.debug != config.debug
             || self.layer_rules != config.layer_rules
     }
@@ -63,17 +79,56 @@ impl RuntimeSettings {
         self.effects = config.effects;
         self.background = config.background.clone();
         self.field = config.field;
-        self.overlays = config.overlays;
+        self.configured_overlays = config.overlays;
+        self.overlays = config
+            .overlays
+            .resolved_for_system(self.system_color_scheme);
         self.zoom = config.field.zoom;
         self.screenshot = config.screenshot.clone();
         self.debug = config.debug;
         self.layer_rules.clone_from(&config.layer_rules);
+    }
+
+    pub fn set_system_color_scheme(&mut self, scheme: halley_config::SystemColorScheme) -> bool {
+        if self.system_color_scheme == scheme {
+            return false;
+        }
+        self.system_color_scheme = scheme;
+        let overlays = self.configured_overlays.resolved_for_system(scheme);
+        let changed = self.overlays != overlays;
+        self.overlays = overlays;
+        changed
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::RuntimeSettings;
+
+    #[test]
+    fn system_scheme_updates_only_explicit_system_colours() {
+        let mut config = halley_config::RuntimeConfig::default();
+        config.overlays.background_color = halley_config::OverlayColorMode::System;
+        let mut settings = RuntimeSettings::new_with_color_scheme(
+            &config,
+            config.input.clone(),
+            halley_config::SystemColorScheme::PreferDark,
+        );
+        assert_eq!(
+            settings.overlays.background_color,
+            halley_config::OverlayColorMode::Dark
+        );
+        assert!(!settings.set_system_color_scheme(halley_config::SystemColorScheme::PreferDark));
+        assert!(settings.set_system_color_scheme(halley_config::SystemColorScheme::PreferLight));
+        assert_eq!(
+            settings.overlays.background_color,
+            halley_config::OverlayColorMode::Light
+        );
+        assert_eq!(
+            settings.overlays.border_color,
+            halley_config::Overlays::default().border_color
+        );
+    }
 
     #[test]
     fn visual_change_detection_ignores_non_visual_settings() {

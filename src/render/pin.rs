@@ -174,13 +174,16 @@ pub fn window_titlebar_badge_rect(
 fn pin_palette(
     pins: &halley_config::Pins,
     overlays: &halley_config::Overlays,
-    decorations: &halley_config::Decorations,
+    _decorations: &halley_config::Decorations,
 ) -> ([u8; 3], [u8; 3]) {
-    let overlay = resolve_visuals(overlays, decorations);
+    let overlay = resolve_visuals(overlays);
     let fill = resolve_fill(pins.background_color, overlay.fill);
     let glyph = match pins.color {
-        halley_config::OverlayColorMode::Auto => {
-            if matches!(pins.background_color, halley_config::OverlayColorMode::Auto) {
+        halley_config::OverlayColorMode::Auto | halley_config::OverlayColorMode::System => {
+            if matches!(
+                pins.background_color,
+                halley_config::OverlayColorMode::Auto | halley_config::OverlayColorMode::System
+            ) {
                 overlay.text
             } else {
                 contrast_text(fill)
@@ -205,7 +208,7 @@ fn pin_palette(
 
 fn resolve_fill(mode: halley_config::OverlayColorMode, auto: OverlayRgb) -> OverlayRgb {
     match mode {
-        halley_config::OverlayColorMode::Auto => auto,
+        halley_config::OverlayColorMode::Auto | halley_config::OverlayColorMode::System => auto,
         halley_config::OverlayColorMode::Light => OverlayRgb {
             r: 0.92,
             g: 0.95,

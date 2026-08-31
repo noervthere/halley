@@ -40,7 +40,7 @@ pub(super) fn node_elements(
     let Some(camera) = cameras.get(&output.name()) else {
         return Ok(NodeScene::default());
     };
-    let focused = decorations.border_color_focused;
+    let focused = nodes.config.border_color_highlighted;
     let mut overlay = Vec::new();
 
     if debug.show_focus_ring || nodes.ring_is_previewed(&output.name(), now) {
@@ -96,7 +96,7 @@ pub(super) fn node_elements(
         );
         let hovered = nodes.hovered == Some(record.id);
         let highlighted = hovered || nodes.focused() == Some(record.id);
-        let ring = node_ring_color(decorations, highlighted);
+        let ring = node_ring_color(nodes.config, highlighted);
         let fill = node_fill_color(nodes.config, ring);
         markers.push(SceneElement::Node(node_renderer.element(
             renderer,
@@ -109,6 +109,7 @@ pub(super) fn node_elements(
                 flat_fill: !matches!(
                     nodes.config.background_color,
                     halley_config::NodeBackgroundColor::Auto
+                        | halley_config::NodeBackgroundColor::System
                 ),
             },
         )?));
@@ -343,14 +344,11 @@ pub(super) fn fit_ui_text(
     Ok((String::new(), (0, 0).into()))
 }
 
-pub(crate) fn node_ring_color(
-    decorations: &halley_config::Decorations,
-    hovered: bool,
-) -> (f32, f32, f32) {
-    let color = if hovered {
-        decorations.border_color_focused
+pub(crate) fn node_ring_color(nodes: halley_config::Nodes, highlighted: bool) -> (f32, f32, f32) {
+    let color = if highlighted {
+        nodes.border_color_highlighted
     } else {
-        decorations.border_color_unfocused
+        nodes.border_color
     };
     (color.r, color.g, color.b)
 }
@@ -360,7 +358,7 @@ pub(crate) fn node_fill_color(
     ring: (f32, f32, f32),
 ) -> (f32, f32, f32) {
     match config.background_color {
-        halley_config::NodeBackgroundColor::Auto => (
+        halley_config::NodeBackgroundColor::Auto | halley_config::NodeBackgroundColor::System => (
             0.94 * 0.86 + ring.0 * 0.14,
             0.96 * 0.86 + ring.1 * 0.14,
             0.985 * 0.86 + ring.2 * 0.14,

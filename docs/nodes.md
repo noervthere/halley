@@ -136,6 +136,8 @@ node:
   icon-size 0.72
   opacity 1.0
   background-colour "auto"
+  border-colour "#474d59"
+  border-colour-highlighted "#d65d26"
 end
 ```
 
@@ -146,8 +148,14 @@ Text renderer, including configured font family/weight suffixes, measured
 centering, contrast-aware text, edge flipping, and the old hover
 slide/grow/fade. See [Fonts](fonts.md) for global typography behavior.
 
-Node borders always use the unfocused window decoration colour, switching to
-the focused colour while highlighted.
+Collapsed nodes and cluster cores own their colours independently of window
+decorations. `border-colour` controls the idle ring and icon (`#474d59` by
+default); `border-colour-highlighted` controls hover, logical focus, join-ready
+feedback, and the highlighted core icon (`#d65d26` by default). American
+`color` spellings are accepted. `background-colour` accepts `auto`, `system`,
+`light`, `dark`, or a hex RGB colour. `auto` is Halley's deterministic local
+palette. `system` explicitly follows the XDG Settings portal appearance
+preference live and falls back to `auto` when no preference is available.
 
 Display policies accept `off`, `hover`, or `always`. Real application icons
 are resolved from desktop entries and icon themes in a background worker.
@@ -179,7 +187,8 @@ normal Field window against the core: the window docks at the same non-overlap
 distance used by `field.gap` instead of pushing the core away.
 
 Hold the window there for `clusters.join-dwell-ms`. When the dwell completes,
-the core's original border changes to the focused colour and thickens to five
+the core's original border changes to `border-colour-highlighted` and thickens
+to five
 pixels without changing its fill or icon. A light wash of that same colour
 marks the dragged window; releasing then adds the window to that cluster.
 Moving away, closing the bloom, changing outputs, cancelling the grab, or

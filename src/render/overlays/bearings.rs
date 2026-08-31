@@ -171,8 +171,7 @@ pub fn elements(
     let Some(camera) = cameras.get(&output_name) else {
         return Ok(Vec::new());
     };
-    let overlay_visuals =
-        crate::render::overlays::shell::resolve_visuals(overlay_config, decorations);
+    let overlay_visuals = crate::render::overlays::shell::resolve_visuals(overlay_config);
     let layouts = collect_layouts(
         renderer,
         LayoutContext {

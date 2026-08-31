@@ -9,10 +9,39 @@ pub const DEFAULT_ZOOM_INDICATOR_FADE_DURATION_MS: u64 = 180;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum OverlayColorMode {
+    /// Halley's deterministic built-in palette and contrast behavior.
     Auto,
+    /// Follow the desktop preference exposed by org.freedesktop.appearance.
+    System,
     Light,
     Dark,
-    Fixed { r: f32, g: f32, b: f32, a: f32 },
+    Fixed {
+        r: f32,
+        g: f32,
+        b: f32,
+        a: f32,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum SystemColorScheme {
+    #[default]
+    NoPreference,
+    PreferDark,
+    PreferLight,
+}
+
+impl OverlayColorMode {
+    fn resolved_for_system(self, scheme: SystemColorScheme) -> Self {
+        if self != Self::System {
+            return self;
+        }
+        match scheme {
+            SystemColorScheme::PreferDark => Self::Dark,
+            SystemColorScheme::PreferLight => Self::Light,
+            SystemColorScheme::NoPreference => Self::Auto,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -52,6 +81,7 @@ pub struct ZoomIndicator {
     pub text_size: Option<u16>,
     pub text_color: Option<OverlayColorMode>,
     pub background_color: Option<OverlayColorMode>,
+    pub border_color: Option<OverlayColorMode>,
     pub opacity: f32,
     pub borders: Option<bool>,
     pub radius_px: Option<i32>,
@@ -68,6 +98,7 @@ impl Default for ZoomIndicator {
             text_size: None,
             text_color: None,
             background_color: None,
+            border_color: None,
             opacity: 1.0,
             borders: None,
             radius_px: None,
@@ -80,8 +111,10 @@ pub struct Overlays {
     pub background_color: OverlayColorMode,
     pub text_color: OverlayColorMode,
     pub error_color: OverlayColorMode,
+    pub border_color: OverlayColorMode,
     pub radius_px: i32,
     pub borders: bool,
+    pub border_size_px: i32,
     pub notifications: Notifications,
     pub zoom_indicator: ZoomIndicator,
 }
@@ -97,11 +130,44 @@ impl Default for Overlays {
                 b: 0x34 as f32 / 255.0,
                 a: 1.0,
             },
+            border_color: OverlayColorMode::Fixed {
+                r: 0xd6 as f32 / 255.0,
+                g: 0x5d as f32 / 255.0,
+                b: 0x26 as f32 / 255.0,
+                a: 1.0,
+            },
             radius_px: 8,
             borders: true,
+            border_size_px: 3,
             notifications: Notifications::default(),
             zoom_indicator: ZoomIndicator::default(),
         }
+    }
+}
+
+impl Overlays {
+    /// Resolve the explicit system mode once at the session boundary.
+    ///
+    /// Renderers then receive a deterministic palette and never perform D-Bus
+    /// work or depend on desktop-global state.
+    pub fn resolved_for_system(mut self, scheme: SystemColorScheme) -> Self {
+        self.background_color = self.background_color.resolved_for_system(scheme);
+        self.text_color = self.text_color.resolved_for_system(scheme);
+        self.error_color = self.error_color.resolved_for_system(scheme);
+        self.border_color = self.border_color.resolved_for_system(scheme);
+        self.zoom_indicator.text_color = self
+            .zoom_indicator
+            .text_color
+            .map(|mode| mode.resolved_for_system(scheme));
+        self.zoom_indicator.background_color = self
+            .zoom_indicator
+            .background_color
+            .map(|mode| mode.resolved_for_system(scheme));
+        self.zoom_indicator.border_color = self
+            .zoom_indicator
+            .border_color
+            .map(|mode| mode.resolved_for_system(scheme));
+        self
     }
 }
 
@@ -175,6 +241,19 @@ pub fn parse_overlays_checked(config: &RuneConfig) -> Result<Overlays, OverlayPa
         "overlays.error-colour",
         defaults.error_color,
     )?;
+    let border_color = parse_color(
+        optional_string(
+            config,
+            &[
+                "overlays.border-colour",
+                "overlays.border-color",
+                "overlay.border-colour",
+                "overlay.border-color",
+            ],
+        )?,
+        "overlays.border-colour",
+        defaults.border_color,
+    )?;
     let radius_px = optional_i32(config, &["overlays.radius", "overlay.radius"])?
         .unwrap_or(defaults.radius_px)
         .clamp(0, 256);
@@ -220,6 +299,16 @@ pub fn parse_overlays_checked(config: &RuneConfig) -> Result<Overlays, OverlayPa
         )?,
         "overlays.zoom-indicator.background-colour",
     )?;
+    let zoom_indicator_border_color = parse_optional_color(
+        optional_string(
+            config,
+            &[
+                "overlays.zoom-indicator.border-colour",
+                "overlays.zoom-indicator.border-color",
+            ],
+        )?,
+        "overlays.zoom-indicator.border-colour",
+    )?;
     let success_duration_ms = optional_u64(
         config,
         &[
@@ -257,9 +346,13 @@ pub fn parse_overlays_checked(config: &RuneConfig) -> Result<Overlays, OverlayPa
         background_color,
         text_color,
         error_color,
+        border_color,
         radius_px,
         borders: optional_bool(config, &["overlays.borders", "overlay.borders"])?
             .unwrap_or(defaults.borders),
+        border_size_px: optional_i32(config, &["overlays.border-size", "overlay.border-size"])?
+            .unwrap_or(defaults.border_size_px)
+            .clamp(0, 64),
         notifications: Notifications {
             position: notification_position,
             success_duration_ms,
@@ -277,6 +370,7 @@ pub fn parse_overlays_checked(config: &RuneConfig) -> Result<Overlays, OverlayPa
                 .map(|size| size.clamp(6, 96) as u16),
             text_color: zoom_indicator_text_color,
             background_color: zoom_indicator_background_color,
+            border_color: zoom_indicator_border_color,
             opacity: optional_f32(config, &["overlays.zoom-indicator.opacity"])?
                 .filter(|value| value.is_finite())
                 .unwrap_or(defaults.zoom_indicator.opacity)
@@ -366,6 +460,7 @@ fn parse_color(
     };
     match raw.trim().to_ascii_lowercase().as_str() {
         "auto" => Ok(OverlayColorMode::Auto),
+        "system" => Ok(OverlayColorMode::System),
         "light" => Ok(OverlayColorMode::Light),
         "dark" => Ok(OverlayColorMode::Dark),
         value => parse_hex_color(value).ok_or(OverlayParseError::InvalidValue { path, value: raw }),
@@ -438,6 +533,7 @@ mod tests {
         let overlays = parse_overlays_checked(&RuneConfig::from_str("").unwrap()).unwrap();
         assert_eq!(overlays.radius_px, 8);
         assert!(overlays.borders);
+        assert_eq!(overlays.border_size_px, 3);
         assert_eq!(
             overlays.notifications.position,
             NotificationPosition::TopCenter
@@ -457,8 +553,10 @@ overlays:
   background-colour "#1238"
   text-color "dark"
   error-colour "#fb4934"
+  border-color "#d65d26"
   radius 12
   borders false
+  border-size 5
   notifications:
     position "bottom-right"
     success-duration-ms 1500
@@ -473,6 +571,7 @@ overlays:
     text-size 18
     text-color "#f0c8"
     background-colour "dark"
+    border-colour "system"
     opacity 0.8
     borders true
     radius 20
@@ -485,6 +584,7 @@ end
 
         assert_eq!(overlays.radius_px, 12);
         assert!(!overlays.borders);
+        assert_eq!(overlays.border_size_px, 5);
         assert_eq!(
             overlays.notifications.position,
             NotificationPosition::BottomRight
@@ -508,6 +608,10 @@ end
             overlays.zoom_indicator.background_color,
             Some(OverlayColorMode::Dark)
         );
+        assert_eq!(
+            overlays.zoom_indicator.border_color,
+            Some(OverlayColorMode::System)
+        );
         assert_eq!(overlays.zoom_indicator.opacity, 0.8);
         assert_eq!(overlays.zoom_indicator.borders, Some(true));
         assert_eq!(overlays.zoom_indicator.radius_px, Some(20));
@@ -515,12 +619,46 @@ end
             overlays.background_color,
             OverlayColorMode::Fixed { .. }
         ));
+        assert!(matches!(
+            overlays.border_color,
+            OverlayColorMode::Fixed { r, g, b, a }
+                if (r - 0xd6 as f32 / 255.0).abs() < f32::EPSILON
+                    && (g - 0x5d as f32 / 255.0).abs() < f32::EPSILON
+                    && (b - 0x26 as f32 / 255.0).abs() < f32::EPSILON
+                    && a == 1.0
+        ));
+    }
+
+    #[test]
+    fn system_colours_resolve_at_the_runtime_boundary() {
+        let config = RuneConfig::from_str(
+            "overlays:\n  background-colour \"system\"\n  text-colour \"system\"\n  border-colour \"system\"\n  zoom-indicator:\n    border-colour \"system\"\n  end\nend\n",
+        )
+        .unwrap();
+        let overlays = parse_overlays_checked(&config).unwrap();
+        assert_eq!(overlays.background_color, OverlayColorMode::System);
+
+        let dark = overlays.resolved_for_system(SystemColorScheme::PreferDark);
+        assert_eq!(dark.background_color, OverlayColorMode::Dark);
+        assert_eq!(dark.text_color, OverlayColorMode::Dark);
+        assert_eq!(dark.border_color, OverlayColorMode::Dark);
+        assert_eq!(
+            dark.zoom_indicator.border_color,
+            Some(OverlayColorMode::Dark)
+        );
+
+        let fallback = overlays.resolved_for_system(SystemColorScheme::NoPreference);
+        assert_eq!(fallback.background_color, OverlayColorMode::Auto);
+        assert_eq!(fallback.border_color, OverlayColorMode::Auto);
     }
 
     #[test]
     fn clamps_radius_and_rejects_zero_duration() {
-        let radius = RuneConfig::from_str("overlays:\n  radius 999\nend\n").unwrap();
-        assert_eq!(parse_overlays_checked(&radius).unwrap().radius_px, 256);
+        let radius =
+            RuneConfig::from_str("overlays:\n  radius 999\n  border-size 999\nend\n").unwrap();
+        let overlays = parse_overlays_checked(&radius).unwrap();
+        assert_eq!(overlays.radius_px, 256);
+        assert_eq!(overlays.border_size_px, 64);
         let duration = RuneConfig::from_str(
             "overlays:\n  notifications:\n    error-duration-ms 0\n  end\nend\n",
         )

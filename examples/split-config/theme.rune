@@ -94,6 +94,8 @@ node:
   icon-size 0.72
   opacity 1.0
   background-colour "auto"
+  border-colour "#474d59"
+  border-colour-highlighted "#d65d26"
   click-collapsed-pan "never"
 end
 
@@ -101,8 +103,10 @@ overlays:
   background-colour "auto"
   text-colour "auto"
   error-colour "#fb4934"
+  border-colour "#d65d26"
   radius 8
   borders true
+  border-size 3
 
   notifications:
     position "top-center"
@@ -123,6 +127,7 @@ overlays:
     # text-size 18
     # text-colour "auto"
     # background-colour "auto"
+    # border-colour "#d65d26"
     # borders true
     # radius 8
   end

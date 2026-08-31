@@ -15,8 +15,10 @@ overlays:
   background-colour "auto"
   text-colour "auto"
   error-colour "#fb4934"
+  border-colour "#d65d26"
   radius 8
   borders true
+  border-size 3
 
   notifications:
     position "top-center"
@@ -36,19 +38,25 @@ overlays:
     # text-size 18
     # text-colour "auto"
     # background-colour "auto"
+    # border-colour "#d65d26"
     # borders true
     # radius 8
   end
 end
 ```
 
-`background-colour`, `text-colour`, and `error-colour` accept `auto`, `light`,
-`dark`, or a `#rgb`, `#rgba`, `#rrggbb`, or `#rrggbbaa` colour. American `color`
-spellings are accepted as aliases. `radius` is the overlay content-corner
-radius in pixels; `0` is square.
-`borders false` removes overlay borders. Overlay borders always use the
-configured focused decoration border colour; there is no secondary/dual
-overlay border source.
+`background-colour`, `text-colour`, `error-colour`, and `border-colour` accept
+`auto`, `system`, `light`, `dark`, or a `#rgb`, `#rgba`, `#rrggbb`, or
+`#rrggbbaa` colour. American `color` spellings are accepted as aliases. `auto`
+is Halley's deterministic built-in palette; it deliberately does not inspect
+the desktop theme. `system` explicitly follows the XDG Settings portal's
+`org.freedesktop.appearance` `color-scheme` preference, updates live, and falls
+back to `auto` when the portal reports no preference or is unavailable.
+`radius` is the overlay content-corner radius in pixels; `0` is square.
+`borders false` removes overlay borders. `border-size` sets their width in
+pixels and is clamped from `0` to `64`; it is independent of
+`decorations.border.size`. `border-colour` is also independent of window
+styling and defaults to Halley's orange `#d65d26`.
 Apogee and Alt+Tab title bands, monitor badges, `NODE` badges, and tiled-cluster
 overflow strips remain borderless regardless of this setting, matching old
 Halley's label chrome.
@@ -79,10 +87,11 @@ fades over the positive `fade-duration-ms`.
 `background false` draws only the text. Because there is no card surface in
 that mode, its border, blur, and shadow are removed too. `opacity` multiplies
 the whole indicator's fade and is clamped from `0.0` to `1.0`. `text-size` is
-clamped from `6` to `96` pixels. `text-colour`, `background-colour`, `borders`,
-and `radius` override the corresponding shared overlay value only when present;
-otherwise they inherit it. Both colour spellings are accepted, and colours use
-the same `auto`, `light`, `dark`, and hex formats as the shared palette. A
+clamped from `6` to `96` pixels. `text-colour`, `background-colour`,
+`border-colour`, `borders`, and `radius`
+override the corresponding shared overlay value only when present; otherwise
+they inherit it. Both colour spellings are accepted, and colours use the same
+`auto`, `system`, `light`, `dark`, and hex formats as the shared palette. A
 private `radius` is clamped from `0` to `256` pixels. `borders` and `radius`
 remain configured but have no visible effect while `background false`.
 

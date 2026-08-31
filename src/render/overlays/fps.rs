@@ -56,12 +56,12 @@ pub fn elements(
     now: Duration,
     state: &mut DebugFpsOverlay,
     overlay_config: &halley_config::Overlays,
-    decorations: &halley_config::Decorations,
+    _decorations: &halley_config::Decorations,
     node_renderer: &mut NodeRenderer,
     ui_text: &mut UiTextRenderer,
 ) -> Result<Vec<SceneElement>, Box<dyn Error>> {
     let label = fps_label(state.sample(output, now));
-    let mut visuals = resolve_visuals(overlay_config, decorations);
+    let mut visuals = resolve_visuals(overlay_config);
     visuals.radius = FPS_CORNER_RADIUS;
     let Some(text_size) = ui_text.measure(renderer, &label, visuals.text.bytes())? else {
         return Ok(Vec::new());

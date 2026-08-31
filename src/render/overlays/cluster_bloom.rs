@@ -14,7 +14,6 @@ pub(crate) struct BloomElementContext<'a> {
     pub(crate) clusters: &'a crate::clusters::ClusterSystem,
     pub(crate) nodes: &'a crate::nodes::NodesState,
     pub(crate) cameras: &'a crate::presentation::camera::OutputCameras,
-    pub(crate) decorations: &'a halley_config::Decorations,
     pub(crate) now: std::time::Duration,
     pub(crate) cluster_renderer: &'a mut crate::clusters::render::ClusterRenderer,
     pub(crate) node_renderer: &'a mut NodeRenderer,
@@ -31,7 +30,6 @@ pub(crate) fn elements(
         clusters,
         nodes,
         cameras,
-        decorations,
         now,
         cluster_renderer,
         node_renderer,
@@ -45,7 +43,7 @@ pub(crate) fn elements(
         return Ok(Vec::new());
     }
 
-    let ring = crate::render::scene::node_ring_color(decorations, false);
+    let ring = crate::render::scene::node_ring_color(nodes.config, false);
     let fill = crate::render::scene::node_fill_color(nodes.config, ring);
     let text = crate::render::scene::contrast_text_rgb(fill);
     let allow_real_icons = clusters.config().show_icons

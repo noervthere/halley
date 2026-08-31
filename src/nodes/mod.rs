@@ -130,6 +130,8 @@ pub struct NodesState {
     by_surface: HashMap<WlSurface, NodeId>,
     decay: DecayTracker,
     pub config: halley_config::Nodes,
+    configured_nodes: halley_config::Nodes,
+    system_color_scheme: halley_config::SystemColorScheme,
     pub decay_config: halley_config::Decay,
     pub focus_rings: halley_config::FocusRings,
     pub landmarks: halley_config::LandmarkPlacement,
@@ -151,12 +153,21 @@ pub struct NodesState {
 
 impl NodesState {
     pub fn new(config: &halley_config::RuntimeConfig) -> Self {
+        Self::new_with_color_scheme(config, halley_config::SystemColorScheme::NoPreference)
+    }
+
+    pub fn new_with_color_scheme(
+        config: &halley_config::RuntimeConfig,
+        system_color_scheme: halley_config::SystemColorScheme,
+    ) -> Self {
         Self {
             field: Field::new(),
             records: HashMap::new(),
             by_surface: HashMap::new(),
             decay: DecayTracker::default(),
-            config: config.nodes,
+            config: config.nodes.resolved_for_system(system_color_scheme),
+            configured_nodes: config.nodes,
+            system_color_scheme,
             decay_config: config.decay,
             focus_rings: config.focus_rings.clone(),
             landmarks: halley_config::LandmarkPlacement {
@@ -194,8 +205,10 @@ impl NodesState {
                 self.focus_rings.for_output(output) != config.focus_rings.for_output(output)
             })
             .collect::<HashSet<_>>();
+        let resolved_nodes = config.nodes.resolved_for_system(self.system_color_scheme);
         let redraw = ring_changed
-            || self.config != config.nodes
+            || self.config != resolved_nodes
+            || self.configured_nodes != config.nodes
             || self.animation != config.animations.node
             || self.animations_enabled != config.animations.enabled;
         if ring_changed {
@@ -227,7 +240,8 @@ impl NodesState {
                 self.decay.remove(id);
             }
         }
-        self.config = config.nodes;
+        self.config = resolved_nodes;
+        self.configured_nodes = config.nodes;
         self.decay_config = config.decay;
         self.focus_rings = config.focus_rings.clone();
         self.landmarks = next_landmarks;
@@ -235,6 +249,17 @@ impl NodesState {
         self.animation = config.animations.node;
         self.animations_enabled = config.animations.enabled;
         redraw || landmarks_changed || physics_changed
+    }
+
+    pub fn set_system_color_scheme(&mut self, scheme: halley_config::SystemColorScheme) -> bool {
+        if self.system_color_scheme == scheme {
+            return false;
+        }
+        self.system_color_scheme = scheme;
+        let nodes = self.configured_nodes.resolved_for_system(scheme);
+        let changed = self.config != nodes;
+        self.config = nodes;
+        changed
     }
 
     pub fn focus_ring_for_output(&self, output: &str) -> halley_config::FocusRing {

@@ -30,17 +30,16 @@ pub(super) struct CollapsedCoreVisuals {
 }
 
 pub(super) fn collapsed_core_visuals(
-    decorations: &halley_config::Decorations,
     nodes: halley_config::Nodes,
     highlighted: bool,
 ) -> CollapsedCoreVisuals {
-    let ring = node_ring_color(decorations, highlighted);
+    let ring = node_ring_color(nodes, highlighted);
     CollapsedCoreVisuals {
         ring,
         fill: node_fill_color(nodes, ring),
         icon_colors: [
-            rgba(decorations.border_color_unfocused),
-            rgba(decorations.border_color_focused),
+            rgba(nodes.border_color),
+            rgba(nodes.border_color_highlighted),
         ],
     }
 }
@@ -119,11 +118,11 @@ pub(super) fn cluster_elements(
             (local.x - side / 2, local.y - side / 2).into(),
             (side, side).into(),
         );
-        let visual = collapsed_core_visuals(decorations, nodes.config, highlighted);
+        let visual = collapsed_core_visuals(nodes.config, highlighted);
         let ring = visual.ring;
         let core_border = if visual_flags.join_border_ready {
-            let focused = decorations.border_color_focused;
-            (focused.r, focused.g, focused.b)
+            let highlighted = nodes.config.border_color_highlighted;
+            (highlighted.r, highlighted.g, highlighted.b)
         } else {
             ring
         };
@@ -280,6 +279,29 @@ mod tests {
         assert!(!show_core_edit_button(first, false, Some(first)));
         assert!(!show_core_edit_button(first, true, Some(second)));
         assert!(!show_core_edit_button(first, true, None));
+    }
+
+    #[test]
+    fn collapsed_core_palette_is_owned_by_nodes() {
+        let nodes = halley_config::Nodes {
+            border_color: halley_config::BorderColor {
+                r: 0.1,
+                g: 0.2,
+                b: 0.3,
+            },
+            border_color_highlighted: halley_config::BorderColor {
+                r: 0.8,
+                g: 0.4,
+                b: 0.2,
+            },
+            ..halley_config::Nodes::default()
+        };
+
+        let idle = collapsed_core_visuals(nodes, false);
+        let highlighted = collapsed_core_visuals(nodes, true);
+        assert_eq!(idle.ring, (0.1, 0.2, 0.3));
+        assert_eq!(highlighted.ring, (0.8, 0.4, 0.2));
+        assert_eq!(idle.icon_colors, [[26, 51, 77, 255], [204, 102, 51, 255]]);
     }
 
     #[test]

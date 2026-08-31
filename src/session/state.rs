@@ -245,6 +245,15 @@ impl<D: SessionDriver> Session<D> {
         self.driver.request_redraw(Some(output));
     }
 
+    pub fn apply_system_color_scheme(&mut self, scheme: halley_config::SystemColorScheme) {
+        let changed = self.settings.set_system_color_scheme(scheme)
+            | self.nodes.set_system_color_scheme(scheme);
+        if changed {
+            eventline::debug!("appearance: applied system colour scheme {scheme:?}");
+            self.request_redraw();
+        }
+    }
+
     pub fn notification_output_name(&self) -> String {
         crate::wayland::focus::selected_output(&self.wayland)
             .unwrap_or_else(|| self.driver.primary_output())

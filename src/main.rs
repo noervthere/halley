@@ -2,6 +2,7 @@
 
 mod accessibility;
 mod animation;
+mod appearance;
 mod backend;
 mod capture;
 mod clusters;

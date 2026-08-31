@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Changed
+- Give compositor overlays independent `overlays.border-size` and
+  `overlays.border-colour` settings instead of inheriting window-decoration
+  styling, and let the zoom indicator override its border colour.
+- Give collapsed nodes and cluster cores independent idle and highlighted
+  colours, defaulting to neutral grey and Halley orange.
+- Add an explicit `system` colour mode backed by the XDG Settings portal's
+  `org.freedesktop.appearance` preference while keeping `auto` deterministic.
 - Give new window decorations an orange focused titlebar, neutral focused
   border, and right-side window controls.
 - Make config migration explicit and structurally detected, remove the config

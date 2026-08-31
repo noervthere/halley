@@ -276,7 +276,6 @@ pub fn build(
             output_geometry,
             overlay_snapshot,
             request.overlays.overlay_config,
-            request.visuals.decorations,
             request.resources.node_renderer,
             request.resources.ui_text,
         )?;
@@ -391,7 +390,6 @@ pub fn build(
             output_geometry,
             overlay_snapshot,
             request.overlays.overlay_config,
-            request.visuals.decorations,
             request.resources.node_renderer,
             request.resources.ui_text,
         )?;
@@ -768,7 +766,6 @@ pub fn build(
             clusters: request.desktop.clusters,
             nodes: request.desktop.nodes,
             cameras: request.desktop.cameras,
-            decorations: request.visuals.decorations,
             now: request.frame.target_presentation_time,
             cluster_renderer: request.resources.cluster_renderer,
             node_renderer: request.resources.node_renderer,
@@ -783,7 +780,6 @@ pub fn build(
             clusters: request.desktop.clusters,
             nodes: request.desktop.nodes,
             config: request.overlays.overlay_config,
-            decorations: request.visuals.decorations,
             now: request.frame.target_presentation_time,
             node_renderer: request.resources.node_renderer,
             ui_text: request.resources.ui_text,
@@ -1022,7 +1018,6 @@ pub fn build(
         output_geometry,
         overlay_snapshot,
         request.overlays.overlay_config,
-        request.visuals.decorations,
         request.resources.node_renderer,
         request.resources.ui_text,
     )?;
@@ -1095,7 +1090,6 @@ pub fn build(
                 output_geometry,
                 request.desktop.cameras,
                 request.desktop.clusters.config(),
-                request.visuals.decorations,
                 request.desktop.nodes.config,
                 1.0,
             )?;

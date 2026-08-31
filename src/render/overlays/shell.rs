@@ -90,21 +90,18 @@ const DARK_TEXT: OverlayRgb = OverlayRgb {
     b: 0.98,
     a: 1.0,
 };
+const HALLEY_ACCENT: OverlayRgb = OverlayRgb {
+    r: 0xd6 as f32 / 255.0,
+    g: 0x5d as f32 / 255.0,
+    b: 0x26 as f32 / 255.0,
+    a: 1.0,
+};
 
-pub fn resolve_visuals(
-    config: &halley_config::Overlays,
-    decorations: &halley_config::Decorations,
-) -> OverlayVisuals {
+pub fn resolve_visuals(config: &halley_config::Overlays) -> OverlayVisuals {
     let fill = resolve_fill(config.background_color);
     let text = resolve_text(config.text_color, fill);
     let error = resolve_error(config.error_color);
-    let border_color = decorations.border_color_focused;
-    let border = OverlayRgb {
-        r: border_color.r,
-        g: border_color.g,
-        b: border_color.b,
-        a: 1.0,
-    };
+    let border = resolve_border(config.border_color);
     OverlayVisuals {
         fill,
         text,
@@ -113,7 +110,7 @@ pub fn resolve_visuals(
         key_fill: fill.mix(text, 0.10),
         border,
         border_px: if config.borders {
-            decorations.border_width_px.max(0) as f32
+            config.border_size_px.max(0) as f32
         } else {
             0.0
         },
@@ -123,9 +120,9 @@ pub fn resolve_visuals(
 
 fn resolve_fill(mode: halley_config::OverlayColorMode) -> OverlayRgb {
     match mode {
-        halley_config::OverlayColorMode::Auto | halley_config::OverlayColorMode::Light => {
-            LIGHT_FILL
-        }
+        halley_config::OverlayColorMode::Auto
+        | halley_config::OverlayColorMode::System
+        | halley_config::OverlayColorMode::Light => LIGHT_FILL,
         halley_config::OverlayColorMode::Dark => DARK_FILL,
         halley_config::OverlayColorMode::Fixed { r, g, b, a } => OverlayRgb { r, g, b, a },
     }
@@ -133,7 +130,7 @@ fn resolve_fill(mode: halley_config::OverlayColorMode) -> OverlayRgb {
 
 fn resolve_text(mode: halley_config::OverlayColorMode, fill: OverlayRgb) -> OverlayRgb {
     match mode {
-        halley_config::OverlayColorMode::Auto => {
+        halley_config::OverlayColorMode::Auto | halley_config::OverlayColorMode::System => {
             if fill.luminance() < 0.45 {
                 DARK_TEXT
             } else {
@@ -150,6 +147,7 @@ fn resolve_error(mode: halley_config::OverlayColorMode) -> OverlayRgb {
     match mode {
         halley_config::OverlayColorMode::Fixed { r, g, b, a } => OverlayRgb { r, g, b, a },
         halley_config::OverlayColorMode::Auto
+        | halley_config::OverlayColorMode::System
         | halley_config::OverlayColorMode::Light
         | halley_config::OverlayColorMode::Dark => OverlayRgb {
             r: 0xfb as f32 / 255.0,
@@ -157,6 +155,16 @@ fn resolve_error(mode: halley_config::OverlayColorMode) -> OverlayRgb {
             b: 0x34 as f32 / 255.0,
             a: 1.0,
         },
+    }
+}
+
+fn resolve_border(mode: halley_config::OverlayColorMode) -> OverlayRgb {
+    match mode {
+        halley_config::OverlayColorMode::Fixed { r, g, b, a } => OverlayRgb { r, g, b, a },
+        halley_config::OverlayColorMode::Auto
+        | halley_config::OverlayColorMode::System
+        | halley_config::OverlayColorMode::Light
+        | halley_config::OverlayColorMode::Dark => HALLEY_ACCENT,
     }
 }
 
@@ -202,17 +210,15 @@ pub fn label_card_element(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn elements(
     renderer: &mut GlesRenderer,
     output_geometry: Rectangle<i32, Logical>,
     snapshot: crate::shell::overlay::OverlaySnapshot,
     config: &halley_config::Overlays,
-    decorations: &halley_config::Decorations,
     node_renderer: &mut NodeRenderer,
     ui_text: &mut UiTextRenderer,
 ) -> Result<Vec<SceneElement>, Box<dyn Error>> {
-    let visuals = resolve_visuals(config, decorations);
+    let visuals = resolve_visuals(config);
     let screen = Rectangle::<i32, Physical>::from_size(output_geometry.size.to_physical(1));
     let mut elements = Vec::new();
     if let Some(mix) = snapshot.exit_mix {
@@ -242,7 +248,7 @@ pub fn elements(
         && let Some(zoom_indicator) = snapshot.zoom_indicator
     {
         let zoom_visuals =
-            resolve_zoom_indicator_visuals(config.zoom_indicator, visuals, decorations);
+            resolve_zoom_indicator_visuals(config.zoom_indicator, visuals, config.border_size_px);
         zoom_indicator_elements(
             renderer,
             screen,
@@ -498,7 +504,7 @@ fn zoom_indicator_elements(
 fn resolve_zoom_indicator_visuals(
     config: halley_config::ZoomIndicator,
     mut visuals: OverlayVisuals,
-    decorations: &halley_config::Decorations,
+    border_size_px: i32,
 ) -> OverlayVisuals {
     if let Some(mode) = config.background_color {
         visuals.fill = resolve_fill(mode);
@@ -506,9 +512,12 @@ fn resolve_zoom_indicator_visuals(
     if let Some(mode) = config.text_color {
         visuals.text = resolve_text(mode, visuals.fill);
     }
+    if let Some(mode) = config.border_color {
+        visuals.border = resolve_border(mode);
+    }
     if let Some(borders) = config.borders {
         visuals.border_px = if borders {
-            decorations.border_width_px.max(0) as f32
+            border_size_px.max(0) as f32
         } else {
             0.0
         };
@@ -588,10 +597,7 @@ mod tests {
 
     #[test]
     fn old_auto_palette_is_light_with_dark_text() {
-        let visuals = resolve_visuals(
-            &halley_config::Overlays::default(),
-            &halley_config::Decorations::default(),
-        );
+        let visuals = resolve_visuals(&halley_config::Overlays::default());
         assert_eq!(visuals.fill, LIGHT_FILL);
         assert_eq!(visuals.text, LIGHT_TEXT);
         assert_eq!(visuals.radius, 8.0);
@@ -603,18 +609,22 @@ mod tests {
             background_color: halley_config::OverlayColorMode::Dark,
             ..halley_config::Overlays::default()
         };
-        assert_eq!(
-            resolve_visuals(&config, &halley_config::Decorations::default()).text,
-            DARK_TEXT
-        );
+        assert_eq!(resolve_visuals(&config).text, DARK_TEXT);
+    }
+
+    #[test]
+    fn overlay_border_size_does_not_inherit_window_border_width() {
+        let config = halley_config::Overlays {
+            border_size_px: 7,
+            ..halley_config::Overlays::default()
+        };
+
+        assert_eq!(resolve_visuals(&config).border_px, 7.0);
     }
 
     #[test]
     fn internal_label_chrome_never_inherits_container_borders() {
-        let visuals = resolve_visuals(
-            &halley_config::Overlays::default(),
-            &halley_config::Decorations::default(),
-        );
+        let visuals = resolve_visuals(&halley_config::Overlays::default());
 
         assert!(visuals.border_px > 0.0);
         assert_eq!(visuals.label_chrome().border_px, 0.0);
@@ -629,8 +639,7 @@ mod tests {
 
     #[test]
     fn zoom_indicator_visual_overrides_are_independent() {
-        let decorations = halley_config::Decorations::default();
-        let shared = resolve_visuals(&halley_config::Overlays::default(), &decorations);
+        let shared = resolve_visuals(&halley_config::Overlays::default());
         let config = halley_config::ZoomIndicator {
             background_color: Some(halley_config::OverlayColorMode::Dark),
             text_color: Some(halley_config::OverlayColorMode::Auto),
@@ -639,7 +648,11 @@ mod tests {
             ..halley_config::ZoomIndicator::default()
         };
 
-        let visuals = resolve_zoom_indicator_visuals(config, shared, &decorations);
+        let visuals = resolve_zoom_indicator_visuals(
+            config,
+            shared,
+            halley_config::Overlays::default().border_size_px,
+        );
         assert_eq!(visuals.fill, DARK_FILL);
         assert_eq!(visuals.text, DARK_TEXT);
         assert_eq!(visuals.border_px, 0.0);
@@ -647,21 +660,39 @@ mod tests {
     }
 
     #[test]
+    fn zoom_indicator_border_override_uses_overlay_border_size() {
+        let shared_config = halley_config::Overlays {
+            borders: false,
+            border_size_px: 7,
+            ..halley_config::Overlays::default()
+        };
+        let shared = resolve_visuals(&shared_config);
+        let zoom = halley_config::ZoomIndicator {
+            borders: Some(true),
+            ..halley_config::ZoomIndicator::default()
+        };
+
+        assert_eq!(
+            resolve_zoom_indicator_visuals(zoom, shared, shared_config.border_size_px).border_px,
+            7.0
+        );
+    }
+
+    #[test]
     fn zoom_indicator_visual_defaults_inherit_shared_style() {
-        let decorations = halley_config::Decorations::default();
         let shared_config = halley_config::Overlays {
             background_color: halley_config::OverlayColorMode::Dark,
             radius_px: 14,
             borders: false,
             ..halley_config::Overlays::default()
         };
-        let shared = resolve_visuals(&shared_config, &decorations);
+        let shared = resolve_visuals(&shared_config);
 
         assert_eq!(
             resolve_zoom_indicator_visuals(
                 halley_config::ZoomIndicator::default(),
                 shared,
-                &decorations,
+                shared_config.border_size_px,
             )
             .fill,
             shared.fill
@@ -670,7 +701,7 @@ mod tests {
             resolve_zoom_indicator_visuals(
                 halley_config::ZoomIndicator::default(),
                 shared,
-                &decorations,
+                shared_config.border_size_px,
             )
             .radius,
             14.0

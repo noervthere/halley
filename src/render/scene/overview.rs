@@ -216,8 +216,7 @@ pub(super) fn apogee_elements(
     let progress = session.progress(now).clamp(0.0, 1.0);
     let visuals = apogee_transition_visuals(progress);
     let output_local = Rectangle::<i32, Physical>::from_size(output_geometry.size.to_physical(1));
-    let overlay_visuals =
-        crate::render::overlays::shell::resolve_visuals(overlay_config, decorations);
+    let overlay_visuals = crate::render::overlays::shell::resolve_visuals(overlay_config);
     let mut tiles = session
         .tiles
         .iter()
@@ -246,7 +245,6 @@ pub(super) fn apogee_elements(
                     highlighted: session.selected == Some(tile.id)
                         || session.hovered == Some(tile.id),
                     overlay_visuals,
-                    decorations,
                     cameras,
                     nodes,
                     clusters,
@@ -669,10 +667,7 @@ pub(super) fn focus_cycle_elements(
     }
 
     let screen = output_geometry.size.to_physical(1);
-    let overlay_visuals = crate::render::overlays::shell::resolve_visuals(
-        context.overlay_config,
-        context.decorations,
-    );
+    let overlay_visuals = crate::render::overlays::shell::resolve_visuals(context.overlay_config);
     let rail_step = (screen.w as f32 * 0.28).clamp(260.0, 440.0) + 9.0;
     let center_y = screen.h as f32 * 0.5;
     let mut cards = session
@@ -1049,7 +1044,7 @@ pub(super) fn hover_preview_elements(
             .into(),
     );
     let body = aspect_fit_rect(body_bounds, source.w, source.h);
-    let visuals = crate::render::overlays::shell::resolve_visuals(overlay_config, decorations);
+    let visuals = crate::render::overlays::shell::resolve_visuals(overlay_config);
     let mut elements = Vec::new();
 
     let title = truncate_chars(&record.title, 24);

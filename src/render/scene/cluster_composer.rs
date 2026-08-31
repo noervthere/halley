@@ -52,8 +52,7 @@ pub(super) fn cluster_composer_elements(
         crate::shell::cluster_composer::Phase::Committing
             | crate::shell::cluster_composer::Phase::CommitEndpointHeld
     );
-    let overlay_visuals =
-        crate::render::overlays::shell::resolve_visuals(overlay_config, decorations);
+    let overlay_visuals = crate::render::overlays::shell::resolve_visuals(overlay_config);
     let output_local = Rectangle::<i32, Physical>::from_size(output_geometry.size.to_physical(1));
     let prepared_core = session
         .prepared()
@@ -188,7 +187,6 @@ pub(super) fn cluster_composer_elements(
             output_geometry,
             cameras,
             clusters.config(),
-            decorations,
             nodes.config,
             alpha,
         )?;
@@ -238,7 +236,6 @@ pub(super) fn prepared_core_elements(
     output_geometry: Rectangle<i32, Logical>,
     cameras: &crate::presentation::camera::OutputCameras,
     cluster_config: halley_config::Clusters,
-    decorations: &halley_config::Decorations,
     node_config: halley_config::Nodes,
     alpha: f32,
 ) -> Result<Vec<SceneElement>, Box<dyn Error>> {
@@ -246,8 +243,7 @@ pub(super) fn prepared_core_elements(
         return Ok(Vec::new());
     };
     let alpha = alpha.clamp(0.0, 1.0);
-    let visual =
-        super::clusters::collapsed_core_visuals(decorations, node_config, prepared.focus_core);
+    let visual = super::clusters::collapsed_core_visuals(node_config, prepared.focus_core);
     let mut elements = Vec::new();
     if cluster_config.show_icons {
         let icon_side = ((destination.size.w as f32 * node_config.icon_size * 0.98).round() as i32)

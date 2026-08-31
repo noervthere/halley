@@ -15,7 +15,6 @@ pub(crate) struct OverflowElementContext<'a> {
     pub(crate) clusters: &'a crate::clusters::ClusterSystem,
     pub(crate) nodes: &'a crate::nodes::NodesState,
     pub(crate) config: &'a halley_config::Overlays,
-    pub(crate) decorations: &'a halley_config::Decorations,
     pub(crate) now: std::time::Duration,
     pub(crate) node_renderer: &'a mut NodeRenderer,
     pub(crate) ui_text: &'a mut UiTextRenderer,
@@ -30,7 +29,6 @@ pub(crate) fn elements(
         clusters,
         nodes,
         config,
-        decorations,
         now,
         node_renderer,
         ui_text,
@@ -39,7 +37,7 @@ pub(crate) fn elements(
     let Some(layout) = clusters.overflow_layout(&output.name(), work_area, now) else {
         return Ok(Vec::new());
     };
-    let visuals = resolve_visuals(config, decorations);
+    let visuals = resolve_visuals(config);
     let visibility = layout.visibility;
     let mut contents = Vec::new();
     let mut chips = Vec::new();

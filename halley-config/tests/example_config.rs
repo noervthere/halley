@@ -396,6 +396,7 @@ fn example_config_overlay_section_is_the_bootstrap_style() {
 
     assert_eq!(overlays.radius_px, 8);
     assert!(overlays.borders);
+    assert_eq!(overlays.border_size_px, 3);
     assert_eq!(
         overlays.notifications.position,
         halley_config::NotificationPosition::TopCenter

@@ -383,6 +383,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
     applied_input.keyboard = applied_keyboard;
     let launch_environment = super::environment::LaunchEnvironment::new(&runtime_config.env);
     let launch_path = launch_environment.path();
+    let system_color_scheme = crate::appearance::current_color_scheme();
     let mut app = TtyApp {
         driver,
         keyboard: Keyboard::from_config(
@@ -410,8 +411,15 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
         config_watcher: None,
         startup_config_diagnostic: initial.diagnostic,
         shell: crate::shell::state::ShellState::new(&runtime_config),
-        settings: super::RuntimeSettings::new(&runtime_config, applied_input),
-        nodes: crate::nodes::NodesState::new(&runtime_config),
+        settings: super::RuntimeSettings::new_with_color_scheme(
+            &runtime_config,
+            applied_input,
+            system_color_scheme,
+        ),
+        nodes: crate::nodes::NodesState::new_with_color_scheme(
+            &runtime_config,
+            system_color_scheme,
+        ),
         trail: crate::trail::TrailState::new(runtime_config.trail),
         clusters: crate::clusters::ClusterSystem::new(
             runtime_config.clusters,
@@ -493,6 +501,11 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
             Ok(watcher) => app.config_watcher = Some(watcher),
             Err(err) => eventline::warn!("config: failed to start watcher: {err}"),
         }
+    }
+    if let Err(err) = crate::appearance::watch(&event_loop.handle(), |app: &mut TtyApp, scheme| {
+        app.apply_system_color_scheme(scheme);
+    }) {
+        eventline::warn!("appearance: failed to start system colour watcher: {err}");
     }
     if let Err(err) = super::install_node_decay_timer(&event_loop.handle()) {
         eventline::warn!("nodes: failed to start decay timer: {err}");
