@@ -393,6 +393,9 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                 if let (Some(before), Some(after)) = (zoom_scale_before, zoom_scale_after)
                     && before != after
                 {
+                    if after < before && app.clusters.active_on(&output_name).is_none() {
+                        crate::nodes::reconcile_landmarks_for_zoom(app, &output_name, after);
+                    }
                     app.shell.overlays.show_zoom_indicator(
                         &output_name,
                         after,

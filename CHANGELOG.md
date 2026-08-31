@@ -19,8 +19,10 @@ All notable changes to this project will be documented in this file.
   when the setting is omitted.
 
 ### Fixed
-- Keep empty cluster workspaces logically focusable and stop zoom actions from
-  moving collapsed nodes away from fixed-size cluster cores.
+- Keep empty cluster workspaces logically focusable.
+- Reflow unpinned collapsed cluster cores alongside ordinary nodes as their
+  screen-constant collision footprints grow during smooth zoom-out, while
+  active windows and pinned landmarks remain stationary.
 - Premultiply configured overlay RGBA colours before GLES composition so alpha
   in values such as zoom-indicator `#ffffff80` produces real translucency
   instead of an over-bright, apparently opaque card.

@@ -68,6 +68,13 @@ fn reconcile_landmarks_inner<D: crate::session::SessionDriver>(
 fn dynamics_bodies<D: crate::session::SessionDriver>(
     session: &mut crate::session::Session<D>,
 ) -> Vec<dynamics::Body> {
+    dynamics_bodies_at_scale(session, None)
+}
+
+fn dynamics_bodies_at_scale<D: crate::session::SessionDriver>(
+    session: &mut crate::session::Session<D>,
+    scale_override: Option<(&str, f32)>,
+) -> Vec<dynamics::Body> {
     session.nodes.sync_from_space(&session.wayland.space);
     let mut bodies = session
         .nodes
@@ -81,10 +88,15 @@ fn dynamics_bodies<D: crate::session::SessionDriver>(
         })
         .filter_map(|record| {
             let node = session.nodes.field.node(record.id)?;
-            let scale = session
-                .cameras
-                .get(&record.output)
-                .map(crate::presentation::camera::scale)
+            let scale = scale_override
+                .filter(|(output, _)| *output == record.output)
+                .map(|(_, scale)| scale)
+                .or_else(|| {
+                    session
+                        .cameras
+                        .get(&record.output)
+                        .map(crate::presentation::camera::scale)
+                })
                 .unwrap_or(1.0)
                 .max(0.05);
             let (kind, extents) = if record.collapsed {
@@ -127,10 +139,15 @@ fn dynamics_bodies<D: crate::session::SessionDriver>(
         .collect::<Vec<_>>();
     bodies.extend(session.clusters.collapsed_core_landmarks().into_iter().map(
         |(_, id, output, pos, pinned)| {
-            let scale = session
-                .cameras
-                .get(&output)
-                .map(crate::presentation::camera::scale)
+            let scale = scale_override
+                .filter(|(override_output, _)| *override_output == output)
+                .map(|(_, scale)| scale)
+                .or_else(|| {
+                    session
+                        .cameras
+                        .get(&output)
+                        .map(crate::presentation::camera::scale)
+                })
                 .unwrap_or(1.0)
                 .max(0.05);
             dynamics::Body {
@@ -148,6 +165,91 @@ fn dynamics_bodies<D: crate::session::SessionDriver>(
         },
     ));
     bodies
+}
+
+/// Reconcile the fixed-pixel footprint of collapsed landmarks at a newly
+/// presented zoom scale. This runs only while zooming out: active windows are
+/// stationary blockers, while ordinary nodes and collapsed cluster cores move
+/// together under the same collision policy.
+pub(crate) fn reconcile_landmarks_for_zoom<D: crate::session::SessionDriver>(
+    session: &mut crate::session::Session<D>,
+    output: &str,
+    scale: f32,
+) -> bool {
+    let bodies = dynamics_bodies_at_scale(session, Some((output, scale)))
+        .into_iter()
+        .filter(|body| body.output == output)
+        .collect::<Vec<_>>();
+    let positions = dynamics::solve_zoom_reflow(&bodies);
+    let now = crate::frame_clock::monotonic_now();
+    let mut changed = false;
+
+    for (id, destination) in positions {
+        if let Some(cluster) = session.clusters.cluster_for_core(id) {
+            let Some((current, core_output)) = session
+                .clusters
+                .metadata(cluster)
+                .map(|metadata| (metadata.core_position, metadata.output.clone()))
+            else {
+                continue;
+            };
+            if (destination.x - current.x).abs() <= 0.001
+                && (destination.y - current.y).abs() <= 0.001
+            {
+                continue;
+            }
+            let from = session.nodes.landmark_position(id, current, now);
+            if !session
+                .clusters
+                .move_core(cluster, &core_output, destination)
+            {
+                continue;
+            }
+            if let Some(node) = session.nodes.field.node_mut(id) {
+                node.pos = destination;
+            }
+            session.nodes.physics_velocity.remove(&id);
+            session
+                .nodes
+                .start_landmark_slide(id, from, destination, now);
+            changed = true;
+            continue;
+        }
+
+        let Some((current, collapsed, attached, node_output)) =
+            session.nodes.record(id).and_then(|record| {
+                session.nodes.field.node(id).map(|node| {
+                    (
+                        node.pos,
+                        record.collapsed,
+                        record.attached,
+                        record.output.clone(),
+                    )
+                })
+            })
+        else {
+            continue;
+        };
+        if !collapsed
+            || !attached
+            || node_output != output
+            || ((destination.x - current.x).abs() <= 0.001
+                && (destination.y - current.y).abs() <= 0.001)
+        {
+            continue;
+        }
+        let from = session.nodes.landmark_position(id, current, now);
+        if let Some(node) = session.nodes.field.node_mut(id) {
+            node.pos = destination;
+        }
+        session.nodes.physics_velocity.remove(&id);
+        session
+            .nodes
+            .start_landmark_slide(id, from, destination, now);
+        changed = true;
+    }
+
+    changed
 }
 
 fn apply_dynamics_positions<D: crate::session::SessionDriver>(

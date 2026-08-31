@@ -228,8 +228,10 @@ Collapse starts at the window center and slides to the nearest legal location.
 A new or restored active window keeps its placement and relocates blocking
 nodes. An interactively dragged window is authoritative and pushes unpinned
 nodes; `halleyctl node move` remains a discrete legal-placement operation.
-Marker collision is screen-constant across camera zoom; transient labels and
-shadows never reserve space.
+Marker collision is screen-constant across camera zoom. As zoom-out grows a
+marker's footprint in Field space, unpinned ordinary nodes and collapsed
+cluster cores reflow together around each other and stationary active windows.
+Transient labels and shadows never reserve space.
 
 The same `field.gap` insets field-maximized windows from the usable output
 work area. See [Field behavior and maximize](field.md).

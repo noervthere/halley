@@ -119,9 +119,10 @@ fn pair_inverse_mass(a: &Body, b: &Body, authority: Option<NodeId>, physics: boo
     )
 }
 
-pub(super) fn solve_static(
+fn solve_static_with_mass(
     bodies: &[Body],
     authority: Option<(NodeId, Vec2)>,
+    inverse_mass: impl Fn(&Body, &Body, Option<NodeId>) -> (f32, f32),
 ) -> HashMap<NodeId, Vec2> {
     let authority_id = authority.map(|(id, _)| id);
     let mut positions = bodies
@@ -147,7 +148,7 @@ pub(super) fn solve_static(
                 let Some((dx, dy, ox, oy)) = overlap(a, a_pos, b, b_pos) else {
                     continue;
                 };
-                let (inv_a, inv_b) = pair_inverse_mass(a, b, authority_id, false);
+                let (inv_a, inv_b) = inverse_mass(a, b, authority_id);
                 let total = inv_a + inv_b;
                 if total <= 0.0 {
                     continue;
@@ -199,6 +200,32 @@ pub(super) fn solve_static(
         }
     }
     positions
+}
+
+pub(super) fn solve_static(
+    bodies: &[Body],
+    authority: Option<(NodeId, Vec2)>,
+) -> HashMap<NodeId, Vec2> {
+    solve_static_with_mass(bodies, authority, |a, b, authority_id| {
+        pair_inverse_mass(a, b, authority_id, false)
+    })
+}
+
+/// Reflow fixed-pixel landmarks after zoom-out expands their world-space
+/// footprint. Active windows are stationary obstacles; ordinary nodes and
+/// collapsed cluster cores share the node body kind and yield equally unless
+/// their persistent pin policy locks them.
+pub(super) fn solve_zoom_reflow(bodies: &[Body]) -> HashMap<NodeId, Vec2> {
+    solve_static_with_mass(bodies, None, |a, b, _| {
+        let inverse = |body: &Body| {
+            if body.pinned || body.kind == BodyKind::Window {
+                0.0
+            } else {
+                1.0
+            }
+        };
+        (inverse(a), inverse(b))
+    })
 }
 
 fn positions_are_legal(bodies: &[Body], positions: &HashMap<NodeId, Vec2>) -> bool {
@@ -521,6 +548,38 @@ mod tests {
         let positions = solve_static(&[a, b], None);
         assert_eq!(positions[&NodeId::new(1)].x, 0.0);
         assert_eq!(positions[&NodeId::new(2)].x, 0.0);
+    }
+
+    #[test]
+    fn zoom_reflow_moves_nodes_and_cores_away_from_stationary_windows() {
+        let window = body(1, BodyKind::Window, 0.0);
+        let node_by_window = body(2, BodyKind::Node, 0.0);
+        let ordinary_node = body(3, BodyKind::Node, 100.0);
+        // Cluster cores use the same body kind with their larger extents.
+        let mut cluster_core = body(4, BodyKind::Node, 100.0);
+        cluster_core.extents = CollisionExtents::symmetric(Vec2 { x: 20.0, y: 20.0 });
+        let bodies = vec![window, node_by_window, ordinary_node, cluster_core];
+        let positions = solve_zoom_reflow(&bodies);
+
+        assert_eq!(positions[&NodeId::new(1)], Vec2 { x: 0.0, y: 0.0 });
+        assert_ne!(positions[&NodeId::new(2)], Vec2 { x: 0.0, y: 0.0 });
+        assert_ne!(positions[&NodeId::new(3)], Vec2 { x: 100.0, y: 0.0 });
+        assert_ne!(positions[&NodeId::new(4)], Vec2 { x: 100.0, y: 0.0 });
+        assert!(positions_are_legal(&bodies, &positions));
+    }
+
+    #[test]
+    fn zoom_reflow_keeps_a_pinned_core_fixed() {
+        let ordinary_node = body(1, BodyKind::Node, 0.0);
+        let mut pinned_core = body(2, BodyKind::Node, 0.0);
+        pinned_core.pinned = true;
+        pinned_core.extents = CollisionExtents::symmetric(Vec2 { x: 20.0, y: 20.0 });
+        let bodies = vec![ordinary_node, pinned_core];
+        let positions = solve_zoom_reflow(&bodies);
+
+        assert_ne!(positions[&NodeId::new(1)], Vec2 { x: 0.0, y: 0.0 });
+        assert_eq!(positions[&NodeId::new(2)], Vec2 { x: 0.0, y: 0.0 });
+        assert!(positions_are_legal(&bodies, &positions));
     }
 
     #[test]

@@ -1100,13 +1100,16 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
             app.settings.input.gestures.pan_decay_rate,
             dt.as_secs_f32(),
         );
-        (animating, (before != after).then_some(after))
+        (animating, (before != after).then_some((before, after)))
     });
     let camera_animating = zoom_tick.is_some_and(|(animating, _)| animating);
-    if let Some(scale) = zoom_tick.and_then(|(_, scale)| scale) {
+    if let Some((before, after)) = zoom_tick.and_then(|(_, scales)| scales) {
+        if after < before && app.clusters.active_on(&output.name()).is_none() {
+            crate::nodes::reconcile_landmarks_for_zoom(app, &output.name(), after);
+        }
         app.shell.overlays.show_zoom_indicator(
             &output.name(),
-            scale,
+            after,
             &app.settings.overlays.zoom_indicator,
             target_presentation_time,
         );

@@ -6,8 +6,10 @@ cluster remains valid when it has no members: closing the final member leaves
 its name, slot, layout, and core available for later use.
 
 Opening a cluster, selecting its slot, or changing its layout briefly shows a
-centered `name · layout` label on that output. Cluster cores and collapsed nodes
-keep their Field positions while the camera zooms.
+centered `name · layout` label on that output. During zoom-out, unpinned
+collapsed cores and ordinary nodes reflow together when their screen-constant
+collision footprints would overlap each other or an active window. Pinned
+landmarks remain fixed.
 
 ## Startup clusters
 

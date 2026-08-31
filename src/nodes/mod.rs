@@ -28,7 +28,8 @@ pub use session_ops::{
 };
 pub(crate) use session_ops::{
     displace_landmarks_for_new_window, move_cluster_core_rigid, move_grabbed_body_rigid,
-    resolve_new_cluster_core, restore_for_cluster_join, set_collapsed_output, tick_physics,
+    reconcile_landmarks_for_zoom, resolve_new_cluster_core, restore_for_cluster_join,
+    set_collapsed_output, tick_physics,
 };
 #[cfg(test)]
 use session_ops::{minimal_reveal_delta, physics_frame_delta};
