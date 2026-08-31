@@ -4,12 +4,23 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- Add compact startup cluster declarations under `autostart`, with persistent
+  named cores, optional layout/output selection, empty `members []` support,
+  and launch attribution for native Wayland and XWayland windows.
+- Flash the active cluster name and layout at the center of its output when a
+  cluster opens or changes layout.
+
 ### Changed
+- Keep clusters and their core identity after the final member closes so named
+  empty workspaces remain available for later windows.
 - Add `decorations.titlebars.text-size` so window-title text can use a size
   independent of the global compositor font while preserving global inheritance
   when the setting is omitted.
 
 ### Fixed
+- Keep empty cluster workspaces logically focusable and stop zoom actions from
+  moving collapsed nodes away from fixed-size cluster cores.
 - Premultiply configured overlay RGBA colours before GLES composition so alpha
   in values such as zoom-indicator `#ffffff80` produces real translucency
   instead of an over-bright, apparently opaque card.

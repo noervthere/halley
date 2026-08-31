@@ -40,6 +40,21 @@ autostart:
   # once "mako"
 
   # on-reload "notify-send 'Halley configuration reloaded'"
+
+  # Startup clusters reserve persistent named slots along the top of the Field.
+  # `members` is only an array of commands; use [] to create an empty cluster.
+  # `layout` and `output` are optional. Changes take effect after restarting the
+  # real TTY session; nested Winit sessions create the cores without launching.
+  # cluster:
+  #   name "Work"
+  #   members ["foot" "firefox"]
+  #   layout "tiling"
+  #   output "DP-1"
+  # end
+  # cluster:
+  #   name "Inbox"
+  #   members []
+  # end
 end
 
 # `view` groups settings by physical output. Repeat `output:` inside this one

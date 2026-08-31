@@ -273,6 +273,11 @@ one atomic snapshot; invalid edits leave the last valid runtime state active.
 Nested Rune `gather` dependencies are watched recursively, including missing
 dependencies that are created after startup.
 
+The `autostart` section can also declare persistent named clusters using compact
+command arrays, including empty `members []` declarations. See
+[startup clusters](docs/clusters.md#startup-clusters) for syntax, launch
+attribution, output placement, and restart behavior.
+
 Useful controls:
 
 ```sh
