@@ -17,8 +17,8 @@ pub struct OverlayRgb {
 }
 
 impl OverlayRgb {
-    pub fn tuple(self) -> (f32, f32, f32, f32) {
-        (self.r, self.g, self.b, self.a)
+    fn premultiplied_tuple(self) -> (f32, f32, f32, f32) {
+        (self.r * self.a, self.g * self.a, self.b * self.a, self.a)
     }
 
     pub fn bytes(self) -> [u8; 3] {
@@ -181,8 +181,11 @@ pub fn card_element(
         destination,
         OverlayCardStyle {
             content_radius: visuals.radius,
-            fill: fill.tuple(),
-            border: visuals.border.tuple(),
+            // Smithay composites GLES elements as premultiplied RGBA. The
+            // configured colours are straight alpha, so premultiply their RGB
+            // channels before the card shader applies its geometric mask.
+            fill: fill.premultiplied_tuple(),
+            border: visuals.border.premultiplied_tuple(),
             border_px: visuals.border_px,
             alpha,
         },
@@ -635,6 +638,21 @@ mod tests {
         assert_eq!(zoom_indicator_label(1.0), "1.00x");
         assert_eq!(zoom_indicator_label(0.754), "0.75x");
         assert_eq!(zoom_indicator_label(0.756), "0.76x");
+    }
+
+    #[test]
+    fn translucent_overlay_colours_are_premultiplied_for_smithay() {
+        let white_at_half_alpha = OverlayRgb {
+            r: 1.0,
+            g: 1.0,
+            b: 1.0,
+            a: 128.0 / 255.0,
+        };
+
+        assert_eq!(
+            white_at_half_alpha.premultiplied_tuple(),
+            (128.0 / 255.0, 128.0 / 255.0, 128.0 / 255.0, 128.0 / 255.0,)
+        );
     }
 
     #[test]

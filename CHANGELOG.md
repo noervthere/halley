@@ -9,6 +9,11 @@ All notable changes to this project will be documented in this file.
   independent of the global compositor font while preserving global inheritance
   when the setting is omitted.
 
+### Fixed
+- Premultiply configured overlay RGBA colours before GLES composition so alpha
+  in values such as zoom-indicator `#ffffff80` produces real translucency
+  instead of an over-bright, apparently opaque card.
+
 ## [v0.7.0] - 2026-08-31
 
 ### Changed

@@ -570,7 +570,7 @@ overlays:
     background false
     text-size 18
     text-color "#f0c8"
-    background-colour "dark"
+    background-colour "#ffffff80"
     border-colour "system"
     opacity 0.8
     borders true
@@ -604,10 +604,14 @@ end
             overlays.zoom_indicator.text_color,
             Some(OverlayColorMode::Fixed { .. })
         ));
-        assert_eq!(
+        assert!(matches!(
             overlays.zoom_indicator.background_color,
-            Some(OverlayColorMode::Dark)
-        );
+            Some(OverlayColorMode::Fixed { r, g, b, a })
+                if r == 1.0
+                    && g == 1.0
+                    && b == 1.0
+                    && (a - 128.0 / 255.0).abs() < f32::EPSILON
+        ));
         assert_eq!(
             overlays.zoom_indicator.border_color,
             Some(OverlayColorMode::System)
