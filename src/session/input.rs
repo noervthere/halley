@@ -628,6 +628,10 @@ pub(crate) fn show_cluster_indicator<D: SessionDriver>(
         .show_cluster_indicator(&output, &name, layout, now);
 }
 
+fn activation_shows_cluster_indicator(first_member: Option<halley_core::field::NodeId>) -> bool {
+    first_member.is_none()
+}
+
 pub(crate) fn sync_cluster_activation_focus<D: SessionDriver>(
     session: &mut Session<D>,
     output: &Output,
@@ -639,7 +643,8 @@ pub(crate) fn sync_cluster_activation_focus<D: SessionDriver>(
     let output_name = output.name();
     super::sync_cluster_camera(session, &output_name, now);
     if session.clusters.active_on(&output_name) == Some(id) {
-        if let Some(member) = session.clusters.first_member(id) {
+        let first_member = session.clusters.first_member(id);
+        if let Some(member) = first_member {
             if let Some(window) = session
                 .nodes
                 .record(member)
@@ -649,7 +654,9 @@ pub(crate) fn sync_cluster_activation_focus<D: SessionDriver>(
             }
         } else {
             // An empty workspace has no client surface to own keyboard focus,
-            // but its persistent core is still the logical selection.
+            // but its persistent core is still the logical selection. Identify
+            // the otherwise blank workspace; populated clusters reveal their
+            // contents directly and do not need an activation card.
             crate::window::clear_focus(&mut session.wayland);
             session.nodes.focus(
                 session.clusters.core_node(id),
@@ -657,7 +664,9 @@ pub(crate) fn sync_cluster_activation_focus<D: SessionDriver>(
             );
             super::sync_keyboard_focus(session, serial);
         }
-        show_cluster_indicator(session, id, now);
+        if activation_shows_cluster_indicator(first_member) {
+            show_cluster_indicator(session, id, now);
+        }
     } else if collapsed_should_focus {
         crate::window::clear_focus(&mut session.wayland);
         session.nodes.focus(
@@ -3523,11 +3532,12 @@ mod tests {
     use super::keyboard::{ModalKeyRouting, modal_key_routing};
     use super::{BTN_LEFT, BTN_RIGHT, PendingWindowMoveMotion};
     use super::{
-        bloom_drag_handoff, collapsed_node_drop_origin, drag_threshold_reached,
-        forward_pointer_button, outside_lift_press_dismisses, pending_window_move_motion,
-        plain_background_press_dismisses_bloom, pointer_move_falls_back_to_field_pan,
-        preferred_cluster_navigation_focus, releases_pending_window_move, sampled_drag_velocity,
-        shortcut_policy_allows_bindings, stacking_cycle_direction, typing_abandons_bloom,
+        activation_shows_cluster_indicator, bloom_drag_handoff, collapsed_node_drop_origin,
+        drag_threshold_reached, forward_pointer_button, outside_lift_press_dismisses,
+        pending_window_move_motion, plain_background_press_dismisses_bloom,
+        pointer_move_falls_back_to_field_pan, preferred_cluster_navigation_focus,
+        releases_pending_window_move, sampled_drag_velocity, shortcut_policy_allows_bindings,
+        stacking_cycle_direction, typing_abandons_bloom,
     };
     fn sample_constant_motion(report_hz: u32) -> Vec2 {
         let step = Duration::from_secs_f64(1.0 / f64::from(report_hz));
@@ -3715,6 +3725,14 @@ mod tests {
             window_action_output(halley_config::FocusMode::Hover, None, Some("left")),
             Some("left".to_string())
         );
+    }
+
+    #[test]
+    fn only_empty_cluster_activation_shows_the_centered_indicator() {
+        assert!(activation_shows_cluster_indicator(None));
+        assert!(!activation_shows_cluster_indicator(Some(
+            halley_core::field::NodeId::new(1)
+        )));
     }
 
     #[test]

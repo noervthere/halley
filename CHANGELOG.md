@@ -8,8 +8,9 @@ All notable changes to this project will be documented in this file.
 - Add compact startup cluster declarations under `autostart`, with persistent
   named cores, optional layout/output selection, empty `members []` support,
   and launch attribution for native Wayland and XWayland windows.
-- Flash the active cluster name and layout at the center of its output when a
-  cluster opens or changes layout.
+- Flash an empty active cluster's name and layout at the center of its output;
+  populated clusters reveal their windows directly without an activation card.
+  Explicit layout changes still flash the updated name and layout.
 
 ### Changed
 - Keep clusters and their core identity after the final member closes so named

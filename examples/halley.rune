@@ -54,6 +54,7 @@ autostart:
   # cluster:
   #   name "Inbox"
   #   members []
+  #   output "DP-2" # Initial connector; the core can be moved after startup.
   # end
 end
 

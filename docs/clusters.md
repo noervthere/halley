@@ -5,11 +5,15 @@ Opening the core presents its members in either tiling or stacking layout. A
 cluster remains valid when it has no members: closing the final member leaves
 its name, slot, layout, and core available for later use.
 
-Opening a cluster, selecting its slot, or changing its layout briefly shows a
-centered `name · layout` label on that output. A collapsed core's hover label
-prefers the right side, then searches the other sides and corners for space not
-occupied by a visible window, ordinary node, or another core. If every nearby
-position is obstructed, it uses the on-screen position with the least overlap.
+Opening or selecting an empty cluster briefly shows a centered `name · layout`
+label so the otherwise blank workspace remains identifiable. A populated
+cluster reveals its windows without showing that activation label. Explicitly
+changing a cluster's layout still flashes its updated name and layout.
+
+A collapsed core's hover label prefers the right side, then searches the other
+sides and corners for space not occupied by a visible window, ordinary node, or
+another core. If every nearby position is obstructed, it uses the on-screen
+position with the least overlap.
 
 During zoom-out, unpinned collapsed cores and ordinary nodes reflow together
 when their screen-constant collision footprints would overlap each other or an
@@ -42,8 +46,10 @@ Fields:
 - `members` is required. It is an array of command strings and may be empty.
 - `layout` is optional: `"tiling"` or `"stacking"`. When omitted, the cluster
   configuration's default layout is used.
-- `output` is optional. When omitted, the primary output is used. An unavailable
-  named output is skipped with a warning.
+- `output` selects the connector where the cluster initially lives (for
+  example, `"DP-1"`). It is optional; omission uses the primary output. An
+  unavailable named output is skipped with a warning. The core may be moved to
+  another output after startup like any other collapsed cluster core.
 
 At most ten clusters can occupy an output. Startup cores are arranged as a
 centered row near the top of each output, in declaration order.
