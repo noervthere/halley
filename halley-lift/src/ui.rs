@@ -473,6 +473,7 @@ pub struct IconCache {
     term_icon: Option<(u32, IconRaster)>,
     config_search_icon: Option<(u32, IconRaster)>,
     config_icon: Option<(u32, IconRaster)>,
+    selection_icon: Option<(u32, IconRaster)>,
 }
 
 /// Search-bar glyphs. Authored as square SVGs and rendered to alpha masks that are
@@ -483,6 +484,7 @@ const ACTION_ICON_SVG: &[u8] = include_bytes!("../assets/spark.svg");
 const TERM_ICON_SVG: &[u8] = include_bytes!("../assets/term.svg");
 const CONFIG_ICON_SVG: &[u8] = include_bytes!("../assets/settings.svg");
 const CLUSTER_SEARCH_ICON_SVG: &[u8] = include_bytes!("../assets/clusters.svg");
+const SELECTION_ICON_SVG: &[u8] = include_bytes!("../assets/selected.svg");
 
 /// State of a single icon in the in-memory cache. Decoding happens on a worker thread,
 /// so a freshly requested icon is `Pending` until its raster arrives.
@@ -666,6 +668,7 @@ impl IconCache {
             term_icon: None,
             config_search_icon: None,
             config_icon: None,
+            selection_icon: None,
         }
     }
 
@@ -713,6 +716,15 @@ impl IconCache {
             self.config_icon = Some((size, raster));
         }
         self.config_icon.as_ref().map(|(_, raster)| raster)
+    }
+
+    fn selection_glyph(&mut self, size: u32) -> Option<&IconRaster> {
+        let size = size.max(1);
+        if self.selection_icon.as_ref().map(|(s, _)| *s) != Some(size) {
+            let raster = render_svg_data(SELECTION_ICON_SVG, None, size)?;
+            self.selection_icon = Some((size, raster));
+        }
+        self.selection_icon.as_ref().map(|(_, raster)| raster)
     }
 
     pub fn set_waker(&mut self, wake: calloop::channel::Sender<()>) {
@@ -1374,17 +1386,22 @@ fn draw_result_row(
     }
 
     if view.mode == LiftMode::Clusters && view.draft.contains_result(result) {
-        let (_, check_h) = font.measure("✓", ui.hint_font_size + 3);
-        font.draw(
-            canvas,
-            width,
-            height,
-            panel.x + pad + 8,
-            y + (ui.row_height - check_h) / 2,
-            "✓",
-            ui.hint_font_size + 3,
-            colors.accent,
-        );
+        // Keep draft membership independent of font coverage. A configured font may not
+        // contain U+2713, which used to turn this indicator into a tofu/missing-glyph box.
+        let marker_size = 18;
+        if let Some(marker) = icon_cache.selection_glyph(marker_size) {
+            draw_raster_tinted(
+                canvas,
+                width,
+                height,
+                marker,
+                panel.x + pad + 5,
+                y + (ui.row_height - marker_size as i32) / 2,
+                marker_size as i32,
+                marker_size as i32,
+                colors.accent,
+            );
+        }
     }
 
     let icon_size = view.config.icon_size as i32;
@@ -2064,6 +2081,15 @@ mod tests {
 
         let center = (((height / 2) * width + (width / 2)) * 4) as usize;
         assert_eq!(canvas[center + 3], 0x80);
+    }
+
+    #[test]
+    fn cluster_draft_selection_marker_is_a_font_independent_raster() {
+        let mut cache = IconCache::new(&LiftConfig::default());
+        let marker = cache.selection_glyph(18).expect("selection marker");
+
+        assert_eq!((marker.width, marker.height), (18, 18));
+        assert!(marker.rgba.chunks_exact(4).any(|pixel| pixel[3] != 0));
     }
 
     #[test]
