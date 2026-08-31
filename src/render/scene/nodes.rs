@@ -251,6 +251,26 @@ pub(crate) fn landmark_label_elements(
     ui_text: &mut crate::render::text::UiTextRenderer,
     label: LandmarkLabel<'_>,
 ) -> Result<Vec<SceneElement>, Box<dyn Error>> {
+    landmark_label_elements_inner(renderer, node_renderer, ui_text, label, None)
+}
+
+pub(crate) fn landmark_label_elements_avoiding(
+    renderer: &mut GlesRenderer,
+    node_renderer: &mut crate::render::node::NodeRenderer,
+    ui_text: &mut crate::render::text::UiTextRenderer,
+    label: LandmarkLabel<'_>,
+    obstacles: &[Rectangle<i32, Physical>],
+) -> Result<Vec<SceneElement>, Box<dyn Error>> {
+    landmark_label_elements_inner(renderer, node_renderer, ui_text, label, Some(obstacles))
+}
+
+fn landmark_label_elements_inner(
+    renderer: &mut GlesRenderer,
+    node_renderer: &mut crate::render::node::NodeRenderer,
+    ui_text: &mut crate::render::text::UiTextRenderer,
+    label: LandmarkLabel<'_>,
+    obstacles: Option<&[Rectangle<i32, Physical>]>,
+) -> Result<Vec<SceneElement>, Box<dyn Error>> {
     let reveal = ease_in_out_cubic(label.hover_mix * label.hover_mix * label.hover_mix);
     let fade = ((reveal - 0.30) / 0.55).clamp(0.0, 1.0);
     if fade <= 0.01 {
@@ -263,26 +283,45 @@ pub(crate) fn landmark_label_elements(
     let height = even((26.0 * (1.0 + 0.55 * grow)).round() as i32);
     let gap = (14.0 * (1.0 + 0.45 * grow)).round() as i32;
     let target_width = even(((base_width as f32 * 1.80).round() as i32).clamp(72, 240));
+    let target_height = even((26.0_f32 * 1.55).round() as i32);
+    let target_gap = (14.0_f32 * 1.45).round() as i32;
     let margin = 12;
-    let side_gap = label.marker_side / 2 + gap.max(10);
-    let prefer_left = label.center.0 + side_gap + target_width + margin > label.output_size.0;
-    let target_x = if prefer_left {
-        label.center.0 - side_gap - width
+    let placement = if let Some(obstacles) = obstacles {
+        choose_label_placement(
+            label.center,
+            label.marker_side,
+            label.output_size,
+            (target_width, target_height),
+            target_gap,
+            obstacles,
+        )
+    } else if label.center.0 + label.marker_side / 2 + gap.max(10) + target_width + margin
+        > label.output_size.0
+    {
+        LabelPlacement::Left
     } else {
-        label.center.0 + side_gap
+        LabelPlacement::Right
     };
-    let start_x = if prefer_left {
-        target_x + 44
-    } else {
-        target_x - 44
-    };
-    let label_x = (start_x as f32 + (target_x - start_x) as f32 * slide).round() as i32;
-    let label_y =
-        (label.center.1 as f32 - height as f32 / 2.0 + (1.0 - slide) * 10.0).round() as i32;
+    let mut destination = label_candidate(
+        placement,
+        label.center,
+        label.marker_side,
+        (width, height),
+        gap,
+    );
+    let slide_offset = placement.slide_offset();
+    destination.loc.x += (slide_offset.0 as f32 * (1.0 - slide)).round() as i32;
+    destination.loc.y += (slide_offset.1 as f32 * (1.0 - slide)).round() as i32;
     let destination = Rectangle::<i32, Physical>::new(
         (
-            label_x.clamp(margin, (label.output_size.0 - width - margin).max(margin)),
-            label_y.clamp(margin, (label.output_size.1 - height - margin).max(margin)),
+            destination
+                .loc
+                .x
+                .clamp(margin, (label.output_size.0 - width - margin).max(margin)),
+            destination
+                .loc
+                .y
+                .clamp(margin, (label.output_size.1 - height - margin).max(margin)),
         )
             .into(),
         (width, height).into(),
@@ -314,6 +353,118 @@ pub(crate) fn landmark_label_elements(
         1.0,
     )?));
     Ok(elements)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LabelPlacement {
+    Right,
+    Left,
+    Down,
+    Up,
+    DownRight,
+    DownLeft,
+    UpRight,
+    UpLeft,
+}
+
+impl LabelPlacement {
+    const PREFERENCE: [Self; 8] = [
+        Self::Right,
+        Self::Left,
+        Self::Down,
+        Self::Up,
+        Self::DownRight,
+        Self::DownLeft,
+        Self::UpRight,
+        Self::UpLeft,
+    ];
+
+    fn slide_offset(self) -> (i32, i32) {
+        match self {
+            Self::Right => (-44, 10),
+            Self::Left => (44, 10),
+            Self::Down => (0, -44),
+            Self::Up => (0, 44),
+            Self::DownRight => (-31, -31),
+            Self::DownLeft => (31, -31),
+            Self::UpRight => (-31, 31),
+            Self::UpLeft => (31, 31),
+        }
+    }
+}
+
+fn label_candidate(
+    placement: LabelPlacement,
+    center: (i32, i32),
+    marker_side: i32,
+    label_size: (i32, i32),
+    gap: i32,
+) -> Rectangle<i32, Physical> {
+    let (width, height) = label_size;
+    let offset = marker_side / 2 + gap.max(10);
+    let centered_x = center.0 - width / 2;
+    let centered_y = center.1 - height / 2;
+    let left = center.0 - offset - width;
+    let right = center.0 + offset;
+    let up = center.1 - offset - height;
+    let down = center.1 + offset;
+    let location = match placement {
+        LabelPlacement::Right => (right, centered_y),
+        LabelPlacement::Left => (left, centered_y),
+        LabelPlacement::Down => (centered_x, down),
+        LabelPlacement::Up => (centered_x, up),
+        LabelPlacement::DownRight => (right, down),
+        LabelPlacement::DownLeft => (left, down),
+        LabelPlacement::UpRight => (right, up),
+        LabelPlacement::UpLeft => (left, up),
+    };
+    Rectangle::new(location.into(), label_size.into())
+}
+
+fn choose_label_placement(
+    center: (i32, i32),
+    marker_side: i32,
+    output_size: (i32, i32),
+    label_size: (i32, i32),
+    gap: i32,
+    obstacles: &[Rectangle<i32, Physical>],
+) -> LabelPlacement {
+    const MARGIN: i32 = 12;
+    const OBSTACLE_CLEARANCE: i32 = 8;
+
+    LabelPlacement::PREFERENCE
+        .into_iter()
+        .enumerate()
+        .map(|(preference, placement)| {
+            let candidate = label_candidate(placement, center, marker_side, label_size, gap);
+            let overflow = i64::from((MARGIN - candidate.loc.x).max(0))
+                + i64::from((MARGIN - candidate.loc.y).max(0))
+                + i64::from((candidate.loc.x + candidate.size.w + MARGIN - output_size.0).max(0))
+                + i64::from((candidate.loc.y + candidate.size.h + MARGIN - output_size.1).max(0));
+            let overlap = obstacles
+                .iter()
+                .map(|obstacle| {
+                    Rectangle::<i32, Physical>::new(
+                        (
+                            obstacle.loc.x - OBSTACLE_CLEARANCE,
+                            obstacle.loc.y - OBSTACLE_CLEARANCE,
+                        )
+                            .into(),
+                        (
+                            obstacle.size.w + OBSTACLE_CLEARANCE * 2,
+                            obstacle.size.h + OBSTACLE_CLEARANCE * 2,
+                        )
+                            .into(),
+                    )
+                })
+                .filter_map(|obstacle| candidate.intersection(obstacle))
+                .map(|overlap| i64::from(overlap.size.w) * i64::from(overlap.size.h))
+                .sum::<i64>();
+            ((overflow, overlap, preference), placement)
+        })
+        .min_by_key(|(score, _)| *score)
+        .map(|(_, placement)| placement)
+        .unwrap_or(LabelPlacement::Right)
 }
 
 pub(super) fn fit_node_label(
@@ -416,4 +567,71 @@ pub(super) fn ease_in_out_cubic(value: f32) -> f32 {
 
 pub(super) fn even(value: i32) -> i32 {
     (value + 1) & !1
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const CENTER: (i32, i32) = (500, 300);
+    const OUTPUT: (i32, i32) = (1_000, 600);
+    const LABEL: (i32, i32) = (180, 40);
+
+    fn obstacle(location: (i32, i32), size: (i32, i32)) -> Rectangle<i32, Physical> {
+        Rectangle::new(location.into(), size.into())
+    }
+
+    #[test]
+    fn adaptive_label_keeps_the_normal_right_side_when_it_is_clear() {
+        assert_eq!(
+            choose_label_placement(CENTER, 64, OUTPUT, LABEL, 20, &[]),
+            LabelPlacement::Right
+        );
+    }
+
+    #[test]
+    fn adaptive_label_uses_the_other_side_when_a_window_blocks_the_right() {
+        let obstacles = [obstacle((540, 260), (260, 80))];
+        assert_eq!(
+            choose_label_placement(CENTER, 64, OUTPUT, LABEL, 20, &obstacles),
+            LabelPlacement::Left
+        );
+    }
+
+    #[test]
+    fn adaptive_label_uses_vertical_space_when_both_sides_are_blocked() {
+        let obstacles = [
+            obstacle((540, 270), (260, 60)),
+            obstacle((200, 270), (260, 60)),
+        ];
+        assert_eq!(
+            choose_label_placement(CENTER, 64, OUTPUT, LABEL, 20, &obstacles),
+            LabelPlacement::Down
+        );
+    }
+
+    #[test]
+    fn adaptive_label_stays_inside_the_output_before_using_preference_order() {
+        assert_eq!(
+            choose_label_placement((900, 300), 64, OUTPUT, LABEL, 20, &[]),
+            LabelPlacement::Left
+        );
+        assert_eq!(
+            choose_label_placement((500, 590), 64, OUTPUT, LABEL, 20, &[]),
+            LabelPlacement::Up
+        );
+    }
+
+    #[test]
+    fn adaptive_label_chooses_the_least_obstructed_on_screen_fallback() {
+        let obstacles = [
+            obstacle((540, 260), (260, 80)),
+            obstacle((250, 260), (210, 80)),
+            obstacle((400, 340), (200, 120)),
+        ];
+        assert_eq!(
+            choose_label_placement(CENTER, 64, OUTPUT, LABEL, 20, &obstacles),
+            LabelPlacement::Up
+        );
+    }
 }

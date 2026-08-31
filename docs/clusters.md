@@ -6,10 +6,14 @@ cluster remains valid when it has no members: closing the final member leaves
 its name, slot, layout, and core available for later use.
 
 Opening a cluster, selecting its slot, or changing its layout briefly shows a
-centered `name · layout` label on that output. During zoom-out, unpinned
-collapsed cores and ordinary nodes reflow together when their screen-constant
-collision footprints would overlap each other or an active window. Pinned
-landmarks remain fixed.
+centered `name · layout` label on that output. A collapsed core's hover label
+prefers the right side, then searches the other sides and corners for space not
+occupied by a visible window, ordinary node, or another core. If every nearby
+position is obstructed, it uses the on-screen position with the least overlap.
+
+During zoom-out, unpinned collapsed cores and ordinary nodes reflow together
+when their screen-constant collision footprints would overlap each other or an
+active window. Pinned landmarks remain fixed.
 
 ## Startup clusters
 

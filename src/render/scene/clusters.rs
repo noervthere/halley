@@ -46,11 +46,17 @@ pub(super) fn collapsed_core_visuals(
 
 pub(super) struct ClusterElementContext<'a> {
     pub(super) output: &'a Output,
+    pub(super) primary_output: &'a Output,
     pub(super) output_geometry: Rectangle<i32, Logical>,
+    pub(super) space: &'a smithay::desktop::Space<smithay::desktop::Window>,
     pub(super) clusters: &'a crate::clusters::ClusterSystem,
     pub(super) nodes: &'a crate::nodes::NodesState,
     pub(super) cameras: &'a crate::presentation::camera::OutputCameras,
+    pub(super) window_open_animations: &'a crate::animation::WindowOpenAnimations,
+    pub(super) fullscreen: &'a crate::wayland::fullscreen::FullscreenManager,
+    pub(super) maximize: &'a crate::presentation::maximize::FieldMaximizeManager,
     pub(super) decorations: &'a halley_config::Decorations,
+    pub(super) font: &'a halley_config::Font,
     pub(super) pins: &'a halley_config::Pins,
     pub(super) overlays: &'a halley_config::Overlays,
     pub(super) pin_renderer: &'a mut crate::render::pin::PinRenderer,
@@ -69,11 +75,17 @@ pub(super) fn cluster_elements(
 ) -> Result<Vec<StackGroup>, Box<dyn Error>> {
     let ClusterElementContext {
         output,
+        primary_output,
         output_geometry,
+        space,
         clusters,
         nodes,
         cameras,
+        window_open_animations,
+        fullscreen,
+        maximize,
         decorations,
+        font,
         pins,
         overlays,
         pin_renderer,
@@ -93,6 +105,67 @@ pub(super) fn cluster_elements(
     let focused_node = nodes.focused();
     let output_name = output.name();
     let join_readiness = clusters.join_readiness_on_output(&output_name);
+
+    // Labels share the desktop stack with the cluster core. Use the same
+    // presentation geometry as live-window rendering so a label never chooses
+    // space that only appears empty before camera or opening transforms.
+    let mut fixed_label_obstacles = space
+        .elements()
+        .filter(|window| crate::wayland::window_is_on_output(window, output, primary_output))
+        .filter_map(|window| {
+            crate::presentation::window::window_visual_state(
+                space,
+                cameras,
+                Some(clusters),
+                Some(nodes),
+                window,
+                output,
+                window_open_animations,
+                fullscreen,
+                maximize,
+                decorations,
+                font,
+                now,
+            )
+        })
+        .filter(|visual| visual.opening_alpha > 0.01)
+        .map(|visual| visual.animated_rect)
+        .collect::<Vec<_>>();
+    fixed_label_obstacles.extend(
+        nodes
+            .collapsed_on_output(&output_name)
+            .filter(|record| clusters.cluster_for_member(record.id).is_none())
+            .filter_map(|record| {
+                let node = nodes.field.node(record.id)?;
+                let position = nodes.landmark_position(record.id, node.pos, now);
+                let center = crate::nodes::screen_from_world(position, camera, output_geometry)
+                    - output_geometry.loc;
+                let side = crate::nodes::NODE_DIAMETER_PX.round() as i32;
+                Some(Rectangle::<i32, Physical>::new(
+                    (center.x - side / 2, center.y - side / 2).into(),
+                    (side, side).into(),
+                ))
+            }),
+    );
+    let core_label_obstacles = clusters
+        .collapsed_core_landmarks()
+        .into_iter()
+        .filter(|(_, _, core_output, _, _)| core_output == &output_name)
+        .map(|(cluster, core, _, position, _)| {
+            let position = nodes.landmark_position(core, position, now);
+            let center = crate::nodes::screen_from_world(position, camera, output_geometry)
+                - output_geometry.loc;
+            let side = crate::clusters::CORE_DIAMETER_PX.round() as i32;
+            (
+                cluster,
+                Rectangle::<i32, Physical>::new(
+                    (center.x - side / 2, center.y - side / 2).into(),
+                    (side, side).into(),
+                ),
+            )
+        })
+        .collect::<Vec<_>>();
+
     let mut groups = Vec::new();
     for (_, id, metadata) in clusters.clusters_for_output(&output.name()) {
         let focused = focused_node.is_some_and(|node| {
@@ -159,7 +232,16 @@ pub(super) fn cluster_elements(
                 (false, halley_config::NodeDisplayPolicy::Always) => 1.0,
             }
         };
-        elements.extend(super::nodes::landmark_label_elements(
+        let label_obstacles = fixed_label_obstacles
+            .iter()
+            .copied()
+            .chain(
+                core_label_obstacles
+                    .iter()
+                    .filter_map(|(other, obstacle)| (*other != id).then_some(*obstacle)),
+            )
+            .collect::<Vec<_>>();
+        elements.extend(super::nodes::landmark_label_elements_avoiding(
             renderer,
             node_renderer,
             ui_text,
@@ -174,6 +256,7 @@ pub(super) fn cluster_elements(
                 hover_mix,
                 alpha: 1.0,
             },
+            &label_obstacles,
         )?);
         if show_core_edit_button(
             id,

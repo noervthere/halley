@@ -19,6 +19,8 @@ All notable changes to this project will be documented in this file.
   when the setting is omitted.
 
 ### Fixed
+- Place collapsed-cluster hover labels in nearby unobstructed screen space around
+  visible windows, ordinary nodes, and other cluster cores.
 - Keep empty cluster workspaces logically focusable.
 - Reflow unpinned collapsed cluster cores alongside ordinary nodes as their
   screen-constant collision footprints grow during smooth zoom-out, while
