@@ -106,9 +106,17 @@ impl ClusterIndicator {
     }
 }
 
+#[derive(Clone, Debug)]
+struct ClusterDeleteConfirmation {
+    cluster_id: halley_core::cluster::ClusterId,
+    output: String,
+    name: String,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct OverlayManager {
     exit: bool,
+    cluster_delete: Option<ClusterDeleteConfirmation>,
     notification: Option<Notification>,
     zoom_indicators: HashMap<String, ZoomIndicator>,
     cluster_indicators: HashMap<String, ClusterIndicator>,
@@ -133,21 +141,37 @@ pub struct ClusterIndicatorSnapshot {
     pub mix: f32,
 }
 
+#[derive(Clone, Debug)]
+pub struct ConfirmationSnapshot {
+    pub title: String,
+    pub message: String,
+    pub confirm_label: &'static str,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct OverlaySnapshot {
     pub exit_mix: Option<f32>,
+    pub confirmation: Option<ConfirmationSnapshot>,
     pub notification: Option<NotificationSnapshot>,
     pub zoom_indicator: Option<ZoomIndicatorSnapshot>,
     pub cluster_indicator: Option<ClusterIndicatorSnapshot>,
 }
 
 impl OverlayManager {
+    pub fn confirmation_modal_active(&self) -> bool {
+        self.exit || self.cluster_delete.is_some()
+    }
+
     pub fn exit_modal_active(&self) -> bool {
         self.exit
     }
 
+    pub fn cluster_delete_modal_active(&self) -> bool {
+        self.cluster_delete.is_some()
+    }
+
     pub fn show_exit(&mut self, _now: Duration) -> bool {
-        if self.exit {
+        if self.confirmation_modal_active() {
             return false;
         }
         self.exit = true;
@@ -156,6 +180,33 @@ impl OverlayManager {
 
     pub fn cancel_exit(&mut self, _now: Duration) -> bool {
         std::mem::take(&mut self.exit)
+    }
+
+    pub fn show_cluster_delete(
+        &mut self,
+        cluster_id: halley_core::cluster::ClusterId,
+        output: String,
+        name: String,
+    ) -> bool {
+        if self.confirmation_modal_active() {
+            return false;
+        }
+        self.cluster_delete = Some(ClusterDeleteConfirmation {
+            cluster_id,
+            output,
+            name,
+        });
+        true
+    }
+
+    pub fn cancel_cluster_delete(&mut self) -> bool {
+        self.cluster_delete.take().is_some()
+    }
+
+    pub fn take_cluster_delete(&mut self) -> Option<(halley_core::cluster::ClusterId, String)> {
+        self.cluster_delete
+            .take()
+            .map(|confirmation| (confirmation.cluster_id, confirmation.output))
     }
 
     pub fn show_config_success(
@@ -329,6 +380,14 @@ impl OverlayManager {
     pub fn snapshot(&self, output: &str, now: Duration) -> OverlaySnapshot {
         OverlaySnapshot {
             exit_mix: self.exit.then_some(1.0),
+            confirmation: self.cluster_delete.as_ref().and_then(|confirmation| {
+                (confirmation.output == output).then(|| ConfirmationSnapshot {
+                    title: format!("Delete {}?", confirmation.name.trim()),
+                    message: "Its windows will return to the Field. Applications will remain open."
+                        .to_string(),
+                    confirm_label: "delete",
+                })
+            }),
             notification: self.notification.as_ref().and_then(|notification| {
                 (notification.output == output && !notification.finished(now)).then(|| {
                     NotificationSnapshot {
@@ -499,6 +558,34 @@ mod tests {
         );
         assert!(!overlays.exit_modal_active());
         assert!(!overlays.cancel_exit(Duration::from_millis(21)));
+    }
+
+    #[test]
+    fn populated_cluster_delete_explains_that_windows_survive() {
+        let mut overlays = OverlayManager::default();
+        let cluster = halley_core::cluster::ClusterId::new(7);
+        assert!(overlays.show_cluster_delete(cluster, "DP-1".into(), "Work".into()));
+        assert!(overlays.confirmation_modal_active());
+        assert!(!overlays.show_exit(Duration::ZERO));
+        assert!(
+            overlays
+                .snapshot("DP-2", Duration::ZERO)
+                .confirmation
+                .is_none()
+        );
+
+        let confirmation = overlays
+            .snapshot("DP-1", Duration::ZERO)
+            .confirmation
+            .expect("confirmation");
+        assert_eq!(confirmation.title, "Delete Work?");
+        assert!(confirmation.message.contains("return to the Field"));
+        assert!(confirmation.message.contains("remain open"));
+        assert_eq!(
+            overlays.take_cluster_delete(),
+            Some((cluster, "DP-1".into()))
+        );
+        assert!(!overlays.confirmation_modal_active());
     }
 
     #[test]

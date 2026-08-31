@@ -1364,6 +1364,7 @@ fn auto_vrr_eligible(app: &TtyApp, output: &Output, now: Duration) -> bool {
     }
     let overlays = app.shell.overlays.snapshot(&output.name(), now);
     if overlays.exit_mix.is_some()
+        || overlays.confirmation.is_some()
         || overlays.notification.is_some()
         || overlays.zoom_indicator.is_some()
         || overlays.cluster_indicator.is_some()

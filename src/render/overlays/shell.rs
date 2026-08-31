@@ -225,10 +225,27 @@ pub fn elements(
     let screen = Rectangle::<i32, Physical>::from_size(output_geometry.size.to_physical(1));
     let mut elements = Vec::new();
     if let Some(mix) = snapshot.exit_mix {
-        exit_elements(
+        confirmation_elements(
             renderer,
             screen,
             mix,
+            "Are you sure you want to leave?",
+            None,
+            "leave",
+            visuals,
+            node_renderer,
+            ui_text,
+            &mut elements,
+        )?;
+    }
+    if let Some(confirmation) = snapshot.confirmation {
+        confirmation_elements(
+            renderer,
+            screen,
+            1.0,
+            &confirmation.title,
+            Some(&confirmation.message),
+            confirmation.confirm_label,
             visuals,
             node_renderer,
             ui_text,
@@ -278,24 +295,31 @@ pub fn elements(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn exit_elements(
+fn confirmation_elements(
     renderer: &mut GlesRenderer,
     screen: Rectangle<i32, Physical>,
     mix: f32,
+    title: &str,
+    message: Option<&str>,
+    confirm_label: &str,
     visuals: OverlayVisuals,
     node_renderer: &mut NodeRenderer,
     ui_text: &mut UiTextRenderer,
     elements: &mut Vec<SceneElement>,
 ) -> Result<(), Box<dyn Error>> {
-    const TITLE: &str = "Are you sure you want to leave?";
-    const ACTIONS: [(&str, &str); 2] = [("Enter", "leave"), ("Esc", "cancel")];
+    let actions = [("Enter", confirm_label), ("Esc", "cancel")];
     let title_size = ui_text
-        .measure(renderer, TITLE, visuals.text.bytes())?
+        .measure(renderer, title, visuals.text.bytes())?
+        .unwrap_or((0, 0).into());
+    let message_size = message
+        .map(|message| ui_text.measure(renderer, message, visuals.subtext.bytes()))
+        .transpose()?
+        .flatten()
         .unwrap_or((0, 0).into());
     let mut action_width = 0;
     let mut action_height = 0;
     let mut action_sizes = Vec::new();
-    for (key, label) in ACTIONS {
+    for (key, label) in actions {
         let key_size = ui_text
             .measure(renderer, key, visuals.text.bytes())?
             .unwrap_or((0, 0).into());
@@ -308,10 +332,11 @@ fn exit_elements(
         action_sizes.push((key, label, key_size, label_size, chip_width));
     }
     action_width = action_width.saturating_sub(22);
-    let card_width = (title_size.w.max(action_width) + 48)
+    let card_width = (title_size.w.max(message_size.w).max(action_width) + 48)
         .max(280)
         .min((screen.size.w - 36).max(1));
-    let card_height = title_size.h + action_height + 54;
+    let message_block_height = message.map_or(0, |_| message_size.h + 12);
+    let card_height = title_size.h + message_block_height + action_height + 54;
     let card = Rectangle::new(
         (
             screen.loc.x + (screen.size.w - card_width) / 2,
@@ -325,10 +350,21 @@ fn exit_elements(
     if let Some(text) = ui_text.element(
         renderer,
         (title_x, title_y).into(),
-        TITLE,
+        title,
         visuals.text.bytes(),
         mix,
     )? {
+        elements.push(SceneElement::UiText(text.element));
+    }
+    if let Some(message) = message
+        && let Some(text) = ui_text.element(
+            renderer,
+            (title_x, title_y + title_size.h + 12).into(),
+            message,
+            visuals.subtext.bytes(),
+            mix,
+        )?
+    {
         elements.push(SceneElement::UiText(text.element));
     }
     let mut x = card.loc.x + 24;

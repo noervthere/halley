@@ -302,6 +302,43 @@ impl<D: SessionDriver> Session<D> {
         }
     }
 
+    pub(crate) fn request_cluster_dissolution(
+        &mut self,
+        cluster_id: halley_core::cluster::ClusterId,
+    ) {
+        let Some(metadata) = self.clusters.metadata(cluster_id).cloned() else {
+            return;
+        };
+        if self.clusters.member_ids(cluster_id).is_empty() {
+            super::dissolve_cluster(self, cluster_id);
+            return;
+        }
+        if !self
+            .shell
+            .overlays
+            .show_cluster_delete(cluster_id, metadata.output, metadata.name)
+        {
+            return;
+        }
+        super::cancel_compositor_grab(self);
+        super::gesture::cancel_all(self);
+        super::touch::cancel_all(self);
+        self.request_redraw();
+    }
+
+    pub(crate) fn cancel_cluster_dissolution(&mut self) {
+        if self.shell.overlays.cancel_cluster_delete() {
+            self.request_redraw();
+        }
+    }
+
+    pub(crate) fn confirm_cluster_dissolution(&mut self) {
+        let Some((cluster_id, _)) = self.shell.overlays.take_cluster_delete() else {
+            return;
+        };
+        super::dissolve_cluster(self, cluster_id);
+    }
+
     pub fn show_exit_confirmation(&mut self) {
         if !self
             .shell

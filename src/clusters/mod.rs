@@ -26,15 +26,22 @@ pub use ipc::handle_request;
 pub use overflow::REVEAL_EDGE_PX;
 
 pub const CORE_DIAMETER_PX: f32 = 68.0;
-pub const EDIT_BUTTON_DIAMETER_PX: i32 = 30;
-const EDIT_BUTTON_GAP_PX: i32 = 7;
+pub const ACTION_BUTTON_DIAMETER_PX: i32 = 26;
+const ACTION_BUTTON_CORE_GAP_PX: i32 = 6;
+const ACTION_BUTTON_STACK_GAP_PX: i32 = 5;
 
-pub fn edit_button_rect(
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ClusterActionControl {
+    Close,
+    Edit,
+}
+
+pub(crate) fn action_button_rects(
     core_center: Point<i32, Logical>,
     output_geometry: Rectangle<i32, Logical>,
-) -> Rectangle<i32, Logical> {
-    let radius = EDIT_BUTTON_DIAMETER_PX / 2;
-    let offset = (CORE_DIAMETER_PX.round() as i32) / 2 + EDIT_BUTTON_GAP_PX + radius;
+) -> [(ClusterActionControl, Rectangle<i32, Logical>); 2] {
+    let radius = ACTION_BUTTON_DIAMETER_PX / 2;
+    let offset = (CORE_DIAMETER_PX.round() as i32) / 2 + ACTION_BUTTON_CORE_GAP_PX + radius;
     let right = core_center.x + offset;
     let left = core_center.x - offset;
     let center_x = if right + radius <= output_geometry.loc.x + output_geometry.size.w {
@@ -42,10 +49,27 @@ pub fn edit_button_rect(
     } else {
         left
     };
-    Rectangle::new(
-        (center_x - radius, core_center.y - radius).into(),
-        (EDIT_BUTTON_DIAMETER_PX, EDIT_BUTTON_DIAMETER_PX).into(),
-    )
+    let stack_offset = (ACTION_BUTTON_DIAMETER_PX + ACTION_BUTTON_STACK_GAP_PX) / 2;
+    let min_center_y = output_geometry.loc.y + radius + stack_offset;
+    let max_center_y =
+        output_geometry.loc.y + output_geometry.size.h - radius - stack_offset;
+    let stack_center_y = core_center.y.clamp(min_center_y, max_center_y.max(min_center_y));
+    let rect = |center_y| {
+        Rectangle::new(
+            (center_x - radius, center_y - radius).into(),
+            (ACTION_BUTTON_DIAMETER_PX, ACTION_BUTTON_DIAMETER_PX).into(),
+        )
+    };
+    [
+        (
+            ClusterActionControl::Close,
+            rect(stack_center_y - stack_offset),
+        ),
+        (
+            ClusterActionControl::Edit,
+            rect(stack_center_y + stack_offset),
+        ),
+    ]
 }
 
 #[derive(Clone, Debug)]
@@ -114,6 +138,13 @@ pub enum StackCycleOutcome {
 pub struct ClusterDragMember {
     pub cluster_id: ClusterId,
     pub node_id: NodeId,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ClusterDissolution {
+    pub(crate) output: String,
+    pub(crate) members: Vec<NodeId>,
+    pub(crate) surface_restores: Vec<(NodeId, Rectangle<i32, Logical>)>,
 }
 
 /// Owns every cluster-specific state transition. Field and Nodes remain
@@ -1411,6 +1442,55 @@ impl ClusterSystem {
         self.registry.cluster(id)?.members().first().copied()
     }
 
+    /// Permanently removes a runtime workspace without destroying any of its
+    /// member windows. This is the authoritative cluster deletion boundary:
+    /// registry membership and every Halley-owned presentation lease retire
+    /// together, while remembered client geometries are handed back to the
+    /// session for protocol-level restoration.
+    pub(crate) fn dissolve_cluster(
+        &mut self,
+        field: &mut Field,
+        cluster_id: ClusterId,
+    ) -> Option<ClusterDissolution> {
+        let output = self.metadata(cluster_id)?.output.clone();
+        let members = self.member_ids(cluster_id);
+        if !self.registry.dissolve_cluster(field, cluster_id) {
+            return None;
+        }
+
+        let surface_restores = members
+            .iter()
+            .filter_map(|member| {
+                self.member_floats.remove(*member);
+                self.overlay_label_hover.borrow_mut().remove(member);
+                self.surfaces
+                    .take_restore(*member)
+                    .map(|geometry| (*member, geometry))
+            })
+            .collect();
+        if self
+            .dragged_window
+            .as_ref()
+            .is_some_and(|drag| members.contains(&drag.member))
+        {
+            self.dragged_window = None;
+        }
+        if self
+            .overlay_hovered
+            .as_ref()
+            .is_some_and(|(_, member)| members.contains(member))
+        {
+            self.overlay_hovered = None;
+        }
+        self.remove_cluster_metadata(cluster_id);
+
+        Some(ClusterDissolution {
+            output,
+            members,
+            surface_restores,
+        })
+    }
+
     pub fn detach_member(
         &mut self,
         field: &mut Field,
@@ -1573,6 +1653,7 @@ impl ClusterSystem {
         self.label_hover.borrow_mut().remove(&id);
         self.bloom.remove_cluster(id);
         self.overflow.remove_cluster(id);
+        self.remove_cluster_transitions(id);
         if self
             .join_candidate
             .as_ref()
@@ -1590,6 +1671,7 @@ impl ClusterSystem {
             }
             if self.active.get(&output) == Some(&id) {
                 self.active.remove(&output);
+                self.overflow.hide(&output);
             }
         }
     }
@@ -1625,16 +1707,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn edit_button_is_small_adjacent_and_flips_inside_the_output_edge() {
+    fn action_buttons_are_compact_stacked_and_flip_inside_the_output_edge() {
         let output = Rectangle::new((0, 0).into(), (1_000, 700).into());
-        let right = edit_button_rect((100, 100).into(), output);
-        assert_eq!(right.size, (30, 30).into());
-        assert!(right.loc.x > 100);
+        let [(close, upper), (edit, lower)] = action_button_rects((100, 100).into(), output);
+        assert_eq!(close, ClusterActionControl::Close);
+        assert_eq!(edit, ClusterActionControl::Edit);
+        assert_eq!(upper.size, (26, 26).into());
+        assert_eq!(lower.size, (26, 26).into());
+        assert!(upper.loc.x > 100);
+        assert!(upper.loc.y < lower.loc.y);
+        assert!(!upper.overlaps(lower));
 
-        let left = edit_button_rect((980, 100).into(), output);
-        assert_eq!(left.size, (30, 30).into());
-        assert!(left.loc.x < 980);
-        assert!(output.contains_rect(left));
+        let [(_, upper), (_, lower)] = action_button_rects((980, 100).into(), output);
+        assert!(upper.loc.x < 980);
+        assert!(output.contains_rect(upper));
+        assert!(output.contains_rect(lower));
     }
 
     fn test_placement_rect(
@@ -1684,6 +1771,58 @@ mod tests {
         system.metadata.get_mut(&cluster).unwrap().layout = layout;
         assert!(system.activate_slot("DP-1", 1, Duration::ZERO));
         (field, system, cluster, members)
+    }
+
+    #[test]
+    fn dissolution_preserves_members_and_clears_cluster_owned_state() {
+        let (mut field, mut system, cluster, members) =
+            active_test_cluster(2, ClusterWorkspaceLayoutKind::Tiling);
+        let core = system.core_node(cluster).expect("synthetic core");
+        let first_restore = Rectangle::new((80, 60).into(), (640, 480).into());
+        let second_restore = Rectangle::new((760, 90).into(), (700, 520).into());
+        assert!(system.prepare_surface_target(
+            members[0],
+            first_restore,
+            Rectangle::new((0, 0).into(), (900, 700).into()),
+        ));
+        assert!(system.prepare_surface_target(
+            members[1],
+            second_restore,
+            Rectangle::new((900, 0).into(), (700, 700).into()),
+        ));
+        assert_eq!(
+            system.toggle_member_floating(
+                "DP-1",
+                members[0],
+                Rectangle::new((0, 0).into(), (1_600, 900).into()),
+                Rectangle::new((120, 100).into(), (600, 450).into()),
+                Duration::from_secs(1),
+            ),
+            Some(true),
+        );
+
+        let outcome = system
+            .dissolve_cluster(&mut field, cluster)
+            .expect("dissolution");
+
+        assert_eq!(outcome.output, "DP-1");
+        assert_eq!(outcome.members, members);
+        assert_eq!(
+            outcome.surface_restores,
+            vec![(members[0], first_restore), (members[1], second_restore)]
+        );
+        assert!(system.registry.cluster(cluster).is_none());
+        assert!(system.metadata(cluster).is_none());
+        assert!(system.clusters_for_output("DP-1").next().is_none());
+        assert_eq!(system.active_on("DP-1"), None);
+        assert!(!system.overflow.is_revealed("DP-1"));
+        assert!(!system.is_animating_on_output("DP-1", Duration::ZERO));
+        assert!(field.node(core).is_none());
+        for member in outcome.members {
+            assert!(!system.is_member(member));
+            assert!(!system.member_floats.is_floating(member));
+            assert!(field.is_visible(member));
+        }
     }
 
     #[test]

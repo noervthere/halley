@@ -19,6 +19,7 @@ use smithay::utils::{Buffer, Logical, Physical, Rectangle, Scale, Transform};
 const CIRCLE_SHADER: &str = include_str!("shaders/node_circle_shader.frag");
 const CLUSTER_ICON: &[u8] = include_bytes!("assets/clusters.svg");
 const EDIT_ICON: &[u8] = include_bytes!("../../assets/edit.svg");
+const CLOSE_ICON: &[u8] = include_bytes!("../../assets/titlebars/close.svg");
 const ICON_SIZE: u32 = 64;
 const JOIN_READY_BORDER_WIDTH_PX: f32 = 5.0;
 
@@ -36,6 +37,9 @@ pub struct ClusterRenderer {
     edit_context: Option<ContextId<GlesTexture>>,
     edit_color: Option<[u8; 4]>,
     edit_texture: Option<GlesTexture>,
+    close_context: Option<ContextId<GlesTexture>>,
+    close_color: Option<[u8; 4]>,
+    close_texture: Option<GlesTexture>,
     ids: crate::render::ids::OutputElementIds<(u8, u32)>,
     active_output: String,
     occurrences: HashMap<u8, u32>,
@@ -222,6 +226,57 @@ impl ClusterRenderer {
         Ok(ClusterIconElement {
             base: TextureRenderElement::from_static_texture(
                 self.dynamic_id(2),
+                context,
+                destination.loc.to_f64(),
+                texture,
+                1,
+                Transform::Normal,
+                Some(alpha.clamp(0.0, 1.0)),
+                Some(source),
+                Some(destination.size.to_logical(1)),
+                None,
+                Kind::Unspecified,
+            ),
+            commit: icon_commit(false, [color, color]),
+        })
+    }
+
+    pub fn close_icon(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        destination: Rectangle<i32, Physical>,
+        color: [u8; 4],
+        alpha: f32,
+    ) -> Result<ClusterIconElement, Box<dyn Error>> {
+        let context = renderer.context_id();
+        if self.close_context.as_ref() != Some(&context)
+            || self.close_color != Some(color)
+            || self.close_texture.is_none()
+        {
+            let raster =
+                raster_svg_icon(CLOSE_ICON, color).ok_or("close SVG could not be rasterized")?;
+            let texture = renderer.import_memory(
+                raster.as_raw(),
+                Fourcc::Abgr8888,
+                (ICON_SIZE as i32, ICON_SIZE as i32).into(),
+                false,
+            )?;
+            self.close_context = Some(context.clone());
+            self.close_color = Some(color);
+            self.close_texture = Some(texture);
+        }
+        let texture = self
+            .close_texture
+            .as_ref()
+            .expect("close texture ensured")
+            .clone();
+        let source = Rectangle::<f64, Logical>::new(
+            (0.0, 0.0).into(),
+            (texture.size().w as f64, texture.size().h as f64).into(),
+        );
+        Ok(ClusterIconElement {
+            base: TextureRenderElement::from_static_texture(
+                self.dynamic_id(3),
                 context,
                 destination.loc.to_f64(),
                 texture,

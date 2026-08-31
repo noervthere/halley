@@ -40,6 +40,19 @@ pub(super) fn window_action_output(
     }
 }
 
+fn focused_cluster_close_target(
+    clusters: &crate::clusters::ClusterSystem,
+    focused: Option<halley_core::field::NodeId>,
+    action_output: Option<&str>,
+) -> Option<halley_core::cluster::ClusterId> {
+    let cluster = clusters.cluster_for_core(focused?)?;
+    clusters.metadata(cluster).and_then(|metadata| {
+        (action_output == Some(metadata.output.as_str())
+            && clusters.active_on(&metadata.output) != Some(cluster))
+        .then_some(cluster)
+    })
+}
+
 pub(super) fn cluster_blocks_zoom(action: &halley_config::Action, active_cluster: bool) -> bool {
     active_cluster
         && matches!(
@@ -203,7 +216,16 @@ pub(crate) fn dispatch<D: SessionDriver>(
         super::super::SessionControl::Continue => {}
         super::super::SessionControl::Quit => session.show_exit_confirmation(),
         super::super::SessionControl::CloseFocusedWindow => {
-            crate::nodes::close_focused_on_output(session, action_output.as_deref())
+            let focused_cluster = focused_cluster_close_target(
+                &session.clusters,
+                session.nodes.focused(),
+                action_output.as_deref(),
+            );
+            if let Some(cluster) = focused_cluster {
+                session.request_cluster_dissolution(cluster);
+            } else {
+                crate::nodes::close_focused_on_output(session, action_output.as_deref());
+            }
         }
         super::super::SessionControl::ToggleFullscreen => {
             super::super::toggle_focused_fullscreen(session, action_output.as_deref())
@@ -448,6 +470,45 @@ pub(crate) fn dispatch<D: SessionDriver>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mod_q_targets_only_the_focused_collapsed_core_on_its_output() {
+        let mut field = halley_core::field::Field::new();
+        let mut clusters = crate::clusters::ClusterSystem::new(
+            halley_config::Clusters::default(),
+            halley_config::ClusterAnimation::default(),
+        );
+        let cluster = clusters
+            .create_collapsed_cluster(
+                &mut field,
+                "Work".into(),
+                "DP-1".into(),
+                halley_core::cluster::layout::ClusterWorkspaceLayoutKind::Tiling,
+                Vec::new(),
+                halley_core::field::Vec2 { x: 10.0, y: 20.0 },
+            )
+            .expect("cluster");
+        let core = clusters.core_node(cluster).expect("core");
+
+        assert_eq!(
+            focused_cluster_close_target(&clusters, Some(core), Some("DP-1")),
+            Some(cluster)
+        );
+        assert_eq!(
+            focused_cluster_close_target(&clusters, Some(core), Some("DP-2")),
+            None
+        );
+        assert_eq!(
+            focused_cluster_close_target(&clusters, None, Some("DP-1")),
+            None
+        );
+
+        assert!(clusters.activate("DP-1", cluster, std::time::Duration::ZERO));
+        assert_eq!(
+            focused_cluster_close_target(&clusters, Some(core), Some("DP-1")),
+            None
+        );
+    }
 
     #[test]
     fn only_navigation_actions_hide_the_cursor() {

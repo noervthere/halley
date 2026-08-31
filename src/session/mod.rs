@@ -605,6 +605,114 @@ pub(crate) fn reconcile_cluster_surfaces<D: SessionDriver>(
     }
 }
 
+/// Removes one runtime workspace, restores member client geometry, and keeps
+/// the member applications alive as ordinary Field windows.
+pub(crate) fn dissolve_cluster<D: SessionDriver>(
+    session: &mut Session<D>,
+    cluster_id: halley_core::cluster::ClusterId,
+) -> bool {
+    let focused_core = session
+        .clusters
+        .core_node(cluster_id)
+        .filter(|core| session.nodes.focused() == Some(*core));
+    let Some(dissolution) = session
+        .clusters
+        .dissolve_cluster(&mut session.nodes.field, cluster_id)
+    else {
+        return false;
+    };
+
+    for (member, geometry) in &dissolution.surface_restores {
+        let Some((window, surface)) = session
+            .nodes
+            .record(*member)
+            .map(|record| (record.window.clone(), record.surface.clone()))
+        else {
+            continue;
+        };
+        if session.fullscreen.is_fullscreen_or_pending(&surface)
+            || session.maximize.is_maximized_or_pending(&surface)
+        {
+            continue;
+        }
+        let center = geometry.loc
+            + smithay::utils::Point::<i32, smithay::utils::Logical>::from((
+                geometry.size.w / 2,
+                geometry.size.h / 2,
+            ));
+        let output = session
+            .wayland
+            .space
+            .outputs()
+            .find(|output| {
+                session
+                    .wayland
+                    .space
+                    .output_geometry(output)
+                    .is_some_and(|output_geometry| output_geometry.contains(center))
+            })
+            .cloned()
+            .or_else(|| {
+                session
+                    .wayland
+                    .space
+                    .outputs()
+                    .find(|output| output.name() == dissolution.output)
+                    .cloned()
+            });
+        let restored_output = output.as_ref().map(smithay::output::Output::name);
+        if let Some(output) = output.as_ref() {
+            crate::wayland::set_window_output(&window, output);
+        }
+        session
+            .wayland
+            .space
+            .relocate_element(&window, geometry.loc);
+        if let Some(record) = session.nodes.record_mut(*member) {
+            record.geometry = *geometry;
+            if let Some(output) = restored_output.as_ref() {
+                record.output.clone_from(output);
+            }
+        }
+        if let Some(toplevel) = window.toplevel() {
+            let bounds = output.as_ref().map(|output| {
+                smithay::desktop::layer_map_for_output(output)
+                    .non_exclusive_zone()
+                    .size
+            });
+            toplevel.with_pending_state(|pending| {
+                pending.size = Some(geometry.size);
+                pending.bounds = bounds;
+                crate::wayland::decoration::clear_tiled_hint(pending);
+            });
+            if toplevel.is_initial_configure_sent() {
+                toplevel.send_configure();
+            }
+        } else {
+            crate::xwayland::configure_window(session, &window, *geometry);
+        }
+    }
+
+    if focused_core.is_some() {
+        let successor = dissolution.members.first().copied();
+        session
+            .nodes
+            .focus(successor, session.start_time.elapsed().as_millis() as u64);
+        if let Some(successor) = successor {
+            session.record_trail_focus(successor);
+        }
+        sync_keyboard_focus(session, smithay::utils::SERIAL_COUNTER.next_serial());
+        reconcile_pointer_constraints(session);
+    }
+    sync_cluster_camera(
+        session,
+        &dissolution.output,
+        crate::frame_clock::monotonic_now(),
+    );
+    session.request_redraw();
+    true
+}
+
 /// Copies an acknowledged interactive-resize result back into the
 /// cluster-local floating layer. Clients may quantize the requested size, so
 /// the committed Space geometry is authoritative rather than the last pointer

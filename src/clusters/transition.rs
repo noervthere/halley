@@ -62,6 +62,13 @@ pub(super) struct ReflowVisual {
 }
 
 impl ClusterSystem {
+    pub(super) fn remove_cluster_transitions(&mut self, cluster_id: ClusterId) {
+        self.transitions
+            .retain(|_, transition| transition.cluster_id != cluster_id);
+        self.reflows
+            .retain(|_, reflow| reflow.cluster_id != cluster_id);
+    }
+
     pub(super) fn begin_transition(
         &mut self,
         output: &str,

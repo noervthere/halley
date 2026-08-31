@@ -5,6 +5,9 @@ enum KeyboardOutcome {
     ExitConfirm,
     ExitCancel,
     ExitIntercept,
+    ClusterDeleteConfirm,
+    ClusterDeleteCancel,
+    ClusterDeleteIntercept,
     AccessibilityIntercept,
     ApogeeCancel,
     ApogeeAccept,
@@ -78,7 +81,7 @@ pub(super) fn handle<D, B>(
             .interactions
             .suppressed_keys
             .release_is_suppressed(keycode);
-    let accessibility = if session.shell.overlays.exit_modal_active() {
+    let accessibility = if session.shell.overlays.confirmation_modal_active() {
         crate::accessibility::KeyboardDisposition::Pass
     } else {
         crate::accessibility::process_key(
@@ -115,6 +118,24 @@ pub(super) fn handle<D, B>(
                     }
                     Some(Keysym::Escape) => FilterResult::Intercept(KeyboardOutcome::ExitCancel),
                     _ => FilterResult::Intercept(KeyboardOutcome::ExitIntercept),
+                };
+            }
+            if data.shell.overlays.cluster_delete_modal_active() {
+                if state == KeyState::Released {
+                    return if release_is_suppressed {
+                        FilterResult::Intercept(KeyboardOutcome::ClusterDeleteIntercept)
+                    } else {
+                        FilterResult::Forward
+                    };
+                }
+                return match handle.raw_latin_sym_or_raw_current_sym() {
+                    Some(Keysym::Return | Keysym::KP_Enter) => {
+                        FilterResult::Intercept(KeyboardOutcome::ClusterDeleteConfirm)
+                    }
+                    Some(Keysym::Escape) => {
+                        FilterResult::Intercept(KeyboardOutcome::ClusterDeleteCancel)
+                    }
+                    _ => FilterResult::Intercept(KeyboardOutcome::ClusterDeleteIntercept),
                 };
             }
             if data.clusters.accepts_modal_input() {
@@ -327,6 +348,19 @@ pub(super) fn handle<D, B>(
             session.cancel_exit_confirmation();
         }
         Some(KeyboardOutcome::ExitIntercept) => {
+            if state == KeyState::Pressed {
+                session.interactions.suppressed_keys.suppress(keycode);
+            }
+        }
+        Some(KeyboardOutcome::ClusterDeleteConfirm) => {
+            session.interactions.suppressed_keys.suppress(keycode);
+            session.confirm_cluster_dissolution();
+        }
+        Some(KeyboardOutcome::ClusterDeleteCancel) => {
+            session.interactions.suppressed_keys.suppress(keycode);
+            session.cancel_cluster_dissolution();
+        }
+        Some(KeyboardOutcome::ClusterDeleteIntercept) => {
             if state == KeyState::Pressed {
                 session.interactions.suppressed_keys.suppress(keycode);
             }

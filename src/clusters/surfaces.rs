@@ -40,6 +40,12 @@ impl WorkspaceSurfaceState {
         self.layout_deferred_until.remove(&node_id);
     }
 
+    pub(super) fn take_restore(&mut self, node_id: NodeId) -> Option<Rectangle<i32, Logical>> {
+        self.requested.remove(&node_id);
+        self.layout_deferred_until.remove(&node_id);
+        self.restore.remove(&node_id)
+    }
+
     pub(super) fn invalidate_target(&mut self, node_id: NodeId) {
         self.requested.remove(&node_id);
     }

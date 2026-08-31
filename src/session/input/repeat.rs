@@ -196,7 +196,7 @@ fn repeat_allowed<D: SessionDriver>(session: &Session<D>, action: &halley_config
     if session.shell.focus_cycle.is_open() {
         return matches!(action, halley_config::Action::FocusCycle(_));
     }
-    !session.shell.overlays.exit_modal_active()
+    !session.shell.overlays.confirmation_modal_active()
         && !session.capture.is_active()
         && !session.shell.apogee.accepts_input()
         && !session.clusters.accepts_modal_input()

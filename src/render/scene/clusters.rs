@@ -7,7 +7,7 @@ struct CoreVisualFlags {
     join_border_ready: bool,
 }
 
-fn show_core_edit_button(
+fn show_core_action_controls(
     id: halley_core::cluster::ClusterId,
     bloom_open: bool,
     edit_target: Option<halley_core::cluster::ClusterId>,
@@ -258,44 +258,54 @@ pub(super) fn cluster_elements(
             },
             &label_obstacles,
         )?);
-        if show_core_edit_button(
+        if show_core_action_controls(
             id,
             bloom_open,
             clusters.bloom_edit_target_on_output(&output_name),
         ) {
-            let button = crate::clusters::edit_button_rect(center, output_geometry);
-            let button = Rectangle::<i32, Physical>::new(
-                (
-                    button.loc.x - output_geometry.loc.x,
-                    button.loc.y - output_geometry.loc.y,
-                )
-                    .into(),
-                (button.size.w, button.size.h).into(),
-            );
-            let glyph_side = 16;
-            let glyph = Rectangle::new(
-                (
-                    button.loc.x + (button.size.w - glyph_side) / 2,
-                    button.loc.y + (button.size.h - glyph_side) / 2,
-                )
-                    .into(),
-                (glyph_side, glyph_side).into(),
-            );
             let text = contrast_text_rgb(fill);
-            elements.push(SceneElement::ClusterIcon(cluster_renderer.edit_icon(
-                renderer,
-                glyph,
-                [text[0], text[1], text[2], 255],
-                nodes.config.opacity,
-            )?));
-            elements.push(SceneElement::ClusterCore(cluster_renderer.core(
-                renderer,
-                button,
-                ring,
-                fill,
-                nodes.config.opacity,
-                false,
-            )?));
+            for (control, button) in crate::clusters::action_button_rects(center, output_geometry) {
+                let button = Rectangle::<i32, Physical>::new(
+                    (
+                        button.loc.x - output_geometry.loc.x,
+                        button.loc.y - output_geometry.loc.y,
+                    )
+                        .into(),
+                    (button.size.w, button.size.h).into(),
+                );
+                let glyph_side = 14;
+                let glyph = Rectangle::new(
+                    (
+                        button.loc.x + (button.size.w - glyph_side) / 2,
+                        button.loc.y + (button.size.h - glyph_side) / 2,
+                    )
+                        .into(),
+                    (glyph_side, glyph_side).into(),
+                );
+                let icon = match control {
+                    crate::clusters::ClusterActionControl::Close => cluster_renderer.close_icon(
+                        renderer,
+                        glyph,
+                        [text[0], text[1], text[2], 255],
+                        nodes.config.opacity,
+                    )?,
+                    crate::clusters::ClusterActionControl::Edit => cluster_renderer.edit_icon(
+                        renderer,
+                        glyph,
+                        [text[0], text[1], text[2], 255],
+                        nodes.config.opacity,
+                    )?,
+                };
+                elements.push(SceneElement::ClusterIcon(icon));
+                elements.push(SceneElement::ClusterCore(cluster_renderer.core(
+                    renderer,
+                    button,
+                    ring,
+                    fill,
+                    nodes.config.opacity,
+                    false,
+                )?));
+            }
         }
         if clusters.config().show_icons {
             let icon_side =
@@ -355,13 +365,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn edit_button_belongs_to_the_open_bloom_core_only() {
+    fn action_controls_belong_to_the_open_bloom_core_only() {
         let first = halley_core::cluster::ClusterId::new(1);
         let second = halley_core::cluster::ClusterId::new(2);
-        assert!(show_core_edit_button(first, true, Some(first)));
-        assert!(!show_core_edit_button(first, false, Some(first)));
-        assert!(!show_core_edit_button(first, true, Some(second)));
-        assert!(!show_core_edit_button(first, true, None));
+        assert!(show_core_action_controls(first, true, Some(first)));
+        assert!(!show_core_action_controls(first, false, Some(first)));
+        assert!(!show_core_action_controls(first, true, Some(second)));
+        assert!(!show_core_action_controls(first, true, None));
     }
 
     #[test]
