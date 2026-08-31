@@ -189,41 +189,6 @@ fn process_parent(pid: u32) -> Option<u32> {
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn context_matches_only_explicit_launch_identifier() {
-        let mut launches = StartupClusters::default();
-        let now = Duration::from_secs(10);
-        let cluster = ClusterId::new(7);
-        let id = launches.begin_launch(cluster, "foot".into(), now);
-
-        assert_eq!(launches.match_launch(&id), Some(cluster));
-        assert_eq!(launches.match_launch("unrelated"), None);
-    }
-
-    #[test]
-    fn context_expires_without_claiming_later_windows() {
-        let mut launches = StartupClusters::default();
-        let now = Duration::from_secs(10);
-        let cluster = ClusterId::new(7);
-        let id = launches.begin_launch(cluster, "foot".into(), now);
-
-        launches.expire(now + LAUNCH_CONTEXT_LIFETIME);
-        assert_eq!(launches.match_launch(&id), None);
-    }
-
-    #[test]
-    fn current_process_environment_parser_is_safe_for_missing_marker() {
-        assert_eq!(
-            process_environment_value(std::process::id(), "HALLEY_TEST_MISSING_MARKER"),
-            None
-        );
-    }
-}
-
 impl<D: super::SessionDriver> super::Session<D> {
     pub(crate) fn initialize_startup_clusters(
         &mut self,
@@ -378,5 +343,40 @@ impl<D: super::SessionDriver> super::Session<D> {
     pub(crate) fn startup_cluster_for_x11_pid(&mut self, pid: u32) -> Option<ClusterId> {
         self.startup_clusters
             .cluster_for_pid(pid, crate::frame_clock::monotonic_now())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn context_matches_only_explicit_launch_identifier() {
+        let mut launches = StartupClusters::default();
+        let now = Duration::from_secs(10);
+        let cluster = ClusterId::new(7);
+        let id = launches.begin_launch(cluster, "foot".into(), now);
+
+        assert_eq!(launches.match_launch(&id), Some(cluster));
+        assert_eq!(launches.match_launch("unrelated"), None);
+    }
+
+    #[test]
+    fn context_expires_without_claiming_later_windows() {
+        let mut launches = StartupClusters::default();
+        let now = Duration::from_secs(10);
+        let cluster = ClusterId::new(7);
+        let id = launches.begin_launch(cluster, "foot".into(), now);
+
+        launches.expire(now + LAUNCH_CONTEXT_LIFETIME);
+        assert_eq!(launches.match_launch(&id), None);
+    }
+
+    #[test]
+    fn current_process_environment_parser_is_safe_for_missing_marker() {
+        assert_eq!(
+            process_environment_value(std::process::id(), "HALLEY_TEST_MISSING_MARKER"),
+            None
+        );
     }
 }
