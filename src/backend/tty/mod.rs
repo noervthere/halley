@@ -88,6 +88,10 @@ struct DrmOutputEntry {
     drm_output: TtyDrmOutput,
     dmabuf_feedback: Option<super::dmabuf::SurfaceDmabufFeedback>,
     pending: bool,
+    /// Whether the last successfully rendered frame belonged to an animation.
+    /// The following settling frame must repaint too so removed elements cannot
+    /// survive in an older swapchain buffer.
+    animation_active_last_frame: bool,
     dpms_enabled: bool,
     enabled: bool,
     gamma: gamma::GammaState,
@@ -333,6 +337,7 @@ impl TtyBackend {
                         drm_output,
                         dmabuf_feedback,
                         pending: false,
+                        animation_active_last_frame: false,
                         dpms_enabled: true,
                         enabled: true,
                         gamma,
@@ -1086,7 +1091,9 @@ impl Renderable for TtyBackend {
             request.frame.clear
         };
         let target_presentation_time = request.frame.target_presentation_time;
-        let force_full_repaint = request.frame.force_full_repaint;
+        let animation_active = request.frame.force_full_repaint;
+        let force_full_repaint =
+            settling_repaint_required(animation_active, entry.animation_active_last_frame);
         let session_lock_generation = request.desktop.session_lock.frame_generation();
         let elements = crate::render::scene::build(
             &mut self.renderer,
@@ -1116,6 +1123,9 @@ impl Renderable for TtyBackend {
             ),
         )?;
 
+        // Only advance this state after Smithay produced a frame result. On an
+        // error, preserve the settling repaint obligation for the retry.
+        entry.animation_active_last_frame = animation_active;
         let element_states = result.states.clone();
         let direct_scanout = matches!(&result.primary_element, PrimaryPlaneElement::Element(_));
         if result.needs_sync()
@@ -1155,6 +1165,10 @@ impl Renderable for TtyBackend {
             Some(element_states),
         ))
     }
+}
+
+fn settling_repaint_required(animation_active: bool, animation_active_last_frame: bool) -> bool {
+    animation_active || animation_active_last_frame
 }
 
 fn set_entry_vrr(entry: &mut DrmOutputEntry, requested: bool) {
@@ -1282,7 +1296,7 @@ fn dpms_target_enabled(
 mod dpms_tests {
     use smithay::backend::drm::VrrSupport;
 
-    use super::{configured_vrr_target, dpms_target_enabled};
+    use super::{configured_vrr_target, dpms_target_enabled, settling_repaint_required};
 
     #[test]
     fn toggle_turns_all_off_only_when_every_target_is_on() {
@@ -1302,6 +1316,14 @@ mod dpms_tests {
             dpms_target_enabled(halley_ipc::DpmsCommand::Toggle, []),
             None
         );
+    }
+
+    #[test]
+    fn animation_gets_one_full_settling_repaint_after_it_ends() {
+        assert!(!settling_repaint_required(false, false));
+        assert!(settling_repaint_required(true, false));
+        assert!(settling_repaint_required(true, true));
+        assert!(settling_repaint_required(false, true));
     }
 
     #[test]

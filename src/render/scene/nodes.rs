@@ -43,6 +43,20 @@ pub(super) fn node_elements(
     let focused = nodes.config.border_color_highlighted;
     let mut overlay = Vec::new();
 
+    // Resolve node icons while their windows are still live. Otherwise the
+    // first decay starts the asynchronous load only after the node appears;
+    // when that load completes after the fade window, the icon pops in at full
+    // opacity. Later decays only looked correct because they reused the cache.
+    if nodes.config.show_app_icons != halley_config::NodeDisplayPolicy::Off {
+        for app_id in nodes.records().filter_map(|record| {
+            (record.attached && record.output == output.name())
+                .then_some(record.app_id.as_deref())
+                .flatten()
+        }) {
+            node_renderer.request_app_icon(renderer, app_id);
+        }
+    }
+
     if debug.show_focus_ring || nodes.ring_is_previewed(&output.name(), now) {
         let focus_ring = nodes.focus_ring_for_output(&output.name());
         let scale = crate::presentation::camera::scale(camera);
