@@ -33,6 +33,13 @@ All notable changes to this project will be documented in this file.
   XWayland constraint proxy surface delivered it, improving input trace detail.
 
 ### Fixed
+- Resolve dotted Freedesktop app-icon identifiers without truncating their final
+  component, persist successful theme lookups by resolved theme and size, discard
+  stale or undecodable cached paths, and retry misses instead of permanently
+  caching the generic fallback.
+- Align Lift's empty caret and typed text with the placeholder input column, add
+  breathing room after the search glyph, and dismiss Lift on an outside click
+  without consuming the click intended for the underlying surface.
 - Never modify any existing configuration during compositor startup;
   compatibility migration now requires an explicit `halleyctl` command.
 - Keep the newly created cluster core continuously visible through the restored

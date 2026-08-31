@@ -29,6 +29,7 @@ const BTN_LEFT: u32 = 0x110;
 #[cfg(test)]
 const BTN_RIGHT: u32 = 0x111;
 const NODE_DRAG_THRESHOLD_PX: f64 = 8.0;
+const LIFT_LAYER_NAMESPACE: &str = "halley-lift";
 
 fn sampled_drag_velocity(
     previous: halley_core::field::Vec2,
@@ -96,6 +97,46 @@ fn releases_pending_window_move(pending_button: u32, event_button: u32, released
 
 fn forward_pointer_button(intercepted: bool, finishing_client_move: bool) -> bool {
     !intercepted || finishing_client_move
+}
+
+fn outside_lift_press_dismisses(
+    button: u32,
+    state: ButtonState,
+    lift_is_mapped: bool,
+    route_is_lift: bool,
+) -> bool {
+    button == BTN_LEFT && state == ButtonState::Pressed && lift_is_mapped && !route_is_lift
+}
+
+/// Lift intentionally uses a palette-sized exclusive layer surface. That lets an
+/// outside click route to the underlying client, but means Lift itself cannot observe
+/// the click. Close the mapped first-party layer here while leaving the press unconsumed.
+fn dismiss_lift_on_outside_press<D: SessionDriver>(
+    session: &mut Session<D>,
+    route: Option<&crate::input::pointer::PointerRoute>,
+    button: u32,
+    state: ButtonState,
+) {
+    let lift = session.wayland.space.outputs().find_map(|output| {
+        let map = smithay::desktop::layer_map_for_output(output);
+        map.layers()
+            .find(|layer| {
+                layer.namespace() == LIFT_LAYER_NAMESPACE
+                    && !session.wayland.unmapped_layers.contains(layer.wl_surface())
+            })
+            .cloned()
+    });
+    let route_is_lift = lift.as_ref().is_some_and(|lift| {
+        matches!(
+            route.map(|route| &route.target),
+            Some(crate::input::pointer::PointerTarget::Layer(layer)) if layer == lift
+        )
+    });
+    if outside_lift_press_dismisses(button, state, lift.is_some(), route_is_lift)
+        && let Some(lift) = lift
+    {
+        lift.layer_surface().send_close();
+    }
 }
 
 fn steam_client_close_target(
@@ -2431,6 +2472,7 @@ where
             }
         }
         let route = super::pointer::route_for_discrete_input(session, time);
+        dismiss_lift_on_outside_press(session, route.as_ref(), button, state);
         if session.clusters.accepts_modal_input() {
             let naming_output = session
                 .clusters
@@ -3427,7 +3469,7 @@ mod tests {
     use std::time::Duration;
 
     use halley_core::field::Vec2;
-    use smithay::backend::input::KeyState;
+    use smithay::backend::input::{ButtonState, KeyState};
     use smithay::utils::{Logical, Point, Rectangle, Size};
 
     use super::actions::{cluster_blocks_zoom, window_action_output};
@@ -3435,10 +3477,10 @@ mod tests {
     use super::{BTN_LEFT, BTN_RIGHT, PendingWindowMoveMotion};
     use super::{
         bloom_drag_handoff, collapsed_node_drop_origin, drag_threshold_reached,
-        forward_pointer_button, pending_window_move_motion, plain_background_press_dismisses_bloom,
-        pointer_move_falls_back_to_field_pan, preferred_cluster_navigation_focus,
-        releases_pending_window_move, sampled_drag_velocity, shortcut_policy_allows_bindings,
-        stacking_cycle_direction, typing_abandons_bloom,
+        forward_pointer_button, outside_lift_press_dismisses, pending_window_move_motion,
+        plain_background_press_dismisses_bloom, pointer_move_falls_back_to_field_pan,
+        preferred_cluster_navigation_focus, releases_pending_window_move, sampled_drag_velocity,
+        shortcut_policy_allows_bindings, stacking_cycle_direction, typing_abandons_bloom,
     };
     fn sample_constant_motion(report_hz: u32) -> Vec2 {
         let step = Duration::from_secs_f64(1.0 / f64::from(report_hz));
@@ -3517,6 +3559,34 @@ mod tests {
         assert!(forward_pointer_button(true, true));
         assert!(!forward_pointer_button(true, false));
         assert!(forward_pointer_button(false, false));
+    }
+
+    #[test]
+    fn left_press_outside_lift_dismisses_without_claiming_inside_clicks() {
+        assert!(outside_lift_press_dismisses(
+            BTN_LEFT,
+            ButtonState::Pressed,
+            true,
+            false
+        ));
+        assert!(!outside_lift_press_dismisses(
+            BTN_LEFT,
+            ButtonState::Pressed,
+            true,
+            true
+        ));
+        assert!(!outside_lift_press_dismisses(
+            BTN_LEFT,
+            ButtonState::Released,
+            true,
+            false
+        ));
+        assert!(!outside_lift_press_dismisses(
+            BTN_LEFT,
+            ButtonState::Pressed,
+            false,
+            false
+        ));
     }
 
     #[test]

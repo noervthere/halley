@@ -1,10 +1,13 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
+use std::ffi::OsString;
 use std::fs;
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use fontdb::{Database, Family, Query, Stretch, Style, Weight};
 use image::{RgbaImage, imageops};
@@ -486,7 +489,7 @@ const CLUSTER_SEARCH_ICON_SVG: &[u8] = include_bytes!("../assets/clusters.svg");
 enum IconSlot {
     Pending,
     Ready(IconRaster),
-    Missing,
+    Missing { retry_at: Instant },
 }
 
 enum IconLookup<'a> {
@@ -499,6 +502,149 @@ struct IconRaster {
     width: u32,
     height: u32,
     rgba: Vec<u8>,
+}
+
+const ICON_PATH_CACHE_MAGIC: &str = "halley-lift-icon-paths-v1";
+const MISSING_ICON_RETRY_DELAY: Duration = Duration::from_secs(30);
+
+/// Successful theme lookups are persisted by resolved theme and target size. Only positive
+/// paths are stored: a missing icon may appear later after an application or icon-theme update.
+struct IconPathCache {
+    file: Option<PathBuf>,
+    paths: HashMap<String, PathBuf>,
+}
+
+impl IconPathCache {
+    fn load(theme: &str, target_size: u32) -> Self {
+        Self::load_file(icon_path_cache_file(theme, target_size))
+    }
+
+    #[cfg(test)]
+    fn load_from_file(file: PathBuf) -> Self {
+        Self::load_file(Some(file))
+    }
+
+    fn load_file(file: Option<PathBuf>) -> Self {
+        let mut paths = HashMap::new();
+        if let Some(file) = file.as_ref()
+            && let Ok(contents) = fs::read_to_string(file)
+        {
+            let mut lines = contents.lines();
+            if lines.next() == Some(ICON_PATH_CACHE_MAGIC) {
+                for line in lines {
+                    let Some((encoded_name, encoded_path)) = line.split_once('\t') else {
+                        continue;
+                    };
+                    let Some(name) =
+                        decode_hex(encoded_name).and_then(|bytes| String::from_utf8(bytes).ok())
+                    else {
+                        continue;
+                    };
+                    let Some(path) = decode_hex(encoded_path)
+                        .map(OsString::from_vec)
+                        .map(PathBuf::from)
+                        .filter(|path| path.is_file())
+                    else {
+                        continue;
+                    };
+                    paths.insert(name, path);
+                }
+            }
+        }
+        Self { file, paths }
+    }
+
+    fn get(&mut self, name: &str) -> Option<PathBuf> {
+        let path = self.paths.get(name)?.clone();
+        if path.is_file() {
+            Some(path)
+        } else {
+            self.paths.remove(name);
+            self.persist();
+            None
+        }
+    }
+
+    fn insert(&mut self, name: &str, path: &Path) {
+        if self.paths.get(name).is_some_and(|cached| cached == path) {
+            return;
+        }
+        self.paths.insert(name.to_string(), path.to_path_buf());
+        self.persist();
+    }
+
+    fn remove(&mut self, name: &str) {
+        if self.paths.remove(name).is_some() {
+            self.persist();
+        }
+    }
+
+    fn persist(&self) {
+        let Some(file) = self.file.as_ref() else {
+            return;
+        };
+        let Some(parent) = file.parent() else {
+            return;
+        };
+        if fs::create_dir_all(parent).is_err() {
+            return;
+        }
+
+        let mut entries = self.paths.iter().collect::<Vec<_>>();
+        entries.sort_by_key(|(name, _)| *name);
+        let mut contents = String::from(ICON_PATH_CACHE_MAGIC);
+        contents.push('\n');
+        for (name, path) in entries {
+            contents.push_str(&encode_hex(name.as_bytes()));
+            contents.push('\t');
+            contents.push_str(&encode_hex(path.as_os_str().as_bytes()));
+            contents.push('\n');
+        }
+
+        let temporary = file.with_extension(format!("tmp-{}", std::process::id()));
+        if fs::write(&temporary, contents).is_ok() {
+            let _ = fs::rename(&temporary, file);
+        }
+    }
+}
+
+fn icon_path_cache_file(theme: &str, target_size: u32) -> Option<PathBuf> {
+    let cache_home = std::env::var_os("XDG_CACHE_HOME")
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .filter(|path| !path.is_empty())
+                .map(|home| PathBuf::from(home).join(".cache"))
+        })?;
+    Some(cache_home.join("halley").join("lift-icons").join(format!(
+        "{}-{target_size}.paths",
+        encode_hex(theme.as_bytes())
+    )))
+}
+
+fn encode_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        encoded.push(HEX[(byte >> 4) as usize] as char);
+        encoded.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    encoded
+}
+
+fn decode_hex(encoded: &str) -> Option<Vec<u8>> {
+    if !encoded.len().is_multiple_of(2) {
+        return None;
+    }
+    encoded
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            let digits = std::str::from_utf8(pair).ok()?;
+            u8::from_str_radix(digits, 16).ok()
+        })
+        .collect()
 }
 
 impl IconCache {
@@ -581,7 +727,12 @@ impl IconCache {
         };
         let mut changed = false;
         while let Ok((key, raster)) = rx.try_recv() {
-            let slot = raster.map_or(IconSlot::Missing, IconSlot::Ready);
+            let slot = raster.map_or_else(
+                || IconSlot::Missing {
+                    retry_at: Instant::now() + MISSING_ICON_RETRY_DELAY,
+                },
+                IconSlot::Ready,
+            );
             self.entries.insert(key, slot);
             self.pending_decodes = self.pending_decodes.saturating_sub(1);
             changed = true;
@@ -594,6 +745,13 @@ impl IconCache {
         if key.is_empty() {
             return IconLookup::Missing;
         }
+        let should_retry = matches!(
+            self.entries.get(&key),
+            Some(IconSlot::Missing { retry_at }) if Instant::now() >= *retry_at
+        );
+        if should_retry {
+            self.entries.remove(&key);
+        }
         if !self.entries.contains_key(&key) {
             self.entries.insert(key.clone(), IconSlot::Pending);
             self.ensure_decode_worker();
@@ -604,12 +762,17 @@ impl IconCache {
             if queued {
                 self.pending_decodes += 1;
             } else {
-                self.entries.insert(key.clone(), IconSlot::Missing);
+                self.entries.insert(
+                    key.clone(),
+                    IconSlot::Missing {
+                        retry_at: Instant::now() + MISSING_ICON_RETRY_DELAY,
+                    },
+                );
             }
         }
         match self.entries.get(&key) {
             Some(IconSlot::Ready(raster)) => IconLookup::Ready(raster),
-            Some(IconSlot::Missing) => IconLookup::Missing,
+            Some(IconSlot::Missing { .. }) => IconLookup::Missing,
             Some(IconSlot::Pending) | None => IconLookup::Pending,
         }
     }
@@ -626,11 +789,13 @@ impl IconCache {
         let theme = self.theme.clone();
         let wake = self.wake.clone();
         let jobs = Arc::new(Mutex::new(job_rx));
+        let path_cache = Arc::new(Mutex::new(None::<IconPathCache>));
         for worker in 0..2 {
             let jobs = jobs.clone();
             let results = res_tx.clone();
             let theme = theme.clone();
             let wake = wake.clone();
+            let path_cache = path_cache.clone();
             thread::Builder::new()
                 .name(format!("halley-lift-icon-{worker}"))
                 .spawn(move || {
@@ -642,8 +807,7 @@ impl IconCache {
                     loop {
                         let job = jobs.lock().ok().and_then(|receiver| receiver.recv().ok());
                         let Some((key, name)) = job else { break };
-                        let raster = resolve_icon_path_direct(&name, &theme, target_size)
-                            .and_then(|path| load_icon(path.as_path(), target_size));
+                        let raster = load_requested_icon(&name, &theme, target_size, &path_cache);
                         if results.send((key, raster)).is_err() {
                             break;
                         }
@@ -659,20 +823,70 @@ impl IconCache {
     }
 }
 
+fn load_requested_icon(
+    name: &str,
+    theme: &str,
+    target_size: u32,
+    shared_cache: &Mutex<Option<IconPathCache>>,
+) -> Option<IconRaster> {
+    let cached_path = shared_cache.lock().ok().and_then(|mut shared| {
+        shared
+            .get_or_insert_with(|| IconPathCache::load(theme, target_size))
+            .get(name)
+    });
+    if let Some(path) = cached_path {
+        if let Some(raster) = load_icon(path.as_path(), target_size) {
+            return Some(raster);
+        }
+        if let Ok(mut shared) = shared_cache.lock()
+            && let Some(cache) = shared.as_mut()
+        {
+            cache.remove(name);
+        }
+    }
+
+    let path = resolve_icon_path_direct(name, theme, target_size)?;
+    let raster = load_icon(path.as_path(), target_size)?;
+    if let Ok(mut shared) = shared_cache.lock() {
+        shared
+            .get_or_insert_with(|| IconPathCache::load(theme, target_size))
+            .insert(name, path.as_path());
+    }
+    Some(raster)
+}
+
 fn resolve_icon_path_direct(name: &str, theme: &str, target_size: u32) -> Option<PathBuf> {
     let path = Path::new(name);
     if path.is_absolute() && path.is_file() {
         return Some(path.to_path_buf());
     }
-    let name = path
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .unwrap_or(name);
-    freedesktop_icons::lookup(name)
+    let lookup_name = icon_lookup_name(name);
+    freedesktop_icons::lookup(lookup_name)
         .with_size(u16::try_from(target_size).unwrap_or(u16::MAX))
         .with_theme(theme)
-        .with_cache()
         .find()
+}
+
+/// Desktop icon identifiers commonly contain dots (for example,
+/// org.mozilla.Thunderbird). Strip only a real image suffix supplied in an Icon= value.
+fn icon_lookup_name(name: &str) -> &str {
+    let path = Path::new(name);
+    let has_image_suffix = path
+        .extension()
+        .and_then(|suffix| suffix.to_str())
+        .is_some_and(|suffix| {
+            matches!(
+                suffix.to_ascii_lowercase().as_str(),
+                "png" | "svg" | "jpg" | "jpeg" | "xpm" | "xmp"
+            )
+        });
+    if has_image_suffix {
+        path.file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or(name)
+    } else {
+        name
+    }
 }
 
 fn union_bounds(glyphs: &[PositionedGlyph<'_>]) -> Option<(i32, i32, i32, i32)> {
@@ -951,11 +1165,11 @@ fn draw_search_box(
     let pad = ui.padding;
     let mut text_x = panel.x + pad;
     let mut text_right = panel.x + panel.w - pad;
-    // Magnifier glyph, tinted and placed on the configured side, with the text column
-    // shrunk to make room for it.
+    // Search glyph, tinted and placed on the configured side. Keep a deliberate
+    // breathing gap between it and the input column so the caret never crowds the glyph.
     if let Some(raster) = search_icon {
         let isize = config.search_icon.size.clamp(1, ui.search_height);
-        let gap = 8;
+        let gap = 12;
         let iy = y + (ui.search_height - isize) / 2;
         let tint = parse_color(&config.colors.search_icon, colors.hint);
         if config.search_icon.side.eq_ignore_ascii_case("right") {
@@ -971,14 +1185,15 @@ fn draw_search_box(
     let _ = input.mode;
     let query_empty = input.query.is_empty();
     let caret_w = config.cursor.width.max(1);
-    let placeholder_caret_gap = 4;
-    let text_caret_gap = 0;
-    let display_x = if query_empty && config.cursor.enabled {
-        text_x + caret_w + placeholder_caret_gap
+    let caret_text_gap = 4;
+    // Preserve the established placeholder/text column. When the field is empty,
+    // the caret occupies that exact first-letter column instead of sitting to its left.
+    let input_x = if config.cursor.enabled {
+        text_x + caret_w + caret_text_gap
     } else {
         text_x
     };
-    let text_width = (text_right - display_x).max(0);
+    let text_width = (text_right - input_x).max(0);
     let display_text = if query_empty {
         font.fit_text(config.placeholder.as_str(), ui.search_font_size, text_width)
     } else {
@@ -995,7 +1210,7 @@ fn draw_search_box(
         canvas,
         width,
         height,
-        display_x,
+        input_x,
         top_y,
         display_text.as_str(),
         ui.search_font_size,
@@ -1010,11 +1225,9 @@ fn draw_search_box(
         let max_caret_h = (ui.search_height - 8).max(12);
         let caret_h = (line_h + 4).min(max_caret_h).max(12);
         let caret_x = if query_empty {
-            text_x
+            input_x
         } else {
-            (text_x + text_w + text_caret_gap)
-                .min(text_right - caret_w)
-                .max(text_x)
+            (input_x + text_w).min(text_right - caret_w).max(input_x)
         };
         let caret_y = y + (ui.search_height - caret_h) / 2;
         fill_rect(
@@ -1971,6 +2184,65 @@ mod tests {
     }
 
     #[test]
+    fn dotted_icon_identifiers_are_not_mistaken_for_file_names() {
+        assert_eq!(
+            icon_lookup_name("org.mozilla.Thunderbird"),
+            "org.mozilla.Thunderbird"
+        );
+        assert_eq!(
+            icon_lookup_name("com.obsproject.Studio"),
+            "com.obsproject.Studio"
+        );
+        assert_eq!(icon_lookup_name("firefox.png"), "firefox");
+        assert_eq!(icon_lookup_name("symbolic-icon.SVG"), "symbolic-icon");
+    }
+
+    #[test]
+    fn persistent_icon_path_cache_round_trips_and_discards_stale_paths() {
+        let root = std::env::temp_dir().join(format!(
+            "halley-lift-icon-cache-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock after Unix epoch")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("temporary cache directory");
+        let icon = root.join("org.example.App.svg");
+        fs::write(&icon, "<svg/>").expect("temporary icon");
+        let file = root.join("paths");
+
+        let mut cache = IconPathCache {
+            file: Some(file.clone()),
+            paths: HashMap::new(),
+        };
+        cache.insert("org.example.App", &icon);
+
+        let mut warm = IconPathCache::load_from_file(file.clone());
+        assert_eq!(warm.get("org.example.App"), Some(icon.clone()));
+
+        fs::remove_file(&icon).expect("remove temporary icon");
+        assert_eq!(warm.get("org.example.App"), None);
+        let reloaded = IconPathCache::load_from_file(file);
+        assert!(!reloaded.paths.contains_key("org.example.App"));
+
+        fs::remove_dir_all(root).expect("remove temporary cache directory");
+    }
+
+    #[test]
+    fn expired_missing_icon_is_retried_instead_of_cached_forever() {
+        let mut cache = IconCache::new(&LiftConfig::default());
+        cache.entries.insert(
+            "new-app-icon".into(),
+            IconSlot::Missing {
+                retry_at: Instant::now(),
+            },
+        );
+        assert!(matches!(cache.load("new-app-icon"), IconLookup::Pending));
+        assert_eq!(cache.entries.len(), 1);
+    }
+
+    #[test]
     fn demand_lookup_queues_only_the_requested_icon() {
         let mut cache = IconCache::new(&LiftConfig::default());
         assert!(matches!(cache.load("new-app-icon"), IconLookup::Pending));
@@ -2014,9 +2286,12 @@ mod tests {
     fn app_result_draws_fallback_when_raster_icon_is_missing() {
         let config = LiftConfig::default();
         let mut cache = IconCache::new(&config);
-        cache
-            .entries
-            .insert("definitely-missing-icon".into(), IconSlot::Missing);
+        cache.entries.insert(
+            "definitely-missing-icon".into(),
+            IconSlot::Missing {
+                retry_at: Instant::now() + MISSING_ICON_RETRY_DELAY,
+            },
+        );
         let result = LiftResult {
             section: "Applications".into(),
             title: "Missing Icon App".into(),
