@@ -297,6 +297,8 @@ decorations:
     show-buttons true
     show-icons false
     show-title true
+    # Optional title-only font size; omit to inherit global font.size.
+    # text-size 11
     radius 8
     height 32
 

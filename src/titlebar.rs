@@ -430,13 +430,18 @@ fn control_geometry<K>(titlebar: Rectangle<i32, K>, config: &Titlebars) -> Vec<C
         .collect()
 }
 
-pub fn effective_height(config: &Titlebars, font_size_px: u16) -> i32 {
+pub fn effective_text_size(config: &Titlebars, global_font_size_px: u16) -> u16 {
+    config.text_size_px.unwrap_or(global_font_size_px).max(1)
+}
+
+pub fn effective_height(config: &Titlebars, global_font_size_px: u16) -> i32 {
     let mut required = 1;
     if config.show_buttons || config.show_icons {
         required = required.max(MIN_CONTENT_HEIGHT);
     }
     if config.show_title {
-        let line_height = (f32::from(font_size_px.max(1)) * 1.25).ceil() as i32;
+        let line_height =
+            (f32::from(effective_text_size(config, global_font_size_px)) * 1.25).ceil() as i32;
         required = required.max(line_height + TITLE_VERTICAL_PADDING);
     }
     config.height_px.max(required).clamp(1, 96)
@@ -697,6 +702,13 @@ mod tests {
         };
         assert_eq!(effective_height(&text_only, 40), 58);
         assert_eq!(effective_height(&text_only, 200), 96);
+
+        let overridden = Titlebars {
+            text_size_px: Some(18),
+            ..text_only
+        };
+        assert_eq!(effective_text_size(&overridden, 40), 18);
+        assert_eq!(effective_height(&overridden, 40), 31);
     }
 
     #[test]

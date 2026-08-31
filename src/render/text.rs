@@ -203,6 +203,28 @@ impl UiTextRenderer {
         )
     }
 
+    pub fn element_scaled_at_size(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        destination: Rectangle<i32, Physical>,
+        text: &str,
+        rgb: [u8; 3],
+        alpha: f32,
+        size_px: u16,
+    ) -> Result<Option<PreparedUiText>, Box<dyn Error>> {
+        self.element_with_options(
+            renderer,
+            destination.loc,
+            text,
+            rgb,
+            alpha,
+            TextElementSizing {
+                font_size_px: Some(size_px),
+                destination_size: Some(destination.size),
+            },
+        )
+    }
+
     fn element_with_options(
         &mut self,
         renderer: &mut GlesRenderer,

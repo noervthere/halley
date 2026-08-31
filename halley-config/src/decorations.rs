@@ -27,7 +27,7 @@ pub enum TitlebarContentPosition {
 /// Compositor-owned titlebar styling.
 ///
 /// `height_px` is the requested height. Rendering raises it when necessary to
-/// fit enabled controls, application icons, or the configured global font.
+/// fit enabled controls, application icons, or the effective title text size.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Titlebars {
     pub enabled: bool,
@@ -36,6 +36,8 @@ pub struct Titlebars {
     pub show_buttons: bool,
     pub show_icons: bool,
     pub show_title: bool,
+    /// Optional title-only font size. `None` inherits the global font size.
+    pub text_size_px: Option<u16>,
     pub radius_px: i32,
     pub height_px: i32,
     pub color_focused: BorderColor,
@@ -55,6 +57,7 @@ impl Default for Titlebars {
             show_buttons: true,
             show_icons: false,
             show_title: true,
+            text_size_px: None,
             radius_px: 8,
             height_px: 32,
             color_focused: BorderColor {
@@ -201,6 +204,11 @@ pub fn parse_decorations(config: &RuneConfig) -> Decorations {
             "decorations.titlebars.show-title",
             titlebar_defaults.show_title,
         ),
+        text_size_px: config
+            .get_optional::<u64>("decorations.titlebars.text-size")
+            .ok()
+            .flatten()
+            .map(|size| size.clamp(1, 96) as u16),
         radius_px: config
             .get_or("decorations.titlebars.radius", titlebar_defaults.radius_px)
             .clamp(0, 96),
@@ -399,6 +407,7 @@ decorations:
     show-buttons false
     show-icons true
     show-title false
+    text-size 18
     radius 12
     height 40
     color-focused "#123"
@@ -420,6 +429,7 @@ end
         assert!(!titlebars.show_buttons);
         assert!(titlebars.show_icons);
         assert!(!titlebars.show_title);
+        assert_eq!(titlebars.text_size_px, Some(18));
         assert_eq!(titlebars.radius_px, 12);
         assert_eq!(titlebars.height_px, 40);
         assert_eq!(titlebars.color_focused.r, 0x11 as f32 / 255.0);
@@ -487,12 +497,13 @@ end
     #[test]
     fn titlebar_metrics_are_clamped_and_invalid_positions_use_defaults() {
         let config = RuneConfig::from_str(
-            "decorations:\n  titlebars:\n    height 0\n    radius 999\n    button-position \"middle\"\n    title-position \"middle\"\n  end\nend\n",
+            "decorations:\n  titlebars:\n    height 0\n    text-size 999\n    radius 999\n    button-position \"middle\"\n    title-position \"middle\"\n  end\nend\n",
         )
         .expect("valid rune-cfg source");
 
         let titlebars = parse_decorations(&config).titlebars;
         assert_eq!(titlebars.height_px, 1);
+        assert_eq!(titlebars.text_size_px, Some(96));
         assert_eq!(titlebars.radius_px, 96);
         assert_eq!(titlebars.button_position, TitlebarButtonPosition::Right);
         assert_eq!(titlebars.title_position, TitlebarContentPosition::Center);

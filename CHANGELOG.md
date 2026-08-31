@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+- Add `decorations.titlebars.text-size` so window-title text can use a size
+  independent of the global compositor font while preserving global inheritance
+  when the setting is omitted.
+
 ## [v0.7.0] - 2026-08-31
 
 ### Changed

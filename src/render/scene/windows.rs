@@ -835,6 +835,7 @@ pub(crate) fn append_titlebar_elements(
                     identity_scale,
                 ),
                 identity_scale,
+                config.text_size_px,
             )?,
             None => None,
         }
@@ -854,11 +855,21 @@ pub(crate) fn append_titlebar_elements(
         elements.push(SceneElement::NodeTexture(icon));
     }
 
-    if let (Some(title), Some(title_rect)) = (title, identity_layout.title)
-        && let Some(prepared) =
-            ui_text.element_scaled(renderer, title_rect, &title.text, rgb, alpha)?
-    {
-        elements.push(SceneElement::UiText(prepared.element));
+    if let (Some(title), Some(title_rect)) = (title, identity_layout.title) {
+        let prepared = match config.text_size_px {
+            Some(size_px) => ui_text.element_scaled_at_size(
+                renderer,
+                title_rect,
+                &title.text,
+                rgb,
+                alpha,
+                size_px,
+            )?,
+            None => ui_text.element_scaled(renderer, title_rect, &title.text, rgb, alpha)?,
+        };
+        if let Some(prepared) = prepared {
+            elements.push(SceneElement::UiText(prepared.element));
+        }
     }
 
     if let Some(background_element) = window_decoration_renderer.tint_element_with_radii(
@@ -912,11 +923,17 @@ fn fitted_title(
     rgb: [u8; 3],
     max_width: i32,
     scale: f32,
+    text_size_px: Option<u16>,
 ) -> Result<Option<FittedTitle>, Box<dyn Error>> {
     if max_width <= 0 || title.is_empty() {
         return Ok(None);
     }
-    if let Some(native_size) = ui_text.measure(renderer, title, rgb)?
+    let mut measure =
+        |ui_text: &mut crate::render::text::UiTextRenderer, text: &str| match text_size_px {
+            Some(size_px) => ui_text.measure_at_size(renderer, text, rgb, size_px),
+            None => ui_text.measure(renderer, text, rgb),
+        };
+    if let Some(native_size) = measure(ui_text, title)?
         && scaled_title_size(native_size, scale).w <= max_width
     {
         return Ok(Some(FittedTitle {
@@ -934,7 +951,7 @@ fn fitted_title(
             .iter()
             .chain(std::iter::once(&'…'))
             .collect::<String>();
-        let Some(native_size) = ui_text.measure(renderer, &candidate, rgb)? else {
+        let Some(native_size) = measure(ui_text, &candidate)? else {
             return Ok(None);
         };
         let size = scaled_title_size(native_size, scale);

@@ -21,6 +21,7 @@ decorations:
     show-buttons true
     show-icons false
     show-title true
+    # text-size 11
     radius 8
     height 32
 
@@ -49,7 +50,9 @@ border then paints only its left, right, and bottom edges. `titlebars.radius`
 rounds only the titlebar's top corners; `border.radius` continues to round only
 the client body's bottom corners. The requested titlebar `height` is clamped to
 1-96 pixels and is raised internally when enabled buttons, the application
-icon, or the global font need more room.
+icon, or title text need more room. `titlebars.text-size` is clamped to 1-96
+pixels and overrides the global `font.size` only for window titles; when omitted,
+titles continue to inherit the global size.
 
 The titlebar's outer top edge and corners participate in border resizing.
 On resizable floating windows, the outermost eight screen pixels take priority
