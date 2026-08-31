@@ -1,6 +1,6 @@
 [package]
 name = "halley-lift"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 description = "Search and action launcher for the Halley Wayland compositor"
 authors.workspace = true

@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [v0.7.0] - 2026-08-31
 
 ### Changed
 - Give compositor overlays independent `overlays.border-size` and
@@ -33,6 +33,13 @@ All notable changes to this project will be documented in this file.
   XWayland constraint proxy surface delivered it, improving input trace detail.
 
 ### Fixed
+- Clear layer-shell backdrop blur as soon as a surface unmaps and make the quit
+  confirmation appear and disappear atomically, preventing dismissed overlays
+  from leaving stale visual remnants.
+- Preload app icons while node windows are still live so icons fade in with the
+  first automatic decay instead of appearing abruptly after it finishes.
+- Render Lift cluster-draft membership with a bundled, font-independent check
+  glyph so selection remains visible with fonts that lack U+2713.
 - Resolve dotted Freedesktop app-icon identifiers without truncating their final
   component, persist successful theme lookups by resolved theme and size, discard
   stale or undecodable cached paths, and retry misses instead of permanently
