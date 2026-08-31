@@ -72,10 +72,7 @@ pub use keybinds::{
     ModifierKey, Modifiers, MonitorTarget, TrailDirection,
 };
 pub use launch::{Autostart, LaunchConfigError, parse_autostart, parse_env};
-pub use migrate::{
-    CONFIG_VERSION, MigrationError, MigrationMode, MigrationReport, MigrationStatus,
-    migrate_config_at,
-};
+pub use migrate::{MigrationError, MigrationReport, MigrationStatus, migrate_config_at};
 pub use nodes::{
     Debug, Decay, FocusRing, FocusRings, LandmarkPlacement, NodeBackgroundColor, NodeDisplayPolicy,
     NodeParseError, NodeShape, Nodes, RestoreCentering, parse_debug, parse_decay,

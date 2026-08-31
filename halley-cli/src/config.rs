@@ -75,14 +75,13 @@ pub fn migrate(explicit: Option<PathBuf>, dry_run: bool) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    match halley_config::migrate_config_at(&path, halley_config::MigrationMode::Explicit, dry_run) {
+    match halley_config::migrate_config_at(&path, dry_run) {
         Ok(report) => {
             use halley_config::MigrationStatus;
             match report.status {
                 MigrationStatus::UpToDate => {
-                    println!("Configuration already current");
+                    println!("No structural migration needed");
                     println!("  File: {}", path.display());
-                    println!("  Version: {}", report.to_version);
                 }
                 MigrationStatus::WouldUpdate | MigrationStatus::Updated => {
                     println!(
@@ -94,18 +93,11 @@ pub fn migrate(explicit: Option<PathBuf>, dry_run: bool) -> ExitCode {
                         }
                     );
                     println!("  File: {}", path.display());
-                    println!(
-                        "  Version: {} -> {}",
-                        report.from_version, report.to_version
-                    );
                     if let Some(reason) = &report.reason {
                         println!("  Reason: {reason}");
                     }
                     for item in &report.applied {
-                        println!("  Add: {item}");
-                    }
-                    for item in &report.skipped {
-                        println!("  Skip: {item}");
+                        println!("  Change: {item}");
                     }
                     if let Some(backup) = report.backup {
                         println!("  Backup: {}", backup.display());
@@ -114,24 +106,19 @@ pub fn migrate(explicit: Option<PathBuf>, dry_run: bool) -> ExitCode {
                 MigrationStatus::Replaced => {
                     println!("Configuration replaced");
                     println!("  File: {}", path.display());
-                    println!(
-                        "  Version: {} -> {}",
-                        report.from_version, report.to_version
-                    );
                     if let Some(reason) = &report.reason {
                         println!("  Reason: {reason}");
+                    }
+                    for item in &report.applied {
+                        println!("  Change: {item}");
                     }
                     if let Some(backup) = report.backup {
                         println!("  Backup: {}", backup.display());
                     }
                 }
-                MigrationStatus::Skipped => {
-                    println!("Configuration migration skipped");
-                    println!("  File: {}", path.display());
-                    if let Some(reason) = report.reason {
-                        println!("  Reason: {reason}");
-                    }
-                }
+            }
+            for item in &report.skipped {
+                println!("  Skip: {item}");
             }
             ExitCode::SUCCESS
         }

@@ -171,7 +171,7 @@ pub struct DecorationLayout<K> {
     pub outer: Rectangle<i32, K>,
     pub controls: Vec<ControlGeometry<K>>,
     pub identity_area: Rectangle<i32, K>,
-    identity_center_x2: i32,
+    titlebar_center_x2: i32,
     pub border_width: i32,
     pub titlebar_height: i32,
 }
@@ -235,9 +235,11 @@ impl<K> DecorationLayout<K> {
             outer,
             controls,
             identity_area,
-            identity_center_x2: identity_x
+            titlebar_center_x2: titlebar
+                .loc
+                .x
                 .saturating_mul(2)
-                .saturating_add(identity_area.size.w),
+                .saturating_add(titlebar.size.w),
             border_width,
             titlebar_height,
         }
@@ -254,8 +256,14 @@ impl<K> DecorationLayout<K> {
         self.identity_area.size.w -= reserved;
     }
 
-    pub fn max_title_width_scaled(&self, has_icon: bool, scale: f32) -> i32 {
+    pub fn max_title_width_scaled(
+        &self,
+        position: TitlebarContentPosition,
+        has_icon: bool,
+        scale: f32,
+    ) -> i32 {
         let available = self.max_title_width_with_metrics(
+            position,
             has_icon,
             scaled_identity_metric(APP_ICON_SIZE, scale),
             scaled_identity_metric(APP_ICON_GAP, scale),
@@ -279,9 +287,38 @@ impl<K> DecorationLayout<K> {
         )
     }
 
-    fn max_title_width_with_metrics(&self, has_icon: bool, icon_size: i32, gap: i32) -> i32 {
+    fn identity_group_width(&self, position: TitlebarContentPosition) -> i32 {
+        match position {
+            TitlebarContentPosition::Center => {
+                let left = self
+                    .titlebar_center_x2
+                    .saturating_sub(self.identity_area.loc.x.saturating_mul(2));
+                let right = self
+                    .identity_area
+                    .loc
+                    .x
+                    .saturating_add(self.identity_area.size.w)
+                    .saturating_mul(2)
+                    .saturating_sub(self.titlebar_center_x2);
+                left.min(right).max(0)
+            }
+            TitlebarContentPosition::Left | TitlebarContentPosition::Right => {
+                self.identity_area.size.w.max(0)
+            }
+        }
+    }
+
+    fn max_title_width_with_metrics(
+        &self,
+        position: TitlebarContentPosition,
+        has_icon: bool,
+        icon_size: i32,
+        gap: i32,
+    ) -> i32 {
         let icon_width = if has_icon { icon_size + gap } else { 0 };
-        self.identity_area.size.w.saturating_sub(icon_width).max(0)
+        self.identity_group_width(position)
+            .saturating_sub(icon_width)
+            .max(0)
     }
 
     fn identity_layout_with_metrics(
@@ -292,12 +329,13 @@ impl<K> DecorationLayout<K> {
         icon_size: i32,
         icon_gap: i32,
     ) -> IdentityLayout<K> {
-        let has_icon = has_icon && self.identity_area.size.w >= icon_size;
+        let has_icon = has_icon && self.identity_group_width(position) >= icon_size;
         let title_size = title_size
             .filter(|(width, height)| *width > 0 && *height > 0)
             .and_then(|(width, height)| {
-                let width =
-                    width.min(self.max_title_width_with_metrics(has_icon, icon_size, icon_gap));
+                let width = width.min(
+                    self.max_title_width_with_metrics(position, has_icon, icon_size, icon_gap),
+                );
                 (width > 0).then_some((width, height))
             });
         let gap = if has_icon && title_size.is_some() {
@@ -309,16 +347,7 @@ impl<K> DecorationLayout<K> {
         let group_width = (if has_icon { icon_size } else { 0 }) + gap + title_width;
         let group_x = match position {
             TitlebarContentPosition::Left => self.identity_area.loc.x,
-            TitlebarContentPosition::Center => {
-                // A titlebar pin reserves space after the base layout is
-                // created. Keep centered identity anchored to the same
-                // control-aware center it had without the pin, only clamping
-                // when a genuinely narrow titlebar would overlap the badge.
-                let desired = (self.identity_center_x2 - group_width) / 2;
-                let minimum = self.identity_area.loc.x;
-                let maximum = minimum + self.identity_area.size.w.saturating_sub(group_width);
-                desired.clamp(minimum, maximum.max(minimum))
-            }
+            TitlebarContentPosition::Center => (self.titlebar_center_x2 - group_width) / 2,
             TitlebarContentPosition::Right => {
                 self.identity_area.loc.x + self.identity_area.size.w - group_width
             }
@@ -610,7 +639,10 @@ mod tests {
 
     #[test]
     fn left_buttons_keep_close_at_the_outer_edge() {
-        let config = Titlebars::default();
+        let config = Titlebars {
+            button_position: TitlebarButtonPosition::Left,
+            ..Titlebars::default()
+        };
         let layout = DecorationLayout::<Logical>::new(
             Rectangle::new((100, 100).into(), (800, 600).into()),
             3,
@@ -731,9 +763,18 @@ mod tests {
             &config,
         );
 
-        assert_eq!(layout.max_title_width_scaled(false, 1.0), 240);
-        assert_eq!(layout.max_title_width_scaled(false, 0.5), 120);
-        assert_eq!(layout.max_title_width_scaled(true, 1.0), 240);
+        assert_eq!(
+            layout.max_title_width_scaled(TitlebarContentPosition::Center, false, 1.0),
+            240
+        );
+        assert_eq!(
+            layout.max_title_width_scaled(TitlebarContentPosition::Center, false, 0.5),
+            120
+        );
+        assert_eq!(
+            layout.max_title_width_scaled(TitlebarContentPosition::Center, true, 1.0),
+            240
+        );
     }
 
     #[test]
@@ -750,13 +791,30 @@ mod tests {
         );
 
         assert_eq!(layout.identity_area.size.w, 188);
-        assert_eq!(layout.max_title_width_scaled(false, 1.0), 188);
-        assert_eq!(layout.max_title_width_scaled(true, 1.0), 164);
+        assert_eq!(
+            layout.max_title_width_scaled(TitlebarContentPosition::Left, false, 1.0),
+            188
+        );
+        assert_eq!(
+            layout.max_title_width_scaled(TitlebarContentPosition::Left, true, 1.0),
+            164
+        );
+        assert_eq!(
+            layout.max_title_width_scaled(TitlebarContentPosition::Center, false, 1.0),
+            92
+        );
+        assert_eq!(
+            layout.max_title_width_scaled(TitlebarContentPosition::Center, true, 1.0),
+            68
+        );
     }
 
     #[test]
     fn controls_win_hit_testing_over_drag_region() {
-        let config = Titlebars::default();
+        let config = Titlebars {
+            button_position: TitlebarButtonPosition::Left,
+            ..Titlebars::default()
+        };
         let layout = DecorationLayout::<Logical>::new(
             Rectangle::new((0, 32).into(), (300, 200).into()),
             0,
@@ -804,7 +862,10 @@ mod tests {
     #[test]
     fn opposite_badge_reservation_tracks_the_control_side() {
         let content = Rectangle::new((0, 32).into(), (400, 200).into());
-        let left_config = Titlebars::default();
+        let left_config = Titlebars {
+            button_position: TitlebarButtonPosition::Left,
+            ..Titlebars::default()
+        };
         let mut left = DecorationLayout::<Logical>::new(content, 0, 32, &left_config);
         let left_before = left.identity_area;
         left.reserve_opposite_controls(TitlebarButtonPosition::Left);
@@ -845,6 +906,15 @@ mod tests {
                 1.0,
             );
 
+            let geometric_center_x2 = layout.titlebar.loc.x * 2 + layout.titlebar.size.w;
+            assert_eq!(
+                before.group.loc.x * 2 + before.group.size.w,
+                geometric_center_x2
+            );
+            assert_eq!(
+                after.group.loc.x * 2 + after.group.size.w,
+                geometric_center_x2
+            );
             assert_eq!(after.title.unwrap().loc.x, before.title.unwrap().loc.x);
             assert_eq!(
                 after.app_icon.unwrap().loc.x,
@@ -854,7 +924,7 @@ mod tests {
     }
 
     #[test]
-    fn title_position_aligns_group_with_the_control_free_area() {
+    fn title_position_uses_edges_or_the_true_titlebar_center() {
         let config = Titlebars::default();
         let layout = DecorationLayout::<Logical>::new(
             Rectangle::new((0, 32).into(), (400, 200).into()),
@@ -883,8 +953,8 @@ mod tests {
 
         assert_eq!(left.group.loc.x, layout.identity_area.loc.x);
         assert_eq!(
-            center.group.loc.x,
-            layout.identity_area.loc.x + (layout.identity_area.size.w - 100) / 2
+            center.group.loc.x * 2 + center.group.size.w,
+            layout.titlebar.loc.x * 2 + layout.titlebar.size.w
         );
         assert_eq!(
             right.group.loc.x + right.group.size.w,

@@ -859,12 +859,11 @@ mod tests {
             ))
         );
 
-        let left_layout = crate::titlebar::DecorationLayout::new(
-            client,
-            0,
-            32,
-            &halley_config::Titlebars::default(),
-        );
+        let left_config = halley_config::Titlebars {
+            button_position: halley_config::TitlebarButtonPosition::Left,
+            ..halley_config::Titlebars::default()
+        };
+        let left_layout = crate::titlebar::DecorationLayout::new(client, 0, 32, &left_config);
         assert_eq!(
             decoration_hit_at(
                 Some(&left_layout),

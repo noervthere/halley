@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Changed
+- Give new window decorations an orange focused titlebar, neutral focused
+  border, and right-side window controls.
+- Make config migration explicit and structurally detected, remove the config
+  version marker from generated examples, and reserve startup writes for
+  creating a missing config only.
 - Make Fuzzel the default `Super+D` launcher in new configurations while
   retaining Halley Lift as a commented alternative.
 - Show a compact edit button beside a collapsed cluster core when its hover bloom
@@ -21,9 +26,8 @@ All notable changes to this project will be documented in this file.
   XWayland constraint proxy surface delivered it, improving input trace detail.
 
 ### Fixed
-- Never replace an existing pre-0.6 configuration during compositor startup;
-  the backup-and-replacement migration now requires an explicit `halleyctl`
-  command.
+- Never modify any existing configuration during compositor startup;
+  compatibility migration now requires an explicit `halleyctl` command.
 - Keep the newly created cluster core continuously visible through the restored
   Field reveal, preventing its three-circle icon from appearing a frame late.
 - Restore collapsed Field nodes dropped into an open cluster workspace, including
@@ -53,7 +57,8 @@ All notable changes to this project will be documented in this file.
 - Respect bufferless client cursor surfaces as hidden instead of replacing them
   with the themed arrow, allowing browser video controls to hide the pointer
   independently of Halley's global inactivity timeout.
-- Keep the titlebar pin from shifting an otherwise centered window title.
+- Keep a centered window title at the titlebar's true geometric center,
+  regardless of window-control placement or the pin badge.
 - Size compositor-owned text textures from the rasterized glyph bounds so the
   final glyph remains visible, including in Cluster Composer instructions.
 

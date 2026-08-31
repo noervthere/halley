@@ -1,4 +1,3 @@
-# halley-config-version: 2
 # Halley compositor configuration.
 #
 # The default location is:
@@ -6,13 +5,14 @@
 # or, when XDG_CONFIG_HOME is unset:
 #   $HOME/.config/halley/halley.rune
 #
-# Halley creates this file when it does not already exist. Existing pre-0.6
-# files are never replaced during startup; inspect and apply that replacement
-# explicitly with `halleyctl config migrate --dry-run` and then `halleyctl
-# config migrate`. Later 0.6 configs receive only guarded, versioned
-# compatibility migrations. While Halley is running, valid
-# saves are applied automatically. A syntactically invalid or incomplete save
-# is rejected as one unit and the last valid configuration remains active.
+# Halley creates this file only when it does not already exist. Startup never
+# rewrites an existing config. Optional compatibility updates are structural
+# and explicit: inspect them with `halleyctl config migrate --dry-run`, then
+# apply them with `halleyctl config migrate`. Applied migrations validate the
+# complete result, write atomically, and retain a timestamped backup. While
+# Halley is running, valid saves are applied automatically. A syntactically
+# invalid or incomplete save is rejected as one unit and the last valid
+# configuration remains active.
 #
 # Sections and fields may be omitted unless noted otherwise; omitted values
 # use their built-in defaults. `keybinds:` is required because it defines the
@@ -278,7 +278,7 @@ decorations:
     radius 8
 
     # Focused and unfocused colors accept "#rrggbb" or shorthand "#rgb".
-    colour-focused "#38d1eb"
+    colour-focused "#f4f5f7"
     colour-unfocused "#474d59"
   end
 
@@ -291,7 +291,7 @@ decorations:
   titlebars:
     enabled true
     # Left uses close/maximize/minimize; right uses minimize/maximize/close.
-    button-position "left"
+    button-position "right"
     # The application icon follows the title as one left/center/right group.
     title-position "center"
     show-buttons true
@@ -300,7 +300,7 @@ decorations:
     radius 8
     height 32
 
-    colour-focused "#38d1eb"
+    colour-focused "#d65d26"
     colour-unfocused "#474d59"
     foreground-colour-focused "#101418"
     foreground-colour-unfocused "#f4f5f7"

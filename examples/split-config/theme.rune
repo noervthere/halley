@@ -22,7 +22,7 @@ decorations:
   border:
     size 3
     radius 8
-    colour-focused "#d65d26"
+    colour-focused "#f4f5f7"
     colour-unfocused "#3c3836"
   end
 
@@ -30,7 +30,7 @@ decorations:
 
   titlebars:
     enabled true
-    button-position "left"
+    button-position "right"
     title-position "center"
     show-buttons true
     show-icons false

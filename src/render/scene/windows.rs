@@ -829,7 +829,11 @@ pub(crate) fn append_titlebar_elements(
                 ui_text,
                 title,
                 rgb,
-                layout.max_title_width_scaled(app_id.is_some(), identity_scale),
+                layout.max_title_width_scaled(
+                    config.title_position,
+                    app_id.is_some(),
+                    identity_scale,
+                ),
                 identity_scale,
             )?,
             None => None,

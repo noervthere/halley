@@ -221,6 +221,26 @@ fn split_example_config_parses_end_to_end() {
         .expect("split example and its gathered files parse");
 
     assert_eq!(runtime.keybinds.modifier, ModifierKey::Super);
+    assert_eq!(
+        runtime.decorations.titlebars.button_position,
+        halley_config::TitlebarButtonPosition::Right
+    );
+    assert_eq!(
+        runtime.decorations.border_color_focused,
+        halley_config::BorderColor {
+            r: 0xf4 as f32 / 255.0,
+            g: 0xf5 as f32 / 255.0,
+            b: 0xf7 as f32 / 255.0,
+        }
+    );
+    assert_eq!(
+        runtime.decorations.titlebars.color_focused,
+        halley_config::BorderColor {
+            r: 0xd6 as f32 / 255.0,
+            g: 0x5d as f32 / 255.0,
+            b: 0x26 as f32 / 255.0,
+        }
+    );
     assert_eq!(runtime.cursor.theme, "Adwaita");
     assert!(runtime.cursor.hide_on_keyboard_nav);
     assert_eq!(
@@ -277,6 +297,26 @@ fn example_config_cluster_sections_parse() {
     assert_eq!(
         runtime.decorations.titlebars.title_position,
         halley_config::TitlebarContentPosition::Center
+    );
+    assert_eq!(
+        runtime.decorations.titlebars.button_position,
+        halley_config::TitlebarButtonPosition::Right
+    );
+    assert_eq!(
+        runtime.decorations.border_color_focused,
+        halley_config::BorderColor {
+            r: 0xf4 as f32 / 255.0,
+            g: 0xf5 as f32 / 255.0,
+            b: 0xf7 as f32 / 255.0,
+        }
+    );
+    assert_eq!(
+        runtime.decorations.titlebars.color_focused,
+        halley_config::BorderColor {
+            r: 0xd6 as f32 / 255.0,
+            g: 0x5d as f32 / 255.0,
+            b: 0x26 as f32 / 255.0,
+        }
     );
     assert!(runtime.decorations.resize_using_border);
     assert_eq!(runtime.animations.cluster.tiling.open_duration_ms, 300);

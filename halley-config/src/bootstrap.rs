@@ -136,7 +136,6 @@ mod tests {
     #[test]
     fn template_contains_overview_and_old_halley_controls() {
         for expected in [
-            "Existing pre-0.6",
             "\"$var.mod+d\" \"fuzzel\"",
             "# \"$var.mod+d\" \"halley-lift\"",
             "\"$var.mod+n\" \"toggle-state\"",
@@ -178,8 +177,10 @@ mod tests {
             "background-colour \"auto\"",
             "size 1.0",
             "titlebars:",
-            "button-position \"left\"",
+            "colour-focused \"#f4f5f7\"",
+            "button-position \"right\"",
             "title-position \"center\"",
+            "colour-focused \"#d65d26\"",
             "show-icons false",
             "show-title true",
             "height 32",
@@ -196,6 +197,8 @@ mod tests {
         assert!(!DEFAULT_CONFIG.contains("border-colour-inactive"));
         assert!(!DEFAULT_CONFIG.contains("gaming:"));
         assert!(!DEFAULT_CONFIG.contains("gamescope"));
+        assert!(!DEFAULT_CONFIG.contains("halley-config-version"));
+        assert!(DEFAULT_CONFIG.contains("Startup never\n# rewrites an existing config"));
     }
 
     #[test]

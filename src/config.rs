@@ -164,6 +164,10 @@ pub fn absolute_path(path: PathBuf) -> std::io::Result<PathBuf> {
     }
 }
 
+fn bootstrap_implicit_config(path: &Path) -> std::io::Result<bool> {
+    halley_config::bootstrap_default_config_at(path)
+}
+
 /// Loads the initial validated snapshot and retains the exact path that later
 /// reloads and `halleyctl config verify` must use.
 pub fn load_initial(explicit_path: Option<PathBuf>) -> InitialConfig {
@@ -205,53 +209,8 @@ pub fn load_initial(explicit_path: Option<PathBuf>) -> InitialConfig {
         };
     };
 
-    if !explicit {
-        match halley_config::bootstrap_default_config_at(&path) {
-            Ok(true) => {}
-            Ok(false) => match halley_config::migrate_config_at(
-                &path,
-                halley_config::MigrationMode::Automatic,
-                false,
-            ) {
-                Ok(report) if report.status == halley_config::MigrationStatus::Updated => {
-                    eventline::info!(
-                        "config: migrated {} from version {} to {} (backup: {})",
-                        path.display(),
-                        report.from_version,
-                        report.to_version,
-                        report.backup.as_deref().map_or_else(
-                            || "none".to_string(),
-                            |backup| backup.display().to_string()
-                        )
-                    );
-                    for skipped in report.skipped {
-                        eventline::warn!("config: migration skipped binding: {skipped}");
-                    }
-                }
-                Ok(report) if report.status == halley_config::MigrationStatus::Replaced => {
-                    eventline::info!(
-                        "config: backed up pre-0.6 {} to {} and installed the current default",
-                        path.display(),
-                        report.backup.as_deref().map_or_else(
-                            || "none".to_string(),
-                            |backup| backup.display().to_string()
-                        )
-                    );
-                }
-                Ok(report) if report.status == halley_config::MigrationStatus::Skipped => {
-                    eventline::info!(
-                        "config: automatic migration skipped for {}: {}",
-                        path.display(),
-                        report.reason.as_deref().unwrap_or("no reason reported")
-                    );
-                }
-                Ok(_) => {}
-                Err(error) => {
-                    eventline::warn!("config: automatic migration left file unchanged: {error}");
-                }
-            },
-            Err(error) => eventline::warn!("config: failed to bootstrap default config: {error}"),
-        }
+    if !explicit && let Err(error) = bootstrap_implicit_config(&path) {
+        eventline::warn!("config: failed to bootstrap default config: {error}");
     }
 
     match halley_config::load_runtime_config_diagnostic_at(&path) {
@@ -421,6 +380,26 @@ mod tests {
         assert!(
             !state.changed(),
             "removed dependencies stop triggering reloads"
+        );
+    }
+
+    #[test]
+    fn implicit_startup_never_rewrites_an_existing_config() {
+        let scratch = ScratchFile::new("startup-existing");
+        let original = format!(
+            "{}\n# user-owned trailing comment\n",
+            halley_config::DEFAULT_CONFIG
+        );
+        fs::write(&scratch.path, &original).unwrap();
+
+        assert!(!bootstrap_implicit_config(&scratch.path).unwrap());
+        assert_eq!(fs::read_to_string(&scratch.path).unwrap(), original);
+        assert_eq!(
+            fs::read_dir(scratch.path.parent().unwrap())
+                .unwrap()
+                .count(),
+            1,
+            "startup must not create a migration backup or sidecar"
         );
     }
 

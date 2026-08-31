@@ -9,24 +9,11 @@ use rune_cfg::RuneConfig;
 
 use crate::{Action, BindingScope, DEFAULT_CONFIG, Keybind, ModifierKey};
 
-pub const CONFIG_VERSION: u32 = 2;
-
-const VERSION_PREFIX: &str = "# halley-config-version:";
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MigrationMode {
-    /// Startup migration of the canonical user config. Legacy pre-0.6 files
-    /// and split trees are left untouched because startup must never replace a
-    /// user's existing configuration.
-    Automatic,
-    /// A migration explicitly requested through `halleyctl config migrate`.
-    Explicit,
-}
+const LEGACY_VERSION_PREFIX: &str = "# halley-config-version:";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MigrationStatus {
     UpToDate,
-    Skipped,
     WouldUpdate,
     Updated,
     /// A pre-0.6 file was backed up and replaced with the current default.
@@ -36,8 +23,6 @@ pub enum MigrationStatus {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MigrationReport {
     pub status: MigrationStatus,
-    pub from_version: u32,
-    pub to_version: u32,
     pub applied: Vec<String>,
     pub skipped: Vec<String>,
     pub reason: Option<String>,
@@ -45,26 +30,12 @@ pub struct MigrationReport {
 }
 
 impl MigrationReport {
-    fn up_to_date(version: u32) -> Self {
+    fn up_to_date(skipped: Vec<String>) -> Self {
         Self {
             status: MigrationStatus::UpToDate,
-            from_version: version,
-            to_version: version,
             applied: Vec::new(),
-            skipped: Vec::new(),
+            skipped,
             reason: None,
-            backup: None,
-        }
-    }
-
-    fn skipped(version: u32, reason: impl Into<String>) -> Self {
-        Self {
-            status: MigrationStatus::Skipped,
-            from_version: version,
-            to_version: version,
-            applied: Vec::new(),
-            skipped: Vec::new(),
-            reason: Some(reason.into()),
             backup: None,
         }
     }
@@ -240,34 +211,15 @@ const VERSION_1_BINDINGS: &[BindingCandidate] = &[
     },
 ];
 
-pub fn migrate_config_at(
-    path: &Path,
-    mode: MigrationMode,
-    dry_run: bool,
-) -> Result<MigrationReport, MigrationError> {
+pub fn migrate_config_at(path: &Path, dry_run: bool) -> Result<MigrationReport, MigrationError> {
     let source = fs::read_to_string(path)?;
-    let from_version = config_version(&source)?;
-    if from_version == CONFIG_VERSION {
-        return Ok(MigrationReport::up_to_date(from_version));
-    }
-    if from_version > CONFIG_VERSION {
-        return Err(MigrationError::Invalid(format!(
-            "config version {from_version} is newer than this Halley build (supports {CONFIG_VERSION})"
-        )));
-    }
-    if from_version == 0 && looks_like_pre_06_tree(path, &source) {
-        if mode == MigrationMode::Automatic {
-            return Ok(MigrationReport::skipped(
-                from_version,
-                "pre-0.6 configuration was left unchanged; run `halleyctl config migrate --dry-run` to inspect the explicit replacement",
-            ));
-        }
+    if looks_like_pre_06_tree(path, &source) {
         return replace_pre_06_config(path, dry_run);
     }
-    if mode == MigrationMode::Automatic && contains_gather(&source) {
-        return Ok(MigrationReport::skipped(
-            from_version,
-            "split config uses gather; run `halleyctl config migrate --dry-run` to inspect it",
+    if contains_gather(&source) {
+        return Err(MigrationError::Invalid(
+            "the selected root file uses gather; migrate the file that owns the affected section explicitly"
+                .to_string(),
         ));
     }
 
@@ -276,49 +228,54 @@ pub fn migrate_config_at(
             "existing configuration is invalid; leaving it unchanged: {error}"
         ))
     })?;
+    let mut known_binds = runtime.keybinds.binds;
+    let modifier = runtime.keybinds.modifier;
     let mut accepted = Vec::new();
     let mut applied = Vec::new();
     let mut skipped = Vec::new();
 
-    if from_version < 1 {
-        let mut known_binds = runtime.keybinds.binds;
-        let modifier = runtime.keybinds.modifier;
-        for candidate in VERSION_1_BINDINGS {
-            let binding = parse_candidate(modifier, candidate.line)?;
-            if known_binds
-                .iter()
-                .any(|existing| existing.action == binding.action)
-            {
-                continue;
-            }
-            if let Some(conflict) = known_binds
-                .iter()
-                .find(|existing| bindings_conflict(existing, &binding))
-            {
-                skipped.push(format!(
-                    "{}: chord is already occupied in {:?} scope",
-                    candidate.name, conflict.scope
-                ));
-                continue;
-            }
-            known_binds.push(binding);
-            accepted.push(*candidate);
-            applied.push(candidate.name.to_string());
+    for candidate in VERSION_1_BINDINGS {
+        let binding = parse_candidate(modifier, candidate.line)?;
+        if known_binds
+            .iter()
+            .any(|existing| existing.action == binding.action)
+        {
+            continue;
         }
+        if let Some(conflict) = known_binds
+            .iter()
+            .find(|existing| bindings_conflict(existing, &binding))
+        {
+            skipped.push(format!(
+                "{}: chord is already occupied in {:?} scope",
+                candidate.name, conflict.scope
+            ));
+            continue;
+        }
+        known_binds.push(binding);
+        accepted.push(*candidate);
+        applied.push(candidate.name.to_string());
     }
 
-    let mut updated = source;
+    let mut updated = source.clone();
     if !accepted.is_empty() {
         updated = insert_bindings(&updated, &accepted)?;
     }
-    if from_version < 2 {
-        let (backfilled, changed) = backfill_zoom_indicator(&updated)?;
-        updated = backfilled;
-        if changed {
-            applied.push("zoom indicator overlay".to_string());
-        }
+    let (backfilled, zoom_changed) = backfill_zoom_indicator(&updated)?;
+    updated = backfilled;
+    if zoom_changed {
+        applied.push("zoom indicator overlay".to_string());
     }
-    updated = set_config_version(&updated, CONFIG_VERSION)?;
+    let (without_marker, marker_removed) = remove_legacy_version_markers(&updated);
+    updated = without_marker;
+    if marker_removed {
+        applied.push("obsolete config version marker".to_string());
+    }
+
+    if updated == source {
+        return Ok(MigrationReport::up_to_date(skipped));
+    }
+
     validate_candidate(path, &updated)?;
 
     let status = if dry_run {
@@ -342,8 +299,6 @@ pub fn migrate_config_at(
 
     Ok(MigrationReport {
         status,
-        from_version,
-        to_version: CONFIG_VERSION,
         applied,
         skipped,
         reason: None,
@@ -351,20 +306,17 @@ pub fn migrate_config_at(
     })
 }
 
-fn config_version(source: &str) -> Result<u32, MigrationError> {
-    let markers = source
-        .lines()
-        .filter_map(|line| line.trim().strip_prefix(VERSION_PREFIX))
-        .collect::<Vec<_>>();
-    match markers.as_slice() {
-        [] => Ok(0),
-        [value] => value.trim().parse::<u32>().map_err(|_| {
-            MigrationError::Invalid(format!("invalid Halley config version marker {value:?}"))
-        }),
-        _ => Err(MigrationError::Invalid(
-            "configuration contains more than one Halley version marker".to_string(),
-        )),
+fn remove_legacy_version_markers(source: &str) -> (String, bool) {
+    let mut updated = String::with_capacity(source.len());
+    let mut removed = false;
+    for line in source.split_inclusive('\n') {
+        if line.trim().starts_with(LEGACY_VERSION_PREFIX) {
+            removed = true;
+        } else {
+            updated.push_str(line);
+        }
     }
+    (updated, removed)
 }
 
 fn contains_gather(source: &str) -> bool {
@@ -376,8 +328,6 @@ fn replace_pre_06_config(path: &Path, dry_run: bool) -> Result<MigrationReport, 
     if dry_run {
         return Ok(MigrationReport {
             status: MigrationStatus::WouldUpdate,
-            from_version: 0,
-            to_version: CONFIG_VERSION,
             applied,
             skipped: Vec::new(),
             reason: Some("pre-0.6 configuration is not compatible with Halley 0.6".to_string()),
@@ -396,8 +346,6 @@ fn replace_pre_06_config(path: &Path, dry_run: bool) -> Result<MigrationReport, 
 
     Ok(MigrationReport {
         status: MigrationStatus::Replaced,
-        from_version: 0,
-        to_version: CONFIG_VERSION,
         applied,
         skipped: Vec::new(),
         reason: Some("pre-0.6 configuration is not compatible with Halley 0.6".to_string()),
@@ -673,47 +621,6 @@ fn has_assignment(block: &str, key: &str) -> bool {
     })
 }
 
-fn set_config_version(source: &str, version: u32) -> Result<String, MigrationError> {
-    let marker = format!("{VERSION_PREFIX} {version}");
-    let mut offset = 0usize;
-    let mut found = None;
-    for line in source.split_inclusive('\n') {
-        if line.trim().starts_with(VERSION_PREFIX) {
-            let line_end = offset + line.trim_end_matches(['\r', '\n']).len();
-            if found.replace((offset, line_end)).is_some() {
-                return Err(MigrationError::Invalid(
-                    "configuration contains more than one Halley version marker".to_string(),
-                ));
-            }
-        }
-        offset += line.len();
-    }
-    if let Some((start, end)) = found {
-        let mut updated = source.to_string();
-        updated.replace_range(start..end, &marker);
-        return Ok(updated);
-    }
-
-    let insert_at = metadata_prefix_end(source);
-    let mut updated = String::with_capacity(source.len() + marker.len() + 1);
-    updated.push_str(&source[..insert_at]);
-    updated.push_str(&marker);
-    updated.push('\n');
-    updated.push_str(&source[insert_at..]);
-    Ok(updated)
-}
-
-fn metadata_prefix_end(source: &str) -> usize {
-    let mut offset = 0usize;
-    for line in source.split_inclusive('\n') {
-        if !line.trim_start().starts_with('@') {
-            break;
-        }
-        offset += line.len();
-    }
-    offset
-}
-
 fn validate_candidate(path: &Path, source: &str) -> Result<(), MigrationError> {
     let temp = temporary_path(path, "validate")?;
     let result = (|| {
@@ -864,9 +771,20 @@ mod tests {
     }
 
     #[test]
-    fn current_default_is_not_treated_as_pre_06() {
+    fn current_markerless_default_needs_no_migration() {
         assert!(!looks_like_pre_06(DEFAULT_CONFIG));
-        assert!(looks_like_pre_06(&pre_06_root()));
+        assert!(!DEFAULT_CONFIG.contains(LEGACY_VERSION_PREFIX));
+
+        let scratch = ScratchDir::new("current");
+        let path = scratch.config();
+        fs::write(&path, DEFAULT_CONFIG).unwrap();
+
+        let report = migrate_config_at(&path, false).unwrap();
+
+        assert_eq!(report.status, MigrationStatus::UpToDate);
+        assert!(report.applied.is_empty());
+        assert!(report.backup.is_none());
+        assert_eq!(fs::read_to_string(path).unwrap(), DEFAULT_CONFIG);
     }
 
     #[test]
@@ -876,42 +794,22 @@ mod tests {
         let original = pre_06_root();
         fs::write(&path, &original).unwrap();
 
-        let report = migrate_config_at(&path, MigrationMode::Explicit, true).unwrap();
+        let report = migrate_config_at(&path, true).unwrap();
 
         assert_eq!(report.status, MigrationStatus::WouldUpdate);
-        assert_eq!(report.from_version, 0);
-        assert_eq!(report.to_version, CONFIG_VERSION);
         assert!(report.applied.iter().any(|item| item == PRE_06_REPLACE));
         assert_eq!(fs::read_to_string(&path).unwrap(), original);
         assert!(report.backup.is_none());
     }
 
     #[test]
-    fn automatic_migration_leaves_pre_06_config_untouched() {
-        let scratch = ScratchDir::new("pre06-auto");
-        let path = scratch.config();
-        let original = pre_06_root();
-        fs::write(&path, &original).unwrap();
-
-        let report = migrate_config_at(&path, MigrationMode::Automatic, false).unwrap();
-
-        assert_eq!(report.status, MigrationStatus::Skipped);
-        assert_eq!(report.from_version, 0);
-        assert_eq!(report.to_version, 0);
-        assert!(report.reason.unwrap().contains("left unchanged"));
-        assert_eq!(fs::read_to_string(&path).unwrap(), original);
-        assert!(report.backup.is_none());
-        assert_eq!(fs::read_dir(&scratch.0).unwrap().count(), 1);
-    }
-
-    #[test]
-    fn pre_06_config_is_backed_up_and_replaced_with_the_bootstrap_template() {
+    fn pre_06_config_is_backed_up_replaced_and_then_current() {
         let scratch = ScratchDir::new("pre06-write");
         let path = scratch.config();
         let original = pre_06_root();
         fs::write(&path, &original).unwrap();
 
-        let report = migrate_config_at(&path, MigrationMode::Explicit, false).unwrap();
+        let report = migrate_config_at(&path, false).unwrap();
 
         assert_eq!(report.status, MigrationStatus::Replaced);
         let backup = report.backup.expect("backup path");
@@ -926,17 +824,14 @@ mod tests {
         assert_eq!(fs::read_to_string(&backup).unwrap(), original);
         assert_eq!(fs::read_to_string(&path).unwrap(), DEFAULT_CONFIG);
         crate::load_runtime_config_at(&path).expect("installed default validates");
-
         assert_eq!(
-            migrate_config_at(&path, MigrationMode::Automatic, false)
-                .unwrap()
-                .status,
+            migrate_config_at(&path, false).unwrap().status,
             MigrationStatus::UpToDate
         );
     }
 
     #[test]
-    fn commented_pre_06_markers_do_not_trigger_replacement() {
+    fn commented_pre_06_syntax_does_not_trigger_replacement() {
         let scratch = ScratchDir::new("pre06-comment");
         let path = scratch.config();
         fs::write(
@@ -953,58 +848,32 @@ mod tests {
         )
         .unwrap();
 
-        let report = migrate_config_at(&path, MigrationMode::Automatic, false).unwrap();
+        let report = migrate_config_at(&path, false).unwrap();
 
         assert_eq!(report.status, MigrationStatus::Updated);
         let updated = fs::read_to_string(&path).unwrap();
         assert!(updated.contains("# viewport:"));
         assert!(updated.contains("# tile:"));
-        assert!(updated.contains("# halley-config-version: 2"));
         assert_ne!(updated, DEFAULT_CONFIG);
     }
 
     #[test]
-    fn automatic_migration_leaves_gathered_pre_06_trees_untouched() {
-        let scratch = ScratchDir::new("pre06-gather");
-        let path = scratch.config();
-        let keys = scratch.0.join("keys.rune");
-        fs::write(&path, "gather \"keys.rune\"\n").unwrap();
-        fs::write(
-            &keys,
-            concat!(
-                "keybinds:\n",
-                "  mod \"super\"\n",
-                "  \"$var.mod+q\" \"close-focused\"\n",
-                "end\n\n",
-                "viewport:\n",
-                "  DP-1:\n",
-                "    enabled true\n",
-                "  end\n",
-                "end\n",
-            ),
-        )
-        .unwrap();
-
-        let report = migrate_config_at(&path, MigrationMode::Automatic, false).unwrap();
-
-        assert_eq!(report.status, MigrationStatus::Skipped);
-        assert!(report.reason.unwrap().contains("left unchanged"));
-        assert_eq!(fs::read_to_string(&path).unwrap(), "gather \"keys.rune\"\n");
-        assert!(fs::read_to_string(&keys).unwrap().contains("viewport:"));
-        assert!(report.backup.is_none());
-    }
-
-    #[test]
-    fn dry_run_backfills_missing_bindings_without_writing() {
+    fn dry_run_backfills_missing_sections_without_writing() {
         let scratch = ScratchDir::new("dry-run");
         let path = scratch.config();
         let original = minimal("  \"$var.mod+q\" \"close-focused\"\n");
         fs::write(&path, &original).unwrap();
 
-        let report = migrate_config_at(&path, MigrationMode::Explicit, true).unwrap();
+        let report = migrate_config_at(&path, true).unwrap();
 
         assert_eq!(report.status, MigrationStatus::WouldUpdate);
         assert!(report.applied.iter().any(|name| name == "Trail previous"));
+        assert!(
+            report
+                .applied
+                .iter()
+                .any(|name| name == "zoom indicator overlay")
+        );
         assert_eq!(fs::read_to_string(&path).unwrap(), original);
         assert!(report.backup.is_none());
     }
@@ -1016,13 +885,13 @@ mod tests {
         let original = minimal("  \"$var.mod+q\" \"close-focused\"\n");
         fs::write(&path, &original).unwrap();
 
-        let report = migrate_config_at(&path, MigrationMode::Explicit, false).unwrap();
+        let report = migrate_config_at(&path, false).unwrap();
 
         assert_eq!(report.status, MigrationStatus::Updated);
         let backup = report.backup.expect("backup path");
         assert_eq!(fs::read_to_string(backup).unwrap(), original);
         let updated = fs::read_to_string(&path).unwrap();
-        assert!(updated.contains("# halley-config-version: 2"));
+        assert!(!updated.contains(LEGACY_VERSION_PREFIX));
         assert!(updated.contains("\"$var.mod+comma\" \"trail-prev\""));
         assert!(updated.contains("zoom-indicator:"));
         assert!(updated.contains("background true"));
@@ -1030,9 +899,7 @@ mod tests {
         crate::load_runtime_config_at(&path).expect("migrated config validates");
 
         assert_eq!(
-            migrate_config_at(&path, MigrationMode::Explicit, false)
-                .unwrap()
-                .status,
+            migrate_config_at(&path, false).unwrap().status,
             MigrationStatus::UpToDate
         );
     }
@@ -1043,7 +910,7 @@ mod tests {
         let path = scratch.config();
         fs::write(&path, minimal("  \"$var.mod+p\" \"notify-send custom\"\n")).unwrap();
 
-        let report = migrate_config_at(&path, MigrationMode::Explicit, false).unwrap();
+        let report = migrate_config_at(&path, false).unwrap();
         let updated = fs::read_to_string(&path).unwrap();
 
         assert!(
@@ -1066,7 +933,7 @@ mod tests {
         )
         .unwrap();
 
-        migrate_config_at(&path, MigrationMode::Explicit, false).unwrap();
+        migrate_config_at(&path, false).unwrap();
         let updated = fs::read_to_string(&path).unwrap();
 
         assert!(
@@ -1075,44 +942,12 @@ mod tests {
     }
 
     #[test]
-    fn version_one_config_gets_the_zoom_indicator_without_binding_backfill() {
-        let scratch = ScratchDir::new("zoom-section");
-        let path = scratch.config();
-        fs::write(
-            &path,
-            concat!(
-                "# halley-config-version: 1\n",
-                "keybinds:\n",
-                "  mod \"super\"\n",
-                "end\n\n",
-                "overlays:\n",
-                "  radius 14\n",
-                "end\n",
-            ),
-        )
-        .unwrap();
-
-        let report = migrate_config_at(&path, MigrationMode::Explicit, false).unwrap();
-        let updated = fs::read_to_string(&path).unwrap();
-
-        assert_eq!(report.applied, vec!["zoom indicator overlay"]);
-        assert!(updated.contains("# halley-config-version: 2"));
-        assert!(updated.contains("  radius 14"));
-        assert!(updated.contains("  zoom-indicator:"));
-        assert!(updated.contains("    background true"));
-        assert!(updated.contains("    opacity 1.0"));
-        assert!(!updated.contains("Added by Halley config migration 1"));
-        crate::load_runtime_config_at(&path).expect("migrated config validates");
-    }
-
-    #[test]
-    fn version_two_backfill_preserves_existing_zoom_customization() {
+    fn structural_backfill_preserves_existing_zoom_customization() {
         let scratch = ScratchDir::new("zoom-existing");
         let path = scratch.config();
         fs::write(
             &path,
             concat!(
-                "# halley-config-version: 1\n",
                 "keybinds:\n",
                 "  mod \"super\"\n",
                 "end\n\n",
@@ -1127,7 +962,7 @@ mod tests {
         )
         .unwrap();
 
-        migrate_config_at(&path, MigrationMode::Explicit, false).unwrap();
+        migrate_config_at(&path, false).unwrap();
         let updated = fs::read_to_string(&path).unwrap();
 
         assert_eq!(updated.matches("background false").count(), 1);
@@ -1138,61 +973,59 @@ mod tests {
     }
 
     #[test]
-    fn automatic_migration_skips_gathered_configs() {
+    fn explicit_migration_reports_ambiguous_gather_owner() {
         let scratch = ScratchDir::new("gather");
         let path = scratch.config();
         let keys = scratch.0.join("keys.rune");
         fs::write(&path, "gather \"keys.rune\"\n").unwrap();
         fs::write(&keys, minimal("  \"$var.mod+q\" \"close-focused\"\n")).unwrap();
 
-        let report = migrate_config_at(&path, MigrationMode::Automatic, false).unwrap();
+        let error = migrate_config_at(&path, true).unwrap_err();
 
-        assert_eq!(report.status, MigrationStatus::Skipped);
-        assert!(report.reason.unwrap().contains("gather"));
+        assert!(error.to_string().contains("uses gather"));
         assert_eq!(fs::read_to_string(&path).unwrap(), "gather \"keys.rune\"\n");
     }
 
     #[test]
-    fn explicit_migration_reports_ambiguous_gather_owner() {
-        let scratch = ScratchDir::new("gather-explicit");
+    fn explicit_migration_removes_obsolete_version_markers_regardless_of_value() {
+        let scratch = ScratchDir::new("legacy-marker");
         let path = scratch.config();
-        let keys = scratch.0.join("keys.rune");
-        fs::write(&path, "gather \"keys.rune\"\n").unwrap();
-        fs::write(&keys, minimal("  \"$var.mod+q\" \"close-focused\"\n")).unwrap();
+        let original = format!("@author \"Dustin\"\n# halley-config-version: 99\n{DEFAULT_CONFIG}");
+        fs::write(&path, &original).unwrap();
 
-        let error = migrate_config_at(&path, MigrationMode::Explicit, true).unwrap_err();
+        let report = migrate_config_at(&path, false).unwrap();
+        let updated = fs::read_to_string(&path).unwrap();
 
-        assert!(
-            error
-                .to_string()
-                .contains("does not own a keybinds section")
+        assert_eq!(report.status, MigrationStatus::Updated);
+        assert_eq!(
+            report.applied,
+            vec!["obsolete config version marker".to_string()]
         );
-        assert!(!fs::read_to_string(&path).unwrap().contains(VERSION_PREFIX));
+        assert!(updated.starts_with("@author \"Dustin\"\n"));
+        assert!(!updated.contains(LEGACY_VERSION_PREFIX));
+        assert_eq!(
+            migrate_config_at(&path, false).unwrap().status,
+            MigrationStatus::UpToDate
+        );
     }
 
     #[test]
-    fn metadata_stays_at_the_start_of_the_file() {
-        let source = format!(
-            "@author \"Dustin\"\n@description \"Halley\"\n{}",
-            minimal("")
+    fn marker_removal_handles_multiple_legacy_comments_without_touching_other_text() {
+        let source = concat!(
+            "@author \"Dustin\"\n",
+            "# halley-config-version: 1\n",
+            "# keep this comment\n",
+            "keybinds:\n",
+            "  # halley-config-version: invalid\n",
+            "end\n",
         );
-        let updated = set_config_version(&source, CONFIG_VERSION).unwrap();
-        assert!(updated.starts_with(
-            "@author \"Dustin\"\n@description \"Halley\"\n# halley-config-version: 2\n"
-        ));
-    }
 
-    #[test]
-    fn future_config_version_is_rejected() {
-        let scratch = ScratchDir::new("future");
-        let path = scratch.config();
-        fs::write(
-            &path,
-            format!("# halley-config-version: 99\n{}", minimal("")),
-        )
-        .unwrap();
+        let (updated, removed) = remove_legacy_version_markers(source);
 
-        let error = migrate_config_at(&path, MigrationMode::Explicit, true).unwrap_err();
-        assert!(error.to_string().contains("newer than this Halley build"));
+        assert!(removed);
+        assert_eq!(
+            updated,
+            "@author \"Dustin\"\n# keep this comment\nkeybinds:\nend\n"
+        );
     }
 }

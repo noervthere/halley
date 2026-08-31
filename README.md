@@ -259,14 +259,14 @@ bindings rather than hardcoded mouse policy.
 On first launch Halley creates
 `$XDG_CONFIG_HOME/halley/halley.rune`, falling back to
 `~/.config/halley/halley.rune`, from the canonical
-[`examples/halley.rune`](examples/halley.rune) template. Existing pre-0.6
-files are left untouched during startup. Use `halleyctl config migrate
---dry-run` to inspect the explicit backup-and-replacement operation before
-applying it. Later 0.6 compatibility changes use guarded, versioned backfill
-instead of rewriting the whole file. Backfill adds a finite set of missing
-bindings, skips conflicting custom chords, validates the complete candidate,
-writes atomically, and retains a timestamped backup. Split 0.6 configs using
-`gather` are not backfilled automatically.
+[`examples/halley.rune`](examples/halley.rune) template. Startup never modifies
+an existing config, and configs need no version marker. Optional compatibility
+updates are explicit and structurally detected: use `halleyctl config migrate
+--dry-run` to inspect them before running `halleyctl config migrate`. Migration
+adds only a finite set of known missing bindings or sections, skips conflicting
+custom chords, validates the complete candidate, writes atomically, and retains
+a timestamped backup. A gathered root reports that the file owning the affected
+section must be migrated directly rather than guessing where to write.
 
 Pass `-c PATH` or `--config PATH` to select another file. Valid edits reload as
 one atomic snapshot; invalid edits leave the last valid runtime state active.
