@@ -312,7 +312,7 @@ Halley's Discord is for practical support, config help, bug triage, packaging,
 release updates, and focused contributor coordination. Halley remains
 maintainer-directed; Discord is not a roadmap vote.
 
-Join the Discord: https://discord.gg/cjutpDv6q
+Join the Discord: https://discord.gg/J2ec3nbHYs
 
 ---
 

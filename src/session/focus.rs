@@ -52,6 +52,20 @@ pub(crate) fn focus_window_from_pointer<D: SessionDriver>(
     window: &Window,
     serial: Serial,
 ) {
+    if let Some(surface) = window.wl_surface()
+        && let Some(output_name) = session.fullscreen.resume_presentation(surface.as_ref())
+    {
+        let output = session
+            .wayland
+            .space
+            .outputs()
+            .find(|output| output.name() == output_name)
+            .cloned();
+        if let Some(output) = output.as_ref() {
+            session.sync_fullscreen_camera(output, crate::frame_clock::monotonic_now());
+        }
+        session.request_redraw();
+    }
     focus_window_with_raise(
         session,
         window,

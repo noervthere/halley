@@ -982,6 +982,19 @@ pub fn focus_and_center_node<D: crate::session::SessionDriver>(
     let Some(node) = session.nodes.field.node(id).cloned() else {
         return false;
     };
+    let selected_output = session
+        .wayland
+        .space
+        .outputs()
+        .find(|output| output.name() == record.output)
+        .cloned();
+    if session
+        .fullscreen
+        .pause_presentation_on_output_except(&record.output, &record.surface)
+        && let Some(output) = selected_output.as_ref()
+    {
+        session.sync_fullscreen_camera(output, crate::frame_clock::monotonic_now());
+    }
     let activated = if record.collapsed {
         restore_with_centering(
             session,
@@ -1004,12 +1017,7 @@ pub fn focus_and_center_node<D: crate::session::SessionDriver>(
     // restore jump to an unrelated Apogee selection.
     if !session.fullscreen.is_fullscreen_or_pending(&record.surface)
         && !session.maximize.contains(&record.surface)
-        && let Some(output) = session
-            .wayland
-            .space
-            .outputs()
-            .find(|output| output.name() == record.output)
-            .cloned()
+        && let Some(output) = selected_output
         && let Some(output_geometry) = session.wayland.space.output_geometry(&output)
     {
         let _ = session.cameras.center_field_on(

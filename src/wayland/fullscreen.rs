@@ -53,6 +53,10 @@ struct FullscreenWindow {
     native: Option<NativeFullscreenState>,
     restore_kind: FullscreenRestoreKind,
     preserve_stack: bool,
+    /// Temporarily releases output-camera/top-layer ownership while retaining
+    /// the client's fullscreen protocol and geometry. Only a direct click on
+    /// this surface resumes immersive presentation.
+    presentation_paused: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -212,6 +216,43 @@ impl FullscreenManager {
             animations,
             windows: HashMap::new(),
         }
+    }
+
+    /// Parks a fullscreen presentation when explicit navigation selects a
+    /// different window on the same output. Protocol fullscreen and client
+    /// geometry remain intact; only output-camera and top-layer ownership are
+    /// released so the Field can move to the selected window.
+    pub(crate) fn pause_presentation_on_output_except(
+        &mut self,
+        output: &str,
+        selected: &WlSurface,
+    ) -> bool {
+        let mut changed = false;
+        for (surface, entry) in &mut self.windows {
+            if surface != selected
+                && entry.target_output == output
+                && entry.origin != FullscreenOrigin::Maximize
+                && entry.desired
+                && entry.active
+                && !entry.presentation_paused
+            {
+                entry.presentation_paused = true;
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    /// Resumes immersive presentation only for a direct pointer activation of
+    /// the fullscreen surface. Keyboard focus and hover intentionally do not
+    /// call this path.
+    pub(crate) fn resume_presentation(&mut self, surface: &WlSurface) -> Option<String> {
+        let entry = self.windows.get_mut(surface)?;
+        if !entry.presentation_paused || entry.origin == FullscreenOrigin::Maximize {
+            return None;
+        }
+        entry.presentation_paused = false;
+        Some(entry.target_output.clone())
     }
 
     pub fn reload(&mut self, animations: Animations) -> bool {
@@ -374,6 +415,7 @@ impl FullscreenManager {
                 native: Some(NativeFullscreenState::default()),
                 restore_kind: FullscreenRestoreKind::Windowed,
                 preserve_stack: false,
+                presentation_paused: false,
             });
         let now = crate::frame_clock::monotonic_now();
         let visual_before = entry.desired;
@@ -610,6 +652,7 @@ impl FullscreenManager {
                 native: None,
                 restore_kind: FullscreenRestoreKind::Windowed,
                 preserve_stack: false,
+                presentation_paused: false,
             });
         super::set_window_output(&window, &target);
         // X11 fullscreen changes presentation geometry, not stacking. Using
@@ -729,6 +772,7 @@ impl FullscreenManager {
                 native: None,
                 restore_kind: FullscreenRestoreKind::Windowed,
                 preserve_stack: false,
+                presentation_paused: false,
             });
         entry.origin = origin;
         entry.target_output = target_name;
@@ -1054,28 +1098,7 @@ impl FullscreenManager {
         if entry.target_output != output.name() {
             return None;
         }
-        let progress = visual_motion_state(entry, now).0.clamp(0.0, 1.0);
-        let transition_completion = entry
-            .transition
-            .map(|transition| transition.completion_at(now))
-            .unwrap_or_else(|| {
-                if entry.desired != entry.active || entry.external_pending.is_some() {
-                    0.0
-                } else {
-                    1.0
-                }
-            });
-        fullscreen_presentation_is_visible(progress, entry_owns_presentation(entry)).then_some(
-            FullscreenPresentation {
-                progress,
-                transition_completion,
-                windowed_geometry: entry
-                    .presentation_windowed
-                    .or_else(|| entry.restore.as_ref().map(|restore| restore.geometry)),
-                windowed_output_rect: entry.presentation_output,
-                fullscreen_size: entry.fullscreen_size,
-            },
-        )
+        fullscreen_presentation(entry, now)
     }
 
     /// Returns the monitor-wide camera track for the fullscreen transaction.
@@ -1102,6 +1125,7 @@ impl FullscreenManager {
     ) -> Option<FullscreenCameraFrame> {
         let (_, entry) = self.windows.iter().find(|(surface, entry)| {
             matches(surface)
+                && entry_owns_output_presentation(entry)
                 && entry.target_output == output.name()
                 && (entry.active
                     || entry.desired
@@ -1148,7 +1172,9 @@ impl FullscreenManager {
         mut matches: impl FnMut(&WlSurface) -> bool,
     ) -> bool {
         self.windows.iter().any(|(surface, entry)| {
-            matches(surface) && entry_covers_top(entry, &output.name(), now)
+            matches(surface)
+                && entry_owns_output_presentation(entry)
+                && entry_covers_top(entry, &output.name(), now)
         })
     }
 
@@ -1518,6 +1544,51 @@ fn apply_protocol_presentation_state(
     }
 }
 
+fn fullscreen_presentation(
+    entry: &FullscreenWindow,
+    now: Duration,
+) -> Option<FullscreenPresentation> {
+    // A parked client keeps its fullscreen buffer and protocol state, but
+    // presents that buffer at its original Field geometry. Reporting settled
+    // fullscreen progress would pin the texture to the output and make it
+    // travel with the camera.
+    let progress = if entry.presentation_paused {
+        0.0
+    } else {
+        visual_motion_state(entry, now).0.clamp(0.0, 1.0)
+    };
+    let transition_completion = entry
+        .transition
+        .map(|transition| transition.completion_at(now))
+        .unwrap_or_else(|| {
+            if entry.desired != entry.active || entry.external_pending.is_some() {
+                0.0
+            } else {
+                1.0
+            }
+        });
+    fullscreen_presentation_is_visible(
+        progress,
+        entry.presentation_paused || entry_owns_presentation(entry),
+    )
+    .then_some(FullscreenPresentation {
+        progress,
+        transition_completion,
+        windowed_geometry: entry
+            .presentation_windowed
+            .or_else(|| entry.restore.as_ref().map(|restore| restore.geometry)),
+        // presentation_output is an already-projected output-local handoff
+        // source. A parked surface must instead project its restore geometry
+        // through the live Field camera on every frame.
+        windowed_output_rect: if entry.presentation_paused {
+            None
+        } else {
+            entry.presentation_output
+        },
+        fullscreen_size: entry.fullscreen_size,
+    })
+}
+
 fn fullscreen_presentation_is_visible(progress: f64, transition_active: bool) -> bool {
     // A transition owns the handoff even at its exact zero endpoint. Dropping
     // presentation there exposes the client's newly configured live buffer for
@@ -1647,6 +1718,10 @@ fn committed_xdg_window_size(surface: &WlSurface) -> Option<Size<i32, Logical>> 
             .geometry
             .map(|geometry| geometry.size)
     })
+}
+
+fn entry_owns_output_presentation(entry: &FullscreenWindow) -> bool {
+    !entry.presentation_paused
 }
 
 fn entry_covers_top(entry: &FullscreenWindow, output: &str, now: Duration) -> bool {
@@ -2012,6 +2087,7 @@ mod tests {
             }),
             restore_kind: FullscreenRestoreKind::Windowed,
             preserve_stack: false,
+            presentation_paused: false,
         }
     }
 
@@ -2267,6 +2343,34 @@ mod tests {
         let entry = test_entry(true);
         assert!(entry_covers_top(&entry, "DP-1", Duration::ZERO));
         assert!(!entry_covers_top(&entry, "DP-2", Duration::ZERO));
+    }
+
+    #[test]
+    fn parked_fullscreen_releases_only_output_presentation_ownership() {
+        let mut entry = test_entry(true);
+        let restore_geometry = Rectangle::new((240, 160).into(), (1280, 720).into());
+        entry.restore = Some(WindowedPlacement {
+            location: restore_geometry.loc,
+            geometry: restore_geometry,
+            output: Some("DP-1".to_string()),
+        });
+        entry.presentation_output = Some(Rectangle::new(
+            (0, 0).into(),
+            entry.fullscreen_size.to_physical(1),
+        ));
+        assert!(entry_owns_output_presentation(&entry));
+        assert!(entry.desired);
+        assert!(entry.active);
+
+        entry.presentation_paused = true;
+        let parked = fullscreen_presentation(&entry, Duration::ZERO)
+            .expect("parked fullscreen retains a spatial presentation");
+        assert!(!entry_owns_output_presentation(&entry));
+        assert!(entry.desired);
+        assert!(entry.active);
+        assert_eq!(parked.progress, 0.0);
+        assert_eq!(parked.windowed_geometry, Some(restore_geometry));
+        assert_eq!(parked.windowed_output_rect, None);
     }
 
     #[test]

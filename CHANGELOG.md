@@ -17,6 +17,7 @@ All notable changes to this project will be documented in this file.
   Field. Autostart declarations recreate them only after the next restart.
 
 ### Changed
+- Update the README's Discord community invite.
 - Seed fresh and example configs with six empty numbered workspaces on each of
   the two sample outputs, without launching applications.
 - Keep clusters and their core identity after the final member closes so named
@@ -29,6 +30,11 @@ All notable changes to this project will be documented in this file.
 - Make Lift mouse-wheel navigation move the highlighted result one row in the
   wheel direction, scrolling the viewport only after the highlight reaches a
   visible edge.
+- Let Alt-Tab park an in-game fullscreen presentation at its original Field
+  position when selecting another window on the same output, preserving the
+  client's fullscreen state without carrying its texture with the monitor.
+  Only clicking the game resumes immersive presentation and restores the output
+  to 1.0 zoom; hover and Alt-Tab do not.
 - Place collapsed-cluster hover labels in nearby unobstructed screen space around
   visible windows, ordinary nodes, and other cluster cores.
 - Keep empty cluster workspaces logically focusable.
