@@ -19,6 +19,22 @@ During zoom-out, unpinned collapsed cores and ordinary nodes reflow together
 when their screen-constant collision footprints would overlap each other or an
 active window. Pinned landmarks remain fixed.
 
+## Deleting a workspace
+
+Rest a pointer on a collapsed core until its bloom opens. Two compact controls
+appear beside it: close above edit. Select close, or give the collapsed core
+logical focus and press `Mod+Q`, to delete the runtime workspace.
+
+An empty workspace disappears immediately. A populated workspace asks for
+confirmation first and explains that its windows will return to the Field.
+Confirming removes the workspace, its slot, and its synthetic core without
+closing any application; window geometry and focus return to ordinary Field
+ownership. Press `Esc` to cancel.
+
+Deletion affects the running session only. A workspace declared under
+`autostart` is created again on the next compositor restart unless its
+declaration is removed from the configuration.
+
 ## Startup clusters
 
 Startup clusters are declared inside `autostart`. Each `cluster` block has a

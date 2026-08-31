@@ -11,6 +11,10 @@ All notable changes to this project will be documented in this file.
 - Flash an empty active cluster's name and layout at the center of its output;
   populated clusters reveal their windows directly without an activation card.
   Explicit layout changes still flash the updated name and layout.
+- Delete runtime workspaces from a bloomed core's compact close control or by
+  pressing `Mod+Q` on its focused core. Empty workspaces disappear immediately;
+  populated workspaces confirm before returning their still-open windows to the
+  Field. Autostart declarations recreate them only after the next restart.
 
 ### Changed
 - Seed fresh and example configs with six empty numbered workspaces on each of
