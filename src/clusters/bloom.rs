@@ -294,6 +294,10 @@ impl ClusterSystem {
         self.bloom.cluster_on_output(output)
     }
 
+    pub fn bloom_edit_target_on_output(&self, output: &str) -> Option<ClusterId> {
+        self.bloom.join_target_on_output(output)
+    }
+
     pub fn begin_bloom_pull(&mut self, token: TokenLayout, output: String) -> bool {
         if self.bloom.cluster_on_output(&output) != Some(token.cluster_id)
             || self.bloom.is_closing(&output)

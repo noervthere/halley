@@ -563,6 +563,7 @@ mod tests {
     #[test]
     fn selection_range_is_order_independent() {
         let creation = CreationState {
+            renaming: None,
             output: "DP-1".into(),
             selected: Default::default(),
             naming: true,

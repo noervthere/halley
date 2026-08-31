@@ -17,6 +17,7 @@ pub struct PreparedCreation {
 
 #[derive(Clone, Debug)]
 pub struct CreationState {
+    pub renaming: Option<ClusterId>,
     pub output: String,
     pub selected: HashSet<NodeId>,
     pub naming: bool,
@@ -149,6 +150,7 @@ impl ClusterSystem {
             return false;
         }
         self.creation = Some(CreationState {
+            renaming: None,
             output,
             selected: HashSet::new(),
             naming: false,
@@ -163,6 +165,58 @@ impl ClusterSystem {
             draft: None,
         });
         true
+    }
+
+    pub fn begin_rename(&mut self, cluster: ClusterId) -> bool {
+        if self.creation.is_some() || self.active.values().any(|active| *active == cluster) {
+            return false;
+        }
+        let Some(metadata) = self.metadata.get(&cluster) else {
+            return false;
+        };
+        let name_buffer = metadata.name.clone();
+        let caret = char_len(&name_buffer);
+        self.creation = Some(CreationState {
+            renaming: Some(cluster),
+            output: metadata.output.clone(),
+            selected: HashSet::new(),
+            naming: true,
+            name_buffer,
+            caret_char: caret,
+            selection_anchor_char: 0,
+            selection_focus_char: caret,
+            scroll_char: 0,
+            dragging_selection: false,
+            prepared: None,
+            name_repeat: None,
+            draft: None,
+        });
+        true
+    }
+
+    pub fn renaming_target(&self) -> Option<ClusterId> {
+        self.creation.as_ref()?.renaming
+    }
+
+    pub fn finish_rename(&mut self) -> Result<ClusterId, String> {
+        let creation = self
+            .creation
+            .as_ref()
+            .ok_or_else(|| "cluster rename is not active".to_string())?;
+        let cluster = creation
+            .renaming
+            .ok_or_else(|| "cluster rename is not active".to_string())?;
+        let name = creation.name_buffer.trim();
+        if name.is_empty() {
+            return Err("cluster name cannot be empty".into());
+        }
+        let metadata = self
+            .metadata
+            .get_mut(&cluster)
+            .ok_or_else(|| "the cluster being renamed no longer exists".to_string())?;
+        metadata.name = name.to_string();
+        self.creation = None;
+        Ok(cluster)
     }
 
     pub fn cancel_creation(&mut self) -> bool {
@@ -202,6 +256,7 @@ impl ClusterSystem {
         self.next_draft_id = self.next_draft_id.saturating_add(1);
         let caret = char_len(&name_buffer);
         self.creation = Some(CreationState {
+            renaming: None,
             output,
             selected,
             naming: true,
@@ -294,6 +349,7 @@ impl ClusterSystem {
             .take()
             .ok_or_else(|| "no cluster draft is ready".to_string())?;
         self.creation = Some(CreationState {
+            renaming: None,
             output: build.output.clone(),
             selected: build.selected.clone(),
             naming: true,
@@ -330,6 +386,10 @@ impl ClusterSystem {
         let Some(creation) = self.creation.as_mut() else {
             return false;
         };
+        if creation.renaming.is_some() {
+            self.creation = None;
+            return true;
+        }
         if creation.naming {
             creation.prepared = None;
             creation.naming = false;
@@ -816,6 +876,55 @@ mod tests {
                 .take_timed_out_draft(std::time::Duration::from_secs(35))
                 .is_some()
         );
+    }
+
+    #[test]
+    fn rename_changes_only_the_existing_cluster_name() {
+        let mut field = Field::new();
+        let first =
+            field.spawn_surface("first", Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 100.0, y: 80.0 });
+        let second = field.spawn_surface(
+            "second",
+            Vec2 { x: 120.0, y: 0.0 },
+            Vec2 { x: 100.0, y: 80.0 },
+        );
+        let mut system = system();
+        assert!(system.begin_creation("DP-1".into()));
+        assert!(system.toggle_creation_member(first, "DP-1"));
+        assert!(system.toggle_creation_member(second, "DP-1"));
+        assert!(system.begin_naming());
+        let cluster = system.finish_creation(&mut field).expect("cluster");
+        let core = system.core_node(cluster);
+        let members = system.member_ids(cluster);
+
+        assert!(system.begin_rename(cluster));
+        assert_eq!(system.renaming_target(), Some(cluster));
+        assert!(system.edit_name(NameInput::Character('W')));
+        assert_eq!(system.finish_rename(), Ok(cluster));
+        assert_eq!(system.metadata(cluster).unwrap().name, "W");
+        assert_eq!(system.core_node(cluster), core);
+        assert_eq!(system.member_ids(cluster), members);
+    }
+
+    #[test]
+    fn cancelling_rename_preserves_the_existing_name() {
+        let mut system = system();
+        let cluster = ClusterId::new(9);
+        system.metadata.insert(
+            cluster,
+            ClusterMetadata {
+                name: "Original".into(),
+                output: "DP-1".into(),
+                layout: ClusterWorkspaceLayoutKind::Tiling,
+                core: None,
+                core_position: Vec2 { x: 0.0, y: 0.0 },
+            },
+        );
+        assert!(system.begin_rename(cluster));
+        assert!(system.edit_name(NameInput::Character('X')));
+        assert!(system.back_or_cancel_creation());
+        assert_eq!(system.metadata(cluster).unwrap().name, "Original");
+        assert!(system.creation().is_none());
     }
 
     #[test]

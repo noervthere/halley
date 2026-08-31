@@ -18,6 +18,7 @@ use smithay::utils::{Buffer, Logical, Physical, Rectangle, Scale, Transform};
 
 const CIRCLE_SHADER: &str = include_str!("shaders/node_circle_shader.frag");
 const CLUSTER_ICON: &[u8] = include_bytes!("assets/clusters.svg");
+const EDIT_ICON: &[u8] = include_bytes!("../../assets/edit.svg");
 const ICON_SIZE: u32 = 64;
 const JOIN_READY_BORDER_WIDTH_PX: f32 = 5.0;
 
@@ -32,6 +33,9 @@ struct Resources {
 #[derive(Default)]
 pub struct ClusterRenderer {
     resources: Option<Resources>,
+    edit_context: Option<ContextId<GlesTexture>>,
+    edit_color: Option<[u8; 4]>,
+    edit_texture: Option<GlesTexture>,
     ids: crate::render::ids::OutputElementIds<(u8, u32)>,
     active_output: String,
     occurrences: HashMap<u8, u32>,
@@ -182,6 +186,57 @@ impl ClusterRenderer {
         })
     }
 
+    pub fn edit_icon(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        destination: Rectangle<i32, Physical>,
+        color: [u8; 4],
+        alpha: f32,
+    ) -> Result<ClusterIconElement, Box<dyn Error>> {
+        let context = renderer.context_id();
+        if self.edit_context.as_ref() != Some(&context)
+            || self.edit_color != Some(color)
+            || self.edit_texture.is_none()
+        {
+            let raster =
+                raster_svg_icon(EDIT_ICON, color).ok_or("edit SVG could not be rasterized")?;
+            let texture = renderer.import_memory(
+                raster.as_raw(),
+                Fourcc::Abgr8888,
+                (ICON_SIZE as i32, ICON_SIZE as i32).into(),
+                false,
+            )?;
+            self.edit_context = Some(context.clone());
+            self.edit_color = Some(color);
+            self.edit_texture = Some(texture);
+        }
+        let texture = self
+            .edit_texture
+            .as_ref()
+            .expect("edit texture ensured")
+            .clone();
+        let source = Rectangle::<f64, Logical>::new(
+            (0.0, 0.0).into(),
+            (texture.size().w as f64, texture.size().h as f64).into(),
+        );
+        Ok(ClusterIconElement {
+            base: TextureRenderElement::from_static_texture(
+                self.dynamic_id(2),
+                context,
+                destination.loc.to_f64(),
+                texture,
+                1,
+                Transform::Normal,
+                Some(alpha.clamp(0.0, 1.0)),
+                Some(source),
+                Some(destination.size.to_logical(1)),
+                None,
+                Kind::Unspecified,
+            ),
+            commit: icon_commit(false, [color, color]),
+        })
+    }
+
     fn ensure(
         &mut self,
         renderer: &mut GlesRenderer,
@@ -264,8 +319,12 @@ fn icon_commit(focused: bool, colors: [[u8; 4]; 2]) -> CommitCounter {
 }
 
 fn raster_icon(color: [u8; 4]) -> Option<RgbaImage> {
+    raster_svg_icon(CLUSTER_ICON, color)
+}
+
+fn raster_svg_icon(svg: &[u8], color: [u8; 4]) -> Option<RgbaImage> {
     let options = usvg::Options::default();
-    let tree = usvg::Tree::from_data(CLUSTER_ICON, &options).ok()?;
+    let tree = usvg::Tree::from_data(svg, &options).ok()?;
     let svg_size = tree.size().to_int_size();
     let mut pixmap = tiny_skia::Pixmap::new(ICON_SIZE, ICON_SIZE)?;
     let scale = (ICON_SIZE as f32 / svg_size.width() as f32)
@@ -446,6 +505,19 @@ mod tests {
         assert_ne!(
             icon_commit(false, [[1, 2, 3, 255], [4, 5, 6, 255]]),
             icon_commit(true, [[1, 2, 3, 255], [4, 5, 6, 255]])
+        );
+    }
+
+    #[test]
+    fn bundled_edit_icon_rasterizes_as_a_tinted_alpha_mask() {
+        let color = [32, 64, 96, 255];
+        let image = raster_svg_icon(EDIT_ICON, color).expect("edit icon should rasterize");
+        assert_eq!(image.dimensions(), (ICON_SIZE, ICON_SIZE));
+        assert!(image.pixels().any(|pixel| pixel[3] != 0));
+        assert!(
+            image.pixels().filter(|pixel| pixel[3] != 0).all(|pixel| {
+                pixel[0] <= color[0] && pixel[1] <= color[1] && pixel[2] <= color[2]
+            })
         );
     }
 

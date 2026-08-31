@@ -26,6 +26,27 @@ pub use ipc::handle_request;
 pub use overflow::REVEAL_EDGE_PX;
 
 pub const CORE_DIAMETER_PX: f32 = 68.0;
+pub const EDIT_BUTTON_DIAMETER_PX: i32 = 30;
+const EDIT_BUTTON_GAP_PX: i32 = 7;
+
+pub fn edit_button_rect(
+    core_center: Point<i32, Logical>,
+    output_geometry: Rectangle<i32, Logical>,
+) -> Rectangle<i32, Logical> {
+    let radius = EDIT_BUTTON_DIAMETER_PX / 2;
+    let offset = (CORE_DIAMETER_PX.round() as i32) / 2 + EDIT_BUTTON_GAP_PX + radius;
+    let right = core_center.x + offset;
+    let left = core_center.x - offset;
+    let center_x = if right + radius <= output_geometry.loc.x + output_geometry.size.w {
+        right
+    } else {
+        left
+    };
+    Rectangle::new(
+        (center_x - radius, core_center.y - radius).into(),
+        (EDIT_BUTTON_DIAMETER_PX, EDIT_BUTTON_DIAMETER_PX).into(),
+    )
+}
 
 #[derive(Clone, Debug)]
 pub struct ClusterMetadata {
@@ -1562,6 +1583,19 @@ fn member_at_point(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn edit_button_is_small_adjacent_and_flips_inside_the_output_edge() {
+        let output = Rectangle::new((0, 0).into(), (1_000, 700).into());
+        let right = edit_button_rect((100, 100).into(), output);
+        assert_eq!(right.size, (30, 30).into());
+        assert!(right.loc.x > 100);
+
+        let left = edit_button_rect((980, 100).into(), output);
+        assert_eq!(left.size, (30, 30).into());
+        assert!(left.loc.x < 980);
+        assert!(output.contains_rect(left));
+    }
 
     fn test_placement_rect(
         placement: halley_core::cluster::layout::ClusterWorkspacePlacement,

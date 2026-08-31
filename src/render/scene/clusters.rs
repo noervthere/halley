@@ -7,6 +7,14 @@ struct CoreVisualFlags {
     join_border_ready: bool,
 }
 
+fn show_core_edit_button(
+    id: halley_core::cluster::ClusterId,
+    bloom_open: bool,
+    edit_target: Option<halley_core::cluster::ClusterId>,
+) -> bool {
+    bloom_open && edit_target == Some(id)
+}
+
 fn core_visual_flags(focused: bool, hovered: bool, join_ready: bool) -> CoreVisualFlags {
     CoreVisualFlags {
         identity_highlighted: focused || hovered,
@@ -168,6 +176,45 @@ pub(super) fn cluster_elements(
                 alpha: 1.0,
             },
         )?);
+        if show_core_edit_button(
+            id,
+            bloom_open,
+            clusters.bloom_edit_target_on_output(&output_name),
+        ) {
+            let button = crate::clusters::edit_button_rect(center, output_geometry);
+            let button = Rectangle::<i32, Physical>::new(
+                (
+                    button.loc.x - output_geometry.loc.x,
+                    button.loc.y - output_geometry.loc.y,
+                )
+                    .into(),
+                (button.size.w, button.size.h).into(),
+            );
+            let glyph_side = 16;
+            let glyph = Rectangle::new(
+                (
+                    button.loc.x + (button.size.w - glyph_side) / 2,
+                    button.loc.y + (button.size.h - glyph_side) / 2,
+                )
+                    .into(),
+                (glyph_side, glyph_side).into(),
+            );
+            let text = contrast_text_rgb(fill);
+            elements.push(SceneElement::ClusterIcon(cluster_renderer.edit_icon(
+                renderer,
+                glyph,
+                [text[0], text[1], text[2], 255],
+                nodes.config.opacity,
+            )?));
+            elements.push(SceneElement::ClusterCore(cluster_renderer.core(
+                renderer,
+                button,
+                ring,
+                fill,
+                nodes.config.opacity,
+                false,
+            )?));
+        }
         if clusters.config().show_icons {
             let icon_side =
                 ((side as f32 * nodes.config.icon_size * 0.98).round() as i32).clamp(16, 42);
@@ -224,6 +271,16 @@ fn rgba(color: halley_config::BorderColor) -> [u8; 4] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn edit_button_belongs_to_the_open_bloom_core_only() {
+        let first = halley_core::cluster::ClusterId::new(1);
+        let second = halley_core::cluster::ClusterId::new(2);
+        assert!(show_core_edit_button(first, true, Some(first)));
+        assert!(!show_core_edit_button(first, false, Some(first)));
+        assert!(!show_core_edit_button(first, true, Some(second)));
+        assert!(!show_core_edit_button(first, true, None));
+    }
 
     #[test]
     fn join_readiness_changes_only_the_core_border_highlight_state() {

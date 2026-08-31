@@ -408,6 +408,35 @@ fn cluster_overflow_at_pointer<D: SessionDriver>(
     Some((member, output, local))
 }
 
+fn cluster_edit_at_pointer<D: SessionDriver>(
+    session: &Session<D>,
+    now: std::time::Duration,
+) -> Option<(halley_core::cluster::ClusterId, Output)> {
+    let position = session.pointer.position();
+    let (output, geometry) = output_at_pointer(&session.wayland.space, position)?;
+    if cluster_exclusive_on_output(session, &output, geometry, now) {
+        return None;
+    }
+    let output_name = output.name();
+    let cluster = session.clusters.bloom_edit_target_on_output(&output_name)?;
+    let metadata = session.clusters.metadata(cluster)?;
+    let core_position =
+        session
+            .clusters
+            .core_node(cluster)
+            .map_or(metadata.core_position, |core| {
+                session
+                    .nodes
+                    .landmark_position(core, metadata.core_position, now)
+            });
+    let camera = session.cameras.get(&output_name)?;
+    let center = crate::nodes::screen_from_world(core_position, camera, geometry);
+    crate::clusters::edit_button_rect(center, geometry)
+        .to_f64()
+        .contains(Point::<f64, Logical>::from(position))
+        .then_some((cluster, output))
+}
+
 fn cluster_bloom_at_pointer<D: SessionDriver>(
     session: &Session<D>,
     now: std::time::Duration,
@@ -698,6 +727,34 @@ pub(crate) fn begin_cluster_commit<D: SessionDriver>(session: &mut Session<D>) -
 }
 
 pub(crate) fn finish_cluster_creation<D: SessionDriver>(session: &mut Session<D>) -> bool {
+    if session.clusters.renaming_target().is_some() {
+        let output = session
+            .clusters
+            .creation()
+            .map(|creation| creation.output.clone());
+        return match session.clusters.finish_rename() {
+            Ok(_) => {
+                session
+                    .cursor
+                    .set_override(crate::cursor::OverrideSource::Modal, None);
+                session.request_redraw();
+                true
+            }
+            Err(message) => {
+                eventline::warn!("clusters: {message}");
+                if let Some(output) = output {
+                    session.shell.overlays.show_error(
+                        output,
+                        &message,
+                        3_000,
+                        crate::frame_clock::monotonic_now(),
+                    );
+                }
+                session.request_redraw();
+                false
+            }
+        };
+    }
     let draft_id = session.clusters.creation_draft_id();
     if let Some(confirmation) = session
         .clusters
@@ -2062,12 +2119,16 @@ where
         }
         let node_grab_active = session.interactions.grab.landmark_active();
         let now = crate::frame_clock::monotonic_now();
-        let hovered_bloom = (!node_grab_active)
+        let hovered_edit = (!node_grab_active)
+            .then(|| cluster_edit_at_pointer(session, now))
+            .flatten();
+        let hovered_bloom = (!node_grab_active && hovered_edit.is_none())
             .then(|| cluster_bloom_at_pointer(session, now))
             .flatten();
-        let overflow_hover = (!node_grab_active && hovered_bloom.is_none())
-            .then(|| update_overflow_hover(session, now))
-            .flatten();
+        let overflow_hover =
+            (!node_grab_active && hovered_edit.is_none() && hovered_bloom.is_none())
+                .then(|| update_overflow_hover(session, now))
+                .flatten();
         let overflow_intercepts = overflow_hover
             .as_ref()
             .is_some_and(|hover| hover.intercepts_desktop);
@@ -2107,7 +2168,8 @@ where
                     .and_then(|hover| hover.member.map(|member| (hover.output.name(), member)))
             });
         let overlay_changed = session.clusters.set_overlay_hovered(overlay_hovered);
-        if hovered_bloom.is_some()
+        if hovered_edit.is_some()
+            || hovered_bloom.is_some()
             || overflow_hover
                 .as_ref()
                 .is_some_and(|hover| hover.member.is_some())
@@ -2628,11 +2690,40 @@ where
         }
         let mut intercepted = false;
         let mut finishing_client_move = false;
-        let bloom_token = (button == BTN_LEFT
+        let now = crate::frame_clock::monotonic_now();
+        let edit_target = (button == BTN_LEFT
             && state == ButtonState::Pressed
             && !session.shell.focus_cycle.is_open())
-        .then(|| cluster_bloom_at_pointer(session, crate::frame_clock::monotonic_now()))
+        .then(|| cluster_edit_at_pointer(session, now))
         .flatten();
+        if let Some((cluster, output)) = edit_target {
+            let output_name = output.name();
+            wayland::focus::select_output(&mut session.wayland, &output);
+            session.clusters.close_bloom(&output_name, now);
+            session.clusters.set_hovered_core(None, now);
+            if session.clusters.begin_rename(cluster) {
+                session.cursor.set_override(
+                    crate::cursor::OverrideSource::Modal,
+                    Some(smithay::input::pointer::CursorIcon::Default),
+                );
+            } else {
+                session.shell.overlays.show_error(
+                    output_name,
+                    "Cluster name could not be edited",
+                    3_000,
+                    now,
+                );
+            }
+            session.interactions.suppressed_buttons.suppress(button);
+            session.request_redraw();
+            intercepted = true;
+        }
+        let bloom_token = (button == BTN_LEFT
+            && state == ButtonState::Pressed
+            && !session.shell.focus_cycle.is_open()
+            && !intercepted)
+            .then(|| cluster_bloom_at_pointer(session, now))
+            .flatten();
         if button == BTN_LEFT
             && state == ButtonState::Pressed
             && !session.shell.focus_cycle.is_open()

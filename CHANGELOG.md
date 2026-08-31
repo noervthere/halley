@@ -5,6 +5,8 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Changed
+- Show a compact edit button beside a collapsed cluster core when its hover bloom
+  opens; activating it edits only that cluster's name.
 - Replace loose in-Field cluster selection with a monitor-local Cluster Composer
   that presents eligible windows and collapsed nodes in a stable,
   non-overlapping mosaic, supports pointer and directional keyboard selection,
