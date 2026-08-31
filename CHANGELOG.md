@@ -26,6 +26,9 @@ All notable changes to this project will be documented in this file.
   when the setting is omitted.
 
 ### Fixed
+- Make Lift mouse-wheel navigation move the highlighted result one row in the
+  wheel direction, scrolling the viewport only after the highlight reaches a
+  visible edge.
 - Place collapsed-cluster hover labels in nearby unobstructed screen space around
   visible windows, ordinary nodes, and other cluster cores.
 - Keep empty cluster workspaces logically focusable.

@@ -213,6 +213,7 @@ fn run() -> Result<(), String> {
         },
         results: Vec::new(),
         selected: 0,
+        scroll_offset: 0,
         selection_authority: SelectionAuthority::Keyboard,
         draft: ClusterDraft::default(),
         modifiers: Modifiers::default(),
@@ -384,6 +385,7 @@ struct LiftApp {
     input: ModeInputState,
     results: Vec<LiftResult>,
     selected: usize,
+    scroll_offset: usize,
     selection_authority: SelectionAuthority,
     draft: ClusterDraft,
     modifiers: Modifiers,
@@ -411,6 +413,68 @@ impl SelectionAuthority {
     }
 }
 
+fn wheel_direction(value120: i32, discrete: i32, absolute: f64) -> isize {
+    if value120 != 0 {
+        value120.signum() as isize
+    } else if discrete != 0 {
+        discrete.signum() as isize
+    } else if absolute > 0.0 {
+        1
+    } else if absolute < 0.0 {
+        -1
+    } else {
+        0
+    }
+}
+
+fn keep_selection_visible(
+    selected: usize,
+    scroll_offset: usize,
+    result_count: usize,
+    visible_results: usize,
+) -> usize {
+    if result_count == 0 {
+        return 0;
+    }
+
+    let selected = selected.min(result_count - 1);
+    let visible = visible_results.max(1);
+    let max_offset = result_count.saturating_sub(visible);
+    let mut offset = scroll_offset.min(max_offset);
+    if selected < offset {
+        offset = selected;
+    } else if selected >= offset.saturating_add(visible) {
+        offset = selected + 1 - visible;
+    }
+    offset.min(max_offset)
+}
+
+/// Mouse-wheel navigation moves the highlight by one row. The viewport stays
+/// fixed while that row remains visible, then follows the highlight at either
+/// visible edge. Unlike keyboard navigation, wheel movement never wraps.
+fn wheel_position(
+    selected: usize,
+    scroll_offset: usize,
+    result_count: usize,
+    visible_results: usize,
+    direction: isize,
+) -> (usize, usize) {
+    if result_count == 0 {
+        return (0, 0);
+    }
+
+    let selected = selected.min(result_count - 1);
+    let next = if direction < 0 {
+        selected.saturating_sub(1)
+    } else if direction > 0 {
+        selected.saturating_add(1).min(result_count - 1)
+    } else {
+        selected
+    };
+    let offset = keep_selection_visible(next, scroll_offset, result_count, visible_results);
+    (next, offset)
+}
+
 impl LiftApp {
     fn refresh_results(&mut self) {
         let start = Instant::now();
@@ -427,6 +491,12 @@ impl LiftApp {
         if self.selected >= self.results.len() {
             self.selected = self.results.len().saturating_sub(1);
         }
+        self.scroll_offset = keep_selection_visible(
+            self.selected,
+            self.scroll_offset,
+            self.results.len(),
+            self.config.visible_results,
+        );
         perf(format_args!(
             "search mode={:?} query_len={} results={} elapsed={:.2?}",
             mode,
@@ -442,6 +512,7 @@ impl LiftApp {
     fn refresh_results_typed(&mut self) {
         self.refresh_results();
         self.selected = 0;
+        self.scroll_offset = 0;
         self.selection_authority.keyboard_activity();
     }
 
@@ -476,7 +547,7 @@ impl LiftApp {
             "draw size={}x{} stride={}",
             self.width, self.height, stride
         ));
-        let scroll_offset = self.scroll_offset();
+        let scroll_offset = self.scroll_offset;
         let (mode, _) = self.effective_search();
         let (buffer, canvas) = self
             .pool
@@ -589,11 +660,13 @@ impl LiftApp {
         }
         let len = self.results.len() as isize;
         self.selected = ((self.selected as isize + delta).rem_euclid(len)) as usize;
+        self.keep_selection_visible();
     }
 
     fn set_selection(&mut self, index: usize) {
         if index < self.results.len() {
             self.selected = index;
+            self.keep_selection_visible();
         }
     }
 
@@ -606,15 +679,26 @@ impl LiftApp {
             return;
         }
         self.selected = if end { self.results.len() - 1 } else { 0 };
+        self.keep_selection_visible();
     }
 
-    fn scroll_offset(&self) -> usize {
-        let visible = self.config.visible_results.max(1);
-        if self.selected < visible {
-            0
-        } else {
-            self.selected + 1 - visible
-        }
+    fn keep_selection_visible(&mut self) {
+        self.scroll_offset = keep_selection_visible(
+            self.selected,
+            self.scroll_offset,
+            self.results.len(),
+            self.config.visible_results,
+        );
+    }
+
+    fn scroll_selection(&mut self, direction: isize) {
+        (self.selected, self.scroll_offset) = wheel_position(
+            self.selected,
+            self.scroll_offset,
+            self.results.len(),
+            self.config.visible_results,
+            direction,
+        );
     }
 
     fn selected_result(&self) -> Option<&LiftResult> {
@@ -628,7 +712,7 @@ impl LiftApp {
             mode: self.effective_search().0,
             results: &self.results,
             selected: self.selected,
-            scroll_offset: self.scroll_offset(),
+            scroll_offset: self.scroll_offset,
             draft: &self.draft,
             status: self.status.as_deref(),
             cursor_visible: self.cursor_visible,
@@ -784,7 +868,7 @@ impl LiftApp {
             && self.config.alt_number_jump
             && let Some(offset) = alt_number_offset(event.keysym)
         {
-            let index = self.scroll_offset() + offset;
+            let index = self.scroll_offset + offset;
             if index < self.results.len() {
                 self.selected = index;
                 self.activate_selected();
@@ -1124,13 +1208,10 @@ impl PointerHandler for LiftApp {
                 }
                 PointerEventKind::Axis { vertical, .. } => {
                     self.selection_authority.pointer_activity();
-                    if vertical.value120 > 0 || vertical.discrete > 0 || vertical.absolute < 0.0 {
-                        self.move_selection(-1);
-                    } else if vertical.value120 < 0
-                        || vertical.discrete < 0
-                        || vertical.absolute > 0.0
-                    {
-                        self.move_selection(1);
+                    let direction =
+                        wheel_direction(vertical.value120, vertical.discrete, vertical.absolute);
+                    if direction != 0 {
+                        self.scroll_selection(direction);
                     }
                 }
                 PointerEventKind::Leave { .. } | PointerEventKind::Release { .. } => {}
@@ -1164,7 +1245,50 @@ impl ProvidesRegistryState for LiftApp {
 
 #[cfg(test)]
 mod selection_tests {
-    use super::SelectionAuthority;
+    use super::{SelectionAuthority, keep_selection_visible, wheel_direction, wheel_position};
+
+    #[test]
+    fn positive_wayland_axis_moves_down_and_negative_moves_up() {
+        assert_eq!(wheel_direction(120, 0, 0.0), 1);
+        assert_eq!(wheel_direction(-120, 0, 0.0), -1);
+        assert_eq!(wheel_direction(0, 1, 0.0), 1);
+        assert_eq!(wheel_direction(0, -1, 0.0), -1);
+        assert_eq!(wheel_direction(0, 0, 8.0), 1);
+        assert_eq!(wheel_direction(0, 0, -8.0), -1);
+    }
+
+    #[test]
+    fn high_resolution_axis_direction_takes_precedence() {
+        assert_eq!(wheel_direction(120, -1, -8.0), 1);
+        assert_eq!(wheel_direction(-120, 1, 8.0), -1);
+    }
+
+    #[test]
+    fn wheel_down_moves_one_row_then_scrolls_at_bottom() {
+        assert_eq!(wheel_position(1, 0, 10, 4, 1), (2, 0));
+        assert_eq!(wheel_position(2, 0, 10, 4, 1), (3, 0));
+        assert_eq!(wheel_position(3, 0, 10, 4, 1), (4, 1));
+    }
+
+    #[test]
+    fn wheel_up_moves_one_row_then_scrolls_at_top() {
+        assert_eq!(wheel_position(5, 3, 10, 4, -1), (4, 3));
+        assert_eq!(wheel_position(4, 3, 10, 4, -1), (3, 3));
+        assert_eq!(wheel_position(3, 3, 10, 4, -1), (2, 2));
+    }
+
+    #[test]
+    fn wheel_stops_at_list_ends_instead_of_wrapping() {
+        assert_eq!(wheel_position(0, 0, 10, 4, -1), (0, 0));
+        assert_eq!(wheel_position(9, 6, 10, 4, 1), (9, 6));
+    }
+
+    #[test]
+    fn keyboard_visibility_uses_existing_viewport() {
+        assert_eq!(keep_selection_visible(4, 3, 10, 4), 3);
+        assert_eq!(keep_selection_visible(2, 3, 10, 4), 2);
+        assert_eq!(keep_selection_visible(7, 3, 10, 4), 4);
+    }
 
     #[test]
     fn keyboard_activity_blocks_stationary_pointer_enter() {
