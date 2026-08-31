@@ -5,10 +5,19 @@ use rune_cfg::RuneConfig;
 use rune_cfg::ast::{ObjectItem, Value};
 
 /// Commands launched as part of the compositor session lifecycle.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StartupCluster {
+    pub name: String,
+    pub members: Vec<String>,
+    pub layout: Option<crate::ClusterLayout>,
+    pub output: Option<String>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Autostart {
     pub once: Vec<String>,
     pub on_reload: Vec<String>,
+    pub clusters: Vec<StartupCluster>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -53,22 +62,45 @@ pub fn parse_autostart(config: &RuneConfig) -> Result<Autostart, LaunchConfigErr
         return Ok(Autostart::default());
     };
     let mut autostart = Autostart::default();
+    let mut cluster_counts = BTreeMap::<Option<String>, usize>::new();
     for item in fields {
         let ObjectItem::Assign(directive, value) = item else {
             continue;
         };
-        let Value::String(command) = value else {
-            return Err(LaunchConfigError(format!(
-                "autostart.{directive} must be a string"
-            )));
-        };
-        let command = command.trim();
-        if command.is_empty() {
-            continue;
-        }
         match directive.as_str() {
-            "once" => autostart.once.push(command.to_string()),
-            "on-reload" => autostart.on_reload.push(command.to_string()),
+            "once" | "on-reload" => {
+                let Value::String(command) = value else {
+                    return Err(LaunchConfigError(format!(
+                        "autostart.{directive} must be a string"
+                    )));
+                };
+                let command = command.trim();
+                if command.is_empty() {
+                    continue;
+                }
+                if directive == "once" {
+                    autostart.once.push(command.to_string());
+                } else {
+                    autostart.on_reload.push(command.to_string());
+                }
+            }
+            "cluster" => {
+                let Value::Object(fields) = value else {
+                    return Err(LaunchConfigError(
+                        "autostart.cluster must be a block".to_string(),
+                    ));
+                };
+                let cluster = parse_startup_cluster(&fields)?;
+                let count = cluster_counts.entry(cluster.output.clone()).or_default();
+                *count += 1;
+                if *count > 10 {
+                    let output = cluster.output.as_deref().unwrap_or("the primary output");
+                    return Err(LaunchConfigError(format!(
+                        "autostart configures more than 10 clusters for {output}"
+                    )));
+                }
+                autostart.clusters.push(cluster);
+            }
             _ => {
                 return Err(LaunchConfigError(format!(
                     "autostart: unsupported directive {directive:?}"
@@ -77,6 +109,104 @@ pub fn parse_autostart(config: &RuneConfig) -> Result<Autostart, LaunchConfigErr
         }
     }
     Ok(autostart)
+}
+
+fn parse_startup_cluster(fields: &[ObjectItem]) -> Result<StartupCluster, LaunchConfigError> {
+    let mut name = None;
+    let mut members = None;
+    let mut layout = None;
+    let mut output = None;
+    for item in fields {
+        let ObjectItem::Assign(key, value) = item else {
+            return Err(LaunchConfigError(
+                "conditionals are not supported inside autostart.cluster".to_string(),
+            ));
+        };
+        match key.as_str() {
+            "name" => {
+                let Value::String(value) = value else {
+                    return Err(LaunchConfigError(
+                        "autostart.cluster.name must be a string".to_string(),
+                    ));
+                };
+                let value = value.trim();
+                if value.is_empty() {
+                    return Err(LaunchConfigError(
+                        "autostart.cluster.name must not be empty".to_string(),
+                    ));
+                }
+                name = Some(value.to_string());
+            }
+            "members" => {
+                let Value::Array(values) = value else {
+                    return Err(LaunchConfigError(
+                        "autostart.cluster.members must be an array of command strings".to_string(),
+                    ));
+                };
+                let mut commands = Vec::with_capacity(values.len());
+                for value in values {
+                    let Value::String(command) = value else {
+                        return Err(LaunchConfigError(
+                            "autostart.cluster.members accepts only command strings".to_string(),
+                        ));
+                    };
+                    let command = command.trim();
+                    if command.is_empty() {
+                        return Err(LaunchConfigError(
+                            "autostart.cluster.members commands must not be empty".to_string(),
+                        ));
+                    }
+                    commands.push(command.to_string());
+                }
+                members = Some(commands);
+            }
+            "layout" => {
+                let Value::String(value) = value else {
+                    return Err(LaunchConfigError(
+                        r#"autostart.cluster.layout must be "tiling" or "stacking""#.to_string(),
+                    ));
+                };
+                layout = Some(match value.trim() {
+                    "tiling" => crate::ClusterLayout::Tiling,
+                    "stacking" => crate::ClusterLayout::Stacking,
+                    _ => {
+                        return Err(LaunchConfigError(
+                            r#"autostart.cluster.layout must be "tiling" or "stacking""#
+                                .to_string(),
+                        ));
+                    }
+                });
+            }
+            "output" => {
+                let Value::String(value) = value else {
+                    return Err(LaunchConfigError(
+                        "autostart.cluster.output must be a non-empty string".to_string(),
+                    ));
+                };
+                let value = value.trim();
+                if value.is_empty() {
+                    return Err(LaunchConfigError(
+                        "autostart.cluster.output must be a non-empty string".to_string(),
+                    ));
+                }
+                output = Some(value.to_string());
+            }
+            _ => {
+                return Err(LaunchConfigError(format!(
+                    "autostart.cluster: unsupported field {key:?}"
+                )));
+            }
+        }
+    }
+    Ok(StartupCluster {
+        name: name
+            .ok_or_else(|| LaunchConfigError("autostart.cluster requires name".to_string()))?,
+        members: members.ok_or_else(|| {
+            LaunchConfigError("autostart.cluster requires members array".to_string())
+        })?,
+        layout,
+        output,
+    })
 }
 
 fn section(config: &RuneConfig, name: &str) -> Result<Option<Vec<ObjectItem>>, LaunchConfigError> {
@@ -183,6 +313,96 @@ end
             .unwrap_err()
             .to_string()
             .contains("unsupported directive")
+        );
+    }
+
+    #[test]
+    fn startup_clusters_parse_compact_command_arrays() {
+        let autostart = parse_autostart(&parse(
+            r#"
+autostart:
+  cluster:
+    name "Development"
+    members ["foot" "firefox --new-window"]
+  end
+  cluster:
+    name "Scratch"
+    members []
+    layout "stacking"
+    output "DP-2"
+  end
+end
+"#,
+        ))
+        .unwrap();
+
+        assert_eq!(autostart.clusters.len(), 2);
+        assert_eq!(
+            autostart.clusters[0].members,
+            ["foot", "firefox --new-window"]
+        );
+        assert_eq!(autostart.clusters[0].layout, None);
+        assert!(autostart.clusters[1].members.is_empty());
+        assert_eq!(
+            autostart.clusters[1].layout,
+            Some(crate::ClusterLayout::Stacking)
+        );
+        assert_eq!(autostart.clusters[1].output.as_deref(), Some("DP-2"));
+    }
+
+    #[test]
+    fn startup_clusters_reject_invalid_members_and_fields() {
+        for (source, expected) in [
+            (
+                r#"name ""
+    members []"#,
+                "name must not be empty",
+            ),
+            (
+                r#"name "Bad"
+    members [""]"#,
+                "commands must not be empty",
+            ),
+            (
+                r#"name "Bad"
+    members [4]"#,
+                "accepts only command strings",
+            ),
+            (
+                r#"name "Bad"
+    members []
+    layout "grid""#,
+                r#"must be "tiling" or "stacking""#,
+            ),
+        ] {
+            let config = parse(&format!(
+                "autostart:\n  cluster:\n    {source}\n  end\nend\n"
+            ));
+            assert!(
+                parse_autostart(&config)
+                    .unwrap_err()
+                    .to_string()
+                    .contains(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn startup_clusters_limit_slots_per_output() {
+        let clusters = (0..11)
+            .map(|index| {
+                format!(
+                    "  cluster:\n    name \"C{index}\"\n    members []\n    output \"DP-1\"\n  end"
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let config = parse(&format!("autostart:\n{clusters}\nend\n"));
+        assert!(
+            parse_autostart(&config)
+                .unwrap_err()
+                .to_string()
+                .contains("more than 10")
         );
     }
 

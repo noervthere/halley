@@ -80,9 +80,6 @@ pub struct Cluster {
 
 impl Cluster {
     fn new(id: ClusterId, members: Vec<NodeId>) -> Option<Self> {
-        if members.is_empty() {
-            return None;
-        }
         if has_duplicates(&members) {
             return None;
         }
@@ -103,12 +100,12 @@ impl Cluster {
         &self.members
     }
 
-    pub fn master(&self) -> NodeId {
-        self.members[0]
+    pub fn master(&self) -> Option<NodeId> {
+        self.members.first().copied()
     }
 
     pub fn secondaries(&self) -> &[NodeId] {
-        &self.members[1..]
+        self.members.get(1..).unwrap_or_default()
     }
 
     pub fn visible_members(&self, max_stack: usize) -> &[NodeId] {
@@ -185,9 +182,6 @@ impl Cluster {
     fn remove_member(&mut self, member: NodeId) -> Option<ClusterRemoveMemberOutcome> {
         if !self.members.contains(&member) {
             return None;
-        }
-        if self.members.len() <= 1 {
-            return Some(ClusterRemoveMemberOutcome::RequiresDissolve);
         }
         self.members.retain(|&id| id != member);
         Some(ClusterRemoveMemberOutcome::Removed)
@@ -396,9 +390,6 @@ impl ClusterRegistry {
         field: &mut Field,
         members: Vec<NodeId>,
     ) -> Result<ClusterId, ClusterCreateError> {
-        if members.is_empty() {
-            return Err(ClusterCreateError::TooFewMembers);
-        }
         if find_duplicate_member(&members).is_some() {
             return Err(ClusterCreateError::DuplicateMember);
         }
@@ -614,8 +605,21 @@ impl ClusterRegistry {
         field.carry(core, to)
     }
 
-    /// Collapse the cluster into a Core node.
+    /// Collapse the cluster into a Core node. Empty clusters use the origin
+    /// as their fallback position; callers creating an empty cluster should
+    /// prefer [`Self::collapse_cluster_at`].
     pub fn collapse_cluster(&mut self, field: &mut Field, id: ClusterId) -> Option<NodeId> {
+        self.collapse_cluster_at(field, id, Vec2 { x: 0.0, y: 0.0 })
+    }
+
+    /// Collapse a cluster, using `fallback_position` when it has no members
+    /// from which to compute a centroid.
+    pub fn collapse_cluster_at(
+        &mut self,
+        field: &mut Field,
+        id: ClusterId,
+        fallback_position: Vec2,
+    ) -> Option<NodeId> {
         let (members, already_collapsed, existing_core, was_active) = {
             let c = self.clusters.get(&id)?;
             (
@@ -646,10 +650,14 @@ impl ClusterRegistry {
             sum.x += n.pos.x;
             sum.y += n.pos.y;
         }
-        let k = members.len() as f32;
-        let core_pos = Vec2 {
-            x: sum.x / k,
-            y: sum.y / k,
+        let core_pos = if members.is_empty() {
+            fallback_position
+        } else {
+            let k = members.len() as f32;
+            Vec2 {
+                x: sum.x / k,
+                y: sum.y / k,
+            }
         };
 
         const CORE_SIZE: Vec2 = Vec2 { x: 48.0, y: 48.0 };
@@ -747,16 +755,8 @@ impl ClusterRegistry {
         id: NodeId,
     ) -> Option<(Node, Option<RemoveNodeClusterEffect>)> {
         if let Some(cid) = self.cluster_id_for_member(id) {
-            let cluster_len = self.cluster(cid)?.members().len();
             let removed = field.remove(id)?;
             self.membership.remove(&id);
-            if cluster_len <= 1 {
-                self.finish_dissolve_cluster(field, cid);
-                return Some((
-                    removed,
-                    Some(RemoveNodeClusterEffect::DissolvedCluster(cid)),
-                ));
-            }
             let cluster = self.clusters.get_mut(&cid)?;
             cluster.remove_member_for_node_removal(id);
             return Some((removed, Some(RemoveNodeClusterEffect::RemovedMember(cid))));
@@ -845,14 +845,27 @@ mod tests {
     // instead of Field owning cluster state itself) ---
 
     #[test]
-    fn cluster_create_rejects_empty_members() {
+    fn cluster_create_allows_empty_members() {
         let mut f = Field::new();
         let mut r = ClusterRegistry::new();
 
-        assert_eq!(
-            r.create_cluster(&mut f, Vec::new()),
-            Err(ClusterCreateError::TooFewMembers)
-        );
+        let cid = r.create_cluster(&mut f, Vec::new()).unwrap();
+        assert!(r.cluster(cid).unwrap().members().is_empty());
+        assert_eq!(r.cluster(cid).unwrap().master(), None);
+        assert!(r.cluster(cid).unwrap().secondaries().is_empty());
+    }
+
+    #[test]
+    fn empty_cluster_collapses_at_explicit_position() {
+        let mut f = Field::new();
+        let mut r = ClusterRegistry::new();
+        let cid = r.create_cluster(&mut f, Vec::new()).unwrap();
+        let position = Vec2 { x: 120.0, y: -45.0 };
+
+        let core = r.collapse_cluster_at(&mut f, cid, position).unwrap();
+
+        assert_eq!(f.node(core).unwrap().pos, position);
+        assert!(r.cluster(cid).unwrap().is_collapsed());
     }
 
     #[test]
@@ -1041,7 +1054,7 @@ mod tests {
         );
         let cluster = r.cluster(cid).unwrap();
         assert_eq!(cluster.members(), &[b]);
-        assert_eq!(cluster.master(), b);
+        assert_eq!(cluster.master(), Some(b));
         assert!(!r.is_cluster_member(a));
     }
 
@@ -1066,7 +1079,7 @@ mod tests {
     }
 
     #[test]
-    fn removing_last_member_dissolves_cluster() {
+    fn removing_last_member_retains_empty_cluster_and_core() {
         let mut f = Field::new();
         let mut r = ClusterRegistry::new();
         let a = f.spawn_surface("A", Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 10.0, y: 10.0 });
@@ -1079,13 +1092,13 @@ mod tests {
         assert_eq!(effect_a, Some(RemoveNodeClusterEffect::RemovedMember(cid)));
 
         let (_, effect_b) = r.remove_node_cluster_safe(&mut f, b).unwrap();
-        assert_eq!(
-            effect_b,
-            Some(RemoveNodeClusterEffect::DissolvedCluster(cid))
-        );
+        assert_eq!(effect_b, Some(RemoveNodeClusterEffect::RemovedMember(cid)));
 
-        assert!(r.cluster(cid).is_none());
-        assert!(f.node(core).is_none());
+        let cluster = r.cluster(cid).expect("empty cluster retained");
+        assert!(cluster.members().is_empty());
+        assert_eq!(cluster.master(), None);
+        assert!(cluster.is_collapsed());
+        assert!(f.node(core).is_some());
     }
 
     #[test]
@@ -1120,11 +1133,11 @@ mod tests {
         let cid = r.create_cluster(&mut f, vec![a, b, c]).unwrap();
         r.promote_cluster_member_to_master(cid, c).unwrap();
         assert_eq!(r.cluster(cid).unwrap().members(), &[c, a, b]);
-        assert_eq!(r.cluster(cid).unwrap().master(), c);
+        assert_eq!(r.cluster(cid).unwrap().master(), Some(c));
 
         r.reorder_cluster_members(cid, vec![b, c, a]).unwrap();
         assert_eq!(r.cluster(cid).unwrap().members(), &[b, c, a]);
-        assert_eq!(r.cluster(cid).unwrap().master(), b);
+        assert_eq!(r.cluster(cid).unwrap().master(), Some(b));
         assert_eq!(r.cluster(cid).unwrap().secondaries(), &[c, a]);
     }
 

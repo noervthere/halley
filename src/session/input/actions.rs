@@ -6,7 +6,8 @@ use smithay::wayland::seat::WaylandFocus;
 
 use super::{
     Session, SessionDriver, cluster_owns_focus, focus_output_target, navigate_cluster,
-    sync_cluster_activation_focus, toggle_cluster_or_focused_node, work_area_for_output,
+    show_cluster_indicator, sync_cluster_activation_focus, toggle_cluster_or_focused_node,
+    work_area_for_output,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -330,13 +331,17 @@ pub(crate) fn dispatch<D: SessionDriver>(
         super::super::SessionControl::ClusterLayoutCycle => {
             if let Some(output) = action_output
                 && let Some(work_area) = work_area_for_output(&session.wayland.space, &output)
-                && session.clusters.cycle_active_layout(
-                    &output,
-                    work_area,
-                    crate::frame_clock::monotonic_now(),
-                )
             {
-                session.request_redraw();
+                let now = crate::frame_clock::monotonic_now();
+                if session
+                    .clusters
+                    .cycle_active_layout(&output, work_area, now)
+                {
+                    if let Some(id) = session.clusters.active_on(&output) {
+                        show_cluster_indicator(session, id, now);
+                    }
+                    session.request_redraw();
+                }
             }
         }
         super::super::SessionControl::ClusterToggleFloat => {
@@ -423,13 +428,6 @@ pub(crate) fn dispatch<D: SessionDriver>(
         && zoom_camera_available
         && let Some(output_name) = output_name
     {
-        let target_scale = session
-            .cameras
-            .get(output_name)
-            .map(crate::presentation::camera::target_scale);
-        if let Some(target_scale) = target_scale {
-            crate::nodes::reconcile_landmarks_at_scale(session, output_name, target_scale);
-        }
         if session.settings.zoom.enabled
             && let Some(live_scale) = session
                 .cameras

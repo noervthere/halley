@@ -125,13 +125,15 @@ pub fn handle_request<D: crate::session::SessionDriver>(
                 .find(|candidate| candidate.name() == output)
                 .map(smithay::desktop::layer_map_for_output)
                 .map(|map| map.non_exclusive_zone());
+            let now = crate::frame_clock::monotonic_now();
             if work_area.is_some_and(|work_area| {
-                session.clusters.cycle_active_layout(
-                    &output,
-                    work_area,
-                    crate::frame_clock::monotonic_now(),
-                )
+                session
+                    .clusters
+                    .cycle_active_layout(&output, work_area, now)
             }) {
+                if let Some(id) = session.clusters.active_on(&output) {
+                    crate::session::show_cluster_indicator(session, id, now);
+                }
                 session.request_redraw();
                 halley_ipc::Response::Ack
             } else {

@@ -276,6 +276,32 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
         );
         match toplevel_commit.clone() {
             wayland::xdg_shell::ToplevelCommit::Mapped(mapped) => {
+                let startup_cluster = self.startup_cluster_for_wayland_surface(&mapped);
+                let startup_target = startup_cluster.and_then(|cluster| {
+                    let output_name = self.clusters.metadata(cluster)?.output.clone();
+                    let output = self
+                        .wayland
+                        .space
+                        .outputs()
+                        .find(|candidate| candidate.name() == output_name)?
+                        .clone();
+                    let window = self
+                        .wayland
+                        .space
+                        .elements()
+                        .find(|window| {
+                            window
+                                .wl_surface()
+                                .is_some_and(|surface| surface.as_ref() == &mapped)
+                        })?
+                        .clone();
+                    let location = self.wayland.space.output_geometry(&output)?.loc;
+                    Some((output, window, location))
+                });
+                if let Some((output, window, location)) = startup_target {
+                    crate::wayland::set_window_output(&window, &output);
+                    self.wayland.space.relocate_element(&window, location);
+                }
                 self.nodes.register_mapped(
                     &self.wayland.space,
                     &mapped,
@@ -298,20 +324,41 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
                         smithay::desktop::layer_map_for_output(&output_handle).non_exclusive_zone();
                     Some((id, output, work_area))
                 });
-                if !admitted_to_draft
-                    && let Some((id, output, work_area)) = cluster_admission
-                    && self.clusters.admit_mapped_window(
-                        &mut self.nodes.field,
-                        &output,
-                        id,
-                        rule.cluster_participation,
-                        work_area,
-                        now,
-                    )
-                {
+                let admitted_to_startup = !admitted_to_draft
+                    && startup_cluster.is_some_and(|cluster| {
+                        cluster_admission
+                            .as_ref()
+                            .is_some_and(|(id, _, work_area)| {
+                                self.clusters.admit_attributed_window(
+                                    &mut self.nodes.field,
+                                    cluster,
+                                    *id,
+                                    *work_area,
+                                    now,
+                                )
+                            })
+                    });
+                let admitted_to_active = !admitted_to_draft
+                    && !admitted_to_startup
+                    && cluster_admission
+                        .as_ref()
+                        .is_some_and(|(id, output, work_area)| {
+                            self.clusters.admit_mapped_window(
+                                &mut self.nodes.field,
+                                output,
+                                *id,
+                                rule.cluster_participation,
+                                *work_area,
+                                now,
+                            )
+                        });
+                if admitted_to_startup || admitted_to_active {
                     self.request_redraw();
                 }
-                if !admitted_to_draft && let Some(id) = self.nodes.id_for_surface(&mapped) {
+                if !admitted_to_draft
+                    && !admitted_to_startup
+                    && let Some(id) = self.nodes.id_for_surface(&mapped)
+                {
                     crate::nodes::displace_landmarks_for_new_window(self, id);
                 }
                 let remains_collapsed = self
@@ -970,8 +1017,21 @@ impl<D: SessionDriver> XdgActivationHandler for Session<D> {
         token_data: XdgActivationTokenData,
         surface: WlSurface,
     ) {
-        if activation_token_is_fresh(token_data.timestamp, Instant::now()) {
-            let root = wayland::compositor::root_surface(&surface);
+        let root = wayland::compositor::root_surface(&surface);
+        let startup_attributed = token_data
+            .user_data
+            .get::<super::startup_clusters::ActivationAttribution>()
+            .and_then(|attribution| {
+                let client_id = root.client().map(|client| client.id());
+                self.startup_clusters.remember_activation(
+                    root.clone(),
+                    client_id,
+                    &attribution.launch_id,
+                    crate::frame_clock::monotonic_now(),
+                )
+            })
+            .is_some();
+        if !startup_attributed && activation_token_is_fresh(token_data.timestamp, Instant::now()) {
             if let Some(id) = self.nodes.id_for_surface(&root)
                 && self.nodes.record(id).is_some_and(|record| record.collapsed)
             {

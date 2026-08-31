@@ -114,6 +114,7 @@ pub struct Session<D: SessionDriver> {
     pub(crate) key_repeat: super::input::repeat::Policy<D>,
     pub(super) launch_environment: super::environment::LaunchEnvironment,
     pub(super) autostart: super::autostart::Autostart,
+    pub(super) startup_clusters: super::startup_clusters::StartupClusters,
     pub pointer: Pointer,
     pub cursor: CursorManager,
     pub(crate) cursor_policy: super::cursor::Policy<D>,
@@ -174,6 +175,7 @@ impl<D: SessionDriver> Session<D> {
             self.cursor.size(),
             &self.launch_environment,
         );
+        self.run_startup_cluster_commands();
     }
 
     pub(crate) fn run_autostart_reload(&mut self, commands: &[String]) {

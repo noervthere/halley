@@ -20,12 +20,31 @@ pub(super) fn spawn_detached(
     cursor_size: u8,
     environment: &LaunchEnvironment,
 ) {
-    let mut process = detached_process(
+    spawn_detached_with_env(
         command_line,
         wayland_display,
         x11_display,
         cursor_size,
         environment,
+        &[],
+    );
+}
+
+pub(super) fn spawn_detached_with_env(
+    command_line: &str,
+    wayland_display: &OsStr,
+    x11_display: Option<&OsStr>,
+    cursor_size: u8,
+    environment: &LaunchEnvironment,
+    extra_environment: &[(&str, &str)],
+) {
+    let mut process = detached_process_with_env(
+        command_line,
+        wayland_display,
+        x11_display,
+        cursor_size,
+        environment,
+        extra_environment,
     );
 
     match process.spawn() {
@@ -45,6 +64,7 @@ pub(super) fn spawn_detached(
     }
 }
 
+#[cfg(test)]
 fn detached_process(
     command_line: &str,
     wayland_display: &OsStr,
@@ -52,12 +72,31 @@ fn detached_process(
     cursor_size: u8,
     environment: &LaunchEnvironment,
 ) -> Command {
+    detached_process_with_env(
+        command_line,
+        wayland_display,
+        x11_display,
+        cursor_size,
+        environment,
+        &[],
+    )
+}
+
+fn detached_process_with_env(
+    command_line: &str,
+    wayland_display: &OsStr,
+    x11_display: Option<&OsStr>,
+    cursor_size: u8,
+    environment: &LaunchEnvironment,
+    extra_environment: &[(&str, &str)],
+) -> Command {
     let mut process = configured_process(
         command_line,
         wayland_display,
         x11_display,
         cursor_size,
         environment,
+        extra_environment,
     );
 
     // Safety: only async-signal-safe calls between fork and exec - a raw
@@ -81,6 +120,7 @@ fn configured_process(
     x11_display: Option<&OsStr>,
     cursor_size: u8,
     environment: &LaunchEnvironment,
+    extra_environment: &[(&str, &str)],
 ) -> Command {
     let mut process = Command::new("sh");
     environment.apply_to(&mut process);
@@ -96,6 +136,7 @@ fn configured_process(
     if let Some(display) = x11_display {
         process.env("DISPLAY", display);
     }
+    process.envs(extra_environment.iter().copied());
     process
 }
 

@@ -381,6 +381,8 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
     };
     let mut applied_input = runtime_config.input.clone();
     applied_input.keyboard = applied_keyboard;
+    let startup_cluster_declarations = runtime_config.autostart.clusters.clone();
+    let startup_cluster_default_layout = runtime_config.clusters.default_layout;
     let launch_environment = super::environment::LaunchEnvironment::new(&runtime_config.env);
     let launch_path = launch_environment.path();
     let system_color_scheme = crate::appearance::current_color_scheme();
@@ -394,6 +396,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
         key_repeat: super::input::repeat::Policy::new(loop_handle.clone()),
         launch_environment,
         autostart: super::autostart::Autostart::enabled(),
+        startup_clusters: super::startup_clusters::StartupClusters::default(),
         pointer: Pointer::new((100.0, 100.0)),
         cursor: CursorManager::new(&runtime_config.cursor),
         cursor_policy: super::cursor::Policy::new(&runtime_config.cursor, loop_handle.clone()),
@@ -468,6 +471,11 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
         app.cameras
             .insert(output.name(), geometry.size.to_physical(1));
     }
+    app.initialize_startup_clusters(
+        &startup_cluster_declarations,
+        startup_cluster_default_layout,
+        true,
+    );
     app.initialize_config_notification();
 
     let socket_name = super::protocol::init_wayland_listener(display, &mut event_loop);
@@ -1355,6 +1363,7 @@ fn auto_vrr_eligible(app: &TtyApp, output: &Output, now: Duration) -> bool {
     if overlays.exit_mix.is_some()
         || overlays.notification.is_some()
         || overlays.zoom_indicator.is_some()
+        || overlays.cluster_indicator.is_some()
     {
         return false;
     }

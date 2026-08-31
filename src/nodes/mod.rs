@@ -23,8 +23,8 @@ pub(crate) use ipc::move_selected_direction;
 pub(crate) use ipc::resize_selected_direction;
 pub use session_ops::{
     close, close_focused_on_output, collapse, focus_and_center_node, focus_or_reveal_node,
-    pan_after_close_restore, reconcile_landmarks, reconcile_landmarks_at_scale, restore,
-    restore_for_close, reveal_cluster_core, tick_decay, toggle_focused_on_output,
+    pan_after_close_restore, reconcile_landmarks, restore, restore_for_close, reveal_cluster_core,
+    tick_decay, toggle_focused_on_output,
 };
 pub(crate) use session_ops::{
     displace_landmarks_for_new_window, move_cluster_core_rigid, move_grabbed_body_rigid,

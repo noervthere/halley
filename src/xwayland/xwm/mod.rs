@@ -298,6 +298,9 @@ fn admit_window<D: SessionDriver>(session: &mut Session<D>, xid: u32) {
     else {
         return;
     };
+    let startup_cluster = surface
+        .pid()
+        .and_then(|pid| session.startup_cluster_for_x11_pid(pid));
     let saved_maximize = maximize_restore(&surface);
     let initially_iconic = session.xwayland.managed_states.state(xid) == WindowState::Iconic;
     let mut opening_size = OpeningPlacement::preferred_size(initial_size, window.geometry().size);
@@ -429,6 +432,19 @@ fn admit_window<D: SessionDriver>(session: &mut Session<D>, xid: u32) {
         }
     }
 
+    if let Some(cluster) = startup_cluster
+        && let Some(output_name) = session
+            .clusters
+            .metadata(cluster)
+            .map(|metadata| metadata.output.clone())
+        && let Some(target_output) = output_named(&session.wayland, &output_name)
+    {
+        output = target_output;
+        if let Some(geometry) = session.wayland.space.output_geometry(&output) {
+            location = geometry.loc;
+        }
+    }
+
     let constrained_size = configure::constrain_surface_size(&surface, opening_size);
     if constrained_size != opening_size && saved_maximize.is_none() {
         location.x = location
@@ -495,19 +511,32 @@ fn admit_window<D: SessionDriver>(session: &mut Session<D>, xid: u32) {
         );
         if let Some(id) = session.nodes.id_for_surface(wl_surface.as_ref()) {
             let admitted_to_draft = crate::session::admit_cluster_draft_window(session, id);
-            if !admitted_to_draft
+            let work_area = smithay::desktop::layer_map_for_output(&output).non_exclusive_zone();
+            let now = crate::frame_clock::monotonic_now();
+            let admitted_to_startup = !admitted_to_draft
+                && startup_cluster.is_some_and(|cluster| {
+                    session.clusters.admit_attributed_window(
+                        &mut session.nodes.field,
+                        cluster,
+                        id,
+                        work_area,
+                        now,
+                    )
+                });
+            let admitted_to_active = !admitted_to_draft
+                && !admitted_to_startup
                 && session.clusters.admit_mapped_window(
                     &mut session.nodes.field,
                     &output.name(),
                     id,
                     rule.cluster_participation,
-                    smithay::desktop::layer_map_for_output(&output).non_exclusive_zone(),
-                    crate::frame_clock::monotonic_now(),
-                )
-            {
+                    work_area,
+                    now,
+                );
+            if admitted_to_startup || admitted_to_active {
                 session.request_redraw();
             }
-            if !admitted_to_draft {
+            if !admitted_to_draft && !admitted_to_startup {
                 crate::nodes::displace_landmarks_for_new_window(session, id);
             }
             crate::session::trace::x11_event(

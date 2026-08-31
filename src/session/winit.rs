@@ -224,6 +224,8 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
     let xwayland = crate::xwayland::State::<WinitDriver>::new(&dh, event_loop.handle());
     let mut applied_input = runtime_config.input.clone();
     applied_input.keyboard = applied_keyboard;
+    let startup_cluster_declarations = runtime_config.autostart.clusters.clone();
+    let startup_cluster_default_layout = runtime_config.clusters.default_layout;
     let launch_environment = super::environment::LaunchEnvironment::new(&runtime_config.env);
     let launch_path = launch_environment.path();
     let system_color_scheme = crate::appearance::current_color_scheme();
@@ -237,6 +239,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
         key_repeat: super::input::repeat::Policy::new(event_loop.handle()),
         launch_environment,
         autostart: super::autostart::Autostart::disabled(),
+        startup_clusters: super::startup_clusters::StartupClusters::default(),
         pointer: Pointer::new((100.0, 100.0)),
         cursor: CursorManager::new(&runtime_config.cursor),
         cursor_policy: super::cursor::Policy::new(&runtime_config.cursor, event_loop.handle()),
@@ -302,6 +305,11 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
     app.wayland
         .space
         .map_output(app.driver.backend.output(), (0, 0));
+    app.initialize_startup_clusters(
+        &startup_cluster_declarations,
+        startup_cluster_default_layout,
+        false,
+    );
     app.initialize_config_notification();
 
     let socket_name = super::protocol::init_wayland_listener(display, &mut event_loop);

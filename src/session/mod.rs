@@ -17,7 +17,7 @@ mod cursor;
 mod focus;
 pub(crate) mod gesture;
 pub(crate) mod input;
-pub(crate) use input::{cluster_owns_focus, sync_cluster_activation_focus};
+pub(crate) use input::{cluster_owns_focus, show_cluster_indicator, sync_cluster_activation_focus};
 mod interaction;
 mod lifecycle;
 mod navigation;
@@ -27,6 +27,7 @@ pub(crate) mod pointer;
 mod protocol;
 mod settings;
 mod spawn;
+mod startup_clusters;
 mod state;
 pub(crate) mod touch;
 #[cfg(feature = "xwayland")]

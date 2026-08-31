@@ -608,6 +608,26 @@ pub(crate) fn cluster_owns_focus<D: SessionDriver>(
     logical || keyboard
 }
 
+pub(crate) fn show_cluster_indicator<D: SessionDriver>(
+    session: &mut Session<D>,
+    id: halley_core::cluster::ClusterId,
+    now: std::time::Duration,
+) {
+    let Some((output, name, layout)) = session.clusters.metadata(id).map(|metadata| {
+        (
+            metadata.output.clone(),
+            metadata.name.clone(),
+            metadata.layout,
+        )
+    }) else {
+        return;
+    };
+    session
+        .shell
+        .overlays
+        .show_cluster_indicator(&output, &name, layout, now);
+}
+
 pub(crate) fn sync_cluster_activation_focus<D: SessionDriver>(
     session: &mut Session<D>,
     output: &Output,
@@ -615,18 +635,29 @@ pub(crate) fn sync_cluster_activation_focus<D: SessionDriver>(
     collapsed_should_focus: bool,
     serial: smithay::utils::Serial,
 ) {
-    super::sync_cluster_camera(session, &output.name(), crate::frame_clock::monotonic_now());
-    let Some(member) = session.clusters.first_member(id) else {
-        return;
-    };
-    if session.clusters.active_on(&output.name()) == Some(id) {
-        if let Some(window) = session
-            .nodes
-            .record(member)
-            .map(|record| record.window.clone())
-        {
-            super::focus_window(session, &window, serial);
+    let now = crate::frame_clock::monotonic_now();
+    let output_name = output.name();
+    super::sync_cluster_camera(session, &output_name, now);
+    if session.clusters.active_on(&output_name) == Some(id) {
+        if let Some(member) = session.clusters.first_member(id) {
+            if let Some(window) = session
+                .nodes
+                .record(member)
+                .map(|record| record.window.clone())
+            {
+                super::focus_window(session, &window, serial);
+            }
+        } else {
+            // An empty workspace has no client surface to own keyboard focus,
+            // but its persistent core is still the logical selection.
+            crate::window::clear_focus(&mut session.wayland);
+            session.nodes.focus(
+                session.clusters.core_node(id),
+                session.start_time.elapsed().as_millis() as u64,
+            );
+            super::sync_keyboard_focus(session, serial);
         }
+        show_cluster_indicator(session, id, now);
     } else if collapsed_should_focus {
         crate::window::clear_focus(&mut session.wayland);
         session.nodes.focus(
@@ -732,10 +763,26 @@ pub(crate) fn begin_cluster_commit<D: SessionDriver>(session: &mut Session<D>) -
         .clusters
         .creation()
         .map(|creation| creation.output.clone());
+    let fallback_core_position = output
+        .as_deref()
+        .and_then(|output_name| {
+            let output = session
+                .wayland
+                .space
+                .outputs()
+                .find(|candidate| candidate.name() == output_name)?;
+            let geometry = session.wayland.space.output_geometry(output)?;
+            let view = session.cameras.view(output_name)?;
+            Some(halley_core::field::Vec2 {
+                x: geometry.loc.x as f32 + view.center.x,
+                y: geometry.loc.y as f32 + view.center.y,
+            })
+        })
+        .unwrap_or(halley_core::field::Vec2 { x: 0.0, y: 0.0 });
     let now = crate::frame_clock::monotonic_now();
     match session
         .clusters
-        .prepare_creation(&session.nodes.field, focused)
+        .prepare_creation(&session.nodes.field, focused, fallback_core_position)
     {
         Ok(prepared) => {
             if session

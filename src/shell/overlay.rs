@@ -81,11 +81,37 @@ impl ZoomIndicator {
     }
 }
 
+#[derive(Clone, Debug)]
+struct ClusterIndicator {
+    label: String,
+    shown_at: Duration,
+    expires_at: Duration,
+    expiry_notified: bool,
+}
+
+impl ClusterIndicator {
+    fn mix(&self, now: Duration) -> f32 {
+        if now >= self.expires_at {
+            return 1.0 - transition_progress(now.saturating_sub(self.expires_at));
+        }
+        transition_progress(now.saturating_sub(self.shown_at))
+    }
+
+    fn finished(&self, now: Duration) -> bool {
+        now >= self.expires_at + TRANSITION_DURATION
+    }
+
+    fn animating(&self, now: Duration) -> bool {
+        !self.finished(now) && (now < self.shown_at + TRANSITION_DURATION || now >= self.expires_at)
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct OverlayManager {
     exit: bool,
     notification: Option<Notification>,
     zoom_indicators: HashMap<String, ZoomIndicator>,
+    cluster_indicators: HashMap<String, ClusterIndicator>,
 }
 
 #[derive(Clone, Debug)]
@@ -101,11 +127,18 @@ pub struct ZoomIndicatorSnapshot {
     pub mix: f32,
 }
 
+#[derive(Clone, Debug)]
+pub struct ClusterIndicatorSnapshot {
+    pub label: String,
+    pub mix: f32,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct OverlaySnapshot {
     pub exit_mix: Option<f32>,
     pub notification: Option<NotificationSnapshot>,
     pub zoom_indicator: Option<ZoomIndicatorSnapshot>,
+    pub cluster_indicator: Option<ClusterIndicatorSnapshot>,
 }
 
 impl OverlayManager {
@@ -258,6 +291,28 @@ impl OverlayManager {
         true
     }
 
+    pub fn show_cluster_indicator(
+        &mut self,
+        output: &str,
+        name: &str,
+        layout: halley_core::cluster::layout::ClusterWorkspaceLayoutKind,
+        now: Duration,
+    ) {
+        let layout = match layout {
+            halley_core::cluster::layout::ClusterWorkspaceLayoutKind::Tiling => "Tiling",
+            halley_core::cluster::layout::ClusterWorkspaceLayoutKind::Stacking => "Stacking",
+        };
+        self.cluster_indicators.insert(
+            output.to_string(),
+            ClusterIndicator {
+                label: format!("{}  ·  {layout}", name.trim()),
+                shown_at: now,
+                expires_at: now + Duration::from_millis(900),
+                expiry_notified: false,
+            },
+        );
+    }
+
     pub fn reload_zoom_indicator(&mut self, config: &halley_config::ZoomIndicator) -> bool {
         if config.enabled || self.zoom_indicators.is_empty() {
             return false;
@@ -268,6 +323,7 @@ impl OverlayManager {
 
     pub fn remove_output(&mut self, output: &str) {
         self.zoom_indicators.remove(output);
+        self.cluster_indicators.remove(output);
     }
 
     pub fn snapshot(&self, output: &str, now: Duration) -> OverlaySnapshot {
@@ -288,6 +344,12 @@ impl OverlayManager {
                     mix: indicator.mix(now),
                 })
             }),
+            cluster_indicator: self.cluster_indicators.get(output).and_then(|indicator| {
+                (!indicator.finished(now)).then(|| ClusterIndicatorSnapshot {
+                    label: indicator.label.clone(),
+                    mix: indicator.mix(now),
+                })
+            }),
         }
     }
 
@@ -297,6 +359,10 @@ impl OverlayManager {
             .is_some_and(|notification| notification.animating(now))
             || self
                 .zoom_indicators
+                .values()
+                .any(|indicator| indicator.animating(now))
+            || self
+                .cluster_indicators
                 .values()
                 .any(|indicator| indicator.animating(now))
     }
@@ -331,6 +397,16 @@ impl OverlayManager {
         self.zoom_indicators
             .retain(|_, indicator| !indicator.finished(now));
         redraw |= self.zoom_indicators.len() != before;
+        for indicator in self.cluster_indicators.values_mut() {
+            if now >= indicator.expires_at && !indicator.expiry_notified {
+                indicator.expiry_notified = true;
+                redraw = true;
+            }
+        }
+        let before = self.cluster_indicators.len();
+        self.cluster_indicators
+            .retain(|_, indicator| !indicator.finished(now));
+        redraw |= self.cluster_indicators.len() != before;
         redraw
     }
 }
@@ -423,6 +499,37 @@ mod tests {
         );
         assert!(!overlays.exit_modal_active());
         assert!(!overlays.cancel_exit(Duration::from_millis(21)));
+    }
+
+    #[test]
+    fn cluster_indicator_names_the_workspace_and_layout_then_expires() {
+        let mut overlays = OverlayManager::default();
+        overlays.show_cluster_indicator(
+            "DP-1",
+            "Work",
+            halley_core::cluster::layout::ClusterWorkspaceLayoutKind::Tiling,
+            Duration::ZERO,
+        );
+
+        let visible = overlays
+            .snapshot("DP-1", Duration::from_millis(180))
+            .cluster_indicator
+            .unwrap();
+        assert_eq!(visible.label, "Work  ·  Tiling");
+        assert_eq!(visible.mix, 1.0);
+        assert!(
+            overlays
+                .snapshot("DP-2", Duration::from_millis(180))
+                .cluster_indicator
+                .is_none()
+        );
+        assert!(overlays.wakeup(Duration::from_millis(900)));
+        assert!(
+            overlays
+                .snapshot("DP-1", Duration::from_millis(1_080))
+                .cluster_indicator
+                .is_none()
+        );
     }
 
     #[test]

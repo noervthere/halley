@@ -247,6 +247,17 @@ pub fn elements(
             &mut elements,
         )?;
     }
+    if let Some(indicator) = snapshot.cluster_indicator {
+        cluster_indicator_elements(
+            renderer,
+            screen,
+            indicator,
+            visuals,
+            node_renderer,
+            ui_text,
+            &mut elements,
+        )?;
+    }
     if config.zoom_indicator.enabled
         && let Some(zoom_indicator) = snapshot.zoom_indicator
     {
@@ -439,6 +450,58 @@ fn notification_elements(
         visuals,
         visuals.fill,
         0.97 * notification.mix,
+    )?));
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cluster_indicator_elements(
+    renderer: &mut GlesRenderer,
+    screen: Rectangle<i32, Physical>,
+    indicator: crate::shell::overlay::ClusterIndicatorSnapshot,
+    visuals: OverlayVisuals,
+    node_renderer: &mut NodeRenderer,
+    ui_text: &mut UiTextRenderer,
+    elements: &mut Vec<SceneElement>,
+) -> Result<(), Box<dyn Error>> {
+    let max_text_width = ((screen.size.w as f32 * 0.70).round() as i32 - 40).max(80);
+    let (label, text_size) = fit_middle(
+        renderer,
+        ui_text,
+        &indicator.label,
+        visuals.text.bytes(),
+        max_text_width,
+    )?;
+    let card_size =
+        smithay::utils::Size::<i32, Physical>::from((text_size.w + 40, text_size.h + 24));
+    let card = Rectangle::<i32, Physical>::new(
+        (
+            (screen.size.w - card_size.w) / 2,
+            (screen.size.h - card_size.h) / 2,
+        )
+            .into(),
+        card_size,
+    );
+    if let Some(text) = ui_text.element(
+        renderer,
+        (
+            card.loc.x + 20,
+            card.loc.y + (card.size.h - text_size.h) / 2,
+        )
+            .into(),
+        &label,
+        visuals.text.bytes(),
+        visuals.text.a * indicator.mix,
+    )? {
+        elements.push(SceneElement::UiText(text.element));
+    }
+    elements.push(SceneElement::NodeLabel(card_element(
+        renderer,
+        node_renderer,
+        card,
+        visuals,
+        visuals.fill,
+        0.97 * indicator.mix,
     )?));
     Ok(())
 }

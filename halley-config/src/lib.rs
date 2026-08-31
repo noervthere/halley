@@ -71,7 +71,7 @@ pub use keybinds::{
     Action, BindingScope, ClusterDirection, Direction, FocusCycleDirection, Keybind, Keybinds,
     ModifierKey, Modifiers, MonitorTarget, TrailDirection,
 };
-pub use launch::{Autostart, LaunchConfigError, parse_autostart, parse_env};
+pub use launch::{Autostart, LaunchConfigError, StartupCluster, parse_autostart, parse_env};
 pub use migrate::{MigrationError, MigrationReport, MigrationStatus, migrate_config_at};
 pub use nodes::{
     Debug, Decay, FocusRing, FocusRings, LandmarkPlacement, NodeBackgroundColor, NodeDisplayPolicy,

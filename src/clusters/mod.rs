@@ -753,6 +753,46 @@ impl ClusterSystem {
         }
     }
 
+    pub fn admit_attributed_window(
+        &mut self,
+        field: &mut Field,
+        cluster: ClusterId,
+        member: NodeId,
+        work_area: Rectangle<i32, Logical>,
+        now: Duration,
+    ) -> bool {
+        if self.registry.is_cluster_member(member) {
+            return false;
+        }
+        let Some(metadata) = self.metadata(cluster).cloned() else {
+            return false;
+        };
+        if self.active_on(&metadata.output) == Some(cluster) {
+            return self.admit_mapped_window(
+                field,
+                &metadata.output,
+                member,
+                halley_config::WindowClusterParticipation::Layout,
+                work_area,
+                now,
+            );
+        }
+        if self
+            .registry
+            .add_member_to_cluster(field, cluster, member)
+            .is_err()
+        {
+            return false;
+        }
+        let _ = field.set_state(member, halley_core::field::NodeState::Node);
+        if let Some(node) = field.node_mut(member) {
+            node.visibility
+                .set(halley_core::field::Visibility::HIDDEN_BY_CLUSTER, true);
+            node.pos = metadata.core_position;
+        }
+        true
+    }
+
     pub fn window_presentation(
         &self,
         id: NodeId,
@@ -1955,7 +1995,7 @@ mod tests {
     }
 
     #[test]
-    fn destroyed_members_reflow_then_retire_cluster_metadata() {
+    fn destroyed_members_reflow_then_leave_a_reusable_empty_cluster() {
         let mut field = Field::new();
         let a = field.spawn_surface("A", Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 100.0, y: 80.0 });
         let b = field.spawn_surface("B", Vec2 { x: 200.0, y: 0.0 }, Vec2 { x: 100.0, y: 80.0 });
@@ -2006,10 +2046,21 @@ mod tests {
         assert_eq!(system.close_targets_for_node(core), vec![b]);
 
         assert!(system.forget_destroyed_member(&mut field, b));
-        assert!(system.registry().cluster(id).is_none());
-        assert!(system.metadata(id).is_none());
-        assert!(system.clusters_for_output("DP-1").next().is_none());
+        assert!(system.registry().cluster(id).unwrap().members().is_empty());
+        assert!(system.metadata(id).is_some());
+        assert_eq!(
+            system
+                .clusters_for_output("DP-1")
+                .map(|(_, cluster, _)| cluster)
+                .collect::<Vec<_>>(),
+            vec![id]
+        );
+        assert_eq!(system.active_on("DP-1"), Some(id));
+        assert_eq!(system.close_targets_for_node(core), Vec::<NodeId>::new());
+
+        assert!(system.activate("DP-1", id, Duration::from_secs(3)));
         assert!(system.active_on("DP-1").is_none());
+        assert_eq!(system.core_node(id), Some(core));
     }
 
     #[test]
@@ -2596,7 +2647,10 @@ mod tests {
             ),
             Some(ids[0])
         );
-        assert_eq!(system.registry().cluster(cluster).unwrap().master(), ids[1]);
+        assert_eq!(
+            system.registry().cluster(cluster).unwrap().master(),
+            Some(ids[1])
+        );
         let before_join = system.workspace_layout(cluster, work_area).unwrap();
 
         let joined = field.spawn_surface(

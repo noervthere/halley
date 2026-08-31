@@ -4,21 +4,12 @@ pub fn reconcile_landmarks<D: crate::session::SessionDriver>(
     session: &mut crate::session::Session<D>,
     only_output: Option<&str>,
 ) {
-    reconcile_landmarks_inner(session, only_output, None);
-}
-
-pub fn reconcile_landmarks_at_scale<D: crate::session::SessionDriver>(
-    session: &mut crate::session::Session<D>,
-    output: &str,
-    scale: f32,
-) {
-    reconcile_landmarks_inner(session, Some(output), Some(scale));
+    reconcile_landmarks_inner(session, only_output);
 }
 
 fn reconcile_landmarks_inner<D: crate::session::SessionDriver>(
     session: &mut crate::session::Session<D>,
     only_output: Option<&str>,
-    scale_override: Option<f32>,
 ) {
     session.nodes.sync_from_space(&session.wayland.space);
     let candidates = session
@@ -39,13 +30,11 @@ fn reconcile_landmarks_inner<D: crate::session::SessionDriver>(
         .collect::<Vec<_>>();
     let now = crate::frame_clock::monotonic_now();
     for (id, output, current) in candidates {
-        let scale = scale_override.unwrap_or_else(|| {
-            session
-                .cameras
-                .get(&output)
-                .map(crate::presentation::camera::scale)
-                .unwrap_or(1.0)
-        });
+        let scale = session
+            .cameras
+            .get(&output)
+            .map(crate::presentation::camera::scale)
+            .unwrap_or(1.0);
         let occupied_cores = session
             .clusters
             .collapsed_core_landmarks()

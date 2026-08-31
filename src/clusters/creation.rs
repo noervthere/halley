@@ -618,6 +618,7 @@ impl ClusterSystem {
         &mut self,
         field: &Field,
         focused: Option<NodeId>,
+        fallback_core_position: Vec2,
     ) -> Result<PreparedCreation, String> {
         let creation = self
             .creation
@@ -625,9 +626,6 @@ impl ClusterSystem {
             .ok_or_else(|| "cluster creation mode is not active".to_string())?;
         if !creation.naming {
             return Err("enter a cluster name before confirming".into());
-        }
-        if creation.selected.is_empty() {
-            return Err("select at least one window before confirming".into());
         }
         if self
             .slots
@@ -659,12 +657,20 @@ impl ClusterSystem {
             sum.x += node.pos.x;
             sum.y += node.pos.y;
         }
-        let count = members.len() as f32;
         let slot = self
             .slots
             .get(&creation.output)
             .map_or(1, |slots| slots.len() + 1);
         let name = creation.name_buffer.trim();
+        let core_position = if members.is_empty() {
+            fallback_core_position
+        } else {
+            let count = members.len() as f32;
+            Vec2 {
+                x: sum.x / count,
+                y: sum.y / count,
+            }
+        };
         let prepared = PreparedCreation {
             output: creation.output.clone(),
             members,
@@ -673,10 +679,7 @@ impl ClusterSystem {
             } else {
                 name.to_string()
             },
-            core_position: Vec2 {
-                x: sum.x / count,
-                y: sum.y / count,
-            },
+            core_position,
             focus_core: focused.is_some_and(|focused| creation.selected.contains(&focused)),
         };
         self.creation
@@ -697,6 +700,71 @@ impl ClusterSystem {
         creation.prepared.take().is_some()
     }
 
+    pub(crate) fn create_collapsed_cluster(
+        &mut self,
+        field: &mut Field,
+        name: String,
+        output: String,
+        layout: ClusterWorkspaceLayoutKind,
+        members: Vec<NodeId>,
+        core_position: Vec2,
+    ) -> Result<ClusterId, String> {
+        if name.trim().is_empty() {
+            return Err("cluster name cannot be empty".into());
+        }
+        if self
+            .slots
+            .get(&output)
+            .is_some_and(|slots| slots.len() >= 10)
+        {
+            return Err(format!(
+                "output {output} already has all 10 cluster slots assigned"
+            ));
+        }
+        for member in &members {
+            if field.node(*member).is_none() {
+                return Err(format!(
+                    "selected window {} disappeared before the cluster was created",
+                    member.as_u64()
+                ));
+            }
+            if self.registry.is_cluster_member(*member) {
+                return Err(format!(
+                    "selected window {} already belongs to a cluster",
+                    member.as_u64()
+                ));
+            }
+        }
+
+        let id = self
+            .registry
+            .create_cluster(field, members)
+            .map_err(|error| format!("could not create cluster: {error:?}"))?;
+        let Some(core) = self.registry.collapse_cluster_at(field, id, core_position) else {
+            self.registry.dissolve_cluster(field, id);
+            return Err("could not create the cluster core".to_string());
+        };
+        if let Some(node) = field.node_mut(core) {
+            node.pos = core_position;
+        } else {
+            self.registry.dissolve_cluster(field, id);
+            return Err("the new cluster core disappeared during creation".into());
+        }
+
+        self.slots.entry(output.clone()).or_default().push(id);
+        self.metadata.insert(
+            id,
+            ClusterMetadata {
+                name,
+                output,
+                layout,
+                core: Some(core),
+                core_position,
+            },
+        );
+        Ok(id)
+    }
+
     pub fn commit_prepared_creation(&mut self, field: &mut Field) -> Result<ClusterId, String> {
         let prepared = self
             .prepared_creation()
@@ -714,82 +782,29 @@ impl ClusterSystem {
             }
             return Err("cluster selection changed while creation was being prepared".into());
         }
-        if self
-            .slots
-            .get(&prepared.output)
-            .is_some_and(|slots| slots.len() >= 10)
-        {
-            if let Some(creation) = self.creation.as_mut() {
-                creation.prepared = None;
-            }
-            return Err(format!(
-                "output {} already has all 10 cluster slots assigned",
-                prepared.output
-            ));
-        }
-        for member in &prepared.members {
-            if field.node(*member).is_none() {
-                if let Some(creation) = self.creation.as_mut() {
-                    creation.prepared = None;
-                }
-                return Err(format!(
-                    "selected window {} disappeared before the cluster was created",
-                    member.as_u64()
-                ));
-            }
-            if self.registry.is_cluster_member(*member) {
-                if let Some(creation) = self.creation.as_mut() {
-                    creation.prepared = None;
-                }
-                return Err(format!(
-                    "selected window {} already belongs to a cluster",
-                    member.as_u64()
-                ));
-            }
-        }
-
-        let id = self
-            .registry
-            .create_cluster(field, prepared.members.clone())
-            .map_err(|error| format!("could not create cluster: {error:?}"))?;
-        let Some(core) = self.registry.collapse_cluster(field, id) else {
-            self.registry.dissolve_cluster(field, id);
-            return Err("could not create the cluster core".to_string());
+        let layout = match self.config.default_layout {
+            halley_config::ClusterLayout::Tiling => ClusterWorkspaceLayoutKind::Tiling,
+            halley_config::ClusterLayout::Stacking => ClusterWorkspaceLayoutKind::Stacking,
         };
-        // ClusterRegistry computes a centroid while collapsing. Override it
-        // with the immutable prepared destination so the held composer frame
-        // and first real Field frame share identical authoritative geometry.
-        if let Some(node) = field.node_mut(core) {
-            node.pos = prepared.core_position;
-        } else {
-            self.registry.dissolve_cluster(field, id);
-            return Err("the new cluster core disappeared during creation".into());
-        }
-
-        self.slots
-            .entry(prepared.output.clone())
-            .or_default()
-            .push(id);
-        self.metadata.insert(
-            id,
-            ClusterMetadata {
-                name: prepared.name,
-                output: prepared.output,
-                layout: match self.config.default_layout {
-                    halley_config::ClusterLayout::Tiling => ClusterWorkspaceLayoutKind::Tiling,
-                    halley_config::ClusterLayout::Stacking => ClusterWorkspaceLayoutKind::Stacking,
-                },
-                core: Some(core),
-                core_position: prepared.core_position,
-            },
+        let result = self.create_collapsed_cluster(
+            field,
+            prepared.name,
+            prepared.output,
+            layout,
+            prepared.members,
+            prepared.core_position,
         );
-        self.creation = None;
-        Ok(id)
+        if result.is_ok() {
+            self.creation = None;
+        } else if let Some(creation) = self.creation.as_mut() {
+            creation.prepared = None;
+        }
+        result
     }
 
     pub fn finish_creation(&mut self, field: &mut Field) -> Result<ClusterId, String> {
         if self.prepared_creation().is_none() {
-            self.prepare_creation(field, None)?;
+            self.prepare_creation(field, None, Vec2 { x: 0.0, y: 0.0 })?;
         }
         self.commit_prepared_creation(field)
     }
@@ -1051,7 +1066,7 @@ mod tests {
         assert!(system.begin_naming());
 
         let prepared = system
-            .prepare_creation(&field, Some(first))
+            .prepare_creation(&field, Some(first), Vec2 { x: 0.0, y: 0.0 })
             .expect("prepared creation");
         assert_eq!(prepared.members, vec![first, second]);
         assert_eq!(prepared.core_position, Vec2 { x: 60.0, y: 80.0 });
@@ -1088,7 +1103,7 @@ mod tests {
         assert!(system.begin_naming());
 
         let error = system
-            .prepare_creation(&field, None)
+            .prepare_creation(&field, None, Vec2 { x: 0.0, y: 0.0 })
             .expect_err("missing member must fail");
         assert!(error.contains("disappeared"));
         let creation = system.creation().expect("naming remains active");
@@ -1102,7 +1117,11 @@ mod tests {
             Vec2 { x: 40.0, y: 40.0 },
         );
         system.creation.as_mut().unwrap().selected = HashSet::from([present]);
-        assert!(system.prepare_creation(&field, None).is_ok());
+        assert!(
+            system
+                .prepare_creation(&field, None, Vec2 { x: 0.0, y: 0.0 })
+                .is_ok()
+        );
     }
 
     #[test]
@@ -1117,7 +1136,9 @@ mod tests {
         assert!(system.toggle_creation_member(node, "DP-1"));
         assert!(system.begin_naming());
 
-        let error = system.prepare_creation(&field, None).unwrap_err();
+        let error = system
+            .prepare_creation(&field, None, Vec2 { x: 0.0, y: 0.0 })
+            .unwrap_err();
         assert!(error.contains("all 10 cluster slots"));
         assert!(system.creation().unwrap().naming);
         assert!(system.prepared_creation().is_none());
@@ -1138,7 +1159,11 @@ mod tests {
         assert!(system.toggle_creation_member(first, "DP-1"));
         assert!(system.toggle_creation_member(second, "DP-1"));
         assert!(system.begin_naming());
-        assert!(system.prepare_creation(&field, None).is_ok());
+        assert!(
+            system
+                .prepare_creation(&field, None, Vec2 { x: 0.0, y: 0.0 })
+                .is_ok()
+        );
 
         assert!(!system.forget_destroyed_member(&mut field, second));
         let creation = system.creation().expect("composer creation remains");
@@ -1200,7 +1225,9 @@ mod tests {
             assert!(system.toggle_creation_member(first, "DP-1"));
             assert!(system.toggle_creation_member(second, "DP-1"));
             assert!(system.begin_naming());
-            let prepared = system.prepare_creation(&field, None).unwrap();
+            let prepared = system
+                .prepare_creation(&field, None, Vec2 { x: 0.0, y: 0.0 })
+                .unwrap();
             let cluster = system.commit_prepared_creation(&mut field).unwrap();
             let metadata = system.metadata(cluster).unwrap();
             assert_eq!(metadata.core_position, prepared.core_position);
