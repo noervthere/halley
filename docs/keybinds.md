@@ -213,13 +213,16 @@ An ordinary `move-window` grab can perform a one-time Field split. While a
 window is grabbed, place the pointer in the outer quarter of another ordinary
 Field window's left, right, top, or bottom side. That side highlights
 immediately; after a 400 ms dwell, two outlined rectangles preview the result.
-Releasing then divides the target window's existing Field rectangle between the
-two windows with `field.gap` between them. The camera does not pan, zoom, or
-recenter, and no layout relationship remains: either window can be moved or
-resized independently afterward. Moving the pointer out of the edge zone or
-pressing `Escape` cancels the candidate. Cluster members, maximized or
-fullscreen windows, pinned targets, and splits that violate either client's
-size constraints are not eligible.
+On the first placement, releasing divides the output's visible work area between
+the two windows with `field.gap` around and between them. If the target already
+occupies a region produced by an earlier split, releasing recursively subdivides
+that target region instead. Halley recognizes those rectangles from their
+geometry; it does not retain a tiling tree or layout relationship, so either
+window can still be moved or resized independently afterward. The camera does
+not pan, zoom, or recenter. Moving the pointer out of the edge zone or pressing
+`Escape` cancels the candidate. Cluster members, maximized or fullscreen
+windows, pinned targets, and splits that violate either client's size
+constraints are not eligible.
 
 An unbound click keeps its ordinary client, focus, decoration, and
 collapsed-node behavior. In an active tiling cluster,

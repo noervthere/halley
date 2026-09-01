@@ -1,8 +1,6 @@
 use smithay::backend::renderer::Color32F;
 use smithay::output::Output;
-#[cfg(test)]
-use smithay::utils::Physical;
-use smithay::utils::{Logical, Rectangle};
+use smithay::utils::{Logical, Physical, Rectangle};
 
 use crate::input::grab::FieldSplitCandidate;
 use crate::presentation::camera::OutputCameras;
@@ -14,7 +12,6 @@ pub fn elements(
     output_geometry: Rectangle<i32, Logical>,
     cameras: &OutputCameras,
     candidate: Option<&FieldSplitCandidate>,
-    gap: f32,
     overlay_config: &halley_config::Overlays,
     node_renderer: &mut NodeRenderer,
 ) -> Vec<SceneElement> {
@@ -26,12 +23,7 @@ pub fn elements(
     };
     let visuals = super::shell::resolve_visuals(overlay_config);
     let screen_rect = |world: Rectangle<i32, Logical>| {
-        crate::render::camera_rect(
-            world.to_physical(1),
-            view.center,
-            output_geometry.size.to_physical(1),
-            view.scale,
-        )
+        field_split_screen_rect(world, output_geometry, view.center, view.scale)
     };
     let fill_color = Color32F::new(
         visuals.border.r,
@@ -41,7 +33,7 @@ pub fn elements(
     );
     let border_color = Color32F::new(visuals.border.r, visuals.border.g, visuals.border.b, 0.92);
     let world_rects = candidate
-        .layout(gap.ceil() as i32)
+        .layout()
         .map(|layout| vec![layout.dragged_outer, layout.target_outer])
         .unwrap_or_else(|| vec![candidate.highlight()]);
     let mut elements = Vec::new();
@@ -76,16 +68,42 @@ pub fn elements(
     elements
 }
 
+fn field_split_screen_rect(
+    world: Rectangle<i32, Logical>,
+    output_geometry: Rectangle<i32, Logical>,
+    camera_center: smithay::utils::Point<f32, Physical>,
+    scale: f32,
+) -> Rectangle<i32, Physical> {
+    let output_local = Rectangle::new(world.loc - output_geometry.loc, world.size);
+    crate::render::camera_rect(
+        output_local.to_physical(1),
+        camera_center,
+        output_geometry.size.to_physical(1),
+        scale,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn camera_preview_rect_stays_in_field_space() {
-        let world = Rectangle::<i32, Physical>::new((100, 50).into(), (400, 300).into());
+        let output = Rectangle::new((0, 0).into(), (800, 600).into());
+        let world = Rectangle::new((100, 50).into(), (400, 300).into());
         assert_eq!(
-            crate::render::camera_rect(world, (300.0, 200.0).into(), (800, 600).into(), 0.5,),
+            field_split_screen_rect(world, output, (300.0, 200.0).into(), 0.5),
             Rectangle::new((300, 225).into(), (200, 150).into())
+        );
+    }
+
+    #[test]
+    fn camera_preview_rebases_world_coordinates_on_secondary_outputs() {
+        let output = Rectangle::new((2560, 0).into(), (1920, 1200).into());
+        let world = Rectangle::new((2860, 200).into(), (800, 600).into());
+        assert_eq!(
+            field_split_screen_rect(world, output, (960.0, 600.0).into(), 1.0),
+            Rectangle::new((300, 200).into(), (800, 600).into())
         );
     }
 }

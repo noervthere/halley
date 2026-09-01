@@ -459,7 +459,6 @@ pub fn build(
         output_geometry,
         request.desktop.cameras,
         request.overlays.field_split,
-        request.overlays.field_gap,
         request.overlays.overlay_config,
         request.resources.node_renderer,
     ));

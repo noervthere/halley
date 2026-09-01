@@ -49,7 +49,12 @@ pub struct FieldSplitCandidate {
     pub target: halley_core::field::NodeId,
     pub output: String,
     pub side: FieldSplitSide,
-    pub outer: Rectangle<i32, Logical>,
+    /// The target's live outer rectangle, used only for the edge highlight.
+    pub target_outer: Rectangle<i32, Logical>,
+    /// The recognized Field region divided by this placement.
+    pub split_outer: Rectangle<i32, Logical>,
+    /// World-space gap captured with `split_outer` so preview and commit agree.
+    pub gap: i32,
     pub started_at: Duration,
     pub ready: bool,
 }
@@ -72,14 +77,14 @@ impl FieldSplitCandidate {
         true
     }
 
-    pub fn layout(&self, gap: i32) -> Option<FieldSplitLayout> {
+    pub fn layout(&self) -> Option<FieldSplitLayout> {
         self.ready
-            .then(|| field_split_layout(self.outer, self.side, gap))
+            .then(|| field_split_layout(self.split_outer, self.side, self.gap))
             .flatten()
     }
 
     pub fn highlight(&self) -> Rectangle<i32, Logical> {
-        field_split_highlight(self.outer, self.side)
+        field_split_highlight(self.target_outer, self.side)
     }
 }
 
@@ -164,6 +169,113 @@ pub fn field_split_layout(
             })
         }
     }
+}
+
+/// Returns the visible output work area in Field world coordinates together
+/// with a gap that renders at the configured screen-space size.
+pub fn field_split_work_area_outer(
+    camera: &Camera,
+    output_geometry: Rectangle<i32, Logical>,
+    work_area: Rectangle<i32, Logical>,
+    gap: i32,
+) -> Option<(Rectangle<i32, Logical>, i32)> {
+    let gap = gap.max(0);
+    let width = work_area.size.w.checked_sub(gap.checked_mul(2)?)?;
+    let height = work_area.size.h.checked_sub(gap.checked_mul(2)?)?;
+    if width < 2 || height < 2 {
+        return None;
+    }
+
+    let screen_outer = Rectangle::new(
+        output_geometry.loc + work_area.loc + Point::from((gap, gap)),
+        (width, height).into(),
+    );
+    let top_left = screen_to_world_on_output(
+        (f64::from(screen_outer.loc.x), f64::from(screen_outer.loc.y)),
+        camera,
+        output_geometry,
+    );
+    let bottom_right = screen_to_world_on_output(
+        (
+            f64::from(screen_outer.loc.x + screen_outer.size.w),
+            f64::from(screen_outer.loc.y + screen_outer.size.h),
+        ),
+        camera,
+        output_geometry,
+    );
+    let left = top_left.x.round() as i32;
+    let top = top_left.y.round() as i32;
+    let right = bottom_right.x.round() as i32;
+    let bottom = bottom_right.y.round() as i32;
+    let outer = Rectangle::new(
+        (left, top).into(),
+        (right.checked_sub(left)?, bottom.checked_sub(top)?).into(),
+    );
+    if outer.size.w < 2 || outer.size.h < 2 {
+        return None;
+    }
+
+    let scale = crate::input::zoom::scale(camera).max(0.05);
+    let world_gap = ((gap as f32) / scale).ceil() as i32;
+    Some((outer, world_gap))
+}
+
+/// A split-created region is recognizable without retaining a tiling tree:
+/// each axis is an exact interval produced by repeatedly bisecting the visible
+/// work area with the configured gap.
+pub fn field_split_recognized_outer(
+    target: Rectangle<i32, Logical>,
+    work_area: Rectangle<i32, Logical>,
+    gap: i32,
+) -> Rectangle<i32, Logical> {
+    let recognized = field_split_interval_is_recursive(
+        work_area.loc.x,
+        work_area.size.w,
+        target.loc.x,
+        target.size.w,
+        gap,
+    ) && field_split_interval_is_recursive(
+        work_area.loc.y,
+        work_area.size.h,
+        target.loc.y,
+        target.size.h,
+        gap,
+    );
+    if recognized { target } else { work_area }
+}
+
+fn field_split_interval_is_recursive(
+    mut root_start: i32,
+    mut root_length: i32,
+    target_start: i32,
+    target_length: i32,
+    gap: i32,
+) -> bool {
+    let gap = gap.max(0);
+    for _ in 0..32 {
+        if target_start == root_start && target_length == root_length {
+            return true;
+        }
+        let Some(available) = root_length.checked_sub(gap) else {
+            return false;
+        };
+        if available < 2 {
+            return false;
+        }
+        let first_length = available / 2;
+        let second_start = root_start + first_length + gap;
+        let second_length = available - first_length;
+        let target_end = target_start.saturating_add(target_length);
+        if target_start >= root_start && target_end <= root_start + first_length {
+            root_length = first_length;
+        } else if target_start >= second_start && target_end <= second_start + second_length {
+            root_start = second_start;
+            root_length = second_length;
+        } else {
+            return false;
+        }
+    }
+    false
 }
 
 pub fn field_split_highlight(
@@ -1662,20 +1774,72 @@ mod tests {
     }
 
     #[test]
+    fn field_split_first_claims_the_visible_work_area_at_any_zoom() {
+        let output = Rectangle::new((1280, 0).into(), (1280, 800).into());
+        let work_area = Rectangle::new((0, 30).into(), (1280, 770).into());
+        let camera = camera_at_rest();
+        let (outer, gap) =
+            field_split_work_area_outer(&camera, output, work_area, 20).expect("work area fits");
+        assert_eq!(outer, Rectangle::new((1300, 50).into(), (1240, 730).into()));
+        assert_eq!(gap, 20);
+
+        let mut zoomed = camera;
+        zoomed.view_size = Vec2 {
+            x: 2560.0,
+            y: 1600.0,
+        };
+        let (outer, gap) =
+            field_split_work_area_outer(&zoomed, output, work_area, 20).expect("work area fits");
+        assert_eq!(
+            outer,
+            Rectangle::new((680, -300).into(), (2480, 1460).into())
+        );
+        assert_eq!(gap, 40);
+    }
+
+    #[test]
+    fn field_split_recognizes_recursive_regions_without_a_layout_tree() {
+        let work_area = Rectangle::new((20, 20).into(), (1240, 760).into());
+        let left_half = Rectangle::new((20, 20).into(), (610, 760).into());
+        let lower_left_quarter = Rectangle::new((20, 410).into(), (610, 370).into());
+        assert_eq!(
+            field_split_recognized_outer(left_half, work_area, 20),
+            left_half
+        );
+        assert_eq!(
+            field_split_recognized_outer(lower_left_quarter, work_area, 20),
+            lower_left_quarter
+        );
+
+        let arbitrary = Rectangle::new((100, 100).into(), (800, 500).into());
+        assert_eq!(
+            field_split_recognized_outer(arbitrary, work_area, 20),
+            work_area
+        );
+        let crosses_gap = Rectangle::new((20, 20).into(), (620, 760).into());
+        assert_eq!(
+            field_split_recognized_outer(crosses_gap, work_area, 20),
+            work_area
+        );
+    }
+
+    #[test]
     fn field_split_candidate_waits_for_dwell_and_can_be_cancelled() {
         let start = Duration::from_secs(3);
         let mut candidate = FieldSplitCandidate {
             target: halley_core::field::NodeId::new(7),
             output: "DP-1".into(),
             side: FieldSplitSide::Right,
-            outer: Rectangle::new((10, 20).into(), (600, 400).into()),
+            target_outer: Rectangle::new((30, 40).into(), (300, 200).into()),
+            split_outer: Rectangle::new((10, 20).into(), (600, 400).into()),
+            gap: 20,
             started_at: start,
             ready: false,
         };
         assert!(!candidate.tick_ready(start + FIELD_SPLIT_DWELL - Duration::from_millis(1)));
-        assert!(candidate.layout(20).is_none());
+        assert!(candidate.layout().is_none());
         assert!(candidate.tick_ready(start + FIELD_SPLIT_DWELL));
-        assert!(candidate.layout(20).is_some());
+        assert!(candidate.layout().is_some());
         assert!(!candidate.tick_ready(start + Duration::from_secs(1)));
     }
 

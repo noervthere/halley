@@ -93,6 +93,14 @@ fn field_split_size_is_accepted(window: &Window, requested: Size<i32, Logical>) 
     })
 }
 
+struct FieldSplitContact {
+    target: halley_core::field::NodeId,
+    side: crate::input::grab::FieldSplitSide,
+    target_outer: Rectangle<i32, Logical>,
+    split_outer: Rectangle<i32, Logical>,
+    gap: i32,
+}
+
 fn field_split_contact<D: SessionDriver>(
     session: &Session<D>,
     dragged_id: halley_core::field::NodeId,
@@ -100,11 +108,7 @@ fn field_split_contact<D: SessionDriver>(
     output: &Output,
     output_geometry: Rectangle<i32, Logical>,
     pointer: (f64, f64),
-) -> Option<(
-    halley_core::field::NodeId,
-    crate::input::grab::FieldSplitSide,
-    Rectangle<i32, Logical>,
-)> {
+) -> Option<FieldSplitContact> {
     let output_name = output.name();
     if session.clusters.active_on(&output_name).is_some() || session.clusters.is_member(dragged_id)
     {
@@ -113,7 +117,14 @@ fn field_split_contact<D: SessionDriver>(
     let camera = session.cameras.get(&output_name)?;
     let world = crate::input::grab::screen_to_world_on_output(pointer, camera, output_geometry);
     let point = Point::<f64, Logical>::from((f64::from(world.x), f64::from(world.y)));
-    let gap = session.settings.field.gap.ceil() as i32;
+    let configured_gap = session.settings.field.gap.ceil() as i32;
+    let work_area = smithay::desktop::layer_map_for_output(output).non_exclusive_zone();
+    let (work_area_outer, gap) = crate::input::grab::field_split_work_area_outer(
+        camera,
+        output_geometry,
+        work_area,
+        configured_gap,
+    )?;
     let mut windows = session
         .wayland
         .space
@@ -155,7 +166,9 @@ fn field_split_contact<D: SessionDriver>(
         let Some(side) = crate::input::grab::field_split_side_at(outer, point) else {
             continue;
         };
-        let layout = crate::input::grab::field_split_layout(outer, side, gap)?;
+        let split_outer =
+            crate::input::grab::field_split_recognized_outer(outer, work_area_outer, gap);
+        let layout = crate::input::grab::field_split_layout(split_outer, side, gap)?;
         let dragged_client = crate::titlebar::client_rect_for_outer(
             dragged_window,
             layout.dragged_outer,
@@ -171,7 +184,13 @@ fn field_split_contact<D: SessionDriver>(
         if field_split_size_is_accepted(dragged_window, dragged_client.size)
             && field_split_size_is_accepted(&target_window, target_client.size)
         {
-            return Some((target_id, side, outer));
+            return Some(FieldSplitContact {
+                target: target_id,
+                side,
+                target_outer: outer,
+                split_outer,
+                gap,
+            });
         }
     }
     None
@@ -183,8 +202,7 @@ fn commit_field_split<D: SessionDriver>(
     dragged_window: &Window,
     candidate: &crate::input::grab::FieldSplitCandidate,
 ) -> bool {
-    let gap = session.settings.field.gap.ceil() as i32;
-    let Some(layout) = candidate.layout(gap) else {
+    let Some(layout) = candidate.layout() else {
         return false;
     };
     let Some(target) = session.nodes.record(candidate.target).cloned() else {
@@ -2325,20 +2343,27 @@ where
                     &mut session.interactions.grab
                 {
                     match split_contact {
-                        Some((target, side, outer)) => {
+                        Some(ref contact) => {
                             if let Some(candidate) = field_split.as_mut()
-                                && candidate.matches(target, &output_name, side)
+                                && candidate.matches(contact.target, &output_name, contact.side)
                             {
-                                if candidate.outer != outer {
-                                    candidate.outer = outer;
+                                if candidate.target_outer != contact.target_outer
+                                    || candidate.split_outer != contact.split_outer
+                                    || candidate.gap != contact.gap
+                                {
+                                    candidate.target_outer = contact.target_outer;
+                                    candidate.split_outer = contact.split_outer;
+                                    candidate.gap = contact.gap;
                                     split_changed = true;
                                 }
                             } else {
                                 *field_split = Some(crate::input::grab::FieldSplitCandidate {
-                                    target,
+                                    target: contact.target,
                                     output: output_name.clone(),
-                                    side,
-                                    outer,
+                                    side: contact.side,
+                                    target_outer: contact.target_outer,
+                                    split_outer: contact.split_outer,
+                                    gap: contact.gap,
                                     started_at: now,
                                     ready: false,
                                 });

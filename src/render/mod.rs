@@ -240,7 +240,6 @@ pub struct OverlayContext<'a> {
     pub apogee_config: halley_config::Apogee,
     pub overlays: &'a crate::shell::overlay::OverlayManager,
     pub field_split: Option<&'a crate::input::grab::FieldSplitCandidate>,
-    pub field_gap: f32,
     pub overlay_config: &'a halley_config::Overlays,
 }
 
