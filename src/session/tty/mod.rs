@@ -1301,6 +1301,9 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
     animating |= app.render.node_renderer.has_pending_icons();
     app.window_animations.cleanup(target_presentation_time);
     app.render
+        .arrange_textures
+        .retain_surfaces(|surface| app.window_animations.has_arrange_timeline(surface));
+    app.render
         .window_close_animations
         .cleanup(target_presentation_time);
     if app.cleanup_fullscreen(target_presentation_time) {

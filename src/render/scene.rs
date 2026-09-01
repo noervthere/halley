@@ -834,6 +834,7 @@ pub fn build(
             window,
             context,
             LiveWindowRenderers {
+                arrange_textures: request.resources.arrange_textures,
                 fullscreen_textures: request.resources.fullscreen_textures,
                 backdrop_blur: request.resources.backdrop_blur_renderer,
                 shadow: request.resources.shadow_renderer,
@@ -869,6 +870,7 @@ pub fn build(
                     ..context
                 },
                 LiveWindowRenderers {
+                    arrange_textures: request.resources.arrange_textures,
                     fullscreen_textures: request.resources.fullscreen_textures,
                     backdrop_blur: request.resources.backdrop_blur_renderer,
                     shadow: request.resources.shadow_renderer,

@@ -697,6 +697,9 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                 wayland::layer_shell::cleanup(&mut app.wayland);
                 app.window_animations.cleanup(target_presentation_time);
                 app.render
+                    .arrange_textures
+                    .retain_surfaces(|surface| app.window_animations.has_arrange_timeline(surface));
+                app.render
                     .window_close_animations
                     .cleanup(target_presentation_time);
                 let fullscreen_cleanup = app.cleanup_fullscreen(target_presentation_time);

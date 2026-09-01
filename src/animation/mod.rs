@@ -405,6 +405,10 @@ impl WindowAnimations {
             .is_some_and(|timeline| !timeline.is_finished_at(now))
     }
 
+    pub fn has_arrange_timeline(&self, surface: &WlSurface) -> bool {
+        self.arranging.contains_key(surface)
+    }
+
     /// Updates policy for future windows without disturbing animations
     /// already in flight.
     pub fn reload(&mut self, config: Animations) {

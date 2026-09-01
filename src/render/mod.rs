@@ -1,4 +1,5 @@
 mod app_icon;
+pub mod arrange_texture;
 pub mod background;
 pub mod close;
 pub mod effects;

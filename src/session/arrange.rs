@@ -211,7 +211,12 @@ pub(crate) fn arrange_visible<D: SessionDriver>(
                 output: output_name.to_string(),
             };
             let target_visual = field_visual_rect(session, &output, target)?;
-            Some((request, current_visual, target_visual))
+            Some((
+                candidate.window.clone(),
+                request,
+                current_visual,
+                target_visual,
+            ))
         })
         .collect::<Vec<_>>();
     if transitions.len() < 2 {
@@ -225,7 +230,8 @@ pub(crate) fn arrange_visible<D: SessionDriver>(
         .interactions
         .field_arrange
         .insert(output_name.to_string(), restores);
-    for (request, current_visual, target_visual) in transitions {
+    for (window, request, current_visual, target_visual) in transitions {
+        capture_arrange_texture(session, &window, &request.surface, now);
         session.window_animations.arrange(
             request.surface.clone(),
             now,
@@ -236,6 +242,22 @@ pub(crate) fn arrange_visible<D: SessionDriver>(
     }
     session.request_output_redraw(&output);
     true
+}
+
+fn capture_arrange_texture<D: SessionDriver>(
+    session: &mut Session<D>,
+    window: &Window,
+    surface: &WlSurface,
+    now: std::time::Duration,
+) {
+    let preserve_existing = session.window_animations.is_arranging(surface, now);
+    let textures = &mut session.render.arrange_textures;
+    let capture = session
+        .driver
+        .with_renderer(|renderer| textures.capture(renderer, window, preserve_existing));
+    if let Err(err) = capture {
+        eventline::warn!("field arrange: failed to capture outgoing window texture: {err}");
+    }
 }
 
 pub(crate) fn undo_last<D: SessionDriver>(session: &mut Session<D>, output_name: &str) -> bool {
@@ -296,6 +318,7 @@ fn restore_transaction<D: SessionDriver>(
                     .and_then(|output| field_visual_rect(session, output, request.geometry)),
             );
         if let Some((current_visual, target_visual)) = transition {
+            capture_arrange_texture(session, &window, &request.surface, now);
             session.window_animations.arrange(
                 request.surface.clone(),
                 now,

@@ -24,6 +24,7 @@ pub(super) struct LiveWindowScene {
 }
 
 pub(super) struct LiveWindowRenderers<'a> {
+    pub arrange_textures: &'a mut crate::render::arrange_texture::ArrangeTextureTransitions,
     pub fullscreen_textures:
         &'a mut crate::render::fullscreen_texture::FullscreenTextureTransitions,
     pub backdrop_blur: &'a mut crate::render::effects::backdrop_blur::BackdropBlurRenderer,
@@ -112,6 +113,7 @@ pub(super) fn live_window_elements(
     renderers: LiveWindowRenderers<'_>,
 ) -> Result<LiveWindowScene, Box<dyn Error>> {
     let LiveWindowRenderers {
+        arrange_textures,
         fullscreen_textures,
         backdrop_blur: backdrop_blur_renderer,
         shadow: shadow_renderer,
@@ -208,12 +210,15 @@ pub(super) fn live_window_elements(
         context.clusters.cluster_for_member(id).is_none()
             && context.nodes.field.node(id).is_some_and(|node| node.pinned)
     });
-    let opening_scale_y = if visual.presentation_rect.size.h > 0 {
-        visual.animated_rect.size.h as f32 / visual.presentation_rect.size.h as f32
-    } else {
-        1.0
-    };
-    let decoration_scale = visual.zoom_scale * opening_scale_y.max(0.0);
+    let arrange_animating = context
+        .window_animations
+        .is_arranging(window_surface.as_ref(), context.target_presentation_time);
+    let presentation_scale_y = decoration_presentation_scale(
+        arrange_animating,
+        visual.presentation_rect.size.h,
+        visual.animated_rect.size.h,
+    );
+    let decoration_scale = visual.zoom_scale * presentation_scale_y.max(0.0);
     let titlebar_metrics = crate::titlebar::rendered_metrics(
         &context.decorations.titlebars,
         context.font.size,
@@ -336,7 +341,12 @@ pub(super) fn live_window_elements(
                     .map(|presentation| presentation.transition_completion)
             }),
     );
-    let texture_blend = if let Some(completion) = texture_transition_completion {
+    let arrange_texture = arrange_animating
+        .then(|| arrange_textures.element(window_surface.as_ref(), visual.animated_rect, alpha))
+        .flatten();
+    let texture_blend = if arrange_texture.is_none()
+        && let Some(completion) = texture_transition_completion
+    {
         let hold_x11_fullscreen_exit = should_hold_x11_fullscreen_exit(
             crate::xwayland::is_x11(window),
             visual.fullscreen.is_some(),
@@ -370,7 +380,28 @@ pub(super) fn live_window_elements(
     } else {
         None
     };
-    if let Some(blend) = texture_blend {
+    if let Some((base, texture)) = arrange_texture {
+        if rounded_available {
+            let radii = if server_titlebar {
+                crate::render::window_decoration::CornerRadii::bottom(content_radius)
+            } else {
+                crate::render::window_decoration::CornerRadii::all(content_radius)
+            };
+            let element = window_decoration_renderer
+                .texture_element_with_radii(
+                    renderer,
+                    base,
+                    texture,
+                    visual.animated_rect,
+                    radii,
+                    (1.0, 1.0, 1.0, 1.0),
+                )
+                .expect("rounded resources were checked above");
+            elements.push(SceneElement::RoundedTexture(element));
+        } else {
+            elements.push(SceneElement::Closing(base));
+        }
+    } else if let Some(blend) = texture_blend {
         elements.push(SceneElement::WindowResize(blend));
     } else {
         for surface_element in surface_elements {
@@ -903,6 +934,24 @@ pub(crate) fn append_titlebar_elements(
     Ok(())
 }
 
+fn decoration_presentation_scale(
+    arranging: bool,
+    presentation_height: i32,
+    animated_height: i32,
+) -> f32 {
+    if arranging {
+        // Arrangement holds a pre-configure client snapshot. Chrome is still
+        // compositor-rendered, so keep it at the Field display scale instead
+        // of deriving its height from a native client size that can change
+        // midway through the timeline.
+        1.0
+    } else if presentation_height > 0 {
+        animated_height as f32 / presentation_height as f32
+    } else {
+        1.0
+    }
+}
+
 fn color_bytes(color: halley_config::BorderColor) -> [u8; 3] {
     [
         (color.r.clamp(0.0, 1.0) * 255.0).round() as u8,
@@ -986,8 +1035,8 @@ mod tests {
     use smithay::utils::{Buffer, Size};
 
     use super::{
-        active_crossfade_completion, compositor_chrome_visible, quantized_f32, scaled_title_size,
-        should_hold_x11_fullscreen_exit,
+        active_crossfade_completion, compositor_chrome_visible, decoration_presentation_scale,
+        quantized_f32, scaled_title_size, should_hold_x11_fullscreen_exit,
     };
 
     #[test]
@@ -1004,6 +1053,13 @@ mod tests {
             Some(0.999_999)
         );
         assert_eq!(active_crossfade_completion(Some(1.0)), None);
+    }
+
+    #[test]
+    fn arrangement_keeps_chrome_scale_stable_across_client_resize_commits() {
+        assert_eq!(decoration_presentation_scale(true, 600, 900), 1.0);
+        assert_eq!(decoration_presentation_scale(true, 1200, 900), 1.0);
+        assert_eq!(decoration_presentation_scale(false, 600, 900), 1.5);
     }
 
     #[test]

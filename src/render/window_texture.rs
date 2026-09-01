@@ -44,6 +44,10 @@ pub struct ResizeWindowTexture {
 }
 
 impl WindowTexture {
+    pub(crate) fn texture(&self) -> &GlesTexture {
+        &self.texture
+    }
+
     pub fn render_element(
         &self,
         id: Id,

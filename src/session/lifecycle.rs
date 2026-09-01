@@ -290,6 +290,7 @@ pub(crate) fn finish_window_unmap<D: SessionDriver>(
         let _ = session.cameras.apply_field_maximize(output, None);
     }
     session.render.fullscreen_textures.remove(&surface);
+    session.render.arrange_textures.remove(&surface);
     super::cancel_grab_for_surface(session, &surface);
     crate::input::grab::forget_resize_anchor(&mut session.interactions.resize_anchor, &surface);
     if close_handoff_needs_fallback(session.render.window_close_animations.is_active(&surface)) {
