@@ -6,6 +6,7 @@ use smithay::utils::{Logical, Point, Rectangle, Size};
 use super::{Session, SessionDriver};
 
 const INFEASIBLE_COST: i64 = i64::MAX / 16;
+const UNREACHED_COST: i64 = i64::MAX / 4;
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct UndoSnapshot {
@@ -130,7 +131,10 @@ pub(crate) fn arrange_visible<D: SessionDriver>(
                         if !window_size_is_accepted(&candidate.window, target.size) {
                             INFEASIBLE_COST
                         } else {
+                            let feasible_ceiling =
+                                INFEASIBLE_COST / (candidates.len() as i64 + 1) - 1;
                             squared_distance(candidate.center, rect_center(*region))
+                                .min(feasible_ceiling)
                         }
                     })
                     .collect::<Vec<_>>()
@@ -381,12 +385,12 @@ fn minimum_cost_assignment(costs: &[Vec<i64>]) -> Vec<usize> {
     for row in 1..=count {
         matched_row[0] = row;
         let mut column = 0usize;
-        let mut minimum = vec![INFEASIBLE_COST; count + 1];
+        let mut minimum = vec![UNREACHED_COST; count + 1];
         let mut used = vec![false; count + 1];
         loop {
             used[column] = true;
             let active_row = matched_row[column];
-            let mut delta = INFEASIBLE_COST;
+            let mut delta = UNREACHED_COST;
             let mut next_column = 0usize;
             for candidate_column in 1..=count {
                 if used[candidate_column] {
@@ -503,5 +507,14 @@ mod tests {
         let impossible = super::INFEASIBLE_COST;
         let assignment = minimum_cost_assignment(&[vec![impossible, 1], vec![1, impossible]]);
         assert_eq!(assignment, vec![1, 0]);
+    }
+
+    #[test]
+    fn assignment_terminates_when_no_target_is_feasible() {
+        let impossible = super::INFEASIBLE_COST;
+        let mut assignment =
+            minimum_cost_assignment(&[vec![impossible, impossible], vec![impossible, impossible]]);
+        assignment.sort_unstable();
+        assert_eq!(assignment, vec![0, 1]);
     }
 }
