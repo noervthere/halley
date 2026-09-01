@@ -383,7 +383,8 @@ fn parse_gesture_action(value: &Value, path: &str) -> Result<GestureAction, Inpu
             crate::Action::Spawn(_)
             | crate::Action::PointerMoveWindow
             | crate::Action::PointerResizeWindow
-            | crate::Action::PointerPanField => Err(InputParseError(format!(
+            | crate::Action::PointerPanField
+            | crate::Action::PointerDragPan => Err(InputParseError(format!(
                 "{path}: unsupported gesture action {value:?}"
             ))),
             action => Ok(GestureAction::Compositor(action)),

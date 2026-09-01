@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- Restore grabbed-window Field panning with the default `Mod+Shift+left-drag`
+  `drag-pan` action: dwelling at an output edge now carries the window through
+  that output's Field instead of transferring it or leaving it offscreen.
 - Add compact startup cluster declarations under `autostart`, with persistent
   named cores, optional layout/output selection, empty `members []` support,
   and launch attribution for native Wayland and XWayland windows.

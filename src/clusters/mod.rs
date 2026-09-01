@@ -51,9 +51,10 @@ pub(crate) fn action_button_rects(
     };
     let stack_offset = (ACTION_BUTTON_DIAMETER_PX + ACTION_BUTTON_STACK_GAP_PX) / 2;
     let min_center_y = output_geometry.loc.y + radius + stack_offset;
-    let max_center_y =
-        output_geometry.loc.y + output_geometry.size.h - radius - stack_offset;
-    let stack_center_y = core_center.y.clamp(min_center_y, max_center_y.max(min_center_y));
+    let max_center_y = output_geometry.loc.y + output_geometry.size.h - radius - stack_offset;
+    let stack_center_y = core_center
+        .y
+        .clamp(min_center_y, max_center_y.max(min_center_y));
     let rect = |center_y| {
         Rectangle::new(
             (center_x - radius, center_y - radius).into(),

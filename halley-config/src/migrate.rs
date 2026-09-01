@@ -206,6 +206,10 @@ const VERSION_1_BINDINGS: &[BindingCandidate] = &[
         line: r#""$var.mod+click-right" "resize-window""#,
     },
     BindingCandidate {
+        name: "grabbed-window Field pan",
+        line: r#""$var.mod+shift+click-left" "drag-pan""#,
+    },
+    BindingCandidate {
         name: "pointer Field pan",
         line: r#""click-left" "pan-field""#,
     },
@@ -893,6 +897,7 @@ mod tests {
         let updated = fs::read_to_string(&path).unwrap();
         assert!(!updated.contains(LEGACY_VERSION_PREFIX));
         assert!(updated.contains("\"$var.mod+comma\" \"trail-prev\""));
+        assert!(updated.contains("\"$var.mod+shift+click-left\" \"drag-pan\""));
         assert!(updated.contains("zoom-indicator:"));
         assert!(updated.contains("background true"));
         assert!(updated.contains("opacity 1.0"));
@@ -921,6 +926,29 @@ mod tests {
         );
         assert!(updated.contains("\"$var.mod+p\" \"notify-send custom\""));
         assert!(!updated.contains("\"$var.mod+p\" \"toggle-focused-pin\""));
+    }
+
+    #[test]
+    fn grabbed_window_pan_migration_preserves_an_occupied_chord() {
+        let scratch = ScratchDir::new("drag-pan-conflict");
+        let path = scratch.config();
+        fs::write(
+            &path,
+            minimal("  \"$var.mod+shift+click-left\" \"notify-send custom\"\n"),
+        )
+        .unwrap();
+
+        let report = migrate_config_at(&path, false).unwrap();
+        let updated = fs::read_to_string(&path).unwrap();
+
+        assert!(
+            report
+                .skipped
+                .iter()
+                .any(|item| item.contains("grabbed-window Field pan"))
+        );
+        assert!(updated.contains("\"$var.mod+shift+click-left\" \"notify-send custom\""));
+        assert!(!updated.contains("\"$var.mod+shift+click-left\" \"drag-pan\""));
     }
 
     #[test]

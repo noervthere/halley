@@ -74,8 +74,9 @@ maximize state, and focus-ring policy.
   forced through a global no-overlap solver.
 - **Decay and landmarks** — inactive windows can collapse into durable nodes;
   pinned nodes stay fixed until explicitly moved.
-- **Cross-output movement** — drag a window through monitor boundaries without
-  a separate Field Jump mode.
+- **Move or carry** — Mod+drag crosses monitor boundaries, while
+  Mod+Shift+drag dwells at an edge to carry the window through its current
+  output's Field.
 - **Trail navigation** — walk backward and forward through each monitor's
   recent Field focus history.
 - **Directional focus** — the same action vocabulary adapts to the Field,

@@ -125,9 +125,12 @@ keybinds:
   "Print" "screenshot"
 
   # Compositor pointer grabs are ordinary remappable actions. Starting the
-  # move action on empty Field pans it instead of moving a window.
+  # move action on empty Field pans it instead of moving a window. Drag-pan
+  # keeps a grabbed window on its output and carries it through that Field
+  # after dwelling against an edge.
   "$var.mod+click-left" "move-window"
   "$var.mod+click-right" "resize-window"
+  "$var.mod+shift+click-left" "drag-pan"
   "click-left" "pan-field"
 
   "alt+tab" "cycle-focus"

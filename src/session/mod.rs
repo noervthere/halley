@@ -127,7 +127,10 @@ fn dispatch_action(
         Action::FocusDirection(direction) => return SessionControl::FocusDirection(direction),
         Action::MoveNode(direction) => return SessionControl::MoveNode(direction),
         Action::ResizeWindow(direction) => return SessionControl::ResizeWindow(direction),
-        Action::PointerMoveWindow | Action::PointerResizeWindow | Action::PointerPanField => {
+        Action::PointerMoveWindow
+        | Action::PointerResizeWindow
+        | Action::PointerPanField
+        | Action::PointerDragPan => {
             eventline::warn!("keybinds: pointer grab action used outside a pointer-button binding")
         }
         Action::CenterLastFocused => return SessionControl::CenterLastFocused,
@@ -1900,7 +1903,16 @@ pub(crate) fn begin_pointer_move<D: SessionDriver>(
     serial: smithay::utils::Serial,
     button: u32,
 ) -> bool {
-    begin_pointer_move_active(session, window, serial, button, false, None)
+    begin_pointer_move_active(session, window, serial, button, false, None, false)
+}
+
+pub(crate) fn begin_pointer_edge_pan<D: SessionDriver>(
+    session: &mut Session<D>,
+    window: &smithay::desktop::Window,
+    serial: smithay::utils::Serial,
+    button: u32,
+) -> bool {
+    begin_pointer_move_active(session, window, serial, button, false, None, true)
 }
 
 pub(crate) fn activate_client_pointer_move<D: SessionDriver>(
@@ -1915,6 +1927,7 @@ pub(crate) fn activate_client_pointer_move<D: SessionDriver>(
         pending.button,
         pending.client_owned,
         Some(pending),
+        false,
     )
 }
 
@@ -1925,6 +1938,7 @@ fn begin_pointer_move_active<D: SessionDriver>(
     button: u32,
     client_owned: bool,
     pending: Option<crate::input::grab::PendingWindowMove>,
+    edge_pan_requested: bool,
 ) -> bool {
     if !crate::window::accepts_compositor_grab(window)
         || window
@@ -1991,6 +2005,9 @@ fn begin_pointer_move_active<D: SessionDriver>(
     let Some(camera) = session.cameras.get(&output_name) else {
         return false;
     };
+    if edge_pan_requested && was_maximized {
+        return false;
+    }
     let pointer_position = session.pointer.position();
     let pointer_world =
         crate::input::grab::screen_to_world_on_output(pointer_position, camera, output_geometry);
@@ -2046,6 +2063,23 @@ fn begin_pointer_move_active<D: SessionDriver>(
         ) && id != session.clusters.first_member(drag.cluster_id)
     }) {
         return false;
+    }
+    if edge_pan_requested {
+        let output_right = output_geometry.loc.x + output_geometry.size.w;
+        let output_bottom = output_geometry.loc.y + output_geometry.size.h;
+        let visual_right = visual_geometry.loc.x + visual_geometry.size.w;
+        let visual_bottom = visual_geometry.loc.y + visual_geometry.size.h;
+        let fully_visible = visual_geometry.loc.x >= output_geometry.loc.x
+            && visual_geometry.loc.y >= output_geometry.loc.y
+            && visual_right <= output_right
+            && visual_bottom <= output_bottom;
+        if id.is_none()
+            || cluster_drag.is_some()
+            || !fully_visible
+            || session.clusters.active_on(&output_name).is_some()
+        {
+            return false;
+        }
     }
     focus::focus_window_from_pointer(session, window, serial);
 
@@ -2167,6 +2201,12 @@ fn begin_pointer_move_active<D: SessionDriver>(
         button,
         client_owned,
         anchor,
+        edge_pan: edge_pan_requested.then(|| {
+            crate::input::grab::WindowEdgePan::new(
+                output_name.clone(),
+                crate::frame_clock::monotonic_now(),
+            )
+        }),
         last_world: center,
         last_update: crate::frame_clock::monotonic_now(),
         velocity: halley_core::field::Vec2 { x: 0.0, y: 0.0 },

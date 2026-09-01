@@ -1045,7 +1045,9 @@ fn apply_tty_output_config(app: &mut TtyApp, outputs_config: &[halley_config::Ou
 }
 
 fn redraw_queued_outputs(app: &mut TtyApp, loop_handle: &LoopHandle<'_, TtyApp>) {
-    let _ = crate::nodes::tick_physics(app, crate::frame_clock::monotonic_now());
+    let now = crate::frame_clock::monotonic_now();
+    let _ = super::input::tick_grabbed_window_edge_pan(app, now);
+    let _ = crate::nodes::tick_physics(app, now);
     // Match startup's connector/CRTC activation order. Iterating the
     // `HashMap` made a multi-output DPMS wake nondeterministic, so the
     // primary could intermittently queue its modeset before the secondary
@@ -1103,6 +1105,7 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
         (animating, (before != after).then_some((before, after)))
     });
     let camera_animating = zoom_tick.is_some_and(|(animating, _)| animating);
+    let edge_pan_animating = super::input::grabbed_window_edge_pan_active_on(app, &output.name());
     if let Some((before, after)) = zoom_tick.and_then(|(_, scales)| scales) {
         if after < before && app.clusters.active_on(&output.name()).is_none() {
             crate::nodes::reconcile_landmarks_for_zoom(app, &output.name(), after);
@@ -1196,6 +1199,7 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
             .schedule_animation(output, next_cursor_frame);
     }
     let mut animating = camera_animating
+        || edge_pan_animating
         || fullscreen_camera_changed
         || window_animating
         || closing_animating

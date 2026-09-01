@@ -195,12 +195,22 @@ continuous camera panning.
 
 Window movement, window resizing, and Field panning are remappable compositor
 actions. The defaults are `"$var.mod+click-left" "move-window"`,
-`"$var.mod+click-right" "resize-window"`, and
+`"$var.mod+click-right" "resize-window"`,
+`"$var.mod+shift+click-left" "drag-pan"`, and
 `"click-left" "pan-field"`. Remove a binding to disable that grab or assign
 the action to another pointer chord. `move-window` is contextual: the same
 grab pans when it starts on empty Field, so both bare left-drag and Mod+left-drag
-pan the desktop. An unbound click keeps its ordinary client, focus, decoration,
-and collapsed-node behavior. In an active tiling cluster,
+pan the desktop.
+
+`drag-pan` begins only on a fully visible Field window. It keeps the grabbed
+window assigned to its current output, clamps it at that output's edge, and
+after a short dwell pans that output's camera while carrying the window. Pulling
+the pointer back from the edge stops the pan. Fullscreen, maximized, oversized,
+and active-cluster windows do not enter this mode. The legacy action names
+`field-jump` and `field_jump` are accepted as aliases for `drag-pan`.
+
+An unbound click keeps its ordinary client, focus, decoration, and
+collapsed-node behavior. In an active tiling cluster,
 dragging a tile temporarily lifts it, reorders it live as the pointer crosses
 another tile, and smoothly returns it to the selected slot on release.
 

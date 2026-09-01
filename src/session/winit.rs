@@ -364,6 +364,8 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
             WinitEvent::Redraw => {
                 let now = Instant::now();
                 let target_presentation_time = crate::frame_clock::monotonic_now();
+                let edge_pan_output =
+                    super::input::tick_grabbed_window_edge_pan(app, target_presentation_time);
                 let physics_animating = crate::nodes::tick_physics(app, target_presentation_time);
                 let dt = now
                     .duration_since(app.driver.last_camera_tick)
@@ -371,6 +373,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                 app.driver.last_camera_tick = now;
                 let output = app.driver.backend.output().clone();
                 let output_name = output.name();
+                let edge_pan_animating = edge_pan_output.as_deref() == Some(output_name.as_str());
                 super::reconcile_cluster_surfaces(app, &output_name);
                 let view_before = app.cameras.view(&output_name);
                 let cluster_camera_changed =
@@ -708,6 +711,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
 
                 let overlay_animating = app.shell.overlays.animating(target_presentation_time);
                 if camera_animating
+                    || edge_pan_animating
                     || fullscreen_camera_changed
                     || window_animating
                     || closing_animating

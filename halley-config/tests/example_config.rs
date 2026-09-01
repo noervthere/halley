@@ -18,7 +18,16 @@ fn example_config_parses_end_to_end() {
     let keybinds = parse_keybinds(&config).expect("example keybinds section parses");
 
     assert_eq!(keybinds.modifier, ModifierKey::Super);
-    assert_eq!(keybinds.binds.len(), 60);
+    assert_eq!(keybinds.binds.len(), 61);
+
+    let drag_pan = keybinds
+        .binds
+        .iter()
+        .find(|bind| bind.action == Action::PointerDragPan)
+        .expect("grabbed-window Field pan bind present");
+    assert_eq!(drag_pan.key, "click-left");
+    assert!(drag_pan.modifiers.super_key);
+    assert!(drag_pan.modifiers.shift);
 
     let launcher = keybinds
         .binds
@@ -221,6 +230,14 @@ fn split_example_config_parses_end_to_end() {
         .expect("split example and its gathered files parse");
 
     assert_eq!(runtime.keybinds.modifier, ModifierKey::Super);
+    assert!(
+        runtime
+            .keybinds
+            .binds
+            .iter()
+            .any(|bind| bind.action == Action::PointerDragPan),
+        "split example includes grabbed-window Field panning"
+    );
     assert_default_startup_workspaces(&runtime.autostart);
     assert_eq!(
         runtime.decorations.titlebars.button_position,

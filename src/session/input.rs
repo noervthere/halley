@@ -314,6 +314,27 @@ fn dispatch_pointer_grab_action<D: SessionDriver>(
             };
             begin_field_pan(session, route, serial)
         }
+        halley_config::Action::PointerDragPan => {
+            let Some(route) = route else {
+                return false;
+            };
+            let window = match &route.target {
+                crate::input::pointer::PointerTarget::Window(window)
+                | crate::input::pointer::PointerTarget::Decoration { window, .. } => window,
+                _ => return false,
+            };
+            if !crate::window::accepts_compositor_grab(window)
+                || window.wl_surface().is_some_and(|surface| {
+                    session
+                        .fullscreen
+                        .is_fullscreen_or_pending(surface.as_ref())
+                })
+            {
+                return false;
+            }
+            wayland::focus::select_output(&mut session.wayland, &route.output);
+            super::begin_pointer_edge_pan(session, window, serial, button)
+        }
         _ => false,
     }
 }
@@ -344,6 +365,113 @@ fn begin_field_pan<D: SessionDriver>(
         Some(smithay::input::pointer::CursorIcon::Grabbing),
     );
     true
+}
+
+pub(crate) fn tick_grabbed_window_edge_pan<D: SessionDriver>(
+    session: &mut Session<D>,
+    now: std::time::Duration,
+) -> Option<String> {
+    let (id, window, drag_size, anchor, edge_pan) = match &session.interactions.grab {
+        crate::input::grab::Grab::MoveWindow {
+            id: Some(id),
+            window,
+            cluster_drag: None,
+            drag_size,
+            anchor,
+            edge_pan: Some(edge_pan),
+            ..
+        } => (*id, window.clone(), *drag_size, *anchor, edge_pan.clone()),
+        _ => return None,
+    };
+    let output = session
+        .wayland
+        .space
+        .outputs()
+        .find(|output| output.name() == edge_pan.output)?
+        .clone();
+    let output_geometry = session.wayland.space.output_geometry(&output)?;
+    let camera = *session.cameras.get(&edge_pan.output)?;
+    let size = drag_size.unwrap_or_else(|| {
+        session
+            .wayland
+            .space
+            .element_geometry(&window)
+            .map(|geometry| geometry.size)
+            .unwrap_or((1, 1).into())
+    });
+    let placement = crate::input::grab::window_edge_pan_placement(
+        session.pointer.position(),
+        anchor,
+        size,
+        &camera,
+        output_geometry,
+    );
+    let Some(placement) = placement else {
+        if let crate::input::grab::Grab::MoveWindow {
+            edge_pan: Some(live),
+            ..
+        } = &mut session.interactions.grab
+        {
+            live.update_contact(halley_core::field::Vec2 { x: 0.0, y: 0.0 }, now);
+            live.last_tick = now;
+        }
+        return None;
+    };
+
+    let (ready, dt, contact) = match &mut session.interactions.grab {
+        crate::input::grab::Grab::MoveWindow {
+            edge_pan: Some(live),
+            last_world,
+            last_update,
+            velocity,
+            ..
+        } => {
+            live.update_contact(placement.contact, now);
+            let ready = live.ready(now);
+            let dt = now
+                .saturating_sub(live.last_tick)
+                .as_secs_f32()
+                .min(1.0 / 20.0);
+            live.last_tick = now;
+            *last_world = placement.center;
+            *last_update = now;
+            *velocity = halley_core::field::Vec2 { x: 0.0, y: 0.0 };
+            (ready, dt, live.contact)
+        }
+        _ => return None,
+    };
+    if contact.x == 0.0 && contact.y == 0.0 {
+        return None;
+    }
+
+    if !session.nodes.physics.enabled {
+        let _ = crate::nodes::move_grabbed_body_rigid(session, id, placement.center);
+    }
+    if ready && dt > 0.0 {
+        let speed = crate::input::grab::WINDOW_EDGE_PAN_SPEED_PXPS
+            / crate::presentation::camera::scale(&camera).max(0.05);
+        if let Some(camera) = session.cameras.get_mut(&edge_pan.output) {
+            camera.pan_target(halley_core::field::Vec2 {
+                x: contact.x * speed * dt,
+                y: contact.y * speed * dt,
+            });
+        }
+    }
+    Some(edge_pan.output)
+}
+
+pub(crate) fn grabbed_window_edge_pan_active_on<D: SessionDriver>(
+    session: &Session<D>,
+    output_name: &str,
+) -> bool {
+    matches!(
+        &session.interactions.grab,
+        crate::input::grab::Grab::MoveWindow {
+            edge_pan: Some(edge_pan),
+            ..
+        } if edge_pan.output == output_name
+            && (edge_pan.contact.x != 0.0 || edge_pan.contact.y != 0.0)
+    )
 }
 
 fn output_at_pointer(
@@ -1023,6 +1151,7 @@ pub(crate) fn wakeup_cluster_interactions<D: SessionDriver>(
             button: BTN_LEFT,
             client_owned: false,
             anchor: crate::input::grab::WindowGrabAnchor::Source(source_offset),
+            edge_pan: None,
             last_world: center,
             last_update: now,
             velocity: halley_core::field::Vec2 { x: 0.0, y: 0.0 },
@@ -1682,6 +1811,25 @@ where
     if let super::pointer::ConstrainedMotion::Clamp(position) = constrained_motion {
         session.pointer.set_position((position.x, position.y));
     }
+    if let crate::input::grab::Grab::MoveWindow {
+        edge_pan: Some(edge_pan),
+        ..
+    } = &session.interactions.grab
+        && let Some(output) = session
+            .wayland
+            .space
+            .outputs()
+            .find(|output| output.name() == edge_pan.output)
+        && let Some(geometry) = session.wayland.space.output_geometry(output)
+    {
+        let position = session.pointer.position();
+        let right = f64::from(geometry.loc.x + geometry.size.w) - 0.001;
+        let bottom = f64::from(geometry.loc.y + geometry.size.h) - 0.001;
+        session.pointer.set_position((
+            position.0.clamp(f64::from(geometry.loc.x), right),
+            position.1.clamp(f64::from(geometry.loc.y), bottom),
+        ));
+    }
     let position_after = session.pointer.position();
     session.request_redraw();
 
@@ -1893,6 +2041,7 @@ where
             cluster_drag,
             drag_size,
             anchor,
+            edge_pan,
             last_world,
             last_update,
             velocity,
@@ -1903,20 +2052,31 @@ where
             let mut cluster_drag = cluster_drag.clone();
             let drag_size = *drag_size;
             let anchor = *anchor;
+            let edge_pan = edge_pan.clone();
             let previous = *last_world;
             let last_update = *last_update;
             let previous_velocity = *velocity;
-            if let Some((output, output_geometry)) =
-                output_at_pointer(&session.wayland.space, position_after)
-            {
+            let drag_output = edge_pan
+                .as_ref()
+                .and_then(|edge_pan| {
+                    let output = session
+                        .wayland
+                        .space
+                        .outputs()
+                        .find(|output| output.name() == edge_pan.output)?
+                        .clone();
+                    let geometry = session.wayland.space.output_geometry(&output)?;
+                    Some((output, geometry))
+                })
+                .or_else(|| output_at_pointer(&session.wayland.space, position_after));
+            if let Some((output, output_geometry)) = drag_output {
                 let output_name = output.name();
                 let Some(camera) = session.cameras.get(&output_name) else {
                     return;
                 };
-                let desired_location =
-                    anchor.world_location(position_after, camera, output_geometry);
-                let output_changed =
-                    wayland::window_output_name(&window).as_deref() != Some(output_name.as_str());
+                let output_changed = edge_pan.is_none()
+                    && wayland::window_output_name(&window).as_deref()
+                        != Some(output_name.as_str());
                 let size = drag_size.unwrap_or_else(|| {
                     session
                         .wayland
@@ -1925,19 +2085,47 @@ where
                         .map(|geometry| geometry.size)
                         .unwrap_or((1, 1).into())
                 });
-                let desired_center = halley_core::field::Vec2 {
-                    x: desired_location.x as f32 + size.w as f32 * 0.5,
-                    y: desired_location.y as f32 + size.h as f32 * 0.5,
-                };
+                let edge_placement = edge_pan.as_ref().and_then(|_| {
+                    crate::input::grab::window_edge_pan_placement(
+                        position_after,
+                        anchor,
+                        size,
+                        camera,
+                        output_geometry,
+                    )
+                });
+                let desired_location = edge_placement
+                    .map(|placement| placement.location)
+                    .unwrap_or_else(|| {
+                        anchor.world_location(position_after, camera, output_geometry)
+                    });
+                let desired_center = edge_placement.map(|placement| placement.center).unwrap_or(
+                    halley_core::field::Vec2 {
+                        x: desired_location.x as f32 + size.w as f32 * 0.5,
+                        y: desired_location.y as f32 + size.h as f32 * 0.5,
+                    },
+                );
                 let camera_scale = crate::presentation::camera::scale(camera).max(0.05);
                 let now = crate::frame_clock::monotonic_now();
-                let sampled = sampled_drag_velocity(
-                    previous,
-                    desired_center,
-                    previous_velocity,
-                    last_update,
-                    now,
-                );
+                if let Some(placement) = edge_placement
+                    && let crate::input::grab::Grab::MoveWindow {
+                        edge_pan: Some(live),
+                        ..
+                    } = &mut session.interactions.grab
+                {
+                    live.update_contact(placement.contact, now);
+                }
+                let sampled = if edge_pan.is_some() {
+                    halley_core::field::Vec2 { x: 0.0, y: 0.0 }
+                } else {
+                    sampled_drag_velocity(
+                        previous,
+                        desired_center,
+                        previous_velocity,
+                        last_update,
+                        now,
+                    )
+                };
                 if let Some(drag) = cluster_drag.as_mut() {
                     drag.on_origin_output = drag.output == output_name;
                     if let Some(id) = id {
@@ -2012,6 +2200,7 @@ where
                         &session.settings.font,
                     );
                     let join_candidate_changed = cluster_drag.is_none()
+                        && edge_pan.is_none()
                         && session.clusters.update_join_candidate(
                             &session.nodes.field,
                             &output_name,
@@ -2997,6 +3186,7 @@ where
                         halley_config::Action::PointerMoveWindow
                             | halley_config::Action::PointerResizeWindow
                             | halley_config::Action::PointerPanField
+                            | halley_config::Action::PointerDragPan
                     );
                     let handled = if pointer_grab {
                         dispatch_pointer_grab_action(

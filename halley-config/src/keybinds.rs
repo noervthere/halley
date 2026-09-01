@@ -110,6 +110,9 @@ pub enum Action {
     PointerResizeWindow,
     /// Pan the Field from an empty-background pointer drag.
     PointerPanField,
+    /// Keep a grabbed window on its output and pan that Field after dwelling
+    /// against an edge.
+    PointerDragPan,
     CenterLastFocused,
     ClusterMode,
     ClusterLayoutCycle,
@@ -154,7 +157,7 @@ impl Action {
             Self::MoveNode(_) | Self::ResizeWindow(_) | Self::ToggleFocusedPin => {
                 BindingScope::Field
             }
-            Self::PointerPanField => BindingScope::Field,
+            Self::PointerPanField | Self::PointerDragPan => BindingScope::Field,
             Self::ClusterLayoutCycle | Self::ClusterToggleFloat => BindingScope::Cluster,
             Self::ClusterTileFocus(_) | Self::ClusterTileSwap(_) => BindingScope::Tile,
             _ => BindingScope::Global,
@@ -200,7 +203,7 @@ mod tests {
     fn default_matches_the_shipped_keybinds() {
         let kb = Keybinds::default();
         assert_eq!(kb.modifier, ModifierKey::Super);
-        assert_eq!(kb.binds.len(), 60);
+        assert_eq!(kb.binds.len(), 61);
 
         let previous = kb
             .binds
@@ -256,6 +259,15 @@ mod tests {
             .expect("contextual pointer move bind present");
         assert!(move_or_pan.modifiers.super_key);
         assert_eq!(move_or_pan.key, "click-left");
+
+        let drag_pan = kb
+            .binds
+            .iter()
+            .find(|bind| bind.action == Action::PointerDragPan)
+            .expect("grabbed-window Field pan bind present");
+        assert!(drag_pan.modifiers.super_key);
+        assert!(drag_pan.modifiers.shift);
+        assert_eq!(drag_pan.key, "click-left");
 
         let bare_pan = kb
             .binds
