@@ -53,8 +53,12 @@ pub(crate) fn arrange_visible<D: SessionDriver>(
         return false;
     };
     let work_area = smithay::desktop::layer_map_for_output(&output).non_exclusive_zone();
+    let Some((visible_area, _)) = visible_work_area_outer(camera, output_geometry, work_area, 0)
+    else {
+        return false;
+    };
     let configured_gap = session.settings.field.gap.ceil() as i32;
-    let Some((visible_outer, gap)) =
+    let Some((layout_outer, gap)) =
         visible_work_area_outer(camera, output_geometry, work_area, configured_gap)
     else {
         return false;
@@ -87,7 +91,7 @@ pub(crate) fn arrange_visible<D: SessionDriver>(
                 &session.settings.font,
             );
             let center = rect_center(outer);
-            visible_outer.contains(center).then(|| Candidate {
+            visible_area.contains(center).then(|| Candidate {
                 window: record.window.clone(),
                 surface: record.surface.clone(),
                 current,
@@ -100,7 +104,7 @@ pub(crate) fn arrange_visible<D: SessionDriver>(
         if candidates.len() < 2 {
             return false;
         }
-        let Some(regions) = mosaic_regions(visible_outer, candidates.len(), gap) else {
+        let Some(regions) = mosaic_regions(layout_outer, candidates.len(), gap) else {
             return false;
         };
         let target_clients = candidates
@@ -442,8 +446,32 @@ fn minimum_cost_assignment(costs: &[Vec<i64>]) -> Vec<usize> {
 
 #[cfg(test)]
 mod tests {
-    use super::{minimum_cost_assignment, mosaic_regions};
+    use super::{minimum_cost_assignment, mosaic_regions, visible_work_area_outer};
+    use halley_core::camera::Camera;
+    use halley_core::field::Vec2;
     use smithay::utils::{Logical, Rectangle};
+
+    #[test]
+    fn eligibility_uses_full_work_area_while_layout_keeps_outer_gap() {
+        let camera = Camera::new(
+            Vec2 { x: 960.0, y: 540.0 },
+            Vec2 {
+                x: 1920.0,
+                y: 1080.0,
+            },
+        );
+        let output = Rectangle::<i32, Logical>::new((0, 0).into(), (1920, 1080).into());
+        let work_area = Rectangle::<i32, Logical>::new((0, 30).into(), (1920, 1050).into());
+
+        let (visible, _) = visible_work_area_outer(&camera, output, work_area, 0).unwrap();
+        let (layout, gap) = visible_work_area_outer(&camera, output, work_area, 20).unwrap();
+
+        assert_eq!(visible, Rectangle::new((0, 30).into(), (1920, 1050).into()));
+        assert_eq!(layout, Rectangle::new((20, 50).into(), (1880, 1010).into()));
+        assert_eq!(gap, 20);
+        assert!(visible.contains((10, 40)));
+        assert!(!layout.contains((10, 40)));
+    }
 
     #[test]
     fn two_windows_fill_halves_with_gap() {
