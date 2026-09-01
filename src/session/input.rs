@@ -70,201 +70,6 @@ fn drag_threshold_reached(press: Point<f64, Logical>, current: (f64, f64)) -> bo
     dx.hypot(dy) >= NODE_DRAG_THRESHOLD_PX
 }
 
-fn field_split_size_is_accepted(window: &Window, requested: Size<i32, Logical>) -> bool {
-    if requested.w < 1 || requested.h < 1 {
-        return false;
-    }
-    if crate::xwayland::is_x11(window) {
-        return crate::xwayland::constrain_window_size(window, requested) == requested;
-    }
-    let Some(toplevel) = window.toplevel() else {
-        return false;
-    };
-    smithay::wayland::compositor::with_states(toplevel.wl_surface(), |states| {
-        let mut cached = states
-            .cached_state
-            .get::<smithay::wayland::shell::xdg::SurfaceCachedState>();
-        let state = cached.current();
-        let minimum_ok = (state.min_size.w <= 0 || requested.w >= state.min_size.w)
-            && (state.min_size.h <= 0 || requested.h >= state.min_size.h);
-        let maximum_ok = (state.max_size.w <= 0 || requested.w <= state.max_size.w)
-            && (state.max_size.h <= 0 || requested.h <= state.max_size.h);
-        minimum_ok && maximum_ok
-    })
-}
-
-struct FieldSplitContact {
-    target: halley_core::field::NodeId,
-    side: crate::input::grab::FieldSplitSide,
-    target_outer: Rectangle<i32, Logical>,
-    split_outer: Rectangle<i32, Logical>,
-    gap: i32,
-}
-
-fn field_split_contact<D: SessionDriver>(
-    session: &Session<D>,
-    dragged_id: halley_core::field::NodeId,
-    dragged_window: &Window,
-    output: &Output,
-    output_geometry: Rectangle<i32, Logical>,
-    pointer: (f64, f64),
-) -> Option<FieldSplitContact> {
-    let output_name = output.name();
-    if session.clusters.active_on(&output_name).is_some() || session.clusters.is_member(dragged_id)
-    {
-        return None;
-    }
-    let camera = session.cameras.get(&output_name)?;
-    let world = crate::input::grab::screen_to_world_on_output(pointer, camera, output_geometry);
-    let point = Point::<f64, Logical>::from((f64::from(world.x), f64::from(world.y)));
-    let configured_gap = session.settings.field.gap.ceil() as i32;
-    let work_area = smithay::desktop::layer_map_for_output(output).non_exclusive_zone();
-    let (work_area_outer, gap) = crate::input::grab::field_split_work_area_outer(
-        camera,
-        output_geometry,
-        work_area,
-        configured_gap,
-    )?;
-    let mut windows = session
-        .wayland
-        .space
-        .elements()
-        .cloned()
-        .collect::<Vec<_>>();
-
-    while let Some(target_window) = windows.pop() {
-        if target_window == *dragged_window {
-            continue;
-        }
-        let Some(target_id) = target_window
-            .wl_surface()
-            .and_then(|surface| session.nodes.id_for_surface(surface.as_ref()))
-        else {
-            continue;
-        };
-        let Some(record) = session.nodes.record(target_id) else {
-            continue;
-        };
-        if record.collapsed
-            || !record.attached
-            || record.output != output_name
-            || session.clusters.is_member(target_id)
-            || super::node_user_pinned(session, target_id)
-            || session.fullscreen.is_fullscreen_or_pending(&record.surface)
-            || session.maximize.contains(&record.surface)
-            || !session.nodes.field.is_visible(target_id)
-        {
-            continue;
-        }
-        let client = session.wayland.space.element_geometry(&target_window)?;
-        let outer = crate::titlebar::outer_rect_for_client(
-            &target_window,
-            client,
-            &session.settings.decorations,
-            &session.settings.font,
-        );
-        let Some(side) = crate::input::grab::field_split_side_at(outer, point) else {
-            continue;
-        };
-        let split_outer =
-            crate::input::grab::field_split_recognized_outer(outer, work_area_outer, gap);
-        let layout = crate::input::grab::field_split_layout(split_outer, side, gap)?;
-        let dragged_client = crate::titlebar::client_rect_for_outer(
-            dragged_window,
-            layout.dragged_outer,
-            &session.settings.decorations,
-            &session.settings.font,
-        );
-        let target_client = crate::titlebar::client_rect_for_outer(
-            &target_window,
-            layout.target_outer,
-            &session.settings.decorations,
-            &session.settings.font,
-        );
-        if field_split_size_is_accepted(dragged_window, dragged_client.size)
-            && field_split_size_is_accepted(&target_window, target_client.size)
-        {
-            return Some(FieldSplitContact {
-                target: target_id,
-                side,
-                target_outer: outer,
-                split_outer,
-                gap,
-            });
-        }
-    }
-    None
-}
-
-fn commit_field_split<D: SessionDriver>(
-    session: &mut Session<D>,
-    dragged_id: halley_core::field::NodeId,
-    dragged_window: &Window,
-    candidate: &crate::input::grab::FieldSplitCandidate,
-) -> bool {
-    let Some(layout) = candidate.layout() else {
-        return false;
-    };
-    let Some(target) = session.nodes.record(candidate.target).cloned() else {
-        return false;
-    };
-    if target.collapsed
-        || !target.attached
-        || target.output != candidate.output
-        || session.clusters.is_member(dragged_id)
-        || session.clusters.is_member(candidate.target)
-        || super::node_user_pinned(session, candidate.target)
-        || session.fullscreen.is_fullscreen_or_pending(&target.surface)
-        || session.maximize.contains(&target.surface)
-    {
-        return false;
-    }
-    let dragged_client = crate::titlebar::client_rect_for_outer(
-        dragged_window,
-        layout.dragged_outer,
-        &session.settings.decorations,
-        &session.settings.font,
-    );
-    let target_client = crate::titlebar::client_rect_for_outer(
-        &target.window,
-        layout.target_outer,
-        &session.settings.decorations,
-        &session.settings.font,
-    );
-    if !field_split_size_is_accepted(dragged_window, dragged_client.size)
-        || !field_split_size_is_accepted(&target.window, target_client.size)
-    {
-        return false;
-    }
-    let Some(dragged_surface) = dragged_window
-        .wl_surface()
-        .map(|surface| surface.into_owned())
-    else {
-        return false;
-    };
-    super::configure_field_geometry(
-        session,
-        &crate::presentation::maximize::FieldRestore {
-            surface: target.surface.clone(),
-            geometry: target_client,
-            output: candidate.output.clone(),
-        },
-    );
-    super::configure_field_geometry(
-        session,
-        &crate::presentation::maximize::FieldRestore {
-            surface: dragged_surface,
-            geometry: dragged_client,
-            output: candidate.output.clone(),
-        },
-    );
-    session.nodes.clear_direct_motion(dragged_id);
-    session.nodes.clear_direct_motion(candidate.target);
-    session.nodes.sync_from_space(&session.wayland.space);
-    session.request_redraw();
-    true
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PendingWindowMoveMotion {
     Wait,
@@ -459,27 +264,6 @@ fn dispatch_pointer_grab_action<D: SessionDriver>(
             }
             wayland::focus::select_output(&mut session.wayland, &route.output);
             super::begin_pointer_move(session, window, serial, button)
-        }
-        halley_config::Action::PointerSplitWindow => {
-            let Some(route) = route else {
-                return false;
-            };
-            let window = match &route.target {
-                crate::input::pointer::PointerTarget::Window(window)
-                | crate::input::pointer::PointerTarget::Decoration { window, .. } => window,
-                _ => return false,
-            };
-            if !crate::window::accepts_compositor_grab(window)
-                || window.wl_surface().is_some_and(|surface| {
-                    session
-                        .fullscreen
-                        .is_fullscreen_or_pending(surface.as_ref())
-                })
-            {
-                return false;
-            }
-            wayland::focus::select_output(&mut session.wayland, &route.output);
-            super::begin_pointer_split(session, window, serial, button)
         }
         halley_config::Action::PointerResizeWindow => {
             let Some(route) = route else {
@@ -1307,7 +1091,6 @@ pub(crate) fn wakeup_cluster_interactions<D: SessionDriver>(
     changed |= super::expire_cluster_draft(session, now);
     changed |= session.clusters.overflow_wakeup(now);
     changed |= session.clusters.tick_join_candidate_ready(now);
-    changed |= session.interactions.grab.tick_field_split(now);
 
     let Some((cluster_id, member_id, output_name, tether_started)) = session.clusters.bloom_pull()
     else {
@@ -1375,8 +1158,6 @@ pub(crate) fn wakeup_cluster_interactions<D: SessionDriver>(
             client_owned: false,
             anchor: crate::input::grab::WindowGrabAnchor::Source(source_offset),
             edge_pan: None,
-            field_split_enabled: false,
-            field_split: None,
             last_world: center,
             last_update: now,
             velocity: halley_core::field::Vec2 { x: 0.0, y: 0.0 },
@@ -2267,7 +2048,6 @@ where
             drag_size,
             anchor,
             edge_pan,
-            field_split_enabled,
             last_world,
             last_update,
             velocity,
@@ -2279,7 +2059,6 @@ where
             let drag_size = *drag_size;
             let anchor = *anchor;
             let edge_pan = edge_pan.clone();
-            let field_split_enabled = *field_split_enabled;
             let previous = *last_world;
             let last_update = *last_update;
             let previous_velocity = *velocity;
@@ -2347,60 +2126,6 @@ where
                     } = &mut session.interactions.grab
                 {
                     live.update_contact(placement.contact, now);
-                }
-                let split_contact =
-                    if field_split_enabled && cluster_drag.is_none() && edge_pan.is_none() {
-                        id.and_then(|id| {
-                            field_split_contact(
-                                session,
-                                id,
-                                &window,
-                                &output,
-                                output_geometry,
-                                position_after,
-                            )
-                        })
-                    } else {
-                        None
-                    };
-                let mut split_changed = false;
-                if let crate::input::grab::Grab::MoveWindow { field_split, .. } =
-                    &mut session.interactions.grab
-                {
-                    match split_contact {
-                        Some(ref contact) => {
-                            if let Some(candidate) = field_split.as_mut()
-                                && candidate.matches(contact.target, &output_name, contact.side)
-                            {
-                                if candidate.target_outer != contact.target_outer
-                                    || candidate.split_outer != contact.split_outer
-                                    || candidate.gap != contact.gap
-                                {
-                                    candidate.target_outer = contact.target_outer;
-                                    candidate.split_outer = contact.split_outer;
-                                    candidate.gap = contact.gap;
-                                    split_changed = true;
-                                }
-                            } else {
-                                *field_split = Some(crate::input::grab::FieldSplitCandidate {
-                                    target: contact.target,
-                                    output: output_name.clone(),
-                                    side: contact.side,
-                                    target_outer: contact.target_outer,
-                                    split_outer: contact.split_outer,
-                                    gap: contact.gap,
-                                    started_at: now,
-                                    ready: false,
-                                });
-                                split_changed = true;
-                            }
-                        }
-                        None => split_changed = field_split.take().is_some(),
-                    }
-                }
-                let split_active = split_contact.is_some();
-                if split_active {
-                    split_changed |= session.clusters.cancel_join_candidate();
                 }
                 let sampled = if edge_pan.is_some() {
                     halley_core::field::Vec2 { x: 0.0, y: 0.0 }
@@ -2488,7 +2213,6 @@ where
                     );
                     let join_candidate_changed = cluster_drag.is_none()
                         && edge_pan.is_none()
-                        && !split_active
                         && session.clusters.update_join_candidate(
                             &session.nodes.field,
                             &output_name,
@@ -2508,7 +2232,7 @@ where
                             },
                             now,
                         );
-                    if cluster_reordered || join_candidate_changed || split_changed {
+                    if cluster_reordered || join_candidate_changed {
                         session.request_redraw();
                     }
                 } else {
@@ -3117,7 +2841,6 @@ where
                     action,
                     halley_config::Action::PointerMoveWindow
                         | halley_config::Action::PointerResizeWindow
-                        | halley_config::Action::PointerSplitWindow
                 )
             }) && dispatch_pointer_grab_action(
                 session,
@@ -3474,7 +3197,6 @@ where
                         action,
                         halley_config::Action::PointerMoveWindow
                             | halley_config::Action::PointerResizeWindow
-                            | halley_config::Action::PointerSplitWindow
                             | halley_config::Action::PointerPanField
                             | halley_config::Action::PointerDragPan
                     );
@@ -3605,20 +3327,18 @@ where
                             cluster_drag,
                             button: move_button,
                             client_owned,
-                            field_split,
                             last_world,
                             ..
                         } if *move_button == button => Some((
                             *id,
                             window.clone(),
                             cluster_drag.clone(),
-                            field_split.clone(),
                             *last_world,
                             *client_owned,
                         )),
                         _ => None,
                     };
-                    if let Some((id, window, cluster_drag, field_split, last_world, client_owned)) =
+                    if let Some((id, window, cluster_drag, last_world, client_owned)) =
                         released_window
                     {
                         finishing_client_move = client_owned;
@@ -3711,10 +3431,6 @@ where
                         session
                             .cursor
                             .set_override(crate::cursor::OverrideSource::Grab, None);
-                        let split_committed =
-                            id.zip(field_split.as_ref()).is_some_and(|(id, candidate)| {
-                                commit_field_split(session, id, &window, candidate)
-                            });
                         let mut cluster_drop_handled = false;
                         if let (
                             Some(id),
@@ -3807,7 +3523,6 @@ where
                             }
                             session.request_redraw();
                         } else if !cluster_drop_handled
-                            && !split_committed
                             && session.nodes.physics.enabled
                             && let Some(id) = id
                         {

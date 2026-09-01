@@ -150,7 +150,6 @@ fn save_region_inner<D: SessionDriver>(
                             cluster_composer: &session.shell.cluster_composer,
                             apogee_config: session.settings.apogee,
                             overlays,
-                            field_split: session.interactions.grab.field_split_candidate(),
                             overlay_config,
                         },
                         visuals: VisualContext {
@@ -401,7 +400,6 @@ where
                     cluster_composer: &session.shell.cluster_composer,
                     apogee_config: session.settings.apogee,
                     overlays,
-                    field_split: session.interactions.grab.field_split_candidate(),
                     overlay_config,
                 },
                 visuals: VisualContext {

@@ -108,9 +108,6 @@ pub enum Action {
     PointerMoveWindow,
     /// Begin an interactive compositor resize for the window under the pointer.
     PointerResizeWindow,
-    /// Move the window under the pointer while enabling explicit Field split
-    /// targeting for the duration of the grab.
-    PointerSplitWindow,
     /// Pan the Field from an empty-background pointer drag.
     PointerPanField,
     /// Keep a grabbed window on its output and pan that Field after dwelling
@@ -160,9 +157,7 @@ impl Action {
             Self::MoveNode(_) | Self::ResizeWindow(_) | Self::ToggleFocusedPin => {
                 BindingScope::Field
             }
-            Self::PointerPanField | Self::PointerDragPan | Self::PointerSplitWindow => {
-                BindingScope::Field
-            }
+            Self::PointerPanField | Self::PointerDragPan => BindingScope::Field,
             Self::ClusterLayoutCycle | Self::ClusterToggleFloat => BindingScope::Cluster,
             Self::ClusterTileFocus(_) | Self::ClusterTileSwap(_) => BindingScope::Tile,
             _ => BindingScope::Global,
@@ -208,7 +203,7 @@ mod tests {
     fn default_matches_the_shipped_keybinds() {
         let kb = Keybinds::default();
         assert_eq!(kb.modifier, ModifierKey::Super);
-        assert_eq!(kb.binds.len(), 62);
+        assert_eq!(kb.binds.len(), 61);
 
         let previous = kb
             .binds
@@ -264,16 +259,6 @@ mod tests {
             .expect("contextual pointer move bind present");
         assert!(move_or_pan.modifiers.super_key);
         assert_eq!(move_or_pan.key, "click-left");
-
-        let split = kb
-            .binds
-            .iter()
-            .find(|bind| bind.action == Action::PointerSplitWindow)
-            .expect("explicit Field split bind present");
-        assert!(split.modifiers.super_key);
-        assert!(split.modifiers.ctrl);
-        assert_eq!(split.scope, BindingScope::Field);
-        assert_eq!(split.key, "click-left");
 
         let drag_pan = kb
             .binds

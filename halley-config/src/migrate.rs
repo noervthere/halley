@@ -206,10 +206,6 @@ const VERSION_1_BINDINGS: &[BindingCandidate] = &[
         line: r#""$var.mod+click-right" "resize-window""#,
     },
     BindingCandidate {
-        name: "pointer Field split",
-        line: r#""$var.mod+ctrl+click-left" "split-window""#,
-    },
-    BindingCandidate {
         name: "grabbed-window Field pan",
         line: r#""$var.mod+shift+click-left" "drag-pan""#,
     },

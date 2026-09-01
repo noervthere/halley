@@ -15,7 +15,6 @@ enum KeyboardOutcome {
     ApogeeIntercept,
     FocusCycleCancel,
     FocusCycleIntercept,
-    FieldSplitCancel,
     CaptureAccept,
     CaptureCancel,
     CapturePrevious,
@@ -307,11 +306,6 @@ pub(super) fn handle<D, B>(
                 return FilterResult::Forward;
             }
             let sym = handle.raw_latin_sym_or_raw_current_sym();
-            if data.interactions.grab.field_split_candidate().is_some()
-                && sym == Some(Keysym::Escape)
-            {
-                return FilterResult::Intercept(KeyboardOutcome::FieldSplitCancel);
-            }
             let non_modifier = sym.is_some_and(|sym| !is_modifier_keysym(sym));
             if !bindings_enabled {
                 forwarded_non_modifier_press = non_modifier;
@@ -579,12 +573,6 @@ pub(super) fn handle<D, B>(
         Some(KeyboardOutcome::FocusCycleIntercept) => {
             if state == KeyState::Pressed {
                 session.interactions.suppressed_keys.suppress(keycode);
-            }
-        }
-        Some(KeyboardOutcome::FieldSplitCancel) => {
-            session.interactions.suppressed_keys.suppress(keycode);
-            if session.interactions.grab.cancel_field_split() {
-                session.request_redraw();
             }
         }
         Some(KeyboardOutcome::CaptureAccept) => {

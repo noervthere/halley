@@ -239,7 +239,6 @@ pub struct OverlayContext<'a> {
     pub cluster_composer: &'a crate::shell::cluster_composer::ClusterComposerState,
     pub apogee_config: halley_config::Apogee,
     pub overlays: &'a crate::shell::overlay::OverlayManager,
-    pub field_split: Option<&'a crate::input::grab::FieldSplitCandidate>,
     pub overlay_config: &'a halley_config::Overlays,
 }
 
