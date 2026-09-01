@@ -18,7 +18,7 @@ fn example_config_parses_end_to_end() {
     let keybinds = parse_keybinds(&config).expect("example keybinds section parses");
 
     assert_eq!(keybinds.modifier, ModifierKey::Super);
-    assert_eq!(keybinds.binds.len(), 63);
+    assert_eq!(keybinds.binds.len(), 62);
 
     let arrange = keybinds
         .binds
@@ -28,15 +28,6 @@ fn example_config_parses_end_to_end() {
     assert_eq!(arrange.key, "a");
     assert!(arrange.modifiers.super_key);
     assert!(!arrange.modifiers.shift);
-
-    let undo = keybinds
-        .binds
-        .iter()
-        .find(|bind| bind.action == Action::UndoArrange)
-        .expect("undo-arrange bind present");
-    assert_eq!(undo.key, "a");
-    assert!(undo.modifiers.super_key);
-    assert!(undo.modifiers.shift);
 
     let drag_pan = keybinds
         .binds
@@ -563,6 +554,21 @@ fn example_config_maximize_animation_parses() {
         maximize.motion,
         halley_config::AnimationMotion::Easing(halley_config::EasingMotion {
             duration_ms: 240,
+            curve: halley_config::AnimationCurve::EaseInOutCubic,
+        })
+    );
+}
+
+#[test]
+fn example_config_arrange_animation_parses() {
+    let config = RuneConfig::from_file(EXAMPLE_PATH).expect("example config parses");
+    let arrange = halley_config::parse_animations(&config).arrange;
+
+    assert!(arrange.enabled);
+    assert_eq!(
+        arrange.motion,
+        halley_config::AnimationMotion::Easing(halley_config::EasingMotion {
+            duration_ms: 360,
             curve: halley_config::AnimationCurve::EaseInOutCubic,
         })
     );

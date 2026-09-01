@@ -810,6 +810,20 @@ animations:
     # stiffness 800.0
   end
 
+  arrange:
+    # Smoothly gathers visible Field windows into a mosaic and returns them
+    # when the arrange-visible action is toggled again.
+    enabled true
+    motion "easing"
+    duration-ms 360
+    curve "ease-in-out-cubic"
+
+    # Spring alternative:
+    # motion "spring"
+    # damping-ratio 1.0
+    # stiffness 800.0
+  end
+
   node:
     enabled true
     duration-ms 280
@@ -927,10 +941,9 @@ keybinds:
   "$var.mod+ctrl+up" "resize-window-up" with scope "field"
   "$var.mod+ctrl+down" "resize-window-down" with scope "field"
 
-  # Arrange ordinary windows visible on this Field output into a balanced,
-  # non-persistent mosaic. Undo restores the one-shot geometry snapshot.
+  # Toggle ordinary windows visible on this Field output between their saved
+  # geometry and a balanced, non-persistent mosaic.
   "$var.mod+a" "arrange-visible"
-  "$var.mod+shift+a" "undo-arrange"
 
   # Re-read this file immediately. Valid saves are still watched automatically.
   "$var.mod+shift+r" "reload"

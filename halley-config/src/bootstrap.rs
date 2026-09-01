@@ -147,7 +147,6 @@ mod tests {
             "\"$var.mod+ctrl+right\" \"cluster-tile-swap-right\"",
             "\"$var.mod+shift+up\" \"monitor-focus up\"",
             "\"$var.mod+a\" \"arrange-visible\"",
-            "\"$var.mod+shift+a\" \"undo-arrange\"",
             "\"$var.mod+shift+click-left\" \"drag-pan\"",
             "live-previews true",
             "max-rows 3",

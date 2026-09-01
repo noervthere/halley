@@ -157,3 +157,24 @@ velocity instead of restarting it.
 Disabling it keeps the maximize state and camera ownership but applies the
 endpoints immediately. A zero easing duration also snaps directly to the
 endpoint.
+
+Field arrangement has its own slightly slower default so a group of windows
+moves as one readable gesture:
+
+```rune
+animations:
+  arrange:
+    enabled true
+    motion "easing"
+    duration-ms 360
+    curve "ease-in-out-cubic"
+  end
+end
+```
+
+`animations.enabled` and `animations.arrange.enabled` both gate the visual
+motion. Disabling either keeps `Mod+A` toggle semantics but applies arrange and
+restore geometry immediately. Arrangement accepts the same easing and spring
+motion knobs as maximize/fullscreen. Window contents, decorations, and input hit
+regions share the interpolated rectangle; a rapid toggle starts the return from
+the current intermediate presentation rather than snapping to either endpoint.

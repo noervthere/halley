@@ -119,7 +119,6 @@ keybinds:
   "$var.mod+ctrl+down" "resize-window-down" with scope "field"
 
   "$var.mod+a" "arrange-visible"
-  "$var.mod+shift+a" "undo-arrange"
 
   "$var.mod+shift+r" "reload"
   "$var.mod+t" "default-terminal"

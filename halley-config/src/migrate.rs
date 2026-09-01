@@ -198,10 +198,6 @@ const VERSION_1_BINDINGS: &[BindingCandidate] = &[
         line: r#""$var.mod+a" "arrange-visible""#,
     },
     BindingCandidate {
-        name: "undo last Field arrangement",
-        line: r#""$var.mod+shift+a" "undo-arrange""#,
-    },
-    BindingCandidate {
         name: "manual config reload",
         line: r#""$var.mod+shift+r" "reload""#,
     },
@@ -273,10 +269,19 @@ pub fn migrate_config_at(path: &Path, dry_run: bool) -> Result<MigrationReport, 
     if !accepted.is_empty() {
         updated = insert_bindings(&updated, &accepted)?;
     }
-    let (without_split, split_removed) = remove_retired_split_binding(&updated);
-    updated = without_split;
+    let (without_retired, split_removed, undo_chord_removed) =
+        remove_retired_default_bindings(&updated);
+    updated = without_retired;
     if split_removed {
         applied.push("retired pointer Field split binding".to_string());
+    }
+    if undo_chord_removed {
+        applied.push("retired separate Field arrange undo binding".to_string());
+    }
+    let (backfilled, arrange_changed) = backfill_arrange_animation(&updated)?;
+    updated = backfilled;
+    if arrange_changed {
+        applied.push("arrange animation".to_string());
     }
     let (backfilled, zoom_changed) = backfill_zoom_indicator(&updated)?;
     updated = backfilled;
@@ -323,18 +328,20 @@ pub fn migrate_config_at(path: &Path, dry_run: bool) -> Result<MigrationReport, 
     })
 }
 
-fn remove_retired_split_binding(source: &str) -> (String, bool) {
-    const RETIRED: &str = r#""$var.mod+ctrl+click-left" "split-window""#;
+fn remove_retired_default_bindings(source: &str) -> (String, bool, bool) {
+    const SPLIT: &str = r#""$var.mod+ctrl+click-left" "split-window""#;
+    const ARRANGE_UNDO: &str = r#""$var.mod+shift+a" "undo-arrange""#;
     let mut updated = String::with_capacity(source.len());
-    let mut removed = false;
+    let mut split_removed = false;
+    let mut undo_chord_removed = false;
     for line in source.split_inclusive('\n') {
-        if line.trim() == RETIRED {
-            removed = true;
-        } else {
-            updated.push_str(line);
+        match line.trim() {
+            SPLIT => split_removed = true,
+            ARRANGE_UNDO => undo_chord_removed = true,
+            _ => updated.push_str(line),
         }
     }
-    (updated, removed)
+    (updated, split_removed, undo_chord_removed)
 }
 
 fn remove_legacy_version_markers(source: &str) -> (String, bool) {
@@ -582,6 +589,47 @@ fn block_offsets(source: &str, path: &[&str]) -> Option<(usize, usize)> {
         offset += line.len();
     }
     None
+}
+
+fn backfill_arrange_animation(source: &str) -> Result<(String, bool), MigrationError> {
+    if block_offsets(source, &["animations", "arrange"]).is_some() {
+        return Ok((source.to_string(), false));
+    }
+
+    let arrange_block = concat!(
+        "  arrange:\n",
+        "    enabled true\n",
+        "    motion \"easing\"\n",
+        "    duration-ms 360\n",
+        "    curve \"ease-in-out-cubic\"\n",
+        "  end\n",
+    );
+    if let Some((_, end)) = block_offsets(source, &["animations"]) {
+        let mut insertion = String::new();
+        if !source[..end].ends_with("\n\n") {
+            insertion.push('\n');
+        }
+        insertion.push_str("  # Added by Halley config migration.\n");
+        insertion.push_str(arrange_block);
+        let mut updated = String::with_capacity(source.len() + insertion.len());
+        updated.push_str(&source[..end]);
+        updated.push_str(&insertion);
+        updated.push_str(&source[end..]);
+        return Ok((updated, true));
+    }
+
+    let mut updated = source.to_string();
+    if !updated.is_empty() && !updated.ends_with('\n') {
+        updated.push('\n');
+    }
+    if !updated.is_empty() && !updated.ends_with("\n\n") {
+        updated.push('\n');
+    }
+    updated.push_str("# Added by Halley config migration.\n");
+    updated.push_str("animations:\n");
+    updated.push_str(arrange_block);
+    updated.push_str("end\n");
+    Ok((updated, true))
 }
 
 fn backfill_zoom_indicator(source: &str) -> Result<(String, bool), MigrationError> {
@@ -937,11 +985,11 @@ mod tests {
     }
 
     #[test]
-    fn retired_split_binding_is_replaced_by_arrange_and_undo() {
-        let scratch = ScratchDir::new("replace-split");
+    fn retired_split_and_separate_undo_bindings_are_replaced_by_arrange_toggle() {
+        let scratch = ScratchDir::new("replace-arrange-defaults");
         let path = scratch.config();
         let original = minimal(
-            "  \"$var.mod+ctrl+click-left\" \"split-window\"\n  # \"$var.mod+ctrl+click-left\" \"split-window\"\n",
+            "  \"$var.mod+ctrl+click-left\" \"split-window\"\n  # \"$var.mod+ctrl+click-left\" \"split-window\"\n  \"$var.mod+shift+a\" \"undo-arrange\"\n  # \"$var.mod+shift+a\" \"undo-arrange\"\n",
         );
         fs::write(&path, &original).unwrap();
 
@@ -955,8 +1003,17 @@ mod tests {
                 .iter()
                 .any(|item| item == "retired pointer Field split binding")
         );
+        assert!(
+            report
+                .applied
+                .iter()
+                .any(|item| item == "retired separate Field arrange undo binding")
+        );
         assert!(updated.contains("\"$var.mod+a\" \"arrange-visible\""));
-        assert!(updated.contains("\"$var.mod+shift+a\" \"undo-arrange\""));
+        assert!(updated.contains("  arrange:\n"));
+        assert!(updated.contains("    duration-ms 360\n"));
+        assert!(!updated.contains("  \"$var.mod+shift+a\" \"undo-arrange\""));
+        assert!(updated.contains("# \"$var.mod+shift+a\" \"undo-arrange\""));
         assert!(!updated.contains("  \"$var.mod+ctrl+click-left\" \"split-window\""));
         assert!(updated.contains("# \"$var.mod+ctrl+click-left\" \"split-window\""));
         crate::load_runtime_config_at(&path).expect("migrated config validates");
