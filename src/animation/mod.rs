@@ -218,6 +218,13 @@ impl RectTransition {
         }
     }
 
+    fn linear_completion_at(self, now: Duration) -> f64 {
+        [self.x, self.y, self.width, self.height]
+            .into_iter()
+            .map(|timeline| timeline.linear_progress_at(now))
+            .fold(1.0, f64::min)
+    }
+
     fn is_finished_at(self, now: Duration) -> bool {
         self.x.is_finished_at(now)
             && self.y.is_finished_at(now)
@@ -289,6 +296,10 @@ impl ArrangeTimeline {
 
     fn velocity_at(self, now: Duration) -> VisualRect {
         self.geometry.velocity_at(now)
+    }
+
+    fn completion_at(self, now: Duration) -> f64 {
+        self.geometry.linear_completion_at(now)
     }
 
     fn is_finished_at(self, now: Duration) -> bool {
@@ -397,6 +408,12 @@ impl WindowAnimations {
         self.arranging
             .get(surface)
             .map(|timeline| timeline.rect_at(now))
+    }
+
+    pub fn arrange_completion(&self, surface: &WlSurface, now: Duration) -> Option<f64> {
+        self.arranging
+            .get(surface)
+            .map(|timeline| timeline.completion_at(now))
     }
 
     pub fn is_arranging(&self, surface: &WlSurface, now: Duration) -> bool {
@@ -862,11 +879,14 @@ mod tests {
         let timeline = ArrangeTimeline::between(motion, Duration::ZERO, start, target, zero);
 
         assert_eq!(timeline.rect_at(Duration::ZERO), start);
+        assert_eq!(timeline.completion_at(Duration::ZERO), 0.0);
         assert_eq!(
             timeline.rect_at(Duration::from_millis(150)),
             Rectangle::new((50, 25).into(), (1000, 750).into())
         );
+        assert_eq!(timeline.completion_at(Duration::from_millis(150)), 0.5);
         assert_eq!(timeline.rect_at(Duration::from_millis(300)), target);
+        assert_eq!(timeline.completion_at(Duration::from_millis(300)), 1.0);
         assert!(timeline.is_finished_at(Duration::from_millis(300)));
     }
 
