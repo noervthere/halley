@@ -72,6 +72,7 @@ pub fn window_edge_pan_placement(
     pointer: (f64, f64),
     anchor: WindowGrabAnchor,
     size: Size<i32, Logical>,
+    frame_extents: (i32, i32, i32, i32),
     camera: &Camera,
     output_geometry: Rectangle<i32, Logical>,
 ) -> Option<WindowEdgePanPlacement> {
@@ -80,7 +81,14 @@ pub fn window_edge_pan_placement(
         x: desired.x as f32 + size.w as f32 * 0.5,
         y: desired.y as f32 + size.h as f32 * 0.5,
     };
-    if size.w as f32 > camera.view_size.x || size.h as f32 > camera.view_size.y {
+    let (left, right, top, bottom) = frame_extents;
+    let left = left.max(0) as f32;
+    let right = right.max(0) as f32;
+    let top = top.max(0) as f32;
+    let bottom = bottom.max(0) as f32;
+    let outer_width = size.w as f32 + left + right;
+    let outer_height = size.h as f32 + top + bottom;
+    if outer_width > camera.view_size.x || outer_height > camera.view_size.y {
         return None;
     }
 
@@ -91,10 +99,10 @@ pub fn window_edge_pan_placement(
     let view_center = screen_to_world_on_output(screen_center, camera, output_geometry);
     let half_w = size.w as f32 * 0.5;
     let half_h = size.h as f32 * 0.5;
-    let min_x = view_center.x - camera.view_size.x * 0.5 + half_w;
-    let max_x = view_center.x + camera.view_size.x * 0.5 - half_w;
-    let min_y = view_center.y - camera.view_size.y * 0.5 + half_h;
-    let max_y = view_center.y + camera.view_size.y * 0.5 - half_h;
+    let min_x = view_center.x - camera.view_size.x * 0.5 + half_w + left;
+    let max_x = view_center.x + camera.view_size.x * 0.5 - half_w - right;
+    let min_y = view_center.y - camera.view_size.y * 0.5 + half_h + top;
+    let max_y = view_center.y + camera.view_size.y * 0.5 - half_h - bottom;
     let center = Vec2 {
         x: desired_center.x.clamp(min_x, max_x),
         y: desired_center.y.clamp(min_y, max_y),
@@ -886,7 +894,7 @@ mod tests {
     }
 
     #[test]
-    fn window_edge_pan_clamps_window_and_reports_edge_contact() {
+    fn window_edge_pan_clamps_complete_frame_at_right_edge() {
         let output = Rectangle::<i32, Logical>::new((0, 0).into(), (1280, 800).into());
         let placement = window_edge_pan_placement(
             (1279.0, 400.0),
@@ -895,16 +903,17 @@ mod tests {
                 y: -50.0,
             }),
             Size::from((200, 100)),
+            (3, 3, 32, 3),
             &camera_at_rest(),
             output,
         )
-        .expect("window fits in the camera view");
+        .expect("decorated window fits in the camera view");
 
-        assert_eq!(placement.location, Point::from((1080, 350)));
+        assert_eq!(placement.location, Point::from((1077, 350)));
         assert_eq!(
             placement.center,
             Vec2 {
-                x: 1180.0,
+                x: 1177.0,
                 y: 400.0
             }
         );
@@ -912,13 +921,36 @@ mod tests {
     }
 
     #[test]
-    fn window_edge_pan_rejects_window_larger_than_view() {
+    fn window_edge_pan_keeps_titlebar_visible_at_top_edge() {
+        let output = Rectangle::<i32, Logical>::new((0, 0).into(), (1280, 800).into());
+        let placement = window_edge_pan_placement(
+            (640.0, 0.0),
+            WindowGrabAnchor::Source(Vec2 {
+                x: -100.0,
+                y: -50.0,
+            }),
+            Size::from((200, 100)),
+            (3, 3, 32, 3),
+            &camera_at_rest(),
+            output,
+        )
+        .expect("decorated window fits in the camera view");
+
+        assert_eq!(placement.location, Point::from((540, 32)));
+        assert_eq!(placement.center, Vec2 { x: 640.0, y: 82.0 });
+        assert_eq!(placement.contact, Vec2 { x: 0.0, y: -1.0 });
+        assert_eq!(placement.location.y - 32, output.loc.y);
+    }
+
+    #[test]
+    fn window_edge_pan_rejects_frame_larger_than_view() {
         let output = Rectangle::<i32, Logical>::new((0, 0).into(), (1280, 800).into());
         assert!(
             window_edge_pan_placement(
                 (640.0, 400.0),
                 WindowGrabAnchor::Source(Vec2 { x: 0.0, y: 0.0 }),
-                Size::from((1400, 100)),
+                Size::from((1276, 100)),
+                (3, 3, 32, 3),
                 &camera_at_rest(),
                 output,
             )

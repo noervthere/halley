@@ -30,6 +30,8 @@ All notable changes to this project will be documented in this file.
   when the setting is omitted.
 
 ### Fixed
+- Keep the complete decorated window frame, including its titlebar and borders,
+  visible while grabbed-window edge panning clamps against an output edge.
 - Make Lift mouse-wheel navigation move the highlighted result one row in the
   wheel direction, scrolling the viewport only after the highlight reaches a
   visible edge.

@@ -399,10 +399,16 @@ pub(crate) fn tick_grabbed_window_edge_pan<D: SessionDriver>(
             .map(|geometry| geometry.size)
             .unwrap_or((1, 1).into())
     });
+    let frame_extents = crate::titlebar::frame_extents(
+        &window,
+        &session.settings.decorations,
+        &session.settings.font,
+    );
     let placement = crate::input::grab::window_edge_pan_placement(
         session.pointer.position(),
         anchor,
         size,
+        frame_extents,
         &camera,
         output_geometry,
     );
@@ -2086,10 +2092,16 @@ where
                         .unwrap_or((1, 1).into())
                 });
                 let edge_placement = edge_pan.as_ref().and_then(|_| {
+                    let frame_extents = crate::titlebar::frame_extents(
+                        &window,
+                        &session.settings.decorations,
+                        &session.settings.font,
+                    );
                     crate::input::grab::window_edge_pan_placement(
                         position_after,
                         anchor,
                         size,
+                        frame_extents,
                         camera,
                         output_geometry,
                     )
