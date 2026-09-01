@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- Add mouse-driven Field split placement: while moving one ordinary Field
+  window, dwell over an edge of another to preview and commit a one-time
+  left/right or top/bottom division of the target's existing Field rectangle.
+  The camera stays fixed and the windows remain independently movable and
+  resizable afterward.
 - Restore grabbed-window Field panning with the default `Mod+Shift+left-drag`
   `drag-pan` action: dwelling at an output edge now carries the window through
   that output's Field instead of transferring it or leaving it offscreen.

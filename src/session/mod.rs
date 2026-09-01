@@ -2207,6 +2207,7 @@ fn begin_pointer_move_active<D: SessionDriver>(
                 crate::frame_clock::monotonic_now(),
             )
         }),
+        field_split: None,
         last_world: center,
         last_update: crate::frame_clock::monotonic_now(),
         velocity: halley_core::field::Vec2 { x: 0.0, y: 0.0 },

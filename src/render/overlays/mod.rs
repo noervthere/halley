@@ -4,6 +4,7 @@ mod capture_assets;
 pub(crate) mod cluster_bloom;
 pub(crate) mod cluster_creation;
 pub(crate) mod cluster_overflow;
+pub(crate) mod field_split;
 pub(crate) mod fps;
 pub mod preview;
 pub mod shell;

@@ -533,6 +533,8 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                             cluster_composer: &app.shell.cluster_composer,
                             apogee_config: app.settings.apogee,
                             overlays: &app.shell.overlays,
+                            field_split: app.interactions.grab.field_split_candidate(),
+                            field_gap: app.settings.field.gap,
                             overlay_config: &app.settings.overlays,
                         },
                         visuals: VisualContext {

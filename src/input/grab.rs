@@ -27,6 +27,172 @@ pub struct ClusterWindowDrag {
 
 pub const WINDOW_EDGE_PAN_DWELL: Duration = Duration::from_millis(450);
 pub const WINDOW_EDGE_PAN_SPEED_PXPS: f32 = 240.0;
+pub const FIELD_SPLIT_DWELL: Duration = Duration::from_millis(400);
+const FIELD_SPLIT_EDGE_FRACTION: f64 = 0.25;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FieldSplitSide {
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FieldSplitLayout {
+    pub dragged_outer: Rectangle<i32, Logical>,
+    pub target_outer: Rectangle<i32, Logical>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FieldSplitCandidate {
+    pub target: halley_core::field::NodeId,
+    pub output: String,
+    pub side: FieldSplitSide,
+    pub outer: Rectangle<i32, Logical>,
+    pub started_at: Duration,
+    pub ready: bool,
+}
+
+impl FieldSplitCandidate {
+    pub fn matches(
+        &self,
+        target: halley_core::field::NodeId,
+        output: &str,
+        side: FieldSplitSide,
+    ) -> bool {
+        self.target == target && self.output == output && self.side == side
+    }
+
+    pub fn tick_ready(&mut self, now: Duration) -> bool {
+        if self.ready || now.saturating_sub(self.started_at) < FIELD_SPLIT_DWELL {
+            return false;
+        }
+        self.ready = true;
+        true
+    }
+
+    pub fn layout(&self, gap: i32) -> Option<FieldSplitLayout> {
+        self.ready
+            .then(|| field_split_layout(self.outer, self.side, gap))
+            .flatten()
+    }
+
+    pub fn highlight(&self) -> Rectangle<i32, Logical> {
+        field_split_highlight(self.outer, self.side)
+    }
+}
+
+pub fn field_split_side_at(
+    outer: Rectangle<i32, Logical>,
+    point: Point<f64, Logical>,
+) -> Option<FieldSplitSide> {
+    if !outer.to_f64().contains(point) {
+        return None;
+    }
+    let width = f64::from(outer.size.w.max(1));
+    let height = f64::from(outer.size.h.max(1));
+    let left = (point.x - f64::from(outer.loc.x)) / width;
+    let right = (f64::from(outer.loc.x + outer.size.w) - point.x) / width;
+    let top = (point.y - f64::from(outer.loc.y)) / height;
+    let bottom = (f64::from(outer.loc.y + outer.size.h) - point.y) / height;
+    [
+        (left, FieldSplitSide::Left),
+        (right, FieldSplitSide::Right),
+        (top, FieldSplitSide::Top),
+        (bottom, FieldSplitSide::Bottom),
+    ]
+    .into_iter()
+    .filter(|(distance, _)| *distance <= FIELD_SPLIT_EDGE_FRACTION)
+    .min_by(|(left, _), (right, _)| left.total_cmp(right))
+    .map(|(_, side)| side)
+}
+
+pub fn field_split_layout(
+    outer: Rectangle<i32, Logical>,
+    side: FieldSplitSide,
+    gap: i32,
+) -> Option<FieldSplitLayout> {
+    let gap = gap.max(0);
+    match side {
+        FieldSplitSide::Left | FieldSplitSide::Right => {
+            let available = outer.size.w.checked_sub(gap)?;
+            if available < 2 {
+                return None;
+            }
+            let first_width = available / 2;
+            let second_width = available - first_width;
+            let left = Rectangle::new(outer.loc, (first_width, outer.size.h).into());
+            let right = Rectangle::new(
+                (outer.loc.x + first_width + gap, outer.loc.y).into(),
+                (second_width, outer.size.h).into(),
+            );
+            Some(if side == FieldSplitSide::Left {
+                FieldSplitLayout {
+                    dragged_outer: left,
+                    target_outer: right,
+                }
+            } else {
+                FieldSplitLayout {
+                    dragged_outer: right,
+                    target_outer: left,
+                }
+            })
+        }
+        FieldSplitSide::Top | FieldSplitSide::Bottom => {
+            let available = outer.size.h.checked_sub(gap)?;
+            if available < 2 {
+                return None;
+            }
+            let first_height = available / 2;
+            let second_height = available - first_height;
+            let top = Rectangle::new(outer.loc, (outer.size.w, first_height).into());
+            let bottom = Rectangle::new(
+                (outer.loc.x, outer.loc.y + first_height + gap).into(),
+                (outer.size.w, second_height).into(),
+            );
+            Some(if side == FieldSplitSide::Top {
+                FieldSplitLayout {
+                    dragged_outer: top,
+                    target_outer: bottom,
+                }
+            } else {
+                FieldSplitLayout {
+                    dragged_outer: bottom,
+                    target_outer: top,
+                }
+            })
+        }
+    }
+}
+
+pub fn field_split_highlight(
+    outer: Rectangle<i32, Logical>,
+    side: FieldSplitSide,
+) -> Rectangle<i32, Logical> {
+    match side {
+        FieldSplitSide::Left => {
+            Rectangle::new(outer.loc, ((outer.size.w / 4).max(1), outer.size.h).into())
+        }
+        FieldSplitSide::Right => {
+            let width = (outer.size.w / 4).max(1);
+            Rectangle::new(
+                (outer.loc.x + outer.size.w - width, outer.loc.y).into(),
+                (width, outer.size.h).into(),
+            )
+        }
+        FieldSplitSide::Top => {
+            Rectangle::new(outer.loc, (outer.size.w, (outer.size.h / 4).max(1)).into())
+        }
+        FieldSplitSide::Bottom => {
+            let height = (outer.size.h / 4).max(1);
+            Rectangle::new(
+                (outer.loc.x, outer.loc.y + outer.size.h - height).into(),
+                (outer.size.w, height).into(),
+            )
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct WindowEdgePan {
@@ -221,6 +387,9 @@ pub enum Grab {
         /// `Some` for the monitor-local `drag-pan` window drag. Ordinary
         /// `move-window` grabs leave this unset and may cross outputs.
         edge_pan: Option<WindowEdgePan>,
+        /// Transient, mouse-driven Field split target. It never survives the
+        /// grab and therefore does not create layout membership.
+        field_split: Option<FieldSplitCandidate>,
         last_world: Vec2,
         last_update: Duration,
         velocity: Vec2,
@@ -293,6 +462,30 @@ impl Grab {
                 | Self::PendingClusterCore { .. }
                 | Self::MoveClusterCore { .. }
         )
+    }
+
+    pub fn field_split_candidate(&self) -> Option<&FieldSplitCandidate> {
+        match self {
+            Self::MoveWindow { field_split, .. } => field_split.as_ref(),
+            _ => None,
+        }
+    }
+
+    pub fn tick_field_split(&mut self, now: Duration) -> bool {
+        match self {
+            Self::MoveWindow {
+                field_split: Some(candidate),
+                ..
+            } => candidate.tick_ready(now),
+            _ => false,
+        }
+    }
+
+    pub fn cancel_field_split(&mut self) -> bool {
+        match self {
+            Self::MoveWindow { field_split, .. } => field_split.take().is_some(),
+            _ => false,
+        }
     }
 }
 
@@ -1422,6 +1615,68 @@ mod tests {
         // into a 1000-unit-wide window becomes 450 px into its 500 px visual.
         assert!(-visual_offset.x < 1000.0 * crate::input::zoom::scale(&camera));
         assert!(-visual_offset.y < 500.0 * crate::input::zoom::scale(&camera));
+    }
+
+    #[test]
+    fn field_split_uses_the_nearest_outer_quarter() {
+        let outer = Rectangle::new((100, 100).into(), (800, 600).into());
+        assert_eq!(
+            field_split_side_at(outer, Point::from((110.0, 400.0))),
+            Some(FieldSplitSide::Left)
+        );
+        assert_eq!(
+            field_split_side_at(outer, Point::from((500.0, 690.0))),
+            Some(FieldSplitSide::Bottom)
+        );
+        assert_eq!(
+            field_split_side_at(outer, Point::from((500.0, 400.0))),
+            None
+        );
+        assert_eq!(field_split_side_at(outer, Point::from((90.0, 400.0))), None);
+    }
+
+    #[test]
+    fn field_split_divides_the_target_once_without_remembered_layout_state() {
+        let outer = Rectangle::new((100, 50).into(), (801, 600).into());
+        let horizontal =
+            field_split_layout(outer, FieldSplitSide::Left, 21).expect("target can split");
+        assert_eq!(
+            horizontal.dragged_outer,
+            Rectangle::new((100, 50).into(), (390, 600).into())
+        );
+        assert_eq!(
+            horizontal.target_outer,
+            Rectangle::new((511, 50).into(), (390, 600).into())
+        );
+
+        let vertical =
+            field_split_layout(outer, FieldSplitSide::Bottom, 20).expect("target can split");
+        assert_eq!(
+            vertical.target_outer,
+            Rectangle::new((100, 50).into(), (801, 290).into())
+        );
+        assert_eq!(
+            vertical.dragged_outer,
+            Rectangle::new((100, 360).into(), (801, 290).into())
+        );
+    }
+
+    #[test]
+    fn field_split_candidate_waits_for_dwell_and_can_be_cancelled() {
+        let start = Duration::from_secs(3);
+        let mut candidate = FieldSplitCandidate {
+            target: halley_core::field::NodeId::new(7),
+            output: "DP-1".into(),
+            side: FieldSplitSide::Right,
+            outer: Rectangle::new((10, 20).into(), (600, 400).into()),
+            started_at: start,
+            ready: false,
+        };
+        assert!(!candidate.tick_ready(start + FIELD_SPLIT_DWELL - Duration::from_millis(1)));
+        assert!(candidate.layout(20).is_none());
+        assert!(candidate.tick_ready(start + FIELD_SPLIT_DWELL));
+        assert!(candidate.layout(20).is_some());
+        assert!(!candidate.tick_ready(start + Duration::from_secs(1)));
     }
 
     #[test]
