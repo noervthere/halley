@@ -11,6 +11,7 @@ use smithay::wayland::seat::WaylandFocus;
 
 use crate::wayland;
 
+mod arrange;
 mod autostart;
 pub(crate) mod closing;
 mod cursor;
@@ -83,6 +84,8 @@ enum SessionControl {
     FocusDirection(halley_config::Direction),
     MoveNode(halley_config::Direction),
     ResizeWindow(halley_config::Direction),
+    ArrangeVisible,
+    UndoArrange,
     CenterLastFocused,
     BearingsShow,
     BearingsToggle,
@@ -127,6 +130,8 @@ fn dispatch_action(
         Action::FocusDirection(direction) => return SessionControl::FocusDirection(direction),
         Action::MoveNode(direction) => return SessionControl::MoveNode(direction),
         Action::ResizeWindow(direction) => return SessionControl::ResizeWindow(direction),
+        Action::ArrangeVisible => return SessionControl::ArrangeVisible,
+        Action::UndoArrange => return SessionControl::UndoArrange,
         Action::PointerMoveWindow
         | Action::PointerResizeWindow
         | Action::PointerPanField

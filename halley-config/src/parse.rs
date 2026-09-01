@@ -195,6 +195,8 @@ pub(crate) fn parse_action(s: &str) -> Action {
             Action::ClusterLayoutCycle
         }
         "cluster-toggle-float" | "cluster_toggle_float" => Action::ClusterToggleFloat,
+        "arrange-visible" | "arrange_visible" => Action::ArrangeVisible,
+        "undo-arrange" | "undo_arrange" => Action::UndoArrange,
         "move-window" | "move_window" => Action::PointerMoveWindow,
         "resize-window" | "resize_window" => Action::PointerResizeWindow,
         "pan-field" | "pan_field" => Action::PointerPanField,
