@@ -35,6 +35,9 @@ All notable changes to this project will be documented in this file.
   when the setting is omitted.
 
 ### Fixed
+- Let Alt-Tab and Bearings resume parked native fullscreen content such as
+  browser video, keep external game fullscreen click-to-resume, and retain every
+  soft-paused fullscreen window as an offscreen Bearings target.
 - Keep arranged client contents at fixed endpoint scales and reveal them through
   the moving frame instead of rubber-stretching the inner texture, while always
   presenting the final live geometry frame after the transition is retired.

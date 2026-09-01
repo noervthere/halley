@@ -243,12 +243,38 @@ impl FullscreenManager {
         changed
     }
 
-    /// Resumes immersive presentation only for a direct pointer activation of
-    /// the fullscreen surface. Keyboard focus and hover intentionally do not
-    /// call this path.
+    /// Resumes any parked fullscreen presentation after direct pointer
+    /// activation.
     pub(crate) fn resume_presentation(&mut self, surface: &WlSurface) -> Option<String> {
+        self.resume_presentation_if(surface, |_| true)
+    }
+
+    /// Explicit keyboard/navigation focus resumes native Wayland fullscreen
+    /// clients such as browser video. External/XWayland fullscreen retains the
+    /// game-oriented click-only resume policy.
+    pub(crate) fn resume_presentation_on_explicit_focus(
+        &mut self,
+        surface: &WlSurface,
+    ) -> Option<String> {
+        self.resume_presentation_if(surface, resumes_on_explicit_focus)
+    }
+
+    pub(crate) fn is_presentation_paused(&self, surface: &WlSurface) -> bool {
+        self.windows
+            .get(surface)
+            .is_some_and(|entry| entry.presentation_paused)
+    }
+
+    fn resume_presentation_if(
+        &mut self,
+        surface: &WlSurface,
+        allows: impl FnOnce(&FullscreenWindow) -> bool,
+    ) -> Option<String> {
         let entry = self.windows.get_mut(surface)?;
-        if !entry.presentation_paused || entry.origin == FullscreenOrigin::Maximize {
+        if !entry.presentation_paused
+            || entry.origin == FullscreenOrigin::Maximize
+            || !allows(entry)
+        {
             return None;
         }
         entry.presentation_paused = false;
@@ -1510,6 +1536,10 @@ pub struct FullscreenCleanup {
     pub finished_surfaces: Vec<WlSurface>,
 }
 
+fn resumes_on_explicit_focus(entry: &FullscreenWindow) -> bool {
+    entry.native.is_some()
+}
+
 fn animations_enabled(animations: Animations) -> bool {
     animations.enabled && animations.fullscreen.enabled
 }
@@ -2343,6 +2373,16 @@ mod tests {
         let entry = test_entry(true);
         assert!(entry_covers_top(&entry, "DP-1", Duration::ZERO));
         assert!(!entry_covers_top(&entry, "DP-2", Duration::ZERO));
+    }
+
+    #[test]
+    fn explicit_focus_resumes_native_video_but_not_external_games() {
+        let native = test_entry(true);
+        assert!(resumes_on_explicit_focus(&native));
+
+        let mut external = test_entry(true);
+        external.native = None;
+        assert!(!resumes_on_explicit_focus(&external));
     }
 
     #[test]

@@ -37,6 +37,7 @@ pub(crate) fn focus_window<D: SessionDriver>(
     window: &Window,
     serial: Serial,
 ) {
+    resume_fullscreen_presentation(session, window, true);
     focus_window_with_raise(
         session,
         window,
@@ -52,20 +53,7 @@ pub(crate) fn focus_window_from_pointer<D: SessionDriver>(
     window: &Window,
     serial: Serial,
 ) {
-    if let Some(surface) = window.wl_surface()
-        && let Some(output_name) = session.fullscreen.resume_presentation(surface.as_ref())
-    {
-        let output = session
-            .wayland
-            .space
-            .outputs()
-            .find(|output| output.name() == output_name)
-            .cloned();
-        if let Some(output) = output.as_ref() {
-            session.sync_fullscreen_camera(output, crate::frame_clock::monotonic_now());
-        }
-        session.request_redraw();
-    }
+    resume_fullscreen_presentation(session, window, false);
     focus_window_with_raise(
         session,
         window,
@@ -90,6 +78,36 @@ pub(crate) fn focus_window_after_close<D: SessionDriver>(
             session.settings.input.raise_on_click,
         ),
     );
+}
+
+fn resume_fullscreen_presentation<D: SessionDriver>(
+    session: &mut Session<D>,
+    window: &Window,
+    explicit_focus: bool,
+) {
+    let Some(surface) = window.wl_surface() else {
+        return;
+    };
+    let output_name = if explicit_focus {
+        session
+            .fullscreen
+            .resume_presentation_on_explicit_focus(surface.as_ref())
+    } else {
+        session.fullscreen.resume_presentation(surface.as_ref())
+    };
+    let Some(output_name) = output_name else {
+        return;
+    };
+    let output = session
+        .wayland
+        .space
+        .outputs()
+        .find(|output| output.name() == output_name)
+        .cloned();
+    if let Some(output) = output.as_ref() {
+        session.sync_fullscreen_camera(output, crate::frame_clock::monotonic_now());
+    }
+    session.request_redraw();
 }
 
 fn focus_window_with_raise<D: SessionDriver>(

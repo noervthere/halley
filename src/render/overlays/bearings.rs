@@ -140,6 +140,7 @@ struct LayoutContext<'a> {
     mix: f32,
     nodes: &'a crate::nodes::NodesState,
     clusters: &'a crate::clusters::ClusterSystem,
+    fullscreen: &'a crate::wayland::fullscreen::FullscreenManager,
     camera: &'a halley_core::camera::Camera,
 }
 
@@ -151,6 +152,7 @@ pub fn elements(
     bearings: &crate::shell::bearings::BearingsState,
     nodes: &crate::nodes::NodesState,
     clusters: &crate::clusters::ClusterSystem,
+    fullscreen: &crate::wayland::fullscreen::FullscreenManager,
     cameras: &crate::presentation::camera::OutputCameras,
     blur_config: halley_config::Blur,
     backdrop_blur_renderer: &mut crate::render::effects::backdrop_blur::BackdropBlurRenderer,
@@ -181,6 +183,7 @@ pub fn elements(
             mix,
             nodes,
             clusters,
+            fullscreen,
             camera,
         },
         ui_text,
@@ -357,6 +360,7 @@ fn collect_layouts(
         mix,
         nodes,
         clusters,
+        fullscreen,
         camera,
     } = context;
     let center = crate::presentation::camera::global_center(
@@ -380,7 +384,9 @@ fn collect_layouts(
         let Some(node) = nodes.field.node(record.id) else {
             continue;
         };
-        if !nodes.field.is_visible(record.id)
+        let field_visible = nodes.field.is_visible(record.id);
+        let parked_fullscreen = fullscreen.is_presentation_paused(&record.surface);
+        if !bearing_node_is_eligible(field_visible, parked_fullscreen)
             || intersects_view(node.pos, node.footprint, &viewport)
         {
             continue;
@@ -796,6 +802,10 @@ fn projected_anchor(
     }
 }
 
+fn bearing_node_is_eligible(field_visible: bool, parked_fullscreen: bool) -> bool {
+    field_visible || parked_fullscreen
+}
+
 fn intersects_view(pos: Vec2, footprint: Vec2, viewport: &Viewport) -> bool {
     let view = viewport.rect();
     let half = Vec2 {
@@ -871,6 +881,14 @@ fn truncate_label(base: &str, fallback: impl FnOnce() -> String) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn parked_fullscreen_remains_bearing_eligible_while_active_fullscreen_does_not() {
+        assert!(bearing_node_is_eligible(false, true));
+        assert!(!bearing_node_is_eligible(false, false));
+        assert!(bearing_node_is_eligible(true, false));
+    }
+
     use super::*;
 
     fn candidate(projected: f32, size: Size) -> Candidate {

@@ -461,6 +461,7 @@ pub fn build(
         request.overlays.bearings,
         request.desktop.nodes,
         request.desktop.clusters,
+        request.desktop.fullscreen,
         request.desktop.cameras,
         request.visuals.blur,
         request.resources.backdrop_blur_renderer,
