@@ -120,59 +120,76 @@ pub(crate) fn arrange_visible<D: SessionDriver>(
         if candidates.len() < 2 {
             return false;
         }
-        let Some(regions) = mosaic_regions(layout_outer, candidates.len(), gap) else {
+        let Some(region_variants) = mosaic_region_variants(layout_outer, candidates.len(), gap)
+        else {
             return false;
         };
-        let target_clients = candidates
-            .iter()
-            .map(|candidate| {
-                regions
-                    .iter()
-                    .map(|region| {
-                        crate::titlebar::client_rect_for_outer(
-                            &candidate.window,
-                            *region,
-                            &session.settings.decorations,
-                            &session.settings.font,
-                        )
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .collect::<Vec<_>>();
-        let costs = candidates
-            .iter()
-            .enumerate()
-            .map(|(candidate_index, candidate)| {
-                regions
-                    .iter()
-                    .enumerate()
-                    .map(|(region_index, region)| {
-                        let target = target_clients[candidate_index][region_index];
-                        if !window_size_is_accepted(&candidate.window, target.size) {
-                            INFEASIBLE_COST
-                        } else {
-                            let feasible_ceiling =
-                                INFEASIBLE_COST / (candidates.len() as i64 + 1) - 1;
-                            squared_distance(candidate.center, rect_center(*region))
-                                .min(feasible_ceiling)
-                        }
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .collect::<Vec<_>>();
-        let assignment = minimum_cost_assignment(&costs);
-        if assignment
-            .iter()
-            .enumerate()
-            .all(|(candidate, region)| costs[candidate][*region] < INFEASIBLE_COST)
-        {
-            break assignment
-                .into_iter()
-                .enumerate()
-                .map(|(candidate, region)| (candidate, target_clients[candidate][region]))
+        let mut best_removal_costs = None;
+        let mut best_feasible_cells = 0usize;
+        let mut selected = None;
+        for regions in region_variants {
+            let target_clients = candidates
+                .iter()
+                .map(|candidate| {
+                    regions
+                        .iter()
+                        .map(|region| {
+                            crate::titlebar::client_rect_for_outer(
+                                &candidate.window,
+                                *region,
+                                &session.settings.decorations,
+                                &session.settings.font,
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                })
                 .collect::<Vec<_>>();
+            let costs = candidates
+                .iter()
+                .enumerate()
+                .map(|(candidate_index, candidate)| {
+                    regions
+                        .iter()
+                        .enumerate()
+                        .map(|(region_index, region)| {
+                            let target = target_clients[candidate_index][region_index];
+                            if !window_size_is_accepted(&candidate.window, target.size) {
+                                INFEASIBLE_COST
+                            } else {
+                                let feasible_ceiling =
+                                    INFEASIBLE_COST / (candidates.len() as i64 + 1) - 1;
+                                squared_distance(candidate.center, rect_center(*region))
+                                    .min(feasible_ceiling)
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>();
+            let feasible_cells = costs
+                .iter()
+                .flatten()
+                .filter(|cost| **cost < INFEASIBLE_COST)
+                .count();
+            if feasible_cells > best_feasible_cells || best_removal_costs.is_none() {
+                best_feasible_cells = feasible_cells;
+                best_removal_costs = Some(costs.clone());
+            }
+            if let Some(assignment) = feasible_assignment(&costs) {
+                selected = Some(
+                    assignment
+                        .into_iter()
+                        .enumerate()
+                        .map(|(candidate, region)| (candidate, target_clients[candidate][region]))
+                        .collect::<Vec<_>>(),
+                );
+                break;
+            }
+        }
+        if let Some(selected) = selected {
+            break selected;
         }
 
+        let costs = best_removal_costs.expect("a mosaic has at least one layout variant");
         let remove = costs
             .iter()
             .enumerate()
@@ -486,6 +503,101 @@ fn mosaic_regions(
     Some(regions)
 }
 
+/// Keeps the balanced mosaic as the stable default, then offers layouts with
+/// one larger slot for clients whose minimum size cannot fit the equal grid.
+fn mosaic_region_variants(
+    outer: Rectangle<i32, Logical>,
+    count: usize,
+    gap: i32,
+) -> Option<Vec<Vec<Rectangle<i32, Logical>>>> {
+    let balanced = mosaic_regions(outer, count, gap)?;
+    let mut variants = vec![balanced];
+    for (numerator, denominator) in [(3, 5), (2, 3), (3, 4)] {
+        for vertical in [true, false] {
+            for featured_at_start in [true, false] {
+                if let Some(regions) = featured_mosaic(
+                    outer,
+                    count,
+                    gap,
+                    numerator,
+                    denominator,
+                    vertical,
+                    featured_at_start,
+                ) {
+                    variants.push(regions);
+                }
+            }
+        }
+    }
+    Some(variants)
+}
+
+fn featured_mosaic(
+    outer: Rectangle<i32, Logical>,
+    count: usize,
+    gap: i32,
+    numerator: i32,
+    denominator: i32,
+    vertical: bool,
+    featured_at_start: bool,
+) -> Option<Vec<Rectangle<i32, Logical>>> {
+    if count < 2 || numerator <= 0 || numerator >= denominator {
+        return None;
+    }
+    let gap = gap.max(0);
+    let axis_length = if vertical { outer.size.w } else { outer.size.h };
+    let available = axis_length.checked_sub(gap)?;
+    let featured_length = available.checked_mul(numerator)?.div_euclid(denominator);
+    let remainder_length = available.checked_sub(featured_length)?;
+    if featured_length < 1 || remainder_length < 1 {
+        return None;
+    }
+    let (featured_axis, remainder_axis) = if featured_at_start {
+        (
+            if vertical { outer.loc.x } else { outer.loc.y },
+            (if vertical { outer.loc.x } else { outer.loc.y })
+                .checked_add(featured_length)?
+                .checked_add(gap)?,
+        )
+    } else {
+        (
+            (if vertical { outer.loc.x } else { outer.loc.y })
+                .checked_add(remainder_length)?
+                .checked_add(gap)?,
+            if vertical { outer.loc.x } else { outer.loc.y },
+        )
+    };
+    let featured = if vertical {
+        Rectangle::new(
+            (featured_axis, outer.loc.y).into(),
+            (featured_length, outer.size.h).into(),
+        )
+    } else {
+        Rectangle::new(
+            (outer.loc.x, featured_axis).into(),
+            (outer.size.w, featured_length).into(),
+        )
+    };
+    let remainder = if vertical {
+        Rectangle::new(
+            (remainder_axis, outer.loc.y).into(),
+            (remainder_length, outer.size.h).into(),
+        )
+    } else {
+        Rectangle::new(
+            (outer.loc.x, remainder_axis).into(),
+            (outer.size.w, remainder_length).into(),
+        )
+    };
+    let mut regions = vec![featured];
+    if count == 2 {
+        regions.push(remainder);
+    } else {
+        regions.extend(mosaic_regions(remainder, count - 1, gap)?);
+    }
+    Some(regions)
+}
+
 fn split_axis(start: i32, length: i32, count: usize, gap: i32) -> Option<Vec<(i32, i32)>> {
     let count = i32::try_from(count).ok()?;
     let gap = gap.max(0);
@@ -523,6 +635,18 @@ fn squared_distance(a: Point<i32, Logical>, b: Point<i32, Logical>) -> i64 {
     dx.saturating_mul(dx)
         .saturating_add(dy.saturating_mul(dy))
         .min(INFEASIBLE_COST - 1)
+}
+
+fn feasible_assignment(costs: &[Vec<i64>]) -> Option<Vec<usize>> {
+    if costs.len() < 2 || costs.iter().any(|row| row.len() != costs.len()) {
+        return None;
+    }
+    let assignment = minimum_cost_assignment(costs);
+    assignment
+        .iter()
+        .enumerate()
+        .all(|(candidate, region)| costs[candidate][*region] < INFEASIBLE_COST)
+        .then_some(assignment)
 }
 
 fn minimum_cost_assignment(costs: &[Vec<i64>]) -> Vec<usize> {
@@ -594,7 +718,8 @@ fn minimum_cost_assignment(costs: &[Vec<i64>]) -> Vec<usize> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ArrangeTransactions, minimum_cost_assignment, mosaic_regions, visible_work_area_outer,
+        ArrangeTransactions, feasible_assignment, minimum_cost_assignment, mosaic_region_variants,
+        mosaic_regions, visible_work_area_outer,
     };
     use halley_core::camera::Camera;
     use halley_core::field::Vec2;
@@ -681,6 +806,36 @@ mod tests {
         assert_eq!(regions[3].loc.y, 410);
         assert_eq!(regions[3].size.w, 490);
         assert_eq!(regions[4].loc.x, 510);
+    }
+
+    #[test]
+    fn asymmetric_variants_offer_a_large_slot_on_smaller_outputs() {
+        let outer = Rectangle::<i32, Logical>::new((0, 0).into(), (1800, 1000).into());
+        let variants = mosaic_region_variants(outer, 3, 20).unwrap();
+
+        assert_eq!(variants[0], mosaic_regions(outer, 3, 20).unwrap());
+        assert!(variants[0].iter().all(|region| region.size.w < 1000));
+        assert!(variants.iter().skip(1).any(|regions| {
+            regions.len() == 3 && regions.iter().any(|region| region.size.w >= 1068)
+        }));
+    }
+
+    #[test]
+    fn feasible_assignment_keeps_a_constrained_window_in_a_featured_slot() {
+        let impossible = super::INFEASIBLE_COST;
+        let balanced = vec![
+            vec![impossible, impossible, impossible],
+            vec![1, 2, 3],
+            vec![3, 2, 1],
+        ];
+        assert!(feasible_assignment(&balanced).is_none());
+
+        let featured = vec![
+            vec![1, impossible, impossible],
+            vec![impossible, 1, 2],
+            vec![impossible, 2, 1],
+        ];
+        assert_eq!(feasible_assignment(&featured), Some(vec![0, 1, 2]));
     }
 
     #[test]

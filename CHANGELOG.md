@@ -35,6 +35,9 @@ All notable changes to this project will be documented in this file.
   when the setting is omitted.
 
 ### Fixed
+- Keep size-constrained windows such as Steam in smaller-output `Mod+A`
+  arrangements by trying asymmetric mosaics before excluding a window, while
+  preserving the balanced layout whenever every client accepts it.
 - Let Alt-Tab and Bearings resume parked native fullscreen content such as
   browser video, keep external game fullscreen click-to-resume, and retain every
   soft-paused fullscreen window as an offscreen Bearings target.
