@@ -448,7 +448,7 @@ impl FullscreenTextureTransitions {
     }
 }
 
-fn expanding_endpoint_is_painted(
+pub(crate) fn expanding_endpoint_is_painted(
     outgoing: &ResizeWindowTexture,
     incoming: &ResizeWindowTexture,
 ) -> bool {
@@ -481,7 +481,7 @@ fn incoming_paint_is_ready(
     incoming_opaque || incoming_opaque_area >= outgoing_opaque_area
 }
 
-fn snapshot_matches_target_endpoint(
+pub(crate) fn snapshot_matches_target_endpoint(
     outgoing: &ResizeWindowTexture,
     candidate: &ResizeWindowTexture,
 ) -> bool {

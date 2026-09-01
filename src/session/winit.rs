@@ -641,6 +641,10 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                             app.render
                                 .fullscreen_textures
                                 .awaiting_target(surface.as_ref())
+                                || app
+                                    .render
+                                    .arrange_textures
+                                    .awaiting_target(surface.as_ref())
                         });
                         let require_visible =
                             crate::wayland::frame_callbacks::requires_render_visibility(
@@ -695,10 +699,21 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                 }
                 crate::xwayland::sync_stacking_order(app);
                 wayland::layer_shell::cleanup(&mut app.wayland);
-                app.window_animations.cleanup(target_presentation_time);
+                let arrange_cleanup = app.window_animations.cleanup(target_presentation_time);
                 app.render
                     .arrange_textures
                     .retain_surfaces(|surface| app.window_animations.has_arrange_timeline(surface));
+                if arrange_cleanup {
+                    // This frame was composed with the arrangement endpoint.
+                    // The client may still have its pre-configure size, which
+                    // that endpoint scales into the target rectangle. Render
+                    // once more after retiring the timeline so stale geometry
+                    // cannot remain latched until unrelated damage arrives.
+                    super::pointer::update_client_state(
+                        app,
+                        app.start_time.elapsed().as_millis() as u32,
+                    );
+                }
                 app.render
                     .window_close_animations
                     .cleanup(target_presentation_time);
@@ -736,6 +751,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                     || app.render.node_renderer.has_pending_icons()
                     || app.settings.debug.overlay_fps && !app.session_lock.active()
                     || fullscreen_cleanup
+                    || arrange_cleanup
                 {
                     app.request_redraw();
                 }

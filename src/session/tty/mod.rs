@@ -880,6 +880,10 @@ fn send_output_frame_callbacks(app: &mut TtyApp, output: &Output) {
                     app.render
                         .fullscreen_textures
                         .awaiting_target(surface.as_ref())
+                        || app
+                            .render
+                            .arrange_textures
+                            .awaiting_target(surface.as_ref())
                 });
                 let require_visible = crate::wayland::frame_callbacks::requires_render_visibility(
                     window_member,
@@ -1299,7 +1303,13 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
         }
     };
     animating |= app.render.node_renderer.has_pending_icons();
-    app.window_animations.cleanup(target_presentation_time);
+    if app.window_animations.cleanup(target_presentation_time) {
+        // The frame just composed can still scale a lagging pre-configure
+        // client buffer into the arrangement endpoint. Owe one live-geometry
+        // frame after retiring that endpoint so it cannot stay latched.
+        animating = true;
+        super::pointer::update_client_state(app, app.start_time.elapsed().as_millis() as u32);
+    }
     app.render
         .arrange_textures
         .retain_surfaces(|surface| app.window_animations.has_arrange_timeline(surface));

@@ -218,6 +218,13 @@ impl RectTransition {
         }
     }
 
+    fn linear_completion_at(self, now: Duration) -> f64 {
+        [self.x, self.y, self.width, self.height]
+            .into_iter()
+            .map(|timeline| timeline.linear_progress_at(now))
+            .fold(1.0, f64::min)
+    }
+
     fn is_finished_at(self, now: Duration) -> bool {
         self.x.is_finished_at(now)
             && self.y.is_finished_at(now)
@@ -289,6 +296,10 @@ impl ArrangeTimeline {
 
     fn velocity_at(self, now: Duration) -> VisualRect {
         self.geometry.velocity_at(now)
+    }
+
+    fn completion_at(self, now: Duration) -> f64 {
+        self.geometry.linear_completion_at(now)
     }
 
     fn is_finished_at(self, now: Duration) -> bool {
@@ -399,6 +410,12 @@ impl WindowAnimations {
             .map(|timeline| timeline.rect_at(now))
     }
 
+    pub fn arrange_completion(&self, surface: &WlSurface, now: Duration) -> Option<f64> {
+        self.arranging
+            .get(surface)
+            .map(|timeline| timeline.completion_at(now))
+    }
+
     pub fn is_arranging(&self, surface: &WlSurface, now: Duration) -> bool {
         self.arranging
             .get(surface)
@@ -441,11 +458,17 @@ impl WindowAnimations {
         self.arranging.remove(surface);
     }
 
-    pub fn cleanup(&mut self, now: Duration) {
+    /// Retires finished timelines and reports whether an arrangement was
+    /// removed. Arrangement snapshots are rendered through the endpoint frame;
+    /// callers need this signal to schedule one more frame from the live client
+    /// geometry after that presentation state is dropped.
+    pub fn cleanup(&mut self, now: Duration) -> bool {
         self.opening
             .retain(|_, timeline| !timeline.is_finished_at(now));
+        let arranging_before = self.arranging.len();
         self.arranging
             .retain(|_, timeline| !timeline.is_finished_at(now));
+        self.arranging.len() != arranging_before
     }
 }
 

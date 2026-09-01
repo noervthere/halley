@@ -41,6 +41,7 @@ uniform vec2 halley_next_scale;
 uniform vec2 halley_next_offset;
 uniform float halley_previous_opaque;
 uniform float halley_next_opaque;
+uniform float halley_native_reveal;
 uniform vec2 halley_rect_size;
 uniform vec2 halley_corner_radii;
 
@@ -95,7 +96,22 @@ void main() {
 
     vec2 size = max(halley_rect_size, vec2(1.0));
     float mask = rounded_alpha(current_coords * size, size, halley_corner_radii);
-    vec4 color = mix(previous, next, halley_progress) * (alpha * mask);
+    vec4 color;
+    if (halley_native_reveal > 0.5) {
+        // Native-scale arrangement never fades a covered pixel into empty
+        // space. Crossfade only where both endpoint textures overlap; the
+        // sole endpoint covering an expanding or shrinking edge remains fully
+        // present until the animated clip reaches it.
+        if (previous_inside && next_inside)
+            color = mix(previous, next, halley_progress);
+        else if (next_inside)
+            color = next;
+        else
+            color = previous;
+    } else {
+        color = mix(previous, next, halley_progress);
+    }
+    color *= alpha * mask;
 
 #if defined(DEBUG_FLAGS)
     if (tint == 1.0)
@@ -121,6 +137,7 @@ pub struct ResizeRenderElement {
     mapping: ResizeMapping,
     previous_opaque: f32,
     next_opaque: f32,
+    native_reveal: f32,
     size: (f32, f32),
     radii: super::window_decoration::CornerRadii,
     commit: CommitCounter,
@@ -151,6 +168,67 @@ impl ResizeRenderer {
         radii: super::window_decoration::CornerRadii,
         generation: CommitCounter,
     ) -> Result<ResizeRenderElement, GlesError> {
+        let mapping = resize_mapping(previous, &next, destination, progress);
+        self.element_with_mapping(
+            renderer,
+            id,
+            previous,
+            next,
+            destination,
+            progress,
+            alpha,
+            radii,
+            generation,
+            mapping,
+            false,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn native_element(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        id: Id,
+        previous: &ResizeWindowTexture,
+        next: ResizeWindowTexture,
+        destination: Rectangle<i32, Physical>,
+        display_scale: f32,
+        progress: f32,
+        alpha: f32,
+        radii: super::window_decoration::CornerRadii,
+        generation: CommitCounter,
+    ) -> Result<ResizeRenderElement, GlesError> {
+        let mapping = native_resize_mapping(previous, &next, destination, display_scale);
+        self.element_with_mapping(
+            renderer,
+            id,
+            previous,
+            next,
+            destination,
+            progress,
+            alpha,
+            radii,
+            generation,
+            mapping,
+            true,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn element_with_mapping(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        id: Id,
+        previous: &ResizeWindowTexture,
+        next: ResizeWindowTexture,
+        destination: Rectangle<i32, Physical>,
+        progress: f32,
+        alpha: f32,
+        radii: super::window_decoration::CornerRadii,
+        generation: CommitCounter,
+        mapping: ResizeMapping,
+        native_reveal: bool,
+    ) -> Result<ResizeRenderElement, GlesError> {
         let context = renderer.context_id();
         let program = match self.program.as_ref() {
             Some((program_context, program)) if program_context == &context => program.clone(),
@@ -168,6 +246,7 @@ impl ResizeRenderer {
                         UniformName::new("halley_next_offset", UniformType::_2f),
                         UniformName::new("halley_previous_opaque", UniformType::_1f),
                         UniformName::new("halley_next_opaque", UniformType::_1f),
+                        UniformName::new("halley_native_reveal", UniformType::_1f),
                         UniformName::new("halley_rect_size", UniformType::_2f),
                         UniformName::new("halley_corner_radii", UniformType::_2f),
                     ],
@@ -177,8 +256,8 @@ impl ResizeRenderer {
             }
         };
 
-        let mapping = resize_mapping(previous, &next, destination, progress);
-        let base = texture_element(previous, id, mapping.draw_area, alpha.clamp(0.0, 1.0));
+        let base =
+            texture_element_for_window(previous, id, mapping.draw_area, alpha.clamp(0.0, 1.0));
         let radii = super::window_decoration::CornerRadii {
             top: fit_radius(radii.top, destination),
             bottom: fit_radius(radii.bottom, destination),
@@ -200,6 +279,7 @@ impl ResizeRenderer {
             mapping,
             previous_opaque: if previous.client_opaque { 1.0 } else { 0.0 },
             next_opaque: if next.client_opaque { 1.0 } else { 0.0 },
+            native_reveal: if native_reveal { 1.0 } else { 0.0 },
             size: (destination.size.w as f32, destination.size.h as f32),
             radii,
             commit,
@@ -213,7 +293,7 @@ fn fit_radius(radius: f32, destination: Rectangle<i32, Physical>) -> f32 {
         .min(destination.size.w.min(destination.size.h).max(0) as f32 * 0.5)
 }
 
-fn texture_element(
+pub(crate) fn texture_element_for_window(
     texture: &ResizeWindowTexture,
     id: Id,
     destination: Rectangle<i32, Physical>,
@@ -255,6 +335,63 @@ fn resize_mapping(
         destination,
         progress,
     )
+}
+
+fn native_resize_mapping(
+    previous: &ResizeWindowTexture,
+    next: &ResizeWindowTexture,
+    destination: Rectangle<i32, Physical>,
+    display_scale: f32,
+) -> ResizeMapping {
+    native_resize_mapping_from_metadata(
+        previous.surface_geometry,
+        previous.window_size,
+        next.surface_geometry,
+        next.window_size,
+        destination,
+        display_scale,
+    )
+}
+
+fn native_resize_mapping_from_metadata(
+    previous_surface: Rectangle<i32, Physical>,
+    previous_window: smithay::utils::Size<i32, Physical>,
+    next_surface: Rectangle<i32, Physical>,
+    next_window: smithay::utils::Size<i32, Physical>,
+    destination: Rectangle<i32, Physical>,
+    display_scale: f32,
+) -> ResizeMapping {
+    let display_scale = display_scale.max(0.001);
+    let mapping = |surface: Rectangle<i32, Physical>,
+                   window: smithay::utils::Size<i32, Physical>| {
+        let width = surface.size.w.max(1) as f32 * display_scale;
+        let height = surface.size.h.max(1) as f32 * display_scale;
+        let window_width = window.w as f32 * display_scale;
+        let window_height = window.h as f32 * display_scale;
+        let center_x = (destination.size.w as f32 - window_width) * 0.5;
+        let center_y = (destination.size.h as f32 - window_height) * 0.5;
+        (
+            (
+                destination.size.w as f32 / width,
+                destination.size.h as f32 / height,
+            ),
+            (
+                -(center_x + surface.loc.x as f32 * display_scale) / width,
+                -(center_y + surface.loc.y as f32 * display_scale) / height,
+            ),
+        )
+    };
+    let (previous_scale, previous_offset) = mapping(previous_surface, previous_window);
+    let (next_scale, next_offset) = mapping(next_surface, next_window);
+    ResizeMapping {
+        draw_area: destination,
+        input_scale: (1.0, 1.0),
+        input_offset: (0.0, 0.0),
+        previous_scale,
+        previous_offset,
+        next_scale,
+        next_offset,
+    }
 }
 
 fn resize_mapping_from_metadata(
@@ -465,6 +602,7 @@ impl RenderElement<GlesRenderer> for ResizeRenderElement {
                 Uniform::new("halley_next_offset", self.mapping.next_offset),
                 Uniform::new("halley_previous_opaque", self.previous_opaque),
                 Uniform::new("halley_next_opaque", self.next_opaque),
+                Uniform::new("halley_native_reveal", self.native_reveal),
                 Uniform::new("halley_rect_size", self.size),
                 Uniform::new("halley_corner_radii", (self.radii.top, self.radii.bottom)),
             ],
@@ -485,9 +623,35 @@ impl RenderElement<GlesRenderer> for ResizeRenderElement {
 
 #[cfg(test)]
 mod tests {
-    use super::{interpolated_window_size, resize_commit, resize_mapping_from_metadata};
+    use super::{
+        interpolated_window_size, native_resize_mapping_from_metadata, resize_commit,
+        resize_mapping_from_metadata,
+    };
     use smithay::backend::renderer::utils::CommitCounter;
     use smithay::utils::{Physical, Rectangle};
+
+    #[test]
+    fn native_arrangement_centers_both_endpoints_without_scaling_them() {
+        let destination = Rectangle::new((10, 20).into(), (1000, 750).into());
+        let mapping = native_resize_mapping_from_metadata(
+            Rectangle::new((0, 0).into(), (800, 600).into()),
+            (800, 600).into(),
+            Rectangle::new((0, 0).into(), (1200, 900).into()),
+            (1200, 900).into(),
+            destination,
+            1.0,
+        );
+
+        assert_eq!(mapping.draw_area, destination);
+        assert_eq!(mapping.input_scale, (1.0, 1.0));
+        assert_eq!(mapping.input_offset, (0.0, 0.0));
+        assert_eq!(mapping.previous_scale, (1.25, 1.25));
+        assert_eq!(mapping.previous_offset, (-0.125, -0.125));
+        assert!((mapping.next_scale.0 - (5.0 / 6.0)).abs() < f32::EPSILON);
+        assert!((mapping.next_scale.1 - (5.0 / 6.0)).abs() < f32::EPSILON);
+        assert!((mapping.next_offset.0 - (1.0 / 12.0)).abs() < f32::EPSILON);
+        assert!((mapping.next_offset.1 - (1.0 / 12.0)).abs() < f32::EPSILON);
+    }
 
     #[test]
     fn firefox_csd_bounds_are_kept_separate_from_window_geometry() {

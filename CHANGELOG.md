@@ -35,9 +35,9 @@ All notable changes to this project will be documented in this file.
   when the setting is omitted.
 
 ### Fixed
-- Keep client contents and compositor titlebars on one stable visual scale
-  throughout reversible Field arrangement, avoiding a mid-restore enlargement
-  when a client acknowledges its resize.
+- Keep arranged client contents at fixed endpoint scales and reveal them through
+  the moving frame instead of rubber-stretching the inner texture, while always
+  presenting the final live geometry frame after the transition is retired.
 - Keep the complete decorated window frame, including its titlebar and borders,
   visible while grabbed-window edge panning clamps against an output edge.
 - Make Lift mouse-wheel navigation move the highlighted result one row in the

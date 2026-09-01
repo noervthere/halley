@@ -341,10 +341,43 @@ pub(super) fn live_window_elements(
                     .map(|presentation| presentation.transition_completion)
             }),
     );
-    let arrange_texture = arrange_animating
-        .then(|| arrange_textures.element(window_surface.as_ref(), visual.animated_rect, alpha))
-        .flatten();
-    let texture_blend = if arrange_texture.is_none()
+    let client_radii = if rounded_available && server_titlebar {
+        crate::render::window_decoration::CornerRadii::bottom(content_radius)
+    } else if rounded_available {
+        crate::render::window_decoration::CornerRadii::all(content_radius)
+    } else {
+        crate::render::window_decoration::CornerRadii::default()
+    };
+    let arrange_blend = if arrange_animating {
+        let completion = context
+            .window_animations
+            .arrange_completion(window_surface.as_ref(), context.target_presentation_time)
+            .unwrap_or(0.0);
+        match arrange_textures.native_blend_element(
+            renderer,
+            window_surface.as_ref(),
+            visual.animated_rect,
+            visual.zoom_scale,
+            completion,
+            alpha,
+            client_radii,
+        ) {
+            Ok(blend) => blend,
+            Err(err) => {
+                eventline::warn!("field arrange: failed to render native reveal: {err}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let arrange_fallback = if arrange_animating && arrange_blend.is_none() {
+        arrange_textures.fallback_element(window_surface.as_ref(), visual.animated_rect, alpha)
+    } else {
+        None
+    };
+    let texture_blend = if arrange_blend.is_none()
+        && arrange_fallback.is_none()
         && let Some(completion) = texture_transition_completion
     {
         let hold_x11_fullscreen_exit = should_hold_x11_fullscreen_exit(
@@ -362,13 +395,7 @@ pub(super) fn live_window_elements(
                 progress: completion,
                 hold_previous_until_restored_buffer_matches: hold_x11_fullscreen_exit,
                 alpha,
-                radii: if rounded_available && server_titlebar {
-                    crate::render::window_decoration::CornerRadii::bottom(content_radius)
-                } else if rounded_available {
-                    crate::render::window_decoration::CornerRadii::all(content_radius)
-                } else {
-                    crate::render::window_decoration::CornerRadii::default()
-                },
+                radii: client_radii,
             },
         ) {
             Ok(blend) => blend,
@@ -380,20 +407,17 @@ pub(super) fn live_window_elements(
     } else {
         None
     };
-    if let Some((base, texture)) = arrange_texture {
+    if let Some(blend) = arrange_blend {
+        elements.push(SceneElement::WindowResize(blend));
+    } else if let Some((base, texture)) = arrange_fallback {
         if rounded_available {
-            let radii = if server_titlebar {
-                crate::render::window_decoration::CornerRadii::bottom(content_radius)
-            } else {
-                crate::render::window_decoration::CornerRadii::all(content_radius)
-            };
             let element = window_decoration_renderer
                 .texture_element_with_radii(
                     renderer,
                     base,
                     texture,
                     visual.animated_rect,
-                    radii,
+                    client_radii,
                     (1.0, 1.0, 1.0, 1.0),
                 )
                 .expect("rounded resources were checked above");

@@ -449,6 +449,29 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
         crate::wayland::session_lock::surface_committed(self, surface);
         crate::xwayland::handle_commit(self, &root);
         let fullscreen_commit_now = crate::frame_clock::monotonic_now();
+        let arrange_target = self
+            .window_animations
+            .arrange_completion(&root, fullscreen_commit_now)
+            .zip(
+                self.wayland
+                    .space
+                    .elements()
+                    .find(|window| {
+                        window
+                            .wl_surface()
+                            .is_some_and(|candidate| candidate.as_ref() == &root)
+                    })
+                    .cloned(),
+            );
+        if let Some((completion, window)) = arrange_target {
+            let textures = &mut self.render.arrange_textures;
+            let capture = self
+                .driver
+                .with_renderer(|renderer| textures.capture_target(renderer, &window, completion));
+            if let Err(err) = capture {
+                eventline::warn!("field arrange: failed to capture target texture: {err}");
+            }
+        }
         let external_surface_size =
             smithay::backend::renderer::utils::with_renderer_surface_state(&root, |state| {
                 state.surface_size()
