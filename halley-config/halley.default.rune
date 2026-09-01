@@ -927,6 +927,11 @@ keybinds:
   "$var.mod+ctrl+up" "resize-window-up" with scope "field"
   "$var.mod+ctrl+down" "resize-window-down" with scope "field"
 
+  # Arrange ordinary windows visible on this Field output into a balanced,
+  # non-persistent mosaic. Undo restores the one-shot geometry snapshot.
+  "$var.mod+a" "arrange-visible"
+  "$var.mod+shift+a" "undo-arrange"
+
   # Re-read this file immediately. Valid saves are still watched automatically.
   "$var.mod+shift+r" "reload"
 

@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- Add one-shot `Mod+A` `arrange-visible` Field mosaics for ordinary windows
+  centered in the active output's visible work area, with constraint-aware
+  exclusions, minimum-travel placement, and `Mod+Shift+A` `undo-arrange`
+  geometry restoration. Arranged windows remain independent Field windows.
 - Restore grabbed-window Field panning with the default `Mod+Shift+left-drag`
   `drag-pan` action: dwelling at an output edge now carries the window through
   that output's Field instead of transferring it or leaving it offscreen.

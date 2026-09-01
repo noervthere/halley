@@ -210,7 +210,7 @@ mod tests {
     fn default_matches_the_shipped_keybinds() {
         let kb = Keybinds::default();
         assert_eq!(kb.modifier, ModifierKey::Super);
-        assert_eq!(kb.binds.len(), 61);
+        assert_eq!(kb.binds.len(), 63);
 
         let previous = kb
             .binds
@@ -258,6 +258,28 @@ mod tests {
             .expect("manual reload bind present");
         assert_eq!(reload.scope, BindingScope::Global);
         assert!(!reload.repeat);
+
+        let arrange = kb
+            .binds
+            .iter()
+            .find(|bind| bind.action == Action::ArrangeVisible)
+            .expect("arrange-visible bind present");
+        assert_eq!(arrange.scope, BindingScope::Field);
+        assert_eq!(arrange.key, "a");
+        assert!(arrange.modifiers.super_key);
+        assert!(!arrange.modifiers.shift);
+        assert!(!arrange.repeat);
+
+        let undo = kb
+            .binds
+            .iter()
+            .find(|bind| bind.action == Action::UndoArrange)
+            .expect("undo-arrange bind present");
+        assert_eq!(undo.scope, BindingScope::Field);
+        assert_eq!(undo.key, "a");
+        assert!(undo.modifiers.super_key);
+        assert!(undo.modifiers.shift);
+        assert!(!undo.repeat);
 
         let move_or_pan = kb
             .binds
@@ -517,6 +539,8 @@ mod tests {
             Action::ToggleFullscreen,
             Action::ToggleFieldMaximize,
             Action::ToggleState,
+            Action::ArrangeVisible,
+            Action::UndoArrange,
             Action::Apogee,
             Action::BearingsShow,
             Action::BearingsToggle,

@@ -254,8 +254,8 @@ resolving `keycode-N`.
 The built-in action strings are `quit`, `close-focused`, `toggle-fullscreen`,
 `maximize-focused`, `toggle-state`, `apogee`, `bearings-show`,
 `bearings-toggle`, `cycle-focus`, `cycle-focus-backward`, `open-terminal`,
-`center-last-focused`, `reload`, `zoom-in`, `zoom-out`, `zoom-reset`, `screenshot`, and
-`cluster-toggle-float`. Parameterized actions also include
+`center-last-focused`, `arrange-visible`, `undo-arrange`, `reload`, `zoom-in`,
+`zoom-out`, `zoom-reset`, `screenshot`, and `cluster-toggle-float`. Parameterized actions also include
 `focus-DIRECTION`, `cluster-focus-DIRECTION`, `cluster-tile-swap-DIRECTION`,
 `node-move DIRECTION`, `resize-window-DIRECTION`, and `monitor-focus DIRECTION`, where `DIRECTION` is
 `left`, `right`, `up`, or `down`. `node-move` shifts the focused or
@@ -270,6 +270,22 @@ pointer warp after its opening transition. Escape cancels without changing
 focus or pointer position. `Mod+O` opens or closes
 the multi-monitor Apogee overview. Apogee stops trapping keys as soon as its
 close transition begins.
+
+The default `Mod+A` `arrange-visible` action reorganizes ordinary Field
+windows whose centers are inside the active output's current visible work area.
+It excludes collapsed or detached windows, cluster members, pinned windows,
+fullscreen and maximized windows, and clients whose size constraints cannot fit
+the resulting mosaic. Two windows use equal halves; three use one large region
+and two smaller regions; four use a 2×2 grid; larger sets use balanced,
+near-square rows. Halley assigns windows to regions by minimum total travel, so
+their approximate spatial order is preserved.
+
+Arrangement is one-shot placement, not a layout mode: it creates no tiling tree
+or relationship, and every resulting window remains independently movable and
+resizable. `Mod+Shift+A` `undo-arrange` restores the geometry/output snapshot
+captured by the last successful arrangement, once. Starting another arrange
+attempt replaces that snapshot.
+
 `default-terminal` (also accepted as `open-terminal`) launches the first
 available built-in terminal in this order:
 `alacritty`, `kitty`, `ghostty`, `wezterm`, `foot`, `footclient`, `rio`,

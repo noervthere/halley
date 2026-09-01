@@ -18,7 +18,25 @@ fn example_config_parses_end_to_end() {
     let keybinds = parse_keybinds(&config).expect("example keybinds section parses");
 
     assert_eq!(keybinds.modifier, ModifierKey::Super);
-    assert_eq!(keybinds.binds.len(), 61);
+    assert_eq!(keybinds.binds.len(), 63);
+
+    let arrange = keybinds
+        .binds
+        .iter()
+        .find(|bind| bind.action == Action::ArrangeVisible)
+        .expect("arrange-visible bind present");
+    assert_eq!(arrange.key, "a");
+    assert!(arrange.modifiers.super_key);
+    assert!(!arrange.modifiers.shift);
+
+    let undo = keybinds
+        .binds
+        .iter()
+        .find(|bind| bind.action == Action::UndoArrange)
+        .expect("undo-arrange bind present");
+    assert_eq!(undo.key, "a");
+    assert!(undo.modifiers.super_key);
+    assert!(undo.modifiers.shift);
 
     let drag_pan = keybinds
         .binds

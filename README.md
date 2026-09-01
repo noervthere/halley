@@ -234,6 +234,7 @@ swipe, and hold actions.
 | Monitor | `Super+Shift+Arrow` | Focus an adjacent monitor |
 | Move | `Super+Alt+Arrow` | Move the focused Field node |
 | Resize/Tile | `Super+Ctrl+Arrow` | Resize in the Field or swap in a tiling cluster |
+| Arrange | `Super+A` / `Super+Shift+A` | Arrange visible Field windows / undo the last arrangement |
 | Clusters | `Super+Shift+C` | Enter cluster creation mode |
 | Clusters | `Super+L` | Cycle cluster layout |
 | Clusters | `Super+V` | Toggle the focused cluster member floating |

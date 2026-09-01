@@ -768,6 +768,25 @@ end
     }
 
     #[test]
+    fn parses_arrange_and_undo_actions() {
+        let kb = parse(
+            r#"
+keybinds:
+  mod "super"
+  "$var.mod+a" "arrange-visible"
+  "$var.mod+shift+a" "undo_arrange"
+end
+"#,
+        );
+        assert_eq!(kb.binds[0].action, Action::ArrangeVisible);
+        assert_eq!(kb.binds[0].scope, BindingScope::Field);
+        assert!(!kb.binds[0].repeat);
+        assert_eq!(kb.binds[1].action, Action::UndoArrange);
+        assert_eq!(kb.binds[1].scope, BindingScope::Field);
+        assert!(!kb.binds[1].repeat);
+    }
+
+    #[test]
     fn parses_remappable_compositor_pointer_actions() {
         let kb = parse(
             r#"

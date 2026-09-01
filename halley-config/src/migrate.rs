@@ -194,6 +194,14 @@ const VERSION_1_BINDINGS: &[BindingCandidate] = &[
         line: r#""$var.mod+shift+down" "monitor-focus down""#,
     },
     BindingCandidate {
+        name: "arrange visible Field windows",
+        line: r#""$var.mod+a" "arrange-visible""#,
+    },
+    BindingCandidate {
+        name: "undo last Field arrangement",
+        line: r#""$var.mod+shift+a" "undo-arrange""#,
+    },
+    BindingCandidate {
         name: "manual config reload",
         line: r#""$var.mod+shift+r" "reload""#,
     },
@@ -265,6 +273,11 @@ pub fn migrate_config_at(path: &Path, dry_run: bool) -> Result<MigrationReport, 
     if !accepted.is_empty() {
         updated = insert_bindings(&updated, &accepted)?;
     }
+    let (without_split, split_removed) = remove_retired_split_binding(&updated);
+    updated = without_split;
+    if split_removed {
+        applied.push("retired pointer Field split binding".to_string());
+    }
     let (backfilled, zoom_changed) = backfill_zoom_indicator(&updated)?;
     updated = backfilled;
     if zoom_changed {
@@ -308,6 +321,20 @@ pub fn migrate_config_at(path: &Path, dry_run: bool) -> Result<MigrationReport, 
         reason: None,
         backup,
     })
+}
+
+fn remove_retired_split_binding(source: &str) -> (String, bool) {
+    const RETIRED: &str = r#""$var.mod+ctrl+click-left" "split-window""#;
+    let mut updated = String::with_capacity(source.len());
+    let mut removed = false;
+    for line in source.split_inclusive('\n') {
+        if line.trim() == RETIRED {
+            removed = true;
+        } else {
+            updated.push_str(line);
+        }
+    }
+    (updated, removed)
 }
 
 fn remove_legacy_version_markers(source: &str) -> (String, bool) {
@@ -903,6 +930,36 @@ mod tests {
         assert!(updated.contains("opacity 1.0"));
         crate::load_runtime_config_at(&path).expect("migrated config validates");
 
+        assert_eq!(
+            migrate_config_at(&path, false).unwrap().status,
+            MigrationStatus::UpToDate
+        );
+    }
+
+    #[test]
+    fn retired_split_binding_is_replaced_by_arrange_and_undo() {
+        let scratch = ScratchDir::new("replace-split");
+        let path = scratch.config();
+        let original = minimal(
+            "  \"$var.mod+ctrl+click-left\" \"split-window\"\n  # \"$var.mod+ctrl+click-left\" \"split-window\"\n",
+        );
+        fs::write(&path, &original).unwrap();
+
+        let report = migrate_config_at(&path, false).unwrap();
+        let updated = fs::read_to_string(&path).unwrap();
+
+        assert_eq!(report.status, MigrationStatus::Updated);
+        assert!(
+            report
+                .applied
+                .iter()
+                .any(|item| item == "retired pointer Field split binding")
+        );
+        assert!(updated.contains("\"$var.mod+a\" \"arrange-visible\""));
+        assert!(updated.contains("\"$var.mod+shift+a\" \"undo-arrange\""));
+        assert!(!updated.contains("  \"$var.mod+ctrl+click-left\" \"split-window\""));
+        assert!(updated.contains("# \"$var.mod+ctrl+click-left\" \"split-window\""));
+        crate::load_runtime_config_at(&path).expect("migrated config validates");
         assert_eq!(
             migrate_config_at(&path, false).unwrap().status,
             MigrationStatus::UpToDate
