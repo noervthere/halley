@@ -417,6 +417,12 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                             .is_animating(surface.as_ref(), target_presentation_time)
                     })
                 });
+                let arrange_animating = app.wayland.space.elements().any(|window| {
+                    window.wl_surface().is_some_and(|surface| {
+                        app.window_animations
+                            .is_arranging(surface.as_ref(), target_presentation_time)
+                    })
+                });
                 let presentation_workspace = crate::presentation::active_workspace_on_output(
                     &app.clusters,
                     &output.name(),
@@ -465,7 +471,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                         .clusters
                         .labels_animating_on_output(&output.name(), app.nodes.config.show_labels);
                 let pointer_time = app.start_time.elapsed().as_millis() as u32;
-                if fullscreen_animating || maximize_animating {
+                if fullscreen_animating || maximize_animating || arrange_animating {
                     super::pointer::update_client_state(app, pointer_time);
                 } else if cluster_animating {
                     super::pointer::refresh_client_focus(app, pointer_time);

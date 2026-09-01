@@ -285,6 +285,24 @@ impl Default for MaximizeAnimation {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ArrangeAnimation {
+    pub enabled: bool,
+    pub motion: AnimationMotion,
+}
+
+impl Default for ArrangeAnimation {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            motion: AnimationMotion::Easing(EasingMotion {
+                duration_ms: 360,
+                curve: AnimationCurve::EaseInOutCubic,
+            }),
+        }
+    }
+}
+
 impl Default for NodeAnimation {
     fn default() -> Self {
         Self {
@@ -310,6 +328,7 @@ pub struct Animations {
     pub window_close: WindowCloseAnimation,
     pub fullscreen: FullscreenAnimation,
     pub maximize: MaximizeAnimation,
+    pub arrange: ArrangeAnimation,
     pub smooth_resize: SmoothResizeAnimation,
     pub node: NodeAnimation,
     pub cluster: ClusterAnimation,
@@ -323,6 +342,7 @@ impl Default for Animations {
             window_close: WindowCloseAnimation::default(),
             fullscreen: FullscreenAnimation::default(),
             maximize: MaximizeAnimation::default(),
+            arrange: ArrangeAnimation::default(),
             smooth_resize: SmoothResizeAnimation::default(),
             node: NodeAnimation::default(),
             cluster: ClusterAnimation::default(),
@@ -412,6 +432,26 @@ pub fn parse_animations(config: &RuneConfig) -> Animations {
             MaximizeAnimation {
                 enabled: config.get_or("animations.maximize.enabled", defaults.maximize.enabled),
                 motion: AnimationMotion::parse(config, "animations.maximize", configured_easing),
+            }
+        },
+        arrange: {
+            let default_easing = match defaults.arrange.motion {
+                AnimationMotion::Easing(easing) => easing,
+                AnimationMotion::Spring(_) => unreachable!("arrange defaults use easing motion"),
+            };
+            let configured_easing = AnimationMotion::Easing(EasingMotion {
+                duration_ms: config
+                    .get_or("animations.arrange.duration-ms", default_easing.duration_ms),
+                curve: config
+                    .get_optional::<String>("animations.arrange.curve")
+                    .ok()
+                    .flatten()
+                    .and_then(|curve| AnimationCurve::parse(&curve))
+                    .unwrap_or(default_easing.curve),
+            });
+            ArrangeAnimation {
+                enabled: config.get_or("animations.arrange.enabled", defaults.arrange.enabled),
+                motion: AnimationMotion::parse(config, "animations.arrange", configured_easing),
             }
         },
         smooth_resize: SmoothResizeAnimation {
@@ -523,6 +563,7 @@ end
                 window_close: WindowCloseAnimation::default(),
                 fullscreen: FullscreenAnimation::default(),
                 maximize: MaximizeAnimation::default(),
+                arrange: ArrangeAnimation::default(),
                 smooth_resize: SmoothResizeAnimation::default(),
                 node: NodeAnimation::default(),
                 cluster: ClusterAnimation::default(),
@@ -787,6 +828,52 @@ end
             AnimationMotion::Easing(EasingMotion {
                 duration_ms: 360,
                 curve: AnimationCurve::EaseInOutCubic,
+            })
+        );
+    }
+
+    #[test]
+    fn arrange_supports_smooth_easing_and_spring_motion() {
+        let easing = RuneConfig::from_str(
+            r#"
+animations:
+  arrange:
+    enabled false
+    duration-ms 420
+    curve "ease-out-cubic"
+  end
+end
+"#,
+        )
+        .expect("valid rune-cfg source");
+        assert_eq!(
+            parse_animations(&easing).arrange,
+            ArrangeAnimation {
+                enabled: false,
+                motion: AnimationMotion::Easing(EasingMotion {
+                    duration_ms: 420,
+                    curve: AnimationCurve::EaseOutCubic,
+                }),
+            }
+        );
+
+        let spring = RuneConfig::from_str(
+            r#"
+animations:
+  arrange:
+    motion "spring"
+    damping-ratio 0.9
+    stiffness 500.0
+  end
+end
+"#,
+        )
+        .expect("valid rune-cfg source");
+        assert_eq!(
+            parse_animations(&spring).arrange.motion,
+            AnimationMotion::Spring(SpringMotion {
+                damping_ratio: 0.9,
+                stiffness: 500.0,
             })
         );
     }

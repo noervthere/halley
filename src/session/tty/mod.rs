@@ -1123,6 +1123,13 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
                     .is_animating(surface.as_ref(), target_presentation_time)
             })
     });
+    let arrange_animating = app.wayland.space.elements().any(|window| {
+        wayland::window_is_on_output(window, output, primary)
+            && window.wl_surface().is_some_and(|surface| {
+                app.window_animations
+                    .is_arranging(surface.as_ref(), target_presentation_time)
+            })
+    });
     let presentation_workspace = crate::presentation::active_workspace_on_output(
         &app.clusters,
         &output.name(),
@@ -1214,7 +1221,8 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
         || app.settings.debug.overlay_fps && !app.session_lock.active();
     if pointer_is_on_output {
         let time = app.start_time.elapsed().as_millis() as u32;
-        if cluster_camera_changed || fullscreen_animating || maximize_animating {
+        if cluster_camera_changed || fullscreen_animating || maximize_animating || arrange_animating
+        {
             super::pointer::update_client_state(app, time);
         } else if cluster_animating {
             super::pointer::refresh_client_focus(app, time);

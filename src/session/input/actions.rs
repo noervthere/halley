@@ -312,7 +312,9 @@ pub(crate) fn dispatch<D: SessionDriver>(
             }
         }
         super::super::SessionControl::UndoArrange => {
-            super::super::arrange::undo_last(session);
+            if let Some(output) = action_output {
+                super::super::arrange::undo_last(session, &output);
+            }
         }
         super::super::SessionControl::CenterLastFocused => {
             if let Some(output) = action_output {

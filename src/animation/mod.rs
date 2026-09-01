@@ -259,16 +259,55 @@ impl WindowOpenVisual {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct ArrangeTimeline {
+    geometry: RectTransition,
+}
+
+impl ArrangeTimeline {
+    fn between(
+        motion: AnimationMotion,
+        now: Duration,
+        start: Rectangle<i32, Physical>,
+        target: Rectangle<i32, Physical>,
+        velocity: VisualRect,
+    ) -> Self {
+        Self {
+            geometry: RectTransition::between(
+                motion,
+                now,
+                VisualRect::from(start),
+                VisualRect::from(target),
+                velocity,
+            ),
+        }
+    }
+
+    fn rect_at(self, now: Duration) -> Rectangle<i32, Physical> {
+        self.geometry.rect_at(now).round()
+    }
+
+    fn velocity_at(self, now: Duration) -> VisualRect {
+        self.geometry.velocity_at(now)
+    }
+
+    fn is_finished_at(self, now: Duration) -> bool {
+        self.geometry.is_finished_at(now)
+    }
+}
+
 pub struct WindowAnimations {
     config: Animations,
-    active: HashMap<WlSurface, WindowOpenTimeline>,
+    opening: HashMap<WlSurface, WindowOpenTimeline>,
+    arranging: HashMap<WlSurface, ArrangeTimeline>,
 }
 
 impl WindowAnimations {
     pub fn new(config: Animations) -> Self {
         Self {
             config,
-            active: HashMap::new(),
+            opening: HashMap::new(),
+            arranging: HashMap::new(),
         }
     }
 
@@ -287,7 +326,7 @@ impl WindowAnimations {
             return false;
         }
 
-        let std::collections::hash_map::Entry::Vacant(entry) = self.active.entry(surface) else {
+        let std::collections::hash_map::Entry::Vacant(entry) = self.opening.entry(surface) else {
             return false;
         };
         entry.insert(WindowOpenTimeline {
@@ -307,11 +346,63 @@ impl WindowAnimations {
         current_bounds: Rectangle<i32, Physical>,
         target_bounds: Rectangle<i32, Physical>,
     ) -> bool {
-        let Some(timeline) = self.active.get_mut(surface) else {
+        let Some(timeline) = self.opening.get_mut(surface) else {
             return false;
         };
         timeline.retarget(now, current_bounds, target_bounds);
         true
+    }
+
+    /// Starts or reverses one compositor-owned Field arrangement.
+    ///
+    /// An in-flight transition contributes its current velocity so rapid
+    /// toggle reversals remain continuous instead of restarting from rest.
+    pub fn arrange(
+        &mut self,
+        surface: WlSurface,
+        now: Duration,
+        current_bounds: Rectangle<i32, Physical>,
+        target_bounds: Rectangle<i32, Physical>,
+    ) -> bool {
+        let config = self.config.arrange;
+        if !self.config.enabled || !config.enabled || current_bounds == target_bounds {
+            self.arranging.remove(&surface);
+            return false;
+        }
+        let velocity = self
+            .arranging
+            .get(&surface)
+            .filter(|timeline| !timeline.is_finished_at(now))
+            .map_or(
+                VisualRect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 0.0,
+                    height: 0.0,
+                },
+                |timeline| timeline.velocity_at(now),
+            );
+        self.arranging.insert(
+            surface,
+            ArrangeTimeline::between(config.motion, now, current_bounds, target_bounds, velocity),
+        );
+        true
+    }
+
+    pub fn arrange_visual(
+        &self,
+        surface: &WlSurface,
+        now: Duration,
+    ) -> Option<Rectangle<i32, Physical>> {
+        self.arranging
+            .get(surface)
+            .map(|timeline| timeline.rect_at(now))
+    }
+
+    pub fn is_arranging(&self, surface: &WlSurface, now: Duration) -> bool {
+        self.arranging
+            .get(surface)
+            .is_some_and(|timeline| !timeline.is_finished_at(now))
     }
 
     /// Updates policy for future windows without disturbing animations
@@ -326,23 +417,30 @@ impl WindowAnimations {
         now: Duration,
         bounds: Rectangle<i32, Physical>,
     ) -> Option<WindowOpenVisual> {
-        self.active
+        self.opening
             .get(surface)
             .map(|timeline| timeline.visual_at(now, bounds))
     }
 
     pub fn is_animating(&self, surface: &WlSurface, now: Duration) -> bool {
-        self.active
+        self.opening
             .get(surface)
             .is_some_and(|timeline| !timeline.is_finished_at(now))
+            || self
+                .arranging
+                .get(surface)
+                .is_some_and(|timeline| !timeline.is_finished_at(now))
     }
 
     pub fn remove(&mut self, surface: &WlSurface) {
-        self.active.remove(surface);
+        self.opening.remove(surface);
+        self.arranging.remove(surface);
     }
 
     pub fn cleanup(&mut self, now: Duration) {
-        self.active
+        self.opening
+            .retain(|_, timeline| !timeline.is_finished_at(now));
+        self.arranging
             .retain(|_, timeline| !timeline.is_finished_at(now));
     }
 }
@@ -741,6 +839,63 @@ mod tests {
         animation.retarget(now, windowed, fullscreen);
 
         assert_eq!(animation.visual_at(now, fullscreen).alpha(), alpha);
+    }
+
+    #[test]
+    fn arrange_timeline_interpolates_position_and_size() {
+        let motion = AnimationMotion::Easing(EasingMotion {
+            duration_ms: 300,
+            curve: AnimationCurve::Linear,
+        });
+        let start = Rectangle::new((100, 50).into(), (800, 600).into());
+        let target = Rectangle::new((0, 0).into(), (1200, 900).into());
+        let zero = VisualRect {
+            x: 0.0,
+            y: 0.0,
+            width: 0.0,
+            height: 0.0,
+        };
+        let timeline = ArrangeTimeline::between(motion, Duration::ZERO, start, target, zero);
+
+        assert_eq!(timeline.rect_at(Duration::ZERO), start);
+        assert_eq!(
+            timeline.rect_at(Duration::from_millis(150)),
+            Rectangle::new((50, 25).into(), (1000, 750).into())
+        );
+        assert_eq!(timeline.rect_at(Duration::from_millis(300)), target);
+        assert!(timeline.is_finished_at(Duration::from_millis(300)));
+    }
+
+    #[test]
+    fn arrange_reversal_starts_at_the_live_intermediate_rect() {
+        let motion = AnimationMotion::Easing(EasingMotion {
+            duration_ms: 300,
+            curve: AnimationCurve::EaseInOutCubic,
+        });
+        let start = Rectangle::new((100, 50).into(), (800, 600).into());
+        let target = Rectangle::new((0, 0).into(), (1200, 900).into());
+        let zero = VisualRect {
+            x: 0.0,
+            y: 0.0,
+            width: 0.0,
+            height: 0.0,
+        };
+        let forward = ArrangeTimeline::between(motion, Duration::ZERO, start, target, zero);
+        let reversed_at = Duration::from_millis(120);
+        let current = forward.rect_at(reversed_at);
+        let reversed = ArrangeTimeline::between(
+            motion,
+            reversed_at,
+            current,
+            start,
+            forward.velocity_at(reversed_at),
+        );
+
+        assert_eq!(reversed.rect_at(reversed_at), current);
+        assert_eq!(
+            reversed.rect_at(reversed_at + Duration::from_millis(300)),
+            start
+        );
     }
 
     #[test]

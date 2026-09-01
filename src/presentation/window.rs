@@ -314,7 +314,10 @@ pub(crate) fn window_visual_state_with_cluster_presentation(
             })
         })
         .unwrap_or(camera_rect);
-    let mut animated_rect = opening_visual.transform_rect(presentation_rect, presentation_rect);
+    let opening_rect = opening_visual.transform_rect(presentation_rect, presentation_rect);
+    let mut animated_rect = window_animations
+        .arrange_visual(window_surface.as_ref(), now)
+        .unwrap_or(opening_rect);
     let mut opening_alpha = opening_visual.alpha() * cluster_alpha;
     let mut inherited_presentation = cluster_rect.is_some();
     let mut presentation_space = if cluster_rect.is_some()

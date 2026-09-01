@@ -8,14 +8,28 @@ use super::{Session, SessionDriver};
 const INFEASIBLE_COST: i64 = i64::MAX / 16;
 const UNREACHED_COST: i64 = i64::MAX / 4;
 
-#[derive(Clone, Debug, Default)]
-pub(crate) struct UndoSnapshot {
+#[derive(Clone, Debug)]
+struct ArrangeTransaction {
     restores: Vec<crate::presentation::maximize::FieldRestore>,
 }
 
-impl UndoSnapshot {
-    pub(crate) fn clear(&mut self) {
-        self.restores.clear();
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ArrangeTransactions {
+    by_output: std::collections::HashMap<String, ArrangeTransaction>,
+}
+
+impl ArrangeTransactions {
+    fn take(&mut self, output: &str) -> Option<ArrangeTransaction> {
+        self.by_output.remove(output)
+    }
+
+    fn insert(
+        &mut self,
+        output: String,
+        restores: Vec<crate::presentation::maximize::FieldRestore>,
+    ) {
+        self.by_output
+            .insert(output, ArrangeTransaction { restores });
     }
 }
 
@@ -31,12 +45,14 @@ pub(crate) fn arrange_visible<D: SessionDriver>(
     session: &mut Session<D>,
     output_name: &str,
 ) -> bool {
+    if let Some(transaction) = session.interactions.field_arrange.take(output_name) {
+        return restore_transaction(session, output_name, transaction);
+    }
     if session.clusters.active_on(output_name).is_some()
         || !matches!(session.interactions.grab, crate::input::grab::Grab::None)
     {
         return false;
     }
-    session.interactions.field_arrange_undo.clear();
     let Some(output) = session
         .wayland
         .space
@@ -182,48 +198,143 @@ pub(crate) fn arrange_visible<D: SessionDriver>(
             output: output_name.to_string(),
         })
         .collect::<Vec<_>>();
-    for (candidate_index, target) in assignment {
-        super::configure_field_geometry(
-            session,
-            &crate::presentation::maximize::FieldRestore {
-                surface: candidates[candidate_index].surface.clone(),
+    let now = crate::frame_clock::monotonic_now();
+    let transitions = assignment
+        .into_iter()
+        .filter_map(|(candidate_index, target)| {
+            let candidate = &candidates[candidate_index];
+            let current_visual =
+                super::presented_window_rect(session, &candidate.window, &output, now)?;
+            let request = crate::presentation::maximize::FieldRestore {
+                surface: candidate.surface.clone(),
                 geometry: target,
                 output: output_name.to_string(),
-            },
-        );
+            };
+            let target_visual = field_visual_rect(session, &output, target)?;
+            Some((request, current_visual, target_visual))
+        })
+        .collect::<Vec<_>>();
+    if transitions.len() < 2 {
+        return false;
     }
-    session.interactions.field_arrange_undo = UndoSnapshot { restores };
+
+    // Publish the exact restore set before issuing any client configure. This
+    // makes a rapid second Mod+A a valid reversal even before clients commit
+    // their arranged sizes.
+    session
+        .interactions
+        .field_arrange
+        .insert(output_name.to_string(), restores);
+    for (request, current_visual, target_visual) in transitions {
+        session.window_animations.arrange(
+            request.surface.clone(),
+            now,
+            current_visual,
+            target_visual,
+        );
+        super::configure_field_geometry(session, &request);
+    }
     session.request_output_redraw(&output);
     true
 }
 
-pub(crate) fn undo_last<D: SessionDriver>(session: &mut Session<D>) -> bool {
-    let snapshot = std::mem::take(&mut session.interactions.field_arrange_undo);
-    if snapshot.restores.is_empty() {
+pub(crate) fn undo_last<D: SessionDriver>(session: &mut Session<D>, output_name: &str) -> bool {
+    let Some(transaction) = session.interactions.field_arrange.take(output_name) else {
         return false;
-    }
+    };
+    restore_transaction(session, output_name, transaction)
+}
+
+fn restore_transaction<D: SessionDriver>(
+    session: &mut Session<D>,
+    output_name: &str,
+    transaction: ArrangeTransaction,
+) -> bool {
+    let now = crate::frame_clock::monotonic_now();
     let mut restored = false;
-    for request in snapshot.restores {
-        let eligible = session
+    for request in transaction.restores {
+        let Some((id, window, current_output_name)) = session
             .nodes
             .id_for_surface(&request.surface)
-            .and_then(|id| session.nodes.record(id).map(|record| (id, record)))
-            .is_some_and(|(id, record)| {
-                record.attached
-                    && !record.collapsed
-                    && !session.clusters.is_member(id)
-                    && !session.fullscreen.is_fullscreen_or_pending(&record.surface)
-                    && !session.maximize.contains(&record.surface)
-            });
-        if eligible {
-            super::configure_field_geometry(session, &request);
-            restored = true;
+            .and_then(|id| {
+                session
+                    .nodes
+                    .record(id)
+                    .map(|record| (id, record.window.clone(), record.output.clone()))
+            })
+        else {
+            continue;
+        };
+        let eligible = session.nodes.record(id).is_some_and(|record| {
+            record.attached
+                && !record.collapsed
+                && !session.clusters.is_member(id)
+                && !session.fullscreen.is_fullscreen_or_pending(&record.surface)
+                && !session.maximize.contains(&record.surface)
+        });
+        if !eligible {
+            continue;
         }
+        let current_output = session
+            .wayland
+            .space
+            .outputs()
+            .find(|output| output.name() == current_output_name)
+            .cloned();
+        let target_output = session
+            .wayland
+            .space
+            .outputs()
+            .find(|output| output.name() == request.output)
+            .cloned();
+        let transition = current_output
+            .as_ref()
+            .and_then(|output| super::presented_window_rect(session, &window, output, now))
+            .zip(
+                target_output
+                    .as_ref()
+                    .and_then(|output| field_visual_rect(session, output, request.geometry)),
+            );
+        if let Some((current_visual, target_visual)) = transition {
+            session.window_animations.arrange(
+                request.surface.clone(),
+                now,
+                current_visual,
+                target_visual,
+            );
+        }
+        super::configure_field_geometry(session, &request);
+        restored = true;
     }
     if restored {
-        session.request_redraw();
+        let output = session
+            .wayland
+            .space
+            .outputs()
+            .find(|output| output.name() == output_name)
+            .cloned();
+        if let Some(output) = output {
+            session.request_output_redraw(&output);
+        } else {
+            session.request_redraw();
+        }
     }
     restored
+}
+
+fn field_visual_rect<D: SessionDriver>(
+    session: &Session<D>,
+    output: &smithay::output::Output,
+    geometry: Rectangle<i32, Logical>,
+) -> Option<Rectangle<i32, smithay::utils::Physical>> {
+    let output_geometry = session.wayland.space.output_geometry(output)?;
+    let view = session.cameras.view(&output.name())?;
+    Some(crate::render::camera_rect(
+        geometry.to_physical(1),
+        crate::presentation::camera::global_center(view.center, output_geometry),
+        output_geometry.size.to_physical(1),
+        view.scale,
+    ))
 }
 
 fn window_size_is_accepted(window: &Window, requested: Size<i32, Logical>) -> bool {
@@ -446,10 +557,23 @@ fn minimum_cost_assignment(costs: &[Vec<i64>]) -> Vec<usize> {
 
 #[cfg(test)]
 mod tests {
-    use super::{minimum_cost_assignment, mosaic_regions, visible_work_area_outer};
+    use super::{
+        ArrangeTransactions, minimum_cost_assignment, mosaic_regions, visible_work_area_outer,
+    };
     use halley_core::camera::Camera;
     use halley_core::field::Vec2;
     use smithay::utils::{Logical, Rectangle};
+
+    #[test]
+    fn arrange_transactions_toggle_once_per_output() {
+        let mut transactions = ArrangeTransactions::default();
+        transactions.insert("DP-1".to_string(), Vec::new());
+        transactions.insert("DP-2".to_string(), Vec::new());
+
+        assert!(transactions.take("DP-1").is_some());
+        assert!(transactions.take("DP-1").is_none());
+        assert!(transactions.take("DP-2").is_some());
+    }
 
     #[test]
     fn eligibility_uses_full_work_area_while_layout_keeps_outer_gap() {

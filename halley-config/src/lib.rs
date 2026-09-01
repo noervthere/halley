@@ -29,10 +29,11 @@ pub mod view;
 pub mod zoom;
 
 pub use animations::{
-    AnimationCurve, AnimationMotion, Animations, ClusterAnimation, ClusterStackingAnimation,
-    ClusterTilingAnimation, EasingMotion, FullscreenAnimation, MaximizeAnimation, NodeAnimation,
-    SmoothResizeAnimation, SpringMotion, WindowCloseAnimation, WindowCloseAnimationType,
-    WindowOpenAnimation, WindowOpenAnimationType, load_animations, parse_animations,
+    AnimationCurve, AnimationMotion, Animations, ArrangeAnimation, ClusterAnimation,
+    ClusterStackingAnimation, ClusterTilingAnimation, EasingMotion, FullscreenAnimation,
+    MaximizeAnimation, NodeAnimation, SmoothResizeAnimation, SpringMotion, WindowCloseAnimation,
+    WindowCloseAnimationType, WindowOpenAnimation, WindowOpenAnimationType, load_animations,
+    parse_animations,
 };
 pub use apogee::{Apogee, parse_apogee};
 pub use background::{
