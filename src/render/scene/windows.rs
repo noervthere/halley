@@ -341,65 +341,67 @@ pub(super) fn live_window_elements(
                     .map(|presentation| presentation.transition_completion)
             }),
     );
-    let client_radii = if rounded_available && server_titlebar {
-        crate::render::window_decoration::CornerRadii::bottom(content_radius)
-    } else if rounded_available {
-        crate::render::window_decoration::CornerRadii::all(content_radius)
-    } else {
-        crate::render::window_decoration::CornerRadii::default()
-    };
-    let arrange_blend = if arrange_animating {
-        let completion = context
-            .window_animations
-            .arrange_completion(window_surface.as_ref(), context.target_presentation_time)
-            .unwrap_or(0.0);
-        match arrange_textures.blend_element(
+    let arrange_texture = arrange_animating
+        .then(|| arrange_textures.element(window_surface.as_ref(), visual.animated_rect, alpha))
+        .flatten();
+    let texture_blend = if arrange_texture.is_none()
+        && let Some(completion) = texture_transition_completion
+    {
+        let hold_x11_fullscreen_exit = should_hold_x11_fullscreen_exit(
+            crate::xwayland::is_x11(window),
+            visual.fullscreen.is_some(),
+            context
+                .fullscreen
+                .is_fullscreen_or_pending(window_surface.as_ref()),
+        );
+        match fullscreen_textures.blend_element(
             renderer,
-            window_surface.as_ref(),
-            visual.animated_rect,
-            completion,
-            alpha,
-            client_radii,
+            crate::render::fullscreen_texture::BlendRequest {
+                window,
+                destination: visual.animated_rect,
+                progress: completion,
+                hold_previous_until_restored_buffer_matches: hold_x11_fullscreen_exit,
+                alpha,
+                radii: if rounded_available && server_titlebar {
+                    crate::render::window_decoration::CornerRadii::bottom(content_radius)
+                } else if rounded_available {
+                    crate::render::window_decoration::CornerRadii::all(content_radius)
+                } else {
+                    crate::render::window_decoration::CornerRadii::default()
+                },
+            },
         ) {
             Ok(blend) => blend,
             Err(err) => {
-                eventline::warn!("field arrange: failed to blend textures: {err}");
+                eventline::warn!("window transition: failed to blend textures: {err}");
                 None
             }
         }
     } else {
         None
     };
-    let texture_blend =
-        if !arrange_animating && let Some(completion) = texture_transition_completion {
-            let hold_x11_fullscreen_exit = should_hold_x11_fullscreen_exit(
-                crate::xwayland::is_x11(window),
-                visual.fullscreen.is_some(),
-                context
-                    .fullscreen
-                    .is_fullscreen_or_pending(window_surface.as_ref()),
-            );
-            match fullscreen_textures.blend_element(
-                renderer,
-                crate::render::fullscreen_texture::BlendRequest {
-                    window,
-                    destination: visual.animated_rect,
-                    progress: completion,
-                    hold_previous_until_restored_buffer_matches: hold_x11_fullscreen_exit,
-                    alpha,
-                    radii: client_radii,
-                },
-            ) {
-                Ok(blend) => blend,
-                Err(err) => {
-                    eventline::warn!("window transition: failed to blend textures: {err}");
-                    None
-                }
-            }
+    if let Some((base, texture)) = arrange_texture {
+        if rounded_available {
+            let radii = if server_titlebar {
+                crate::render::window_decoration::CornerRadii::bottom(content_radius)
+            } else {
+                crate::render::window_decoration::CornerRadii::all(content_radius)
+            };
+            let element = window_decoration_renderer
+                .texture_element_with_radii(
+                    renderer,
+                    base,
+                    texture,
+                    visual.animated_rect,
+                    radii,
+                    (1.0, 1.0, 1.0, 1.0),
+                )
+                .expect("rounded resources were checked above");
+            elements.push(SceneElement::RoundedTexture(element));
         } else {
-            None
-        };
-    if let Some(blend) = arrange_blend.or(texture_blend) {
+            elements.push(SceneElement::Closing(base));
+        }
+    } else if let Some(blend) = texture_blend {
         elements.push(SceneElement::WindowResize(blend));
     } else {
         for surface_element in surface_elements {

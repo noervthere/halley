@@ -231,13 +231,7 @@ pub(crate) fn arrange_visible<D: SessionDriver>(
         .field_arrange
         .insert(output_name.to_string(), restores);
     for (window, request, current_visual, target_visual) in transitions {
-        capture_arrange_texture(
-            session,
-            &window,
-            &request.surface,
-            request.geometry.size,
-            now,
-        );
+        capture_arrange_texture(session, &window, &request.surface, now);
         session.window_animations.arrange(
             request.surface.clone(),
             now,
@@ -254,14 +248,13 @@ fn capture_arrange_texture<D: SessionDriver>(
     session: &mut Session<D>,
     window: &Window,
     surface: &WlSurface,
-    target_size: Size<i32, Logical>,
     now: std::time::Duration,
 ) {
     let preserve_existing = session.window_animations.is_arranging(surface, now);
     let textures = &mut session.render.arrange_textures;
-    let capture = session.driver.with_renderer(|renderer| {
-        textures.capture(renderer, window, target_size, preserve_existing)
-    });
+    let capture = session
+        .driver
+        .with_renderer(|renderer| textures.capture(renderer, window, preserve_existing));
     if let Err(err) = capture {
         eventline::warn!("field arrange: failed to capture outgoing window texture: {err}");
     }
@@ -325,13 +318,7 @@ fn restore_transaction<D: SessionDriver>(
                     .and_then(|output| field_visual_rect(session, output, request.geometry)),
             );
         if let Some((current_visual, target_visual)) = transition {
-            capture_arrange_texture(
-                session,
-                &window,
-                &request.surface,
-                request.geometry.size,
-                now,
-            );
+            capture_arrange_texture(session, &window, &request.surface, now);
             session.window_animations.arrange(
                 request.surface.clone(),
                 now,

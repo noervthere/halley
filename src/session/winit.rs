@@ -641,10 +641,6 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                             app.render
                                 .fullscreen_textures
                                 .awaiting_target(surface.as_ref())
-                                || app
-                                    .render
-                                    .arrange_textures
-                                    .awaiting_target(surface.as_ref())
                         });
                         let require_visible =
                             crate::wayland::frame_callbacks::requires_render_visibility(
