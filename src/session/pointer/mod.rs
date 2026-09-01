@@ -90,7 +90,7 @@ pub(super) fn route_client<D: SessionDriver>(
             cameras: &session.cameras,
             clusters: &session.clusters,
             nodes: &session.nodes,
-            window_open_animations: &session.window_open_animations,
+            window_animations: &session.window_animations,
             primary: session.driver.primary_output(),
             fullscreen: &session.fullscreen,
             maximize: &session.maximize,

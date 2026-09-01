@@ -411,7 +411,7 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
         {
             ExternalConfigureResult::NotPending => {
                 let opening = window.wl_surface().is_some_and(|wl_surface| {
-                    self.window_open_animations
+                    self.window_animations
                         .is_animating(wl_surface.as_ref(), now)
                 });
                 let client_geometry_guarded = self

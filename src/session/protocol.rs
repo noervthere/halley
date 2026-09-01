@@ -381,7 +381,7 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
                     .flatten();
                 if admitted_to_draft {
                     self.opening_origins.forget(&mapped);
-                    self.window_open_animations.remove(&mapped);
+                    self.window_animations.remove(&mapped);
                     super::closing::mapped(self, &mapped);
                 } else if let Some(window) = remapped_window {
                     self.wayland.space.unmap_elem(&window);
@@ -405,7 +405,7 @@ impl<D: SessionDriver> CompositorHandler for Session<D> {
                             crate::frame_clock::monotonic_now(),
                         );
                     } else {
-                        self.window_open_animations
+                        self.window_animations
                             .start(mapped, crate::frame_clock::monotonic_now());
                     }
                 }

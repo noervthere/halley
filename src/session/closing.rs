@@ -175,7 +175,7 @@ fn capture_window_inner<D: SessionDriver>(
         Some(&session.nodes),
         window,
         &output,
-        &session.window_open_animations,
+        &session.window_animations,
         &session.fullscreen,
         &session.maximize,
         &session.settings.decorations,

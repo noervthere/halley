@@ -69,7 +69,7 @@ pub(crate) fn start<D: SessionDriver>(
 ) -> bool {
     let Some(output_geometry) = session.wayland.space.output_geometry(output) else {
         session.opening_origins.forget(&surface);
-        return session.window_open_animations.start(surface, now);
+        return session.window_animations.start(surface, now);
     };
     let fallback = fallback_origin(session, output);
     let global = session.opening_origins.activate(&surface, fallback);
@@ -80,7 +80,7 @@ pub(crate) fn start<D: SessionDriver>(
         ))
     });
     session
-        .window_open_animations
+        .window_animations
         .start_with_origin(surface, now, local)
 }
 
@@ -116,7 +116,7 @@ pub(super) fn surface_visual_center<D: SessionDriver>(
         Some(&session.clusters),
         Some(&session.nodes),
         session.driver.primary_output(),
-        &session.window_open_animations,
+        &session.window_animations,
         &session.fullscreen,
         &session.maximize,
         &session.settings.decorations,

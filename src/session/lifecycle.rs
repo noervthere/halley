@@ -282,7 +282,7 @@ pub(crate) fn finish_window_unmap<D: SessionDriver>(
         .presentation_close_size_recovery
         .forget_surface(&surface);
     session.opening_origins.forget(&surface);
-    session.window_open_animations.remove(&surface);
+    session.window_animations.remove(&surface);
     session.fullscreen.remove(&surface);
     if session.maximize.remove(&surface)
         && let Some(output) = focus.as_ref().and_then(|focus| focus.output.as_deref())

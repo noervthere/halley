@@ -259,12 +259,12 @@ impl WindowOpenVisual {
     }
 }
 
-pub struct WindowOpenAnimations {
+pub struct WindowAnimations {
     config: Animations,
     active: HashMap<WlSurface, WindowOpenTimeline>,
 }
 
-impl WindowOpenAnimations {
+impl WindowAnimations {
     pub fn new(config: Animations) -> Self {
         Self {
             config,

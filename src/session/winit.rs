@@ -288,9 +288,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
         window_trace: super::trace::WindowTrace::from_env(),
         keyboard_monitor: None,
         opening_origins: super::opening::OpeningOrigins::default(),
-        window_open_animations: crate::animation::WindowOpenAnimations::new(
-            runtime_config.animations,
-        ),
+        window_animations: crate::animation::WindowAnimations::new(runtime_config.animations),
         render: crate::render::resources::RenderState::new(
             runtime_config.animations,
             &runtime_config.font,
@@ -415,7 +413,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
 
                 let window_animating = app.wayland.space.elements().any(|window| {
                     window.wl_surface().is_some_and(|surface| {
-                        app.window_open_animations
+                        app.window_animations
                             .is_animating(surface.as_ref(), target_presentation_time)
                     })
                 });
@@ -507,7 +505,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                             space: &app.wayland.space,
                             focused: app.wayland.focused_window.as_ref(),
                             cameras: &app.cameras,
-                            window_open_animations: &app.window_open_animations,
+                            window_animations: &app.window_animations,
                             fullscreen: &app.fullscreen,
                             maximize: &app.maximize,
                             nodes: &app.nodes,
@@ -691,7 +689,7 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
                 }
                 crate::xwayland::sync_stacking_order(app);
                 wayland::layer_shell::cleanup(&mut app.wayland);
-                app.window_open_animations.cleanup(target_presentation_time);
+                app.window_animations.cleanup(target_presentation_time);
                 app.render
                     .window_close_animations
                     .cleanup(target_presentation_time);

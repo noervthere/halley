@@ -237,7 +237,7 @@ fn owner_context<D: SessionDriver>(
         Some(&session.clusters),
         Some(&session.nodes),
         session.driver.primary_output(),
-        &session.window_open_animations,
+        &session.window_animations,
         &session.fullscreen,
         &session.maximize,
         &session.settings.decorations,

@@ -152,7 +152,7 @@ pub struct Session<D: SessionDriver> {
     pub(super) window_trace: super::trace::WindowTrace,
     pub keyboard_monitor: Option<crate::accessibility::KeyboardMonitorService>,
     pub opening_origins: super::opening::OpeningOrigins,
-    pub window_open_animations: crate::animation::WindowOpenAnimations,
+    pub window_animations: crate::animation::WindowAnimations,
     pub render: crate::render::resources::RenderState,
     pub fullscreen: crate::wayland::fullscreen::FullscreenManager,
     pub maximize: crate::presentation::maximize::FieldMaximizeManager,
@@ -426,7 +426,7 @@ impl<D: SessionDriver> Session<D> {
                 &self.settings.font,
             );
         }
-        self.window_open_animations.reload(config.animations);
+        self.window_animations.reload(config.animations);
         self.render
             .window_close_animations
             .reload(config.animations);

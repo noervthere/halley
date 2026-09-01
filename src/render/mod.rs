@@ -208,7 +208,7 @@ pub struct DesktopContext<'a> {
     pub space: &'a Space<Window>,
     pub focused: Option<&'a WlSurface>,
     pub cameras: &'a crate::presentation::camera::OutputCameras,
-    pub window_open_animations: &'a crate::animation::WindowOpenAnimations,
+    pub window_animations: &'a crate::animation::WindowAnimations,
     pub fullscreen: &'a crate::wayland::fullscreen::FullscreenManager,
     pub maximize: &'a crate::presentation::maximize::FieldMaximizeManager,
     pub nodes: &'a crate::nodes::NodesState,

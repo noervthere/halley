@@ -67,7 +67,7 @@ pub(super) fn set_external_fullscreen<D: SessionDriver>(
     let now = crate::frame_clock::monotonic_now();
     let opening_animation = window.wl_surface().is_some_and(|wl_surface| {
         session
-            .window_open_animations
+            .window_animations
             .is_animating(wl_surface.as_ref(), now)
     });
     // Source-engine clients briefly request fullscreen off/on while loading.
@@ -307,7 +307,7 @@ pub(super) fn request_opening_fullscreen<D: SessionDriver>(
                 settle_external_immediately(session, surface, window, fullscreen, origin);
                 return;
             };
-            session.window_open_animations.retarget(
+            session.window_animations.retarget(
                 wl_surface.as_ref(),
                 now,
                 current_bounds,
@@ -349,7 +349,7 @@ pub(super) fn opening_presentation_bounds<D: SessionDriver>(
         &session.cameras,
         Some(&session.clusters),
         Some(&session.nodes),
-        &session.window_open_animations,
+        &session.window_animations,
         &session.fullscreen,
         &session.maximize,
         &session.settings.decorations,
@@ -607,7 +607,7 @@ fn presentation_for_window<D: SessionDriver>(
         &session.cameras,
         Some(&session.clusters),
         Some(&session.nodes),
-        &session.window_open_animations,
+        &session.window_animations,
         &session.fullscreen,
         &session.maximize,
         &session.settings.decorations,
@@ -668,7 +668,7 @@ fn presentation_geometry_is_moving<D: SessionDriver>(
     });
     let opening = window.wl_surface().is_some_and(|surface| {
         session
-            .window_open_animations
+            .window_animations
             .is_animating(surface.as_ref(), now)
     });
     let grabbed = window.wl_surface().is_some_and(|surface| {
