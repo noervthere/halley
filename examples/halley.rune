@@ -961,6 +961,7 @@ keybinds:
   # Drag-pan keeps a window on its output; dwell against an edge to carry it
   # through that output's Field instead of transferring it to another output.
   "$var.mod+click-left" "move-window"
+  "$var.mod+ctrl+click-left" "split-window"
   "$var.mod+click-right" "resize-window"
   "$var.mod+shift+click-left" "drag-pan"
   "click-left" "pan-field"

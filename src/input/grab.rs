@@ -499,8 +499,11 @@ pub enum Grab {
         /// `Some` for the monitor-local `drag-pan` window drag. Ordinary
         /// `move-window` grabs leave this unset and may cross outputs.
         edge_pan: Option<WindowEdgePan>,
-        /// Transient, mouse-driven Field split target. It never survives the
-        /// grab and therefore does not create layout membership.
+        /// Only the explicit `split-window` pointer action enables split
+        /// target recognition for this move.
+        field_split_enabled: bool,
+        /// Transient Field split target. It never survives the grab and
+        /// therefore does not create layout membership.
         field_split: Option<FieldSplitCandidate>,
         last_world: Vec2,
         last_update: Duration,

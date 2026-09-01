@@ -197,6 +197,7 @@ pub(crate) fn parse_action(s: &str) -> Action {
         "cluster-toggle-float" | "cluster_toggle_float" => Action::ClusterToggleFloat,
         "move-window" | "move_window" => Action::PointerMoveWindow,
         "resize-window" | "resize_window" => Action::PointerResizeWindow,
+        "split-window" | "split_window" => Action::PointerSplitWindow,
         "pan-field" | "pan_field" => Action::PointerPanField,
         "drag-pan" | "drag_pan" | "field-jump" | "field_jump" => Action::PointerDragPan,
         "reload" | "reload-config" | "reload_config" => Action::Reload,
@@ -772,6 +773,7 @@ end
 keybinds:
   mod "super"
   "$var.mod+click-left" "move-window"
+  "$var.mod+ctrl+click-left" "split-window"
   "$var.mod+click-right" "resize-window"
   "$var.mod+shift+click-left" "drag-pan"
   "click-left" "pan-field"
@@ -779,11 +781,13 @@ end
 "#,
         );
         assert_eq!(kb.binds[0].action, Action::PointerMoveWindow);
-        assert_eq!(kb.binds[1].action, Action::PointerResizeWindow);
-        assert_eq!(kb.binds[2].action, Action::PointerDragPan);
-        assert_eq!(kb.binds[2].scope, BindingScope::Field);
-        assert_eq!(kb.binds[3].action, Action::PointerPanField);
+        assert_eq!(kb.binds[1].action, Action::PointerSplitWindow);
+        assert_eq!(kb.binds[1].scope, BindingScope::Field);
+        assert_eq!(kb.binds[2].action, Action::PointerResizeWindow);
+        assert_eq!(kb.binds[3].action, Action::PointerDragPan);
         assert_eq!(kb.binds[3].scope, BindingScope::Field);
+        assert_eq!(kb.binds[4].action, Action::PointerPanField);
+        assert_eq!(kb.binds[4].scope, BindingScope::Field);
 
         for alias in ["drag_pan", "field-jump", "field_jump"] {
             assert_eq!(parse_action(alias), Action::PointerDragPan);

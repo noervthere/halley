@@ -39,6 +39,7 @@ pub enum NodeSlot {
     SourceChooserBackdrop,
     ClusterCreationBackdrop,
     FieldSplitFill(u8),
+    FieldSplitRoundedBorder(u8),
     FieldSplitBorder(u8, u8),
     ClusterNameSelection,
     ClusterNameCaret,

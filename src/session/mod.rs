@@ -129,6 +129,7 @@ fn dispatch_action(
         Action::ResizeWindow(direction) => return SessionControl::ResizeWindow(direction),
         Action::PointerMoveWindow
         | Action::PointerResizeWindow
+        | Action::PointerSplitWindow
         | Action::PointerPanField
         | Action::PointerDragPan => {
             eventline::warn!("keybinds: pointer grab action used outside a pointer-button binding")
@@ -1895,6 +1896,13 @@ fn begin_pending_pointer_move<D: SessionDriver>(
     true
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PointerMoveMode {
+    Ordinary,
+    EdgePan,
+    FieldSplit,
+}
+
 /// Starts a compositor-owned move immediately. Client title bars use
 /// `begin_client_pointer_move` and promote only after real pointer motion.
 pub(crate) fn begin_pointer_move<D: SessionDriver>(
@@ -1903,7 +1911,32 @@ pub(crate) fn begin_pointer_move<D: SessionDriver>(
     serial: smithay::utils::Serial,
     button: u32,
 ) -> bool {
-    begin_pointer_move_active(session, window, serial, button, false, None, false)
+    begin_pointer_move_active(
+        session,
+        window,
+        serial,
+        button,
+        false,
+        None,
+        PointerMoveMode::Ordinary,
+    )
+}
+
+pub(crate) fn begin_pointer_split<D: SessionDriver>(
+    session: &mut Session<D>,
+    window: &smithay::desktop::Window,
+    serial: smithay::utils::Serial,
+    button: u32,
+) -> bool {
+    begin_pointer_move_active(
+        session,
+        window,
+        serial,
+        button,
+        false,
+        None,
+        PointerMoveMode::FieldSplit,
+    )
 }
 
 pub(crate) fn begin_pointer_edge_pan<D: SessionDriver>(
@@ -1912,7 +1945,15 @@ pub(crate) fn begin_pointer_edge_pan<D: SessionDriver>(
     serial: smithay::utils::Serial,
     button: u32,
 ) -> bool {
-    begin_pointer_move_active(session, window, serial, button, false, None, true)
+    begin_pointer_move_active(
+        session,
+        window,
+        serial,
+        button,
+        false,
+        None,
+        PointerMoveMode::EdgePan,
+    )
 }
 
 pub(crate) fn activate_client_pointer_move<D: SessionDriver>(
@@ -1927,7 +1968,7 @@ pub(crate) fn activate_client_pointer_move<D: SessionDriver>(
         pending.button,
         pending.client_owned,
         Some(pending),
-        false,
+        PointerMoveMode::Ordinary,
     )
 }
 
@@ -1938,7 +1979,7 @@ fn begin_pointer_move_active<D: SessionDriver>(
     button: u32,
     client_owned: bool,
     pending: Option<crate::input::grab::PendingWindowMove>,
-    edge_pan_requested: bool,
+    mode: PointerMoveMode,
 ) -> bool {
     if !crate::window::accepts_compositor_grab(window)
         || window
@@ -2005,7 +2046,7 @@ fn begin_pointer_move_active<D: SessionDriver>(
     let Some(camera) = session.cameras.get(&output_name) else {
         return false;
     };
-    if edge_pan_requested && was_maximized {
+    if mode == PointerMoveMode::EdgePan && was_maximized {
         return false;
     }
     let pointer_position = session.pointer.position();
@@ -2064,7 +2105,7 @@ fn begin_pointer_move_active<D: SessionDriver>(
     }) {
         return false;
     }
-    if edge_pan_requested {
+    if mode == PointerMoveMode::EdgePan {
         let output_right = output_geometry.loc.x + output_geometry.size.w;
         let output_bottom = output_geometry.loc.y + output_geometry.size.h;
         let visual_right = visual_geometry.loc.x + visual_geometry.size.w;
@@ -2201,12 +2242,13 @@ fn begin_pointer_move_active<D: SessionDriver>(
         button,
         client_owned,
         anchor,
-        edge_pan: edge_pan_requested.then(|| {
+        edge_pan: (mode == PointerMoveMode::EdgePan).then(|| {
             crate::input::grab::WindowEdgePan::new(
                 output_name.clone(),
                 crate::frame_clock::monotonic_now(),
             )
         }),
+        field_split_enabled: mode == PointerMoveMode::FieldSplit,
         field_split: None,
         last_world: center,
         last_update: crate::frame_clock::monotonic_now(),

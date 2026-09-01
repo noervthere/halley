@@ -455,12 +455,15 @@ pub fn build(
         request.visuals.decorations,
     )?;
     elements.extend(super::overlays::field_split::elements(
+        renderer,
         output,
         output_geometry,
         request.desktop.cameras,
         request.overlays.field_split,
         request.overlays.overlay_config,
+        request.visuals.decorations,
         request.resources.node_renderer,
+        request.resources.window_decoration_renderer,
     ));
     let mut bearings = super::overlays::bearings::elements(
         renderer,

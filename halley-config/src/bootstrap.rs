@@ -146,6 +146,7 @@ mod tests {
             "\"$var.mod+left\" \"focus-left\"",
             "\"$var.mod+ctrl+right\" \"cluster-tile-swap-right\"",
             "\"$var.mod+shift+up\" \"monitor-focus up\"",
+            "\"$var.mod+ctrl+click-left\" \"split-window\"",
             "\"$var.mod+shift+click-left\" \"drag-pan\"",
             "live-previews true",
             "max-rows 3",

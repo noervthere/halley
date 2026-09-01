@@ -18,7 +18,16 @@ fn example_config_parses_end_to_end() {
     let keybinds = parse_keybinds(&config).expect("example keybinds section parses");
 
     assert_eq!(keybinds.modifier, ModifierKey::Super);
-    assert_eq!(keybinds.binds.len(), 61);
+    assert_eq!(keybinds.binds.len(), 62);
+
+    let split = keybinds
+        .binds
+        .iter()
+        .find(|bind| bind.action == Action::PointerSplitWindow)
+        .expect("explicit Field split bind present");
+    assert_eq!(split.key, "click-left");
+    assert!(split.modifiers.super_key);
+    assert!(split.modifiers.ctrl);
 
     let drag_pan = keybinds
         .binds

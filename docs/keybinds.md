@@ -193,14 +193,16 @@ continuous camera panning.
 | Wheel left | `scroll-left` | Physical wheel horizontal negative |
 | Wheel right | `scroll-right` | Physical wheel horizontal positive |
 
-Window movement, window resizing, and Field panning are remappable compositor
-actions. The defaults are `"$var.mod+click-left" "move-window"`,
+Window movement, window resizing, explicit Field splitting, and Field panning
+are remappable compositor actions. The defaults are
+`"$var.mod+click-left" "move-window"`,
+`"$var.mod+ctrl+click-left" "split-window"`,
 `"$var.mod+click-right" "resize-window"`,
 `"$var.mod+shift+click-left" "drag-pan"`, and
 `"click-left" "pan-field"`. Remove a binding to disable that grab or assign
 the action to another pointer chord. `move-window` is contextual: the same
 grab pans when it starts on empty Field, so both bare left-drag and Mod+left-drag
-pan the desktop.
+pan the desktop. Ordinary `move-window` grabs never arm split placement.
 
 `drag-pan` begins only on a fully visible Field window. It keeps the grabbed
 window assigned to its current output, clamps it at that output's edge, and
@@ -209,20 +211,21 @@ the pointer back from the edge stops the pan. Fullscreen, maximized, oversized,
 and active-cluster windows do not enter this mode. The legacy action names
 `field-jump` and `field_jump` are accepted as aliases for `drag-pan`.
 
-An ordinary `move-window` grab can perform a one-time Field split. While a
-window is grabbed, place the pointer in the outer quarter of another ordinary
-Field window's left, right, top, or bottom side. That side highlights
-immediately; after a 400 ms dwell, two outlined rectangles preview the result.
-On the first placement, releasing divides the output's visible work area between
-the two windows with `field.gap` around and between them. If the target already
-occupies a region produced by an earlier split, releasing recursively subdivides
-that target region instead. Halley recognizes those rectangles from their
-geometry; it does not retain a tiling tree or layout relationship, so either
-window can still be moved or resized independently afterward. The camera does
-not pan, zoom, or recenter. Moving the pointer out of the edge zone or pressing
-`Escape` cancels the candidate. Cluster members, maximized or fullscreen
-windows, pinned targets, and splits that violate either client's size
-constraints are not eligible.
+The explicit `split-window` grab performs one-time Field placement while also
+moving the grabbed window. Place the pointer in the outer quarter of another
+ordinary Field window's left, right, top, or bottom side. That side highlights
+immediately; after a 400 ms dwell, the highlight expands into two border-only
+outlines using the current `decorations.border.radius` rounding. On the first
+placement, releasing divides the output's visible work area between the two
+windows with `field.gap` around and between them. If the target already occupies
+a region produced by an earlier split, releasing recursively subdivides that
+target region instead. Halley recognizes those rectangles from their geometry;
+it does not retain a tiling tree or layout relationship, so either window can
+still be moved or resized independently afterward. The camera does not pan,
+zoom, or recenter. Moving the pointer out of the edge zone or pressing `Escape`
+cancels the candidate. Cluster members, maximized or fullscreen windows, pinned
+targets, and splits that violate either client's size constraints are not
+eligible.
 
 An unbound click keeps its ordinary client, focus, decoration, and
 collapsed-node behavior. In an active tiling cluster,

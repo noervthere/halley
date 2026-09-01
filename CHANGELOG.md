@@ -5,12 +5,13 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
-- Add mouse-driven Field split placement: while moving one ordinary Field
-  window, dwell over an edge of another to preview and commit a one-time
-  left/right or top/bottom division. The first placement claims the output's
-  visible work area; targeting a region produced by an earlier split
-  recursively subdivides that region. The camera stays fixed, no tiling tree is
-  retained, and the windows remain independently movable and resizable.
+- Add explicit mouse-driven Field split placement with the default
+  `Mod+Ctrl+left-drag` `split-window` action. Dwell over an edge of another
+  ordinary Field window to expand the edge cue into two border-only outlines
+  using `decorations.border.radius`, then release to divide the output's
+  visible work area or recursively subdivide an earlier split region. Ordinary
+  window movement never arms the interaction; the camera stays fixed, no tiling
+  tree is retained, and the windows remain independently movable and resizable.
 - Restore grabbed-window Field panning with the default `Mod+Shift+left-drag`
   `drag-pan` action: dwelling at an output edge now carries the window through
   that output's Field instead of transferring it or leaving it offscreen.

@@ -460,6 +460,27 @@ fn dispatch_pointer_grab_action<D: SessionDriver>(
             wayland::focus::select_output(&mut session.wayland, &route.output);
             super::begin_pointer_move(session, window, serial, button)
         }
+        halley_config::Action::PointerSplitWindow => {
+            let Some(route) = route else {
+                return false;
+            };
+            let window = match &route.target {
+                crate::input::pointer::PointerTarget::Window(window)
+                | crate::input::pointer::PointerTarget::Decoration { window, .. } => window,
+                _ => return false,
+            };
+            if !crate::window::accepts_compositor_grab(window)
+                || window.wl_surface().is_some_and(|surface| {
+                    session
+                        .fullscreen
+                        .is_fullscreen_or_pending(surface.as_ref())
+                })
+            {
+                return false;
+            }
+            wayland::focus::select_output(&mut session.wayland, &route.output);
+            super::begin_pointer_split(session, window, serial, button)
+        }
         halley_config::Action::PointerResizeWindow => {
             let Some(route) = route else {
                 return false;
@@ -1354,6 +1375,7 @@ pub(crate) fn wakeup_cluster_interactions<D: SessionDriver>(
             client_owned: false,
             anchor: crate::input::grab::WindowGrabAnchor::Source(source_offset),
             edge_pan: None,
+            field_split_enabled: false,
             field_split: None,
             last_world: center,
             last_update: now,
@@ -2245,6 +2267,7 @@ where
             drag_size,
             anchor,
             edge_pan,
+            field_split_enabled,
             last_world,
             last_update,
             velocity,
@@ -2256,6 +2279,7 @@ where
             let drag_size = *drag_size;
             let anchor = *anchor;
             let edge_pan = edge_pan.clone();
+            let field_split_enabled = *field_split_enabled;
             let previous = *last_world;
             let last_update = *last_update;
             let previous_velocity = *velocity;
@@ -2324,20 +2348,21 @@ where
                 {
                     live.update_contact(placement.contact, now);
                 }
-                let split_contact = if cluster_drag.is_none() && edge_pan.is_none() {
-                    id.and_then(|id| {
-                        field_split_contact(
-                            session,
-                            id,
-                            &window,
-                            &output,
-                            output_geometry,
-                            position_after,
-                        )
-                    })
-                } else {
-                    None
-                };
+                let split_contact =
+                    if field_split_enabled && cluster_drag.is_none() && edge_pan.is_none() {
+                        id.and_then(|id| {
+                            field_split_contact(
+                                session,
+                                id,
+                                &window,
+                                &output,
+                                output_geometry,
+                                position_after,
+                            )
+                        })
+                    } else {
+                        None
+                    };
                 let mut split_changed = false;
                 if let crate::input::grab::Grab::MoveWindow { field_split, .. } =
                     &mut session.interactions.grab
@@ -3092,6 +3117,7 @@ where
                     action,
                     halley_config::Action::PointerMoveWindow
                         | halley_config::Action::PointerResizeWindow
+                        | halley_config::Action::PointerSplitWindow
                 )
             }) && dispatch_pointer_grab_action(
                 session,
@@ -3448,6 +3474,7 @@ where
                         action,
                         halley_config::Action::PointerMoveWindow
                             | halley_config::Action::PointerResizeWindow
+                            | halley_config::Action::PointerSplitWindow
                             | halley_config::Action::PointerPanField
                             | halley_config::Action::PointerDragPan
                     );
