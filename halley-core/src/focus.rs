@@ -108,17 +108,15 @@ pub fn focus_cycle_candidates(
     candidates
 }
 
-/// World-space (field) rectangle for a node eligible for directional focus:
-/// visible and in the `Active` representation state (matches the old
-/// `kind == NodeKind::Surface && state == NodeState::Active` check, minus
-/// the now-gone `kind` half). Derived from the node's center `pos` and
-/// `intrinsic_size`. Ported from `directional.rs::node_field_rect`.
+/// World-space (field) rectangle for a visible directional-focus target.
+/// Uses the node's current representation footprint so expanded windows,
+/// collapsed nodes, and cluster cores all participate with their visible size.
 pub fn node_field_rect(field: &Field, id: NodeId) -> Option<Rect> {
     let node = field.node(id)?;
-    if node.state != NodeState::Active || !field.is_visible(id) {
+    if !field.is_visible(id) {
         return None;
     }
-    let size = node.intrinsic_size;
+    let size = node.footprint;
     let w = size.x.max(1.0);
     let h = size.y.max(1.0);
     Some(Rect {
@@ -335,12 +333,15 @@ mod tests {
     }
 
     #[test]
-    fn node_field_rect_excludes_non_active_and_hidden() {
+    fn node_field_rect_uses_visible_window_node_and_core_footprints() {
         let mut field = Field::new();
         let active = field.spawn_surface("A", Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 100.0, y: 50.0 });
-        let dot = field.spawn_surface("B", Vec2 { x: 10.0, y: 0.0 }, Vec2 { x: 100.0, y: 50.0 });
+        let dot = field.spawn_surface("B", Vec2 { x: 100.0, y: 0.0 }, Vec2 { x: 100.0, y: 50.0 });
         field.set_state(dot, NodeState::Node);
-        let hidden = field.spawn_surface("C", Vec2 { x: 20.0, y: 0.0 }, Vec2 { x: 100.0, y: 50.0 });
+        let core = field.spawn_surface("C", Vec2 { x: 200.0, y: 0.0 }, Vec2 { x: 100.0, y: 50.0 });
+        field.set_state(core, NodeState::Core);
+        let hidden =
+            field.spawn_surface("D", Vec2 { x: 300.0, y: 0.0 }, Vec2 { x: 100.0, y: 50.0 });
         field.set_hidden(hidden, true);
 
         let rect = node_field_rect(&field, active).unwrap();
@@ -349,7 +350,10 @@ mod tests {
         assert_eq!(rect.w, 100.0);
         assert_eq!(rect.h, 50.0);
 
-        assert!(node_field_rect(&field, dot).is_none());
+        let dot_rect = node_field_rect(&field, dot).unwrap();
+        assert!(dot_rect.w < rect.w);
+        assert!(dot_rect.h < rect.h);
+        assert_eq!(node_field_rect(&field, core).unwrap().w, 48.0);
         assert!(node_field_rect(&field, hidden).is_none());
     }
 

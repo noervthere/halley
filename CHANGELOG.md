@@ -25,6 +25,8 @@ All notable changes to this project will be documented in this file.
   Field. Autostart declarations recreate them only after the next restart.
 
 ### Changed
+- Let directional `Mod+Arrow` Field focus traverse expanded windows, collapsed
+  nodes, and collapsed cluster cores without opening the selected handle.
 - Update the README's Discord community invite.
 - Seed fresh and example configs with six empty numbered workspaces on each of
   the two sample outputs, without launching applications.
