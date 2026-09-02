@@ -26,8 +26,9 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 - Let directional `Mod+Arrow` Field focus traverse expanded windows, collapsed
-  nodes, and collapsed cluster cores, panning each selected target minimally
-  into view without opening node or core handles.
+  nodes, and collapsed cluster cores without opening node or core handles.
+  Collapsed nodes reserve their full restored decorated-window bounds while
+  panning, so opening them afterward remains completely in view.
 - Update the README's Discord community invite.
 - Seed fresh and example configs with six empty numbered workspaces on each of
   the two sample outputs, without launching applications.

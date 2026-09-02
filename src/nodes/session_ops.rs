@@ -1093,8 +1093,8 @@ pub fn focus_or_reveal_node<D: crate::session::SessionDriver>(
     true
 }
 
-/// Select a collapsed Field node and pan only far enough to make its landmark
-/// visible. This intentionally leaves the node collapsed.
+/// Select a collapsed Field node and pan only far enough to fit its restored
+/// decorated-window bounds. This intentionally leaves the node collapsed.
 pub fn reveal_collapsed_node<D: crate::session::SessionDriver>(
     session: &mut crate::session::Session<D>,
     id: NodeId,
@@ -1129,11 +1129,17 @@ pub fn reveal_collapsed_node<D: crate::session::SessionDriver>(
         session.wayland.space.output_geometry(&output),
         session.cameras.view(&record.output),
     ) {
-        let delta = landmark_reveal_delta(
+        let restored_client = centered_rect(node_position, record.geometry.size);
+        let restored_outer = crate::titlebar::outer_rect_for_client(
+            &record.window,
+            restored_client,
+            &session.settings.decorations,
+            &session.settings.font,
+        );
+        let delta = minimal_reveal_delta(
             crate::presentation::camera::world_viewport(view, output_geometry),
-            node_position,
-            NODE_DIAMETER_PX,
-            view.scale,
+            restored_outer,
+            24,
         );
         apply_camera_reveal_delta(session, &record.output, delta);
     }
@@ -1183,6 +1189,20 @@ pub fn reveal_cluster_core<D: crate::session::SessionDriver>(
     }
     session.request_redraw();
     true
+}
+
+pub(super) fn centered_rect(
+    position: Vec2,
+    size: smithay::utils::Size<i32, Logical>,
+) -> Rectangle<i32, Logical> {
+    Rectangle::new(
+        (
+            (position.x - size.w as f32 * 0.5).round() as i32,
+            (position.y - size.h as f32 * 0.5).round() as i32,
+        )
+            .into(),
+        size,
+    )
 }
 
 pub(super) fn landmark_reveal_delta(
