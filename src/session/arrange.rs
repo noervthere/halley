@@ -31,6 +31,15 @@ impl ArrangeTransactions {
         self.by_output
             .insert(output, ArrangeTransaction { restores });
     }
+
+    pub(crate) fn contains_surface(&self, surface: &WlSurface) -> bool {
+        self.by_output.values().any(|transaction| {
+            transaction
+                .restores
+                .iter()
+                .any(|restore| restore.surface == *surface)
+        })
+    }
 }
 
 #[derive(Clone)]

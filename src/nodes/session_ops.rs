@@ -1286,6 +1286,15 @@ pub(super) fn minimal_reveal_delta(
     }
 }
 
+fn hard_protected_from_decay(
+    fullscreen: bool,
+    maximized: bool,
+    grabbed: bool,
+    arranged: bool,
+) -> bool {
+    fullscreen || maximized || grabbed || arranged
+}
+
 pub fn tick_decay<D: crate::session::SessionDriver>(
     session: &mut crate::session::Session<D>,
 ) -> bool {
@@ -1329,12 +1338,15 @@ pub fn tick_decay<D: crate::session::SessionDriver>(
         .nodes
         .records()
         .filter(|record| {
-            session.fullscreen.is_fullscreen_or_pending(&record.surface)
-                || session.maximize.contains(&record.surface)
-                || crate::input::grab::belongs_to_surface(
-                    &session.interactions.grab,
-                    &record.surface,
-                )
+            hard_protected_from_decay(
+                session.fullscreen.is_fullscreen_or_pending(&record.surface),
+                session.maximize.contains(&record.surface),
+                crate::input::grab::belongs_to_surface(&session.interactions.grab, &record.surface),
+                session
+                    .interactions
+                    .field_arrange
+                    .contains_surface(&record.surface),
+            )
         })
         .map(|record| record.surface.clone())
         .collect::<Vec<_>>();
@@ -1358,8 +1370,14 @@ pub fn tick_decay<D: crate::session::SessionDriver>(
 
 #[cfg(test)]
 mod close_tests {
-    use super::{collapse_allowed, preferred_close_candidate};
+    use super::{collapse_allowed, hard_protected_from_decay, preferred_close_candidate};
     use halley_core::field::NodeId;
+
+    #[test]
+    fn arranged_windows_are_hard_protected_from_decay() {
+        assert!(hard_protected_from_decay(false, false, false, true));
+        assert!(!hard_protected_from_decay(false, false, false, false));
+    }
 
     #[test]
     fn live_client_focus_wins_over_stale_logical_focus_for_cluster_members() {

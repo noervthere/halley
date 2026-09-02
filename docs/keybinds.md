@@ -287,10 +287,11 @@ their approximate spatial order is preserved.
 
 Arrangement is one-shot placement, not a layout mode: it creates no tiling tree
 or relationship, and every resulting window remains independently movable and
-resizable. Pressing `Mod+A` again restores the exact geometry/output snapshot
-captured by that output's arrangement. The restore transaction is recorded
-before clients are configured, so an immediate or mid-animation second press
-reverses reliably without waiting for clients to commit. `undo-arrange` remains
+resizable. While its restore transaction is active, its windows are protected
+from automatic decay. Pressing `Mod+A` again restores the exact geometry/output
+snapshot captured by that output's arrangement. The restore transaction is
+recorded before clients are configured, so an immediate or mid-animation second
+press reverses reliably without waiting for clients to commit. `undo-arrange` remains
 available as an unbound compatibility action for custom configurations.
 
 `default-terminal` (also accepted as `open-terminal`) launches the first

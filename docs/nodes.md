@@ -69,10 +69,11 @@ end
 ```
 
 There is no active-window count cap. Focused windows, fullscreen or
-fullscreen-pending windows, field-maximized windows, and windows in an
-interactive move/resize grab are hard-protected from decay. Changing between
-protected, inside-ring, and outside-ring status starts a fresh timer; stale
-time from an earlier status is never reused.
+fullscreen-pending windows, field-maximized windows, windows in an active Field
+arrangement, and windows in an interactive move/resize grab are hard-protected
+from decay. Undoing an arrangement starts a fresh timer for each still-eligible
+window. Changing between protected, inside-ring, and outside-ring status starts
+a fresh timer; stale time from an earlier status is never reused.
 
 Each output has its own camera-centered ellipse. Configure it inside that
 connector's `view.output` entry. An entry may contain both hardware settings

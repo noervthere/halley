@@ -25,6 +25,8 @@ All notable changes to this project will be documented in this file.
   Field. Autostart declarations recreate them only after the next restart.
 
 ### Changed
+- Pause automatic decay for windows in an active Field arrangement; undoing the
+  arrangement starts each still-eligible window with a fresh decay timer.
 - Let directional `Mod+Arrow` Field focus traverse expanded windows, collapsed
   nodes, and collapsed cluster cores without opening node or core handles.
   Collapsed nodes reserve their full restored decorated-window bounds while
