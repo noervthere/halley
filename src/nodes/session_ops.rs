@@ -1093,6 +1093,54 @@ pub fn focus_or_reveal_node<D: crate::session::SessionDriver>(
     true
 }
 
+/// Select a collapsed Field node and pan only far enough to make its landmark
+/// visible. This intentionally leaves the node collapsed.
+pub fn reveal_collapsed_node<D: crate::session::SessionDriver>(
+    session: &mut crate::session::Session<D>,
+    id: NodeId,
+    serial: smithay::utils::Serial,
+) -> bool {
+    let Some(record) = session.nodes.record(id).cloned() else {
+        return false;
+    };
+    if !record.attached || !record.collapsed {
+        return false;
+    }
+    let Some(node_position) = session.nodes.field.node(id).map(|node| node.pos) else {
+        return false;
+    };
+    let Some(output) = session
+        .wayland
+        .space
+        .outputs()
+        .find(|output| output.name() == record.output)
+        .cloned()
+    else {
+        return false;
+    };
+    crate::wayland::focus::select_output(&mut session.wayland, &output);
+    crate::window::clear_focus(&mut session.wayland);
+    session
+        .nodes
+        .focus(Some(id), session.start_time.elapsed().as_millis() as u64);
+    crate::session::sync_keyboard_focus(session, serial);
+
+    if let (Some(output_geometry), Some(view)) = (
+        session.wayland.space.output_geometry(&output),
+        session.cameras.view(&record.output),
+    ) {
+        let delta = landmark_reveal_delta(
+            crate::presentation::camera::world_viewport(view, output_geometry),
+            node_position,
+            NODE_DIAMETER_PX,
+            view.scale,
+        );
+        apply_camera_reveal_delta(session, &record.output, delta);
+    }
+    session.request_output_redraw(&output);
+    true
+}
+
 /// Select a collapsed cluster's logical core and pan only far enough to make
 /// that core visible. This intentionally does not activate the workspace.
 pub fn reveal_cluster_core<D: crate::session::SessionDriver>(
@@ -1125,33 +1173,51 @@ pub fn reveal_cluster_core<D: crate::session::SessionDriver>(
         session.wayland.space.output_geometry(&output),
         session.cameras.view(&metadata.output),
     ) {
-        let scale = view.scale.max(0.05);
-        let side = (crate::clusters::CORE_DIAMETER_PX / scale).round().max(1.0) as i32;
-        let core_rect = Rectangle::<i32, Logical>::new(
-            (
-                (metadata.core_position.x - side as f32 * 0.5).round() as i32,
-                (metadata.core_position.y - side as f32 * 0.5).round() as i32,
-            )
-                .into(),
-            (side, side).into(),
-        );
-        let delta = minimal_reveal_delta(
+        let delta = landmark_reveal_delta(
             crate::presentation::camera::world_viewport(view, output_geometry),
-            core_rect,
-            (24.0 / scale).round() as i32,
+            metadata.core_position,
+            crate::clusters::CORE_DIAMETER_PX,
+            view.scale,
         );
-        if (delta.x != 0.0 || delta.y != 0.0)
-            && let Some(camera) = session.cameras.get_mut(&metadata.output)
-        {
-            camera.pan_vel = Vec2 { x: 0.0, y: 0.0 };
-            camera.target_center = Vec2 {
-                x: camera.center.x + delta.x,
-                y: camera.center.y + delta.y,
-            };
-        }
+        apply_camera_reveal_delta(session, &metadata.output, delta);
     }
     session.request_redraw();
     true
+}
+
+pub(super) fn landmark_reveal_delta(
+    viewport: Rectangle<i32, Logical>,
+    position: Vec2,
+    diameter_px: f32,
+    scale: f32,
+) -> Vec2 {
+    let scale = scale.max(0.05);
+    let side = (diameter_px / scale).round().max(1.0) as i32;
+    let landmark = Rectangle::<i32, Logical>::new(
+        (
+            (position.x - side as f32 * 0.5).round() as i32,
+            (position.y - side as f32 * 0.5).round() as i32,
+        )
+            .into(),
+        (side, side).into(),
+    );
+    minimal_reveal_delta(viewport, landmark, (24.0 / scale).round() as i32)
+}
+
+fn apply_camera_reveal_delta<D: crate::session::SessionDriver>(
+    session: &mut crate::session::Session<D>,
+    output: &str,
+    delta: Vec2,
+) {
+    if (delta.x != 0.0 || delta.y != 0.0)
+        && let Some(camera) = session.cameras.get_mut(output)
+    {
+        camera.pan_vel = Vec2 { x: 0.0, y: 0.0 };
+        camera.target_center = Vec2 {
+            x: camera.center.x + delta.x,
+            y: camera.center.y + delta.y,
+        };
+    }
 }
 
 pub(super) fn minimal_reveal_delta(

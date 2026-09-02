@@ -260,9 +260,10 @@ The built-in action strings are `quit`, `close-focused`, `toggle-fullscreen`,
 `node-move DIRECTION`, `resize-window-DIRECTION`, and `monitor-focus DIRECTION`, where `DIRECTION` is
 `left`, `right`, `up`, or `down`. The default `Mod+Arrow` `focus-DIRECTION`
 walks spatially among expanded windows, collapsed nodes, and collapsed cluster
-cores on the active output; selecting a node or core focuses its handle without
-opening it. `node-move` shifts the focused or most-recent Field
-window/collapsed node by one legal placement step; the default binding is
+cores on the active output; each target is panned minimally into view, while
+selecting a node or core focuses its handle without opening it. `node-move`
+shifts the focused or most-recent Field window/collapsed node by one legal
+placement step; the default binding is
 `Mod+Alt+Arrow`. Field `resize-window` uses `left`/`up` to
 shrink and `right`/`down` to grow, sharing `Mod+Ctrl+Arrow` with scoped tile
 swapping. `monitor focus DP-1` targets an exact connector name. `Alt+Tab` and

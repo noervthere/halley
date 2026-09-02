@@ -24,7 +24,7 @@ pub(crate) use ipc::resize_selected_direction;
 pub use session_ops::{
     close, close_focused_on_output, collapse, focus_and_center_node, focus_or_reveal_node,
     pan_after_close_restore, reconcile_landmarks, restore, restore_for_close, reveal_cluster_core,
-    tick_decay, toggle_focused_on_output,
+    reveal_collapsed_node, tick_decay, toggle_focused_on_output,
 };
 pub(crate) use session_ops::{
     displace_landmarks_for_new_window, move_cluster_core_rigid, move_grabbed_body_rigid,
@@ -32,7 +32,7 @@ pub(crate) use session_ops::{
     set_collapsed_output, tick_physics,
 };
 #[cfg(test)]
-use session_ops::{minimal_reveal_delta, physics_frame_delta};
+use session_ops::{landmark_reveal_delta, minimal_reveal_delta, physics_frame_delta};
 
 const OUTSIDE_THRESHOLD: f32 = 0.90;
 pub const NODE_DIAMETER_PX: f32 = 51.0;
@@ -1065,7 +1065,7 @@ fn vec_size(rect: Rectangle<i32, Logical>) -> Vec2 {
 #[cfg(test)]
 mod tests {
     use super::{
-        HoverPreviewState, advance_hover_preview, hover_preview_ready,
+        HoverPreviewState, advance_hover_preview, hover_preview_ready, landmark_reveal_delta,
         logical_focus_after_collapse, minimal_reveal_delta, nearest_free_landmark,
         nearest_free_window_rect, participates_in_decay, physics_frame_delta,
         release_lock_deadline, release_lock_is_active,
@@ -1208,6 +1208,32 @@ mod tests {
             "DP-1",
             started + Duration::from_millis(super::LANDMARK_SLIDE_MS),
         ));
+    }
+
+    #[test]
+    fn offscreen_collapsed_landmark_gets_a_minimal_zoom_aware_reveal() {
+        let viewport = Rectangle::<i32, Logical>::new((0, 0).into(), (1_000, 700).into());
+        assert_eq!(
+            landmark_reveal_delta(
+                viewport,
+                Vec2 {
+                    x: 1_100.0,
+                    y: 350.0
+                },
+                super::NODE_DIAMETER_PX,
+                0.5,
+            ),
+            Vec2 { x: 199.0, y: 0.0 }
+        );
+        assert_eq!(
+            landmark_reveal_delta(
+                viewport,
+                Vec2 { x: 500.0, y: 350.0 },
+                super::NODE_DIAMETER_PX,
+                0.5,
+            ),
+            Vec2 { x: 0.0, y: 0.0 }
+        );
     }
 
     #[test]

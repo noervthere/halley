@@ -109,23 +109,14 @@ fn focus_directional_field_target<D: SessionDriver>(
     if !collapsed {
         return crate::nodes::focus_or_reveal_node(session, id, SERIAL_COUNTER.next_serial());
     }
-    let Some(output) = session
-        .wayland
-        .space
-        .outputs()
-        .find(|output| output.name() == output_name)
-        .cloned()
-    else {
-        return false;
-    };
-    crate::wayland::focus::select_output(&mut session.wayland, &output);
-    crate::window::clear_focus(&mut session.wayland);
-    session
-        .nodes
-        .focus(Some(id), session.start_time.elapsed().as_millis() as u64);
-    super::sync_keyboard_focus(session, SERIAL_COUNTER.next_serial());
-    session.request_output_redraw(&output);
-    true
+    debug_assert_eq!(
+        session
+            .nodes
+            .record(id)
+            .map(|record| record.output.as_str()),
+        Some(output_name)
+    );
+    crate::nodes::reveal_collapsed_node(session, id, SERIAL_COUNTER.next_serial())
 }
 
 /// Selects a directional neighbour in the output's Field. Expanded windows,
