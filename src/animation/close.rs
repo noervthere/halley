@@ -10,6 +10,9 @@ pub(crate) struct CloseVisual {
     pub(crate) scale: f64,
     pub(crate) alpha: f32,
     pub(crate) progress: f64,
+    /// Wall-clock 0..1. Close shaders use this; ease-in-out is only for CPU
+    /// shrink/fade/retract envelopes.
+    pub(crate) linear_progress: f64,
     retract_sample: Option<MotionSample>,
 }
 
@@ -76,12 +79,14 @@ impl CloseTimeline {
                 scale: 1.0 - progress,
                 alpha: self.start_alpha,
                 progress,
+                linear_progress,
                 retract_sample: None,
             },
             WindowCloseAnimationType::Fade => CloseVisual {
                 scale: 1.0,
                 alpha: self.start_alpha * (1.0 - progress) as f32,
                 progress,
+                linear_progress,
                 retract_sample: None,
             },
             WindowCloseAnimationType::Retract => {
@@ -90,6 +95,7 @@ impl CloseTimeline {
                     scale: 1.0,
                     alpha: self.start_alpha * super::launch::alpha(reverse_linear),
                     progress,
+                    linear_progress,
                     retract_sample: Some(MotionSample {
                         linear_progress: reverse_linear,
                         linear_velocity: 0.0,
@@ -142,6 +148,7 @@ mod tests {
                 scale: 1.0,
                 alpha: 0.7,
                 progress: 0.0,
+                linear_progress: 0.0,
                 retract_sample: None,
             }
         );
@@ -151,6 +158,7 @@ mod tests {
                 scale: 0.5,
                 alpha: 0.7,
                 progress: 0.5,
+                linear_progress: 0.5,
                 retract_sample: None,
             }
         );
@@ -160,6 +168,7 @@ mod tests {
                 scale: 0.0,
                 alpha: 0.7,
                 progress: 1.0,
+                linear_progress: 1.0,
                 retract_sample: None,
             }
         );
@@ -179,6 +188,7 @@ mod tests {
                 scale: 1.0,
                 alpha: 0.3,
                 progress: 0.5,
+                linear_progress: 0.5,
                 retract_sample: None,
             }
         );
@@ -188,6 +198,7 @@ mod tests {
                 scale: 1.0,
                 alpha: 0.0,
                 progress: 1.0,
+                linear_progress: 1.0,
                 retract_sample: None,
             }
         );
@@ -229,6 +240,27 @@ mod tests {
 
         assert!(timeline.is_finished_at(now));
         assert_eq!(timeline.visual_at(now).scale, 0.0);
+    }
+
+    #[test]
+    fn shader_clock_is_linear_while_cpu_envelopes_stay_eased() {
+        let timeline = CloseTimeline::new(
+            WindowCloseAnimation {
+                enabled: true,
+                animation_type: WindowCloseAnimationType::Shrink,
+                duration_ms: 200,
+                custom_shader: Some("close.frag".into()),
+            },
+            Duration::from_secs(1),
+            1.0,
+        );
+        let early = timeline.visual_at(Duration::from_millis(1050));
+        assert!((early.linear_progress - 0.25).abs() < 1e-9);
+        assert!(
+            early.progress < 0.1,
+            "ease-in-out stays near zero at 25% time"
+        );
+        assert_eq!(early.scale, 1.0 - early.progress);
     }
 
     #[test]

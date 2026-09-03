@@ -270,8 +270,8 @@ impl WindowCloseAnimations {
                         &active.captured.texture,
                         active.captured.id.clone(),
                         shader_geo,
-                        visual.progress as f32,
-                        visual.progress.clamp(0.0, 1.0) as f32,
+                        visual.linear_progress as f32,
+                        visual.linear_progress.clamp(0.0, 1.0) as f32,
                         active.random_seed,
                         metadata.start_alpha,
                     )

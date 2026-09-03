@@ -44,7 +44,9 @@ that geometry in compositor pixels. Return premultiplied alpha.
 Uniforms you may use:
 
 - `tex` — the window snapshot
-- `halley_progress` — motion value; springs and elastic may leave 0..1
+- `halley_progress` — motion value. Open may overshoot with springs or
+  elastic. Close is linear wall-clock time; the CPU ease-in-out used by
+  shrink/fade is not applied to the shader.
 - `halley_clamped_progress` — that value clamped to 0..1
 - `halley_random_seed` — stable in `[0, 1)` for the life of the animation
 - `halley_tex_scale` and `halley_tex_offset` — map geometry to `tex`
