@@ -23,6 +23,12 @@ All notable changes to this project will be documented in this file.
   pressing `Mod+Q` on its focused core. Empty workspaces disappear immediately;
   populated workspaces confirm before returning their still-open windows to the
   Field. Autostart declarations recreate them only after the next restart.
+- Add optional `custom-shader` fragment paths on `animations.window-open` and
+  `animations.window-close`. The configured `type` still owns the geometry
+  path: `launch` and `retract` travel, while in-place types stay at the real
+  window rectangle. The shader replaces scale and fade. Node collapse stays on
+  the CPU path. A missing or invalid shader is logged once and the configured
+  type draws instead. See `docs/window-shaders.md`.
 
 ### Changed
 - Keep directional `Mod+Arrow` Field focus from panning the camera while a
@@ -41,6 +47,9 @@ All notable changes to this project will be documented in this file.
 - Add `decorations.titlebars.text-size` so window-title text can use a size
   independent of the global compositor font while preserving global inheritance
   when the setting is omitted.
+- Drive close custom shaders with linear wall-clock progress instead of the
+  CPU shrink/fade ease-in-out cubic, so the effect starts on the first frame
+  instead of holding near zero.
 
 ### Fixed
 - Hide Bearings on an output while immersive fullscreen owns it, including
@@ -74,6 +83,9 @@ All notable changes to this project will be documented in this file.
 - Premultiply configured overlay RGBA colours before GLES composition so alpha
   in values such as zoom-indicator `#ffffff80` produces real translucency
   instead of an over-bright, apparently opaque card.
+- Suppress compositor window shadows while a window is drawn through an open
+  or close custom shader, so a detached shadow does not sit next to the
+  effect.
 
 ## [v0.7.0] - 2026-08-31
 
