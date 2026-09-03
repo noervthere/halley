@@ -34,6 +34,7 @@ pub(super) struct LiveWindowRenderers<'a> {
     pub node: &'a mut crate::render::node::NodeRenderer,
     pub text: &'a mut crate::render::text::UiTextRenderer,
     pub pin: &'a mut crate::render::pin::PinRenderer,
+    pub window_shaders: &'a mut crate::render::window_shader::WindowAnimationShaders,
 }
 
 #[derive(Clone, Copy)]
@@ -74,6 +75,128 @@ fn active_crossfade_completion(completion: Option<f64>) -> Option<f64> {
 
 fn compositor_chrome_visible(logical_fullscreen: bool, x11_fullscreen: bool) -> bool {
     !logical_fullscreen && !x11_fullscreen
+}
+
+fn opening_shader_elements(
+    renderer: &mut GlesRenderer,
+    window: &smithay::desktop::Window,
+    context: &LiveWindowContext<'_>,
+    shaders: &crate::render::window_shader::WindowAnimationShaders,
+    titlebar_renderer: &mut crate::render::titlebar::TitlebarRenderer,
+    window_decoration_renderer: &mut crate::render::window_decoration::WindowDecorationRenderer,
+    node_renderer: &mut crate::render::node::NodeRenderer,
+    ui_text: &mut crate::render::text::UiTextRenderer,
+    shadow_renderer: &mut crate::render::effects::shadow::ShadowRenderer,
+    visual: &crate::presentation::window::WindowVisualState,
+    chrome_visible: bool,
+    focused: bool,
+    alpha: f32,
+) -> Result<Option<Vec<SceneElement>>, Box<dyn Error>> {
+    let Some(surface) = window.wl_surface() else {
+        return Ok(None);
+    };
+    let geo = opening_shader_geo(
+        window,
+        visual,
+        context.decorations,
+        context.font,
+        chrome_visible,
+    );
+    if geo.size.w <= 0 || geo.size.h <= 0 {
+        return Ok(None);
+    }
+    let texture = crate::render::window_texture::capture_decorated(
+        renderer,
+        window,
+        None,
+        context.decorations,
+        context.font,
+        focused,
+        chrome_visible,
+        context.maximize.contains(surface.as_ref()),
+        titlebar_renderer,
+        window_decoration_renderer,
+        node_renderer,
+        ui_text,
+    )?;
+    let Some(shader) = shaders.open_element(
+        renderer,
+        &texture,
+        crate::render::window_decoration::surface_slot_for_instance(
+            surface.as_ref(),
+            crate::render::window_decoration::slot::JOIN_TINT,
+            context.instance_identity,
+        ),
+        geo,
+        visual.opening_progress(),
+        visual.opening_clamped_progress(),
+        visual.opening_random_seed(),
+        alpha,
+    ) else {
+        return Ok(None);
+    };
+    let mut elements = vec![SceneElement::WindowShader(shader)];
+    if let Some(shadow) = shadow_renderer.element(
+        renderer,
+        format!(
+            "{}:opening:{}",
+            context.output.name(),
+            smithay::reexports::wayland_server::Resource::id(surface.as_ref())
+        ),
+        geo,
+        0.0,
+        alpha,
+        context.shadow_config,
+    )? {
+        elements.push(SceneElement::Shadow(shadow));
+    }
+    Ok(Some(elements))
+}
+
+fn opening_shader_geo(
+    window: &smithay::desktop::Window,
+    visual: &crate::presentation::window::WindowVisualState,
+    decorations: &halley_config::Decorations,
+    font: &halley_config::Font,
+    chrome_visible: bool,
+) -> Rectangle<i32, Physical> {
+    if !chrome_visible {
+        return visual.animated_rect;
+    }
+    let opening_scale_y = if visual.presentation_rect.size.h > 0 {
+        visual.animated_rect.size.h as f32 / visual.presentation_rect.size.h as f32
+    } else {
+        1.0
+    };
+    let decoration_scale = visual.zoom_scale * opening_scale_y.max(0.0);
+    let chrome = crate::titlebar::WindowChrome::for_window(window, decorations, font);
+    let border_width =
+        crate::render::window_decoration::scaled_metric(chrome.border_width, decoration_scale);
+    if chrome.has_server_titlebar() {
+        let titlebar_height =
+            crate::titlebar::rendered_metrics(&decorations.titlebars, font.size, decoration_scale)
+                .height;
+        crate::titlebar::DecorationLayout::new(
+            visual.animated_rect,
+            border_width,
+            titlebar_height,
+            &decorations.titlebars,
+        )
+        .outer
+    } else {
+        Rectangle::new(
+            (
+                visual.animated_rect.loc.x - border_width,
+                visual.animated_rect.loc.y - border_width,
+            )
+                .into(),
+            (
+                visual.animated_rect.size.w + border_width * 2,
+                visual.animated_rect.size.h + border_width * 2,
+            )
+                .into(),
+        )
+    }
 }
 
 fn quantized_f32(value: f32) -> i32 {
@@ -122,6 +245,7 @@ pub(super) fn live_window_elements(
         node: node_renderer,
         text: ui_text,
         pin: pin_renderer,
+        window_shaders,
     } = renderers;
     let Some(location) = context.space.element_location(window) else {
         return Ok(LiveWindowScene {
@@ -306,6 +430,40 @@ pub(super) fn live_window_elements(
             destination,
         ))
     }));
+    if visual.shader_pixels()
+        && window_shaders.open_available()
+        && visual.fullscreen.is_none()
+        && visual.maximize.is_none()
+        && !arrange_animating
+    {
+        match opening_shader_elements(
+            renderer,
+            window,
+            &context,
+            window_shaders,
+            titlebar_renderer,
+            window_decoration_renderer,
+            node_renderer,
+            ui_text,
+            shadow_renderer,
+            &visual,
+            chrome_visible,
+            Some(window_surface.as_ref()) == context.focused,
+            alpha,
+        ) {
+            Ok(Some(shader_elements)) => {
+                return Ok(LiveWindowScene {
+                    popup_elements,
+                    elements: shader_elements,
+                    cluster_depth: visual.cluster_depth,
+                    cluster_floating: visual.cluster_floating,
+                    cluster_exclusive: visual.cluster_exclusive,
+                });
+            }
+            Ok(None) => {}
+            Err(error) => eventline::warn!("window open shader: {error}"),
+        }
+    }
     if server_titlebar && chrome_alpha > 0.0 {
         append_titlebar_elements(
             renderer,

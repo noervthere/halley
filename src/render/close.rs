@@ -56,10 +56,12 @@ struct CapturedWindow {
 struct ActiveClose {
     captured: CapturedWindow,
     timeline: CloseTimeline,
+    random_seed: f32,
 }
 
 pub struct ClosingWindowRender {
     pub texture: TextureRenderElement<GlesTexture>,
+    pub shader: Option<super::window_shader::WindowShaderRenderElement>,
     /// The snapshot's own identity, namespaced for the border so both parts
     /// stay stable for the life of the animation.
     pub border_id: Id,
@@ -146,6 +148,7 @@ impl WindowCloseAnimations {
             ActiveClose {
                 timeline: CloseTimeline::new(config, now, captured.metadata.start_alpha),
                 captured,
+                random_seed: crate::animation::animation_seed(),
             },
         );
         true
@@ -229,6 +232,7 @@ impl WindowCloseAnimations {
     pub fn renders_for_output(
         &self,
         renderer: &GlesRenderer,
+        shaders: &super::window_shader::WindowAnimationShaders,
         output: &Output,
         output_geometry: Rectangle<i32, Logical>,
         cameras: &OutputCameras,
@@ -241,7 +245,7 @@ impl WindowCloseAnimations {
                 return None;
             }
             let destination = destination_for(metadata, output, output_geometry, cameras)?;
-            closing_render(captured, destination, metadata.start_alpha)
+            closing_render(captured, destination, metadata.start_alpha, None)
         });
         let active = self
             .active
@@ -255,6 +259,42 @@ impl WindowCloseAnimations {
                 let metadata = &active.captured.metadata;
                 let start = destination_for(metadata, output, output_geometry, cameras)?;
                 let visual = active.timeline.visual_at(now);
+                let shader_geo = visual.shader_geo(start, metadata.retract_origin);
+                if metadata.collapse_target.is_none()
+                    && active.timeline.shader_pixels()
+                    && shaders.close_available()
+                    && shader_geo.size.w > 0
+                    && shader_geo.size.h > 0
+                    && let Some(shader) = shaders.close_element(
+                        renderer,
+                        &active.captured.texture,
+                        active.captured.id.clone(),
+                        shader_geo,
+                        visual.progress as f32,
+                        visual.progress.clamp(0.0, 1.0) as f32,
+                        active.random_seed,
+                        metadata.start_alpha,
+                    )
+                {
+                    return Some(ClosingWindowRender {
+                        texture: active.captured.texture.render_element(
+                            active.captured.id.clone(),
+                            shader_geo,
+                            metadata.start_alpha,
+                        ),
+                        shader: Some(shader),
+                        border_id: active
+                            .captured
+                            .id
+                            .namespaced(crate::render::window_decoration::slot::BORDER),
+                        source_texture: active.captured.texture.texture.clone(),
+                        destination: shader_geo,
+                        border: None,
+                        content_radius: 0.0,
+                        stack_index: metadata.stack_index,
+                        order: active.captured.order,
+                    });
+                }
                 let destination = if let Some(target) = metadata.collapse_target {
                     let camera = cameras.get(&output.name())?;
                     let target = crate::nodes::screen_from_world(target, camera, output_geometry)
@@ -266,7 +306,7 @@ impl WindowCloseAnimations {
                 if destination.size.w <= 0 || destination.size.h <= 0 || visual.alpha <= 0.0 {
                     return None;
                 }
-                closing_render(&active.captured, destination, visual.alpha)
+                closing_render(&active.captured, destination, visual.alpha, None)
             });
         pending.chain(active).collect()
     }
@@ -290,6 +330,7 @@ fn closing_render(
     captured: &CapturedWindow,
     destination: Rectangle<i32, Physical>,
     alpha: f32,
+    shader: Option<super::window_shader::WindowShaderRenderElement>,
 ) -> Option<ClosingWindowRender> {
     if destination.size.w <= 0 || destination.size.h <= 0 || alpha <= 0.0 {
         return None;
@@ -309,6 +350,7 @@ fn closing_render(
         texture: captured
             .texture
             .render_element(captured.id.clone(), destination, alpha),
+        shader,
         border_id: captured
             .id
             .namespaced(crate::render::window_decoration::slot::BORDER),

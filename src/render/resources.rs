@@ -14,6 +14,7 @@ use super::pin::PinRenderer;
 use super::text::UiTextRenderer;
 use super::titlebar::TitlebarRenderer;
 use super::window_decoration::WindowDecorationRenderer;
+use super::window_shader::WindowAnimationShaders;
 use crate::clusters::render::ClusterRenderer;
 
 /// Renderer-owned caches and GPU resources shared by every output.
@@ -37,6 +38,7 @@ pub struct RenderState {
     pub(crate) shadow_renderer: ShadowRenderer,
     pub(crate) ui_text: UiTextRenderer,
     pub(crate) titlebar_renderer: TitlebarRenderer,
+    pub(crate) window_shaders: WindowAnimationShaders,
 }
 
 /// Per-frame mutable view over [`RenderState`].
@@ -59,6 +61,7 @@ pub struct RenderResources<'a> {
     pub shadow_renderer: &'a mut ShadowRenderer,
     pub ui_text: &'a mut UiTextRenderer,
     pub titlebar_renderer: &'a mut TitlebarRenderer,
+    pub window_shaders: &'a mut WindowAnimationShaders,
 }
 
 impl<'a> From<&'a mut RenderState> for RenderResources<'a> {
@@ -79,6 +82,7 @@ impl<'a> From<&'a mut RenderState> for RenderResources<'a> {
             shadow_renderer: &mut state.shadow_renderer,
             ui_text: &mut state.ui_text,
             titlebar_renderer: &mut state.titlebar_renderer,
+            window_shaders: &mut state.window_shaders,
         }
     }
 }
@@ -86,7 +90,7 @@ impl<'a> From<&'a mut RenderState> for RenderResources<'a> {
 impl RenderState {
     pub fn new(animations: Animations, font: &Font) -> Self {
         Self {
-            window_close_animations: WindowCloseAnimations::new(animations),
+            window_close_animations: WindowCloseAnimations::new(animations.clone()),
             arrange_textures: ArrangeTextureTransitions::default(),
             background_renderer: BackgroundRenderer::default(),
             fullscreen_textures: FullscreenTextureTransitions::default(),
@@ -101,6 +105,11 @@ impl RenderState {
             shadow_renderer: ShadowRenderer::default(),
             ui_text: UiTextRenderer::new(font),
             titlebar_renderer: TitlebarRenderer::default(),
+            window_shaders: {
+                let mut shaders = WindowAnimationShaders::default();
+                shaders.reload(&animations);
+                shaders
+            },
         }
     }
 }

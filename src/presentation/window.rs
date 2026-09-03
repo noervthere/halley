@@ -19,6 +19,10 @@ pub(crate) struct WindowVisualState {
     pub(crate) presentation_rect: Rectangle<i32, Physical>,
     pub(crate) animated_rect: Rectangle<i32, Physical>,
     pub(crate) opening_alpha: f32,
+    opening_progress: f32,
+    opening_clamped_progress: f32,
+    opening_random_seed: f32,
+    shader_pixels: bool,
     pub(crate) fullscreen: Option<crate::wayland::fullscreen::FullscreenPresentation>,
     pub(crate) maximize: Option<crate::presentation::maximize::FieldMaximizePresentation>,
     pub(crate) camera_center: Point<f32, Physical>,
@@ -90,6 +94,22 @@ fn is_cluster_exclusive_window(
 impl WindowVisualState {
     pub(crate) fn maps_from_source(self) -> bool {
         self.inherited_presentation || self.fullscreen.is_some() || self.maximize.is_some()
+    }
+
+    pub(crate) fn shader_pixels(self) -> bool {
+        self.shader_pixels
+    }
+
+    pub(crate) fn opening_progress(self) -> f32 {
+        self.opening_progress
+    }
+
+    pub(crate) fn opening_clamped_progress(self) -> f32 {
+        self.opening_clamped_progress
+    }
+
+    pub(crate) fn opening_random_seed(self) -> f32 {
+        self.opening_random_seed
     }
 }
 
@@ -319,6 +339,10 @@ pub(crate) fn window_visual_state_with_cluster_presentation(
         .arrange_visual(window_surface.as_ref(), now)
         .unwrap_or(opening_rect);
     let mut opening_alpha = opening_visual.alpha() * cluster_alpha;
+    let mut opening_progress = opening_visual.progress() as f32;
+    let mut opening_clamped_progress = opening_visual.clamped_progress() as f32;
+    let mut opening_random_seed = opening_visual.random_seed();
+    let mut shader_pixels = opening_visual.shader_pixels();
     let mut inherited_presentation = cluster_rect.is_some();
     let mut presentation_space = if cluster_rect.is_some()
         || fullscreen_presentation.is_some()
@@ -388,6 +412,10 @@ pub(crate) fn window_visual_state_with_cluster_presentation(
             owner_visual.animated_rect,
         );
         opening_alpha = owner_visual.opening_alpha;
+        opening_progress = owner_visual.opening_progress;
+        opening_clamped_progress = owner_visual.opening_clamped_progress;
+        opening_random_seed = owner_visual.opening_random_seed;
+        shader_pixels = owner_visual.shader_pixels;
         inherited_camera_center = owner_visual.camera_center;
         inherited_zoom_scale = owner_visual.zoom_scale;
         inherited_cluster_depth = owner_visual.cluster_depth;
@@ -403,6 +431,10 @@ pub(crate) fn window_visual_state_with_cluster_presentation(
         presentation_rect,
         animated_rect,
         opening_alpha,
+        opening_progress,
+        opening_clamped_progress,
+        opening_random_seed,
+        shader_pixels,
         fullscreen: fullscreen_presentation,
         maximize: maximize_presentation,
         camera_center: inherited_camera_center,

@@ -66,6 +66,7 @@ render_elements! {
     Cropped=CropRenderElement<super::rescale::RescaledElement>,
     RoundedCropped=CropRenderElement<super::window_decoration::RoundedSurfaceElement>,
     WindowResize=super::resize::ResizeRenderElement,
+    WindowShader=super::window_shader::WindowShaderRenderElement,
     WindowBorder=super::window_decoration::RoundedBorderElement,
     RoundedTexture=super::window_decoration::RoundedTextureElement,
     ClusterCore=crate::clusters::render::ClusterCoreElement,
@@ -95,6 +96,10 @@ pub fn build(
     request: RenderRequest<'_>,
 ) -> Result<Vec<SceneElement>, Box<dyn Error>> {
     request.resources.node_renderer.poll_icons(renderer);
+    request
+        .resources
+        .window_shaders
+        .ensure(renderer, request.visuals.background_base);
     request
         .resources
         .backdrop_blur_renderer
@@ -646,6 +651,7 @@ pub fn build(
         .window_close_animations
         .renders_for_output(
             renderer,
+            request.resources.window_shaders,
             output,
             output_geometry,
             request.desktop.cameras,
@@ -654,9 +660,14 @@ pub fn build(
         .into_iter()
         .map(|closing| -> Result<StackGroup, Box<dyn Error>> {
             let mut elements = Vec::new();
-            let shadow_alpha = closing.texture.alpha();
+            let shader = closing.shader;
+            let shadow_alpha = shader
+                .as_ref()
+                .map(|element| element.alpha())
+                .unwrap_or_else(|| closing.texture.alpha());
             let border_width = closing.border.map(|border| border.width).unwrap_or(0);
-            let rounded = closing.content_radius > 0.0
+            let rounded = shader.is_none()
+                && closing.content_radius > 0.0
                 && request
                     .resources
                     .window_decoration_renderer
@@ -688,7 +699,9 @@ pub fn build(
                     );
                 }
             }
-            if rounded {
+            if let Some(shader) = shader {
+                elements.push(SceneElement::WindowShader(shader));
+            } else if rounded {
                 let texture = request
                     .resources
                     .window_decoration_renderer
@@ -844,6 +857,7 @@ pub fn build(
                 node: request.resources.node_renderer,
                 text: request.resources.ui_text,
                 pin: request.resources.pin_renderer,
+                window_shaders: request.resources.window_shaders,
             },
         )?;
         if window_scene.cluster_exclusive {
@@ -880,6 +894,7 @@ pub fn build(
                     node: request.resources.node_renderer,
                     text: request.resources.ui_text,
                     pin: request.resources.pin_renderer,
+                    window_shaders: request.resources.window_shaders,
                 },
             )?;
             if !extra_scene.elements.is_empty() || !extra_scene.popup_elements.is_empty() {

@@ -430,6 +430,7 @@ impl<D: SessionDriver> Session<D> {
         self.render
             .window_close_animations
             .reload(config.animations.clone());
+        self.render.window_shaders.reload(&config.animations);
         let fullscreen_redraw = self.fullscreen.reload(config.animations.clone());
         if fullscreen_redraw {
             self.render.fullscreen_textures.remove_owner(

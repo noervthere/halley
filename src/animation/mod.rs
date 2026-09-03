@@ -529,7 +529,7 @@ impl WindowAnimations {
     }
 }
 
-fn animation_seed() -> f32 {
+pub(crate) fn animation_seed() -> f32 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     std::time::SystemTime::now()
