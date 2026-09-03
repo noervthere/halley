@@ -1251,6 +1251,21 @@ impl FullscreenManager {
         })
     }
 
+    /// Whether immersive fullscreen is presenting on this output right now.
+    ///
+    /// Includes enter/exit transitions so overlay chrome such as Bearings
+    /// disappears with the client. Parked (Alt-Tabbed) fullscreen and
+    /// field-maximize are excluded so the desktop overlay can return.
+    pub(crate) fn presents_immersive_on_output_matching(
+        &self,
+        output: &Output,
+        mut matches: impl FnMut(&WlSurface) -> bool,
+    ) -> bool {
+        self.windows.iter().any(|(surface, entry)| {
+            matches(surface) && entry_presents_immersive(entry, &output.name())
+        })
+    }
+
     pub fn has_stable_fullscreen_on_output(&self, output: &Output, now: Duration) -> bool {
         self.stable_fullscreen_surface_on_output(output, now)
             .is_some()
@@ -1752,6 +1767,12 @@ fn committed_xdg_window_size(surface: &WlSurface) -> Option<Size<i32, Logical>> 
 
 fn entry_owns_output_presentation(entry: &FullscreenWindow) -> bool {
     !entry.presentation_paused
+}
+
+fn entry_presents_immersive(entry: &FullscreenWindow, output: &str) -> bool {
+    entry.origin != FullscreenOrigin::Maximize
+        && entry_owns_output_presentation(entry)
+        && entry_occupies_output(entry, output)
 }
 
 fn entry_covers_top(entry: &FullscreenWindow, output: &str, now: Duration) -> bool {
@@ -2383,6 +2404,24 @@ mod tests {
         let mut external = test_entry(true);
         external.native = None;
         assert!(!resumes_on_explicit_focus(&external));
+    }
+
+    #[test]
+    fn immersive_presentation_excludes_parked_and_maximize() {
+        let mut client = test_entry(true);
+        assert!(entry_presents_immersive(&client, "DP-1"));
+        assert!(!entry_presents_immersive(&client, "DP-2"));
+
+        client.presentation_paused = true;
+        assert!(!entry_presents_immersive(&client, "DP-1"));
+
+        let mut maximize = test_entry(true);
+        maximize.origin = FullscreenOrigin::Maximize;
+        assert!(!entry_presents_immersive(&maximize, "DP-1"));
+
+        let mut compositor = test_entry(true);
+        compositor.origin = FullscreenOrigin::Compositor;
+        assert!(entry_presents_immersive(&compositor, "DP-1"));
     }
 
     #[test]

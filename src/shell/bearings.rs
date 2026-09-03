@@ -94,8 +94,8 @@ impl BearingsState {
         self.held_show_keys.contains(&keycode)
     }
 
-    pub fn tick(&mut self, output: &str, now: Duration) -> bool {
-        let target = if self.visible { 1.0 } else { 0.0 };
+    pub fn tick(&mut self, output: &str, now: Duration, allowed: bool) -> bool {
+        let target = if self.visible && allowed { 1.0 } else { 0.0 };
         let state = self
             .animation
             .entry(output.to_string())
@@ -108,6 +108,11 @@ impl BearingsState {
             .as_secs_f32()
             .clamp(0.0, 0.1);
         state.last_tick = now;
+        if !allowed {
+            let changed = state.mix > SETTLE_EPSILON;
+            state.mix = 0.0;
+            return changed;
+        }
         state.mix = animate_mix(state.mix, target, dt);
         (state.mix - target).abs() > SETTLE_EPSILON
     }
@@ -173,5 +178,18 @@ mod tests {
         assert!(bearings.visible());
         assert!(bearings.release_show_key(44));
         assert!(!bearings.visible());
+    }
+
+    #[test]
+    fn immersive_output_hides_immediately_without_clearing_visible() {
+        let mut bearings = BearingsState::new(halley_config::Bearings::default());
+        assert!(bearings.set_visible(true));
+        assert!(!bearings.tick("DP-1", Duration::from_millis(16), true));
+        assert_eq!(bearings.mix("DP-1"), 1.0);
+
+        assert!(bearings.tick("DP-1", Duration::from_millis(32), false));
+        assert_eq!(bearings.mix("DP-1"), 0.0);
+        assert!(bearings.visible());
+        assert!(!bearings.tick("DP-1", Duration::from_millis(48), false));
     }
 }

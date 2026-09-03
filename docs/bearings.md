@@ -17,6 +17,11 @@ overlapping. This affects Bearings UI only: active windows remain free to
 overlap one another, while the separate landmark policy continues to keep
 collapsed nodes clear.
 
+Bearings stay hidden on an output while immersive fullscreen owns it, including
+games, browser video, and compositor `Mod+F`. Chips return when that
+presentation is parked (for example by Alt-Tab) or left. Field-maximize does
+not hide them.
+
 Clicking a chip performs one action:
 
 - A collapsed node restores and focuses immediately. Optional

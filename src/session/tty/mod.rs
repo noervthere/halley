@@ -1159,10 +1159,20 @@ fn redraw_output(app: &mut TtyApp, output: &Output, loop_handle: &LoopHandle<'_,
     let node_animating = app
         .nodes
         .is_animating_on_output(&output.name(), target_presentation_time);
-    let bearings_animating = app
-        .shell
-        .bearings
-        .tick(&output.name(), target_presentation_time);
+    let bearings_animating = app.shell.bearings.tick(
+        &output.name(),
+        target_presentation_time,
+        !app.fullscreen
+            .presents_immersive_on_output_matching(output, |surface| {
+                crate::presentation::surface_workspace_is_active(
+                    &app.clusters,
+                    &app.nodes,
+                    surface,
+                    &output.name(),
+                    target_presentation_time,
+                )
+            }),
+    );
     let focus_cycle_animating = app.shell.focus_cycle.tick(target_presentation_time);
     let composer_animating = app
         .shell

@@ -41,6 +41,9 @@ All notable changes to this project will be documented in this file.
   when the setting is omitted.
 
 ### Fixed
+- Hide Bearings on an output while immersive fullscreen owns it, including
+  games and browser video, so chips do not paint over the client. Parked
+  fullscreen and field-maximize still allow Bearings.
 - Keep size-constrained windows such as Steam in smaller-output `Mod+A`
   arrangements by trying asymmetric mosaics before excluding a window, while
   preserving the balanced layout whenever every client accepts it.
