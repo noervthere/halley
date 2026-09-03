@@ -445,15 +445,19 @@ pub fn run(explicit_config_path: Option<std::path::PathBuf>) {
         window_trace: super::trace::WindowTrace::from_env(),
         keyboard_monitor,
         opening_origins: super::opening::OpeningOrigins::default(),
-        window_animations: crate::animation::WindowAnimations::new(runtime_config.animations),
+        window_animations: crate::animation::WindowAnimations::new(
+            runtime_config.animations.clone(),
+        ),
         render: crate::render::resources::RenderState::new(
-            runtime_config.animations,
+            runtime_config.animations.clone(),
             &runtime_config.font,
         ),
-        fullscreen: crate::wayland::fullscreen::FullscreenManager::new(runtime_config.animations),
+        fullscreen: crate::wayland::fullscreen::FullscreenManager::new(
+            runtime_config.animations.clone(),
+        ),
         maximize: crate::presentation::maximize::FieldMaximizeManager::new(
             runtime_config.field,
-            runtime_config.animations,
+            runtime_config.animations.clone(),
         ),
         xwayland,
     };

@@ -104,7 +104,7 @@ impl WindowCloseAnimations {
         let Some(surface) = window.wl_surface().map(|surface| surface.into_owned()) else {
             return Ok(false);
         };
-        if !close_enabled(self.config) {
+        if !close_enabled(&self.config) {
             self.provisional.remove(&surface);
             self.pending.remove(&surface);
             return Ok(false);
@@ -136,11 +136,11 @@ impl WindowCloseAnimations {
         let Some(captured) = self.pending.remove(surface) else {
             return false;
         };
-        if !close_enabled(self.config) {
+        if !close_enabled(&self.config) {
             return false;
         }
 
-        let config = self.config.window_close;
+        let config = self.config.window_close.clone();
         self.active.insert(
             surface.clone(),
             ActiveClose {
@@ -212,7 +212,7 @@ impl WindowCloseAnimations {
 
     pub fn reload(&mut self, config: Animations) {
         self.config = config;
-        if !close_enabled(config) {
+        if !close_enabled(&self.config) {
             self.provisional.clear();
             self.speculative.clear();
             self.pending.clear();
@@ -350,7 +350,7 @@ fn collapse_destination(
     )
 }
 
-fn close_enabled(config: Animations) -> bool {
+fn close_enabled(config: &Animations) -> bool {
     config.enabled && config.window_close.enabled && config.window_close.duration_ms > 0
 }
 
@@ -400,16 +400,16 @@ mod tests {
     #[test]
     fn close_policy_respects_master_local_and_zero_duration_killswitches() {
         let mut animations = Animations::default();
-        assert!(close_enabled(animations));
+        assert!(close_enabled(&animations));
 
         animations.enabled = false;
-        assert!(!close_enabled(animations));
+        assert!(!close_enabled(&animations));
         animations.enabled = true;
         animations.window_close.enabled = false;
-        assert!(!close_enabled(animations));
+        assert!(!close_enabled(&animations));
         animations.window_close.enabled = true;
         animations.window_close.duration_ms = 0;
-        assert!(!close_enabled(animations));
+        assert!(!close_enabled(&animations));
     }
 
     #[test]

@@ -332,7 +332,7 @@ impl WindowAnimations {
         now: Duration,
         launch_origin: Option<Point<f64, Physical>>,
     ) -> bool {
-        let config = self.config.window_open;
+        let config = &self.config.window_open;
         if !self.config.enabled || !config.enabled {
             return false;
         }

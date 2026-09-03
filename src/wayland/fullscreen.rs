@@ -283,7 +283,7 @@ impl FullscreenManager {
 
     pub fn reload(&mut self, animations: Animations) -> bool {
         self.animations = animations;
-        if animations_enabled(animations) {
+        if animations_enabled(&self.animations) {
             return false;
         }
         self.windows.retain(|_, entry| {
@@ -322,7 +322,7 @@ impl FullscreenManager {
         origin: FullscreenOrigin,
         requested: bool,
     ) -> bool {
-        if !animations_enabled(self.animations) {
+        if !animations_enabled(&self.animations) {
             return false;
         }
         let mut native = self
@@ -473,7 +473,7 @@ impl FullscreenManager {
         });
         let configure_serial = send_required_configure(toplevel);
         if let Some(serial) = configure_serial
-            && animations_enabled(self.animations)
+            && animations_enabled(&self.animations)
             && transition_requested
         {
             entry.snapshot_serials.push(serial);
@@ -601,7 +601,7 @@ impl FullscreenManager {
             super::decoration::apply_tiled_hint(state);
         });
         if let Some(serial) = send_required_configure(toplevel)
-            && animations_enabled(self.animations)
+            && animations_enabled(&self.animations)
             && transition_requested
             && let Some(entry) = self.windows.get_mut(toplevel.wl_surface())
         {
@@ -861,7 +861,7 @@ impl FullscreenManager {
         let Some(entry) = self.windows.get_mut(&wl_surface) else {
             return ExternalConfigureResult::NotPending;
         };
-        let result = acknowledge_external_geometry(entry, observed, self.animations, now);
+        let result = acknowledge_external_geometry(entry, observed, &self.animations, now);
         let ExternalConfigureResult::Settled {
             fullscreen,
             animated,
@@ -907,7 +907,7 @@ impl FullscreenManager {
         let ExternalConfigureResult::Settled {
             fullscreen,
             animated: _,
-        } = acknowledge_external_surface(entry, surface_size, self.animations, now)
+        } = acknowledge_external_surface(entry, surface_size, &self.animations, now)
         else {
             return false;
         };
@@ -1110,7 +1110,7 @@ impl FullscreenManager {
                 },
             );
         }
-        settle_visual_commit(entry, self.animations, now, visual_desired);
+        settle_visual_commit(entry, &self.animations, now, visual_desired);
         true
     }
 
@@ -1470,7 +1470,7 @@ impl FullscreenManager {
         surface: &WlSurface,
         fullscreen: bool,
     ) -> bool {
-        animations_enabled(self.animations)
+        animations_enabled(&self.animations)
             && self
                 .windows
                 .get(surface)
@@ -1555,7 +1555,7 @@ fn resumes_on_explicit_focus(entry: &FullscreenWindow) -> bool {
     entry.native.is_some()
 }
 
-fn animations_enabled(animations: Animations) -> bool {
+fn animations_enabled(animations: &Animations) -> bool {
     animations.enabled && animations.fullscreen.enabled
 }
 
@@ -1887,7 +1887,7 @@ fn begin_external_transaction(
 fn acknowledge_external_geometry(
     entry: &mut FullscreenWindow,
     observed: Rectangle<i32, Logical>,
-    animations: Animations,
+    animations: &Animations,
     now: Duration,
 ) -> ExternalConfigureResult {
     let Some(pending) = entry.external_pending.as_mut() else {
@@ -1903,7 +1903,7 @@ fn acknowledge_external_geometry(
 fn acknowledge_external_surface(
     entry: &mut FullscreenWindow,
     surface_size: Option<Size<i32, Logical>>,
-    animations: Animations,
+    animations: &Animations,
     now: Duration,
 ) -> ExternalConfigureResult {
     let Some(pending) = entry.external_pending.as_mut() else {
@@ -1925,7 +1925,7 @@ fn acknowledge_external_surface(
 
 fn settle_external_transaction(
     entry: &mut FullscreenWindow,
-    animations: Animations,
+    animations: &Animations,
     now: Duration,
 ) -> ExternalConfigureResult {
     let Some(pending) = entry.external_pending else {
@@ -2010,7 +2010,7 @@ fn freeze_visual_for_configure(entry: &mut FullscreenWindow, now: Duration) {
 
 fn retarget_visual(
     entry: &mut FullscreenWindow,
-    animations: Animations,
+    animations: &Animations,
     now: Duration,
     presented: bool,
 ) {
@@ -2034,7 +2034,7 @@ fn retarget_visual(
 /// clock, matching Niri's resize transaction boundary.
 fn settle_visual_commit(
     entry: &mut FullscreenWindow,
-    animations: Animations,
+    animations: &Animations,
     now: Duration,
     desired: bool,
 ) {
@@ -2478,7 +2478,7 @@ mod tests {
     fn local_killswitch_disables_visual_motion() {
         let mut animations = Animations::default();
         animations.fullscreen.enabled = false;
-        assert!(!animations_enabled(animations));
+        assert!(!animations_enabled(&animations));
     }
 
     #[test]
@@ -2491,12 +2491,12 @@ mod tests {
         let mut entry = test_entry(false);
         let started = Duration::from_secs(1);
 
-        retarget_visual(&mut entry, animations, started, true);
+        retarget_visual(&mut entry, &animations, started, true);
         let forward = entry.transition.expect("forward transition");
         let reversed_at = started + Duration::from_millis(100);
         let value_before_reverse = forward.value_at(reversed_at);
 
-        retarget_visual(&mut entry, animations, reversed_at, false);
+        retarget_visual(&mut entry, &animations, reversed_at, false);
         let reverse = entry.transition.expect("reverse transition");
 
         assert!(!entry.active);
@@ -2519,7 +2519,7 @@ mod tests {
         let mut entry = test_entry(true);
         entry.desired = false;
         entry.pending_motion = (1.0, 0.0);
-        settle_visual_commit(&mut entry, animations, started, false);
+        settle_visual_commit(&mut entry, &animations, started, false);
 
         let value_before_reverse = visual_motion_state(&entry, reversed_at).0;
         freeze_visual_for_configure(&mut entry, reversed_at);
@@ -2532,7 +2532,7 @@ mod tests {
             "waiting for the reversal configure must hold the current rectangle"
         );
 
-        settle_visual_commit(&mut entry, animations, reversed_at, true);
+        settle_visual_commit(&mut entry, &animations, reversed_at, true);
         let reverse = entry.transition.expect("reverse transition");
         assert_eq!(reverse.value_at(reversed_at), value_before_reverse);
         assert_eq!(
@@ -2550,7 +2550,7 @@ mod tests {
         assert!(entry.transition.is_none());
         assert!(!entry.active);
 
-        settle_visual_commit(&mut entry, animations, Duration::ZERO, true);
+        settle_visual_commit(&mut entry, &animations, Duration::ZERO, true);
         assert!(entry.active);
         assert!(entry.transition.is_some());
     }
@@ -2619,7 +2619,7 @@ mod tests {
         animations.fullscreen.enabled = false;
         let mut entry = test_entry(false);
 
-        retarget_visual(&mut entry, animations, Duration::ZERO, true);
+        retarget_visual(&mut entry, &animations, Duration::ZERO, true);
 
         assert!(!entry.active);
         assert!(entry.presented);
@@ -2630,7 +2630,7 @@ mod tests {
     fn external_fullscreen_is_logically_settled_without_animation() {
         let animations = Animations::default();
         let mut entry = test_entry(false);
-        retarget_visual(&mut entry, animations, Duration::from_secs(1), true);
+        retarget_visual(&mut entry, &animations, Duration::from_secs(1), true);
 
         settle_external_fullscreen(&mut entry, "HDMI-A-1", (2560, 1440).into());
 
@@ -2659,19 +2659,24 @@ mod tests {
             ExternalTransactionRequest::Configure(target)
         );
         assert_eq!(
-            acknowledge_external_surface(&mut entry, Some(target.size), animations, Duration::ZERO,),
+            acknowledge_external_surface(
+                &mut entry,
+                Some(target.size),
+                &animations,
+                Duration::ZERO,
+            ),
             ExternalConfigureResult::Waiting
         );
         assert!(!entry.external_pending.unwrap().surface_committed);
 
         assert_eq!(
-            acknowledge_external_geometry(&mut entry, intermediate, animations, Duration::ZERO),
+            acknowledge_external_geometry(&mut entry, intermediate, &animations, Duration::ZERO),
             ExternalConfigureResult::Waiting
         );
         assert!(entry.transition.is_none());
 
         assert_eq!(
-            acknowledge_external_geometry(&mut entry, target, animations, Duration::from_secs(1),),
+            acknowledge_external_geometry(&mut entry, target, &animations, Duration::from_secs(1),),
             ExternalConfigureResult::Waiting
         );
         assert!(!entry.active);
@@ -2682,7 +2687,7 @@ mod tests {
             acknowledge_external_surface(
                 &mut entry,
                 Some(target.size),
-                animations,
+                &animations,
                 Duration::from_secs(1),
             ),
             ExternalConfigureResult::Settled {
@@ -2809,7 +2814,7 @@ mod tests {
         );
 
         assert_eq!(
-            acknowledge_external_geometry(&mut entry, target, animations, Duration::ZERO),
+            acknowledge_external_geometry(&mut entry, target, &animations, Duration::ZERO),
             ExternalConfigureResult::Settled {
                 fullscreen: true,
                 animated: false,
@@ -2831,11 +2836,11 @@ mod tests {
             ExternalPresentationKind::Animated,
             Duration::ZERO,
         );
-        acknowledge_external_geometry(&mut entry, target, animations, Duration::from_secs(1));
+        acknowledge_external_geometry(&mut entry, target, &animations, Duration::from_secs(1));
         acknowledge_external_surface(
             &mut entry,
             Some(target.size),
-            animations,
+            &animations,
             Duration::from_secs(1),
         );
         assert!(entry.transition.is_some());

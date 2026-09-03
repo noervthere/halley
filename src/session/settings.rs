@@ -42,7 +42,7 @@ impl RuntimeSettings {
             system_color_scheme,
             apogee: config.apogee,
             input: applied_input,
-            animations: config.animations,
+            animations: config.animations.clone(),
             decorations: config.decorations,
             font: config.font.clone(),
             effects: config.effects,
@@ -73,7 +73,7 @@ impl RuntimeSettings {
     /// working keyboard configuration.
     pub fn reload_non_input(&mut self, config: &halley_config::RuntimeConfig) {
         self.apogee = config.apogee;
-        self.animations = config.animations;
+        self.animations = config.animations.clone();
         self.decorations = config.decorations;
         self.font = config.font.clone();
         self.effects = config.effects;

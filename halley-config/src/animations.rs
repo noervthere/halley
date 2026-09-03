@@ -131,11 +131,15 @@ impl WindowOpenAnimationType {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct WindowOpenAnimation {
     pub enabled: bool,
     pub animation_type: WindowOpenAnimationType,
     pub motion: AnimationMotion,
+    /// Optional fragment-shader path. Relative paths resolve from the
+    /// directory that contains `halley.rune`. Empty or omitted means the
+    /// configured `type` draws the pixels.
+    pub custom_shader: Option<String>,
 }
 
 impl Default for WindowOpenAnimation {
@@ -147,6 +151,7 @@ impl Default for WindowOpenAnimation {
                 duration_ms: 300,
                 curve: AnimationCurve::Linear,
             }),
+            custom_shader: None,
         }
     }
 }
@@ -170,11 +175,15 @@ impl WindowCloseAnimationType {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WindowCloseAnimation {
     pub enabled: bool,
     pub animation_type: WindowCloseAnimationType,
     pub duration_ms: u32,
+    /// Optional fragment-shader path. Relative paths resolve from the
+    /// directory that contains `halley.rune`. Empty or omitted means the
+    /// configured `type` draws the pixels.
+    pub custom_shader: Option<String>,
 }
 
 impl Default for WindowCloseAnimation {
@@ -183,6 +192,7 @@ impl Default for WindowCloseAnimation {
             enabled: true,
             animation_type: WindowCloseAnimationType::default(),
             duration_ms: 270,
+            custom_shader: None,
         }
     }
 }
@@ -321,7 +331,7 @@ impl Default for FullscreenAnimation {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Animations {
     pub enabled: bool,
     pub window_open: WindowOpenAnimation,
@@ -387,6 +397,7 @@ pub fn parse_animations(config: &RuneConfig) -> Animations {
             ),
             animation_type,
             motion: window_open_motion,
+            custom_shader: optional_shader_path(config, "animations.window-open.custom-shader"),
         },
         window_close: WindowCloseAnimation {
             enabled: config.get_or(
@@ -403,6 +414,7 @@ pub fn parse_animations(config: &RuneConfig) -> Animations {
                 "animations.window-close.duration-ms",
                 defaults.window_close.duration_ms,
             ),
+            custom_shader: optional_shader_path(config, "animations.window-close.custom-shader"),
         },
         fullscreen: FullscreenAnimation {
             enabled: config.get_or("animations.fullscreen.enabled", defaults.fullscreen.enabled),
@@ -508,6 +520,15 @@ pub fn parse_animations(config: &RuneConfig) -> Animations {
     }
 }
 
+fn optional_shader_path(config: &RuneConfig, path: &str) -> Option<String> {
+    config
+        .get_optional::<String>(path)
+        .ok()
+        .flatten()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
 pub fn load_animations() -> Animations {
     let Some(path) = crate::config_path() else {
         eprintln!("animations: no config path resolvable, using defaults");
@@ -559,6 +580,7 @@ end
                         duration_ms: 450,
                         curve: AnimationCurve::Elastic,
                     }),
+                    custom_shader: None,
                 },
                 window_close: WindowCloseAnimation::default(),
                 fullscreen: FullscreenAnimation::default(),
@@ -592,6 +614,7 @@ end
                 enabled: false,
                 animation_type: WindowCloseAnimationType::Fade,
                 duration_ms: 410,
+                custom_shader: None,
             }
         );
     }
@@ -652,6 +675,7 @@ end
                 enabled: true,
                 animation_type: WindowCloseAnimationType::Shrink,
                 duration_ms: 270,
+                custom_shader: None,
             }
         );
         assert_eq!(
@@ -943,5 +967,48 @@ end
                 stiffness: 100_000.0,
             })
         );
+    }
+
+    #[test]
+    fn parses_custom_shader_paths_and_treats_blank_as_unset() {
+        let config = RuneConfig::from_str(
+            r#"
+animations:
+  window-open:
+    custom-shader "shaders/open.frag"
+  end
+  window-close:
+    custom-shader "  shaders/close.frag  "
+  end
+end
+"#,
+        )
+        .expect("valid rune-cfg source");
+        let animations = parse_animations(&config);
+        assert_eq!(
+            animations.window_open.custom_shader.as_deref(),
+            Some("shaders/open.frag")
+        );
+        assert_eq!(
+            animations.window_close.custom_shader.as_deref(),
+            Some("shaders/close.frag")
+        );
+
+        let blank = RuneConfig::from_str(
+            r#"
+animations:
+  window-open:
+    custom-shader "   "
+  end
+  window-close:
+    custom-shader ""
+  end
+end
+"#,
+        )
+        .expect("valid rune-cfg source");
+        let animations = parse_animations(&blank);
+        assert_eq!(animations.window_open.custom_shader, None);
+        assert_eq!(animations.window_close.custom_shader, None);
     }
 }

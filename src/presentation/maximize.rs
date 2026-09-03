@@ -88,7 +88,7 @@ impl FieldMaximizeManager {
     pub fn reload(&mut self, field: Field, animations: Animations) -> bool {
         self.field = field;
         self.animations = animations;
-        if !animations_enabled(animations) {
+        if !animations_enabled(&self.animations) {
             for entry in self.entries.values_mut() {
                 entry.active = entry.desired;
                 entry.window_timeline = None;
@@ -104,7 +104,7 @@ impl FieldMaximizeManager {
     }
 
     pub fn animations_enabled(&self) -> bool {
-        animations_enabled(self.animations)
+        animations_enabled(&self.animations)
     }
 
     pub(crate) fn toggle(
@@ -581,14 +581,14 @@ impl FieldMaximizeManager {
         }
         let target = if entry.desired { 1.0 } else { 0.0 };
         entry.window_timeline = timeline(
-            self.animations,
+            &self.animations,
             now,
             entry.pending_window_motion.0,
             target,
             entry.pending_window_motion.1,
         );
         entry.camera_timeline = timeline(
-            self.animations,
+            &self.animations,
             now,
             entry.pending_camera_motion.0,
             target,
@@ -607,7 +607,7 @@ pub struct FieldMaximizeCleanup {
     pub finished_surfaces: Vec<WlSurface>,
 }
 
-fn animations_enabled(animations: Animations) -> bool {
+fn animations_enabled(animations: &Animations) -> bool {
     animations.enabled && animations.maximize.enabled
 }
 
@@ -621,7 +621,7 @@ fn presentation_is_visible(progress: f64, timeline_active: bool) -> bool {
 }
 
 fn timeline(
-    animations: Animations,
+    animations: &Animations,
     now: Duration,
     from: f64,
     to: f64,
@@ -732,11 +732,11 @@ mod tests {
             curve: AnimationCurve::Linear,
         });
         let started = Duration::from_secs(1);
-        let forward = timeline(animations, started, 0.0, 1.0, 0.0).unwrap();
+        let forward = timeline(&animations, started, 0.0, 1.0, 0.0).unwrap();
         let reversed_at = started + Duration::from_millis(100);
         let value = forward.value_at(reversed_at);
         let velocity = forward.velocity_at(reversed_at);
-        let reverse = timeline(animations, reversed_at, value, 0.0, velocity).unwrap();
+        let reverse = timeline(&animations, reversed_at, value, 0.0, velocity).unwrap();
 
         assert!((reverse.value_at(reversed_at) - value).abs() < f64::EPSILON);
         assert_eq!(

@@ -426,17 +426,19 @@ impl<D: SessionDriver> Session<D> {
                 &self.settings.font,
             );
         }
-        self.window_animations.reload(config.animations);
+        self.window_animations.reload(config.animations.clone());
         self.render
             .window_close_animations
-            .reload(config.animations);
-        let fullscreen_redraw = self.fullscreen.reload(config.animations);
+            .reload(config.animations.clone());
+        let fullscreen_redraw = self.fullscreen.reload(config.animations.clone());
         if fullscreen_redraw {
             self.render.fullscreen_textures.remove_owner(
                 crate::render::fullscreen_texture::TextureTransitionOwner::Fullscreen,
             );
         }
-        let maximize_redraw = self.maximize.reload(config.field, config.animations);
+        let maximize_redraw = self
+            .maximize
+            .reload(config.field, config.animations.clone());
         if maximize_redraw {
             self.render
                 .fullscreen_textures

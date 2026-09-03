@@ -108,6 +108,7 @@ mod tests {
             enabled: true,
             animation_type,
             duration_ms: 200,
+            custom_shader: None,
         }
     }
 

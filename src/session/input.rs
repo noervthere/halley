@@ -1249,7 +1249,7 @@ pub(crate) fn wakeup_smooth_resize<D: SessionDriver>(
     session: &mut Session<D>,
     now: std::time::Duration,
 ) -> bool {
-    let animations = session.settings.animations;
+    let animations = &session.settings.animations;
     let changed = match &mut session.interactions.grab {
         crate::input::grab::Grab::ResizeWindow(state) => {
             crate::input::grab::advance_resize_preview(
@@ -2032,7 +2032,7 @@ where
         } else {
             requested_size
         };
-        let animations = session.settings.animations;
+        let animations = &session.settings.animations;
         resize_preview_changed = crate::input::grab::advance_resize_preview(
             state,
             crate::frame_clock::monotonic_now(),
