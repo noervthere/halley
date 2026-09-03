@@ -661,10 +661,8 @@ pub fn build(
         .map(|closing| -> Result<StackGroup, Box<dyn Error>> {
             let mut elements = Vec::new();
             let shader = closing.shader;
-            let shadow_alpha = shader
-                .as_ref()
-                .map(|element| element.alpha())
-                .unwrap_or_else(|| closing.texture.alpha());
+            let shader_active = shader.is_some();
+            let shadow_alpha = closing.texture.alpha();
             let border_width = closing.border.map(|border| border.width).unwrap_or(0);
             let rounded = shader.is_none()
                 && closing.content_radius > 0.0
@@ -729,18 +727,23 @@ pub fn build(
                 )
                     .into(),
             );
-            if let Some(shadow) = request.resources.shadow_renderer.element(
-                renderer,
-                format!("{}:closing:{}", output.name(), closing.order),
-                caster,
-                if rounded {
-                    closing.content_radius + border_width as f32
-                } else {
-                    0.0
-                },
-                shadow_alpha,
-                request.visuals.shadows.window,
-            )? {
+            // The rectangular caster cannot follow an arbitrary shader's
+            // fragment silhouette. Let the shader own the complete close
+            // visual instead of leaving a detached shadow on the trajectory.
+            if !shader_active
+                && let Some(shadow) = request.resources.shadow_renderer.element(
+                    renderer,
+                    format!("{}:closing:{}", output.name(), closing.order),
+                    caster,
+                    if rounded {
+                        closing.content_radius + border_width as f32
+                    } else {
+                        0.0
+                    },
+                    shadow_alpha,
+                    request.visuals.shadows.window,
+                )?
+            {
                 elements.push(SceneElement::Shadow(shadow));
             }
             Ok(StackGroup {

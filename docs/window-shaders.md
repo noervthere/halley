@@ -59,6 +59,11 @@ vec2 coords_tex = coords_geo.xy * halley_tex_scale + halley_tex_offset;
 vec4 color = texture2D(tex, coords_tex);
 ```
 
+Custom window shaders own the complete animated silhouette. Halley does not
+draw its ordinary geometry-based window shadow during a custom open or close
+animation, because that rectangular shadow cannot follow pixels which the
+shader moves, fragments, or dissolves.
+
 The shader interface is not a compatibility guarantee. Opening windows that
 are also fullscreen, maximized, or arranging keep the live tree. Closing
 windows that collapse into a node keep the CPU collapse.

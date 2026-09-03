@@ -86,7 +86,6 @@ fn opening_shader_elements(
     window_decoration_renderer: &mut crate::render::window_decoration::WindowDecorationRenderer,
     node_renderer: &mut crate::render::node::NodeRenderer,
     ui_text: &mut crate::render::text::UiTextRenderer,
-    shadow_renderer: &mut crate::render::effects::shadow::ShadowRenderer,
     visual: &crate::presentation::window::WindowVisualState,
     chrome_visible: bool,
     focused: bool,
@@ -135,22 +134,11 @@ fn opening_shader_elements(
     ) else {
         return Ok(None);
     };
-    let mut elements = vec![SceneElement::WindowShader(shader)];
-    if let Some(shadow) = shadow_renderer.element(
-        renderer,
-        format!(
-            "{}:opening:{}",
-            context.output.name(),
-            smithay::reexports::wayland_server::Resource::id(surface.as_ref())
-        ),
-        geo,
-        0.0,
-        alpha,
-        context.shadow_config,
-    )? {
-        elements.push(SceneElement::Shadow(shadow));
-    }
-    Ok(Some(elements))
+    // A geometry shadow would remain a solid rectangle while an arbitrary
+    // shader deforms or dissolves its pixels. Matching that silhouette would
+    // require rendering and blurring a separate alpha mask, so custom window
+    // shaders deliberately own the complete visual here.
+    Ok(Some(vec![SceneElement::WindowShader(shader)]))
 }
 
 fn opening_shader_geo(
@@ -445,7 +433,6 @@ pub(super) fn live_window_elements(
             window_decoration_renderer,
             node_renderer,
             ui_text,
-            shadow_renderer,
             &visual,
             chrome_visible,
             Some(window_surface.as_ref()) == context.focused,
