@@ -263,6 +263,8 @@ walks spatially among expanded windows, collapsed nodes, and collapsed cluster
 cores on the active output. It pans each target minimally into view without
 opening node or core handles; a collapsed node reserves its full restored
 decorated-window bounds so opening it afterward remains completely visible.
+While a `Mod+A` arrangement is active on that output, the same keybind still
+moves focus but does not pan the camera.
 `node-move` shifts the focused or most-recent Field window/collapsed node by one
 legal placement step; the default binding is
 `Mod+Alt+Arrow`. Field `resize-window` uses `left`/`up` to

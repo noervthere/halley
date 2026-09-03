@@ -40,6 +40,10 @@ impl ArrangeTransactions {
                 .any(|restore| restore.surface == *surface)
         })
     }
+
+    pub(crate) fn active_on(&self, output: &str) -> bool {
+        self.by_output.contains_key(output)
+    }
 }
 
 #[derive(Clone)]
@@ -740,9 +744,13 @@ mod tests {
         transactions.insert("DP-1".to_string(), Vec::new());
         transactions.insert("DP-2".to_string(), Vec::new());
 
+        assert!(transactions.active_on("DP-1"));
+        assert!(transactions.active_on("DP-2"));
         assert!(transactions.take("DP-1").is_some());
+        assert!(!transactions.active_on("DP-1"));
         assert!(transactions.take("DP-1").is_none());
         assert!(transactions.take("DP-2").is_some());
+        assert!(!transactions.active_on("DP-2"));
     }
 
     #[test]

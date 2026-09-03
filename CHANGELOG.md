@@ -25,6 +25,8 @@ All notable changes to this project will be documented in this file.
   Field. Autostart declarations recreate them only after the next restart.
 
 ### Changed
+- Keep directional `Mod+Arrow` Field focus from panning the camera while a
+  `Mod+A` arrangement is active on that output.
 - Pause automatic decay for windows in an active Field arrangement; undoing the
   arrangement starts each still-eligible window with a fresh decay timer.
 - Let directional `Mod+Arrow` Field focus traverse expanded windows, collapsed

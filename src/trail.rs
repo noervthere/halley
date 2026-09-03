@@ -171,7 +171,8 @@ pub(crate) fn navigate<D: SessionDriver>(
 
 fn focus_target<D: SessionDriver>(session: &mut Session<D>, id: NodeId) -> Result<(), String> {
     session.trail.recording_suspended = true;
-    let focused = crate::nodes::focus_or_reveal_node(session, id, SERIAL_COUNTER.next_serial());
+    let focused =
+        crate::nodes::focus_or_reveal_node(session, id, SERIAL_COUNTER.next_serial(), true);
     session.trail.recording_suspended = false;
     focused
         .then_some(())

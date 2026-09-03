@@ -98,16 +98,17 @@ fn focus_directional_field_target<D: SessionDriver>(
     session: &mut Session<D>,
     id: halley_core::field::NodeId,
     output_name: &str,
+    pan: bool,
 ) -> bool {
     if session.clusters.cluster_for_core(id).is_some() {
-        return crate::nodes::reveal_cluster_core(session, id, SERIAL_COUNTER.next_serial());
+        return crate::nodes::reveal_cluster_core(session, id, SERIAL_COUNTER.next_serial(), pan);
     }
     let collapsed = session
         .nodes
         .record(id)
         .is_some_and(|record| record.collapsed);
     if !collapsed {
-        return crate::nodes::focus_or_reveal_node(session, id, SERIAL_COUNTER.next_serial());
+        return crate::nodes::focus_or_reveal_node(session, id, SERIAL_COUNTER.next_serial(), pan);
     }
     debug_assert_eq!(
         session
@@ -116,13 +117,15 @@ fn focus_directional_field_target<D: SessionDriver>(
             .map(|record| record.output.as_str()),
         Some(output_name)
     );
-    crate::nodes::reveal_collapsed_node(session, id, SERIAL_COUNTER.next_serial())
+    crate::nodes::reveal_collapsed_node(session, id, SERIAL_COUNTER.next_serial(), pan)
 }
 
 /// Selects a directional neighbour in the output's Field. Expanded windows,
 /// collapsed nodes, and collapsed cluster cores participate using their visible
 /// footprints. Cluster members remain excluded because workspace navigation
 /// owns them while open and their Field geometry is only storage while closed.
+/// An active Field arrangement on that output still moves focus, but does not
+/// pan the camera.
 pub(super) fn focus_directional_field<D: SessionDriver>(
     session: &mut Session<D>,
     output_name: &str,
@@ -174,7 +177,8 @@ pub(super) fn focus_directional_field<D: SessionDriver>(
         })
         .map(|(_, _, id)| id);
 
-    target.is_some_and(|id| focus_directional_field_target(session, id, output_name))
+    let pan = !session.interactions.field_arrange.active_on(output_name);
+    target.is_some_and(|id| focus_directional_field_target(session, id, output_name, pan))
 }
 
 /// Focuses the output's most recent Field window and pans that output's camera

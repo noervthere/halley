@@ -1035,11 +1035,13 @@ pub fn focus_and_center_node<D: crate::session::SessionDriver>(
 
 /// Activate a node and make it visible in one operation. Collapsed nodes
 /// follow the configured restore-centering policy; live windows are focused
-/// immediately and the camera only moves far enough to reveal their bounds.
+/// immediately. When `pan` is true, the camera only moves far enough to
+/// reveal their bounds.
 pub fn focus_or_reveal_node<D: crate::session::SessionDriver>(
     session: &mut crate::session::Session<D>,
     id: NodeId,
     serial: smithay::utils::Serial,
+    pan: bool,
 ) -> bool {
     let Some(record) = session.nodes.record(id).cloned() else {
         return false;
@@ -1075,30 +1077,26 @@ pub fn focus_or_reveal_node<D: crate::session::SessionDriver>(
         .space
         .element_geometry(&record.window)
         .unwrap_or(record.geometry);
-    let delta = minimal_reveal_delta(
-        crate::presentation::camera::world_viewport(view, output_geometry),
-        geometry,
-        24,
-    );
-    if (delta.x != 0.0 || delta.y != 0.0)
-        && let Some(camera) = session.cameras.get_mut(&record.output)
-    {
-        camera.pan_vel = Vec2 { x: 0.0, y: 0.0 };
-        camera.target_center = Vec2 {
-            x: camera.center.x + delta.x,
-            y: camera.center.y + delta.y,
-        };
+    if pan {
+        let delta = minimal_reveal_delta(
+            crate::presentation::camera::world_viewport(view, output_geometry),
+            geometry,
+            24,
+        );
+        apply_camera_reveal_delta(session, &record.output, delta);
     }
     session.request_redraw();
     true
 }
 
-/// Select a collapsed Field node and pan only far enough to fit its restored
-/// decorated-window bounds. This intentionally leaves the node collapsed.
+/// Select a collapsed Field node. When `pan` is true, the camera moves only
+/// far enough to fit its restored decorated-window bounds. This intentionally
+/// leaves the node collapsed.
 pub fn reveal_collapsed_node<D: crate::session::SessionDriver>(
     session: &mut crate::session::Session<D>,
     id: NodeId,
     serial: smithay::utils::Serial,
+    pan: bool,
 ) -> bool {
     let Some(record) = session.nodes.record(id).cloned() else {
         return false;
@@ -1136,23 +1134,27 @@ pub fn reveal_collapsed_node<D: crate::session::SessionDriver>(
             &session.settings.decorations,
             &session.settings.font,
         );
-        let delta = minimal_reveal_delta(
-            crate::presentation::camera::world_viewport(view, output_geometry),
-            restored_outer,
-            24,
-        );
-        apply_camera_reveal_delta(session, &record.output, delta);
+        if pan {
+            let delta = minimal_reveal_delta(
+                crate::presentation::camera::world_viewport(view, output_geometry),
+                restored_outer,
+                24,
+            );
+            apply_camera_reveal_delta(session, &record.output, delta);
+        }
     }
     session.request_output_redraw(&output);
     true
 }
 
-/// Select a collapsed cluster's logical core and pan only far enough to make
-/// that core visible. This intentionally does not activate the workspace.
+/// Select a collapsed cluster's logical core. When `pan` is true, the camera
+/// moves only far enough to make that core visible. This intentionally does
+/// not activate the workspace.
 pub fn reveal_cluster_core<D: crate::session::SessionDriver>(
     session: &mut crate::session::Session<D>,
     core: NodeId,
     serial: smithay::utils::Serial,
+    pan: bool,
 ) -> bool {
     let Some(cluster) = session.clusters.cluster_for_core(core) else {
         return false;
@@ -1179,13 +1181,15 @@ pub fn reveal_cluster_core<D: crate::session::SessionDriver>(
         session.wayland.space.output_geometry(&output),
         session.cameras.view(&metadata.output),
     ) {
-        let delta = landmark_reveal_delta(
-            crate::presentation::camera::world_viewport(view, output_geometry),
-            metadata.core_position,
-            crate::clusters::CORE_DIAMETER_PX,
-            view.scale,
-        );
-        apply_camera_reveal_delta(session, &metadata.output, delta);
+        if pan {
+            let delta = landmark_reveal_delta(
+                crate::presentation::camera::world_viewport(view, output_geometry),
+                metadata.core_position,
+                crate::clusters::CORE_DIAMETER_PX,
+                view.scale,
+            );
+            apply_camera_reveal_delta(session, &metadata.output, delta);
+        }
     }
     session.request_redraw();
     true

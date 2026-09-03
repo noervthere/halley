@@ -3154,10 +3154,10 @@ where
             wayland::focus::select_output(&mut session.wayland, &output);
             let revealed = match target {
                 crate::shell::bearings::BearingTarget::Node(id) => {
-                    crate::nodes::focus_or_reveal_node(session, id, serial)
+                    crate::nodes::focus_or_reveal_node(session, id, serial, true)
                 }
                 crate::shell::bearings::BearingTarget::ClusterCore { core, .. } => {
-                    crate::nodes::reveal_cluster_core(session, core, serial)
+                    crate::nodes::reveal_cluster_core(session, core, serial, true)
                 }
             };
             if revealed {
