@@ -110,6 +110,10 @@ timing. Closing snapshots preserve the window's current opening opacity and
 track camera motion while they finish. Layer-shell surfaces and X11
 override-redirect popups are not window-close animation targets.
 
+An optional `custom-shader` path on `window-open` or `window-close` replaces
+the type's scale and fade with a user fragment shader. Launch and retract
+still travel. This is an advanced feature; see `docs/window-shaders.md`.
+
 Node collapse uses a short ease-out scale transition. Restoration and optional
 camera centering start together; it never centers first and waits for a second
 action to restore the window.
