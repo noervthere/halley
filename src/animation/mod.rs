@@ -22,6 +22,8 @@ struct WindowOpenTimeline {
     animation_type: WindowOpenAnimationType,
     launch_origin: Option<Point<f64, Physical>>,
     geometry: Option<RectTransition>,
+    shader_pixels: bool,
+    random_seed: f32,
 }
 
 impl WindowOpenTimeline {
@@ -29,25 +31,40 @@ impl WindowOpenTimeline {
         let sample = self.motion.sample_at(now);
         let raw_progress = sample.value;
         let progress = raw_progress.clamp(0.0, 1.0);
-        let (scale, alpha) = match self.animation_type {
-            WindowOpenAnimationType::CenterOut => {
-                (raw_progress.clamp(0.0, MAX_OVERSHOOT_SCALE), 1.0)
+        let shader_pixels = self.shader_pixels;
+        let (scale, alpha) = if shader_pixels {
+            (1.0, 1.0)
+        } else {
+            match self.animation_type {
+                WindowOpenAnimationType::CenterOut => {
+                    (raw_progress.clamp(0.0, MAX_OVERSHOOT_SCALE), 1.0)
+                }
+                WindowOpenAnimationType::Fade => (1.0, progress.clamp(0.0, 1.0) as f32),
+                WindowOpenAnimationType::Launch => (1.0, launch::alpha(sample.linear_progress)),
             }
-            WindowOpenAnimationType::Fade => (1.0, progress.clamp(0.0, 1.0) as f32),
-            WindowOpenAnimationType::Launch => (1.0, launch::alpha(sample.linear_progress)),
         };
         let destination = self
             .geometry
             .map(|geometry| geometry.rect_at(now).round())
             .or_else(|| {
-                (self.animation_type == WindowOpenAnimationType::Launch
-                    && !self.motion.is_finished_at(now))
-                .then(|| launch::rect(bounds, self.launch_origin, sample).round())
+                let traveling = self.animation_type == WindowOpenAnimationType::Launch
+                    && !self.motion.is_finished_at(now);
+                traveling.then(|| {
+                    if shader_pixels {
+                        launch::path_rect(bounds, self.launch_origin, sample).round()
+                    } else {
+                        launch::rect(bounds, self.launch_origin, sample).round()
+                    }
+                })
             });
         WindowOpenVisual {
             scale,
             alpha,
             destination,
+            progress: raw_progress,
+            clamped_progress: progress,
+            random_seed: self.random_seed,
+            shader_pixels,
         }
     }
 
@@ -67,11 +84,19 @@ impl WindowOpenTimeline {
         let (current, velocity) = match self.geometry {
             Some(geometry) => (geometry.rect_at(now), geometry.velocity_at(now)),
             None if self.animation_type == WindowOpenAnimationType::Launch => {
-                launch::rect_and_velocity(
-                    current_bounds,
-                    self.launch_origin,
-                    self.motion.sample_at(now),
-                )
+                if self.shader_pixels {
+                    launch::path_rect_and_velocity(
+                        current_bounds,
+                        self.launch_origin,
+                        self.motion.sample_at(now),
+                    )
+                } else {
+                    launch::rect_and_velocity(
+                        current_bounds,
+                        self.launch_origin,
+                        self.motion.sample_at(now),
+                    )
+                }
             }
             None => {
                 let scale = self.scale_at(now);
@@ -92,6 +117,9 @@ impl WindowOpenTimeline {
     }
 
     fn scale_at(self, now: Duration) -> f64 {
+        if self.shader_pixels {
+            return 1.0;
+        }
         let motion = self.motion.value_at(now).clamp(0.0, MAX_OVERSHOOT_SCALE);
         match self.animation_type {
             WindowOpenAnimationType::CenterOut => motion,
@@ -101,6 +129,9 @@ impl WindowOpenTimeline {
     }
 
     fn scale_velocity_at(self, now: Duration) -> f64 {
+        if self.shader_pixels {
+            return 0.0;
+        }
         let progress = self.motion.value_at(now);
         if !(0.0..MAX_OVERSHOOT_SCALE).contains(&progress) {
             return 0.0;
@@ -238,6 +269,10 @@ pub struct WindowOpenVisual {
     scale: f64,
     alpha: f32,
     destination: Option<Rectangle<i32, Physical>>,
+    progress: f64,
+    clamped_progress: f64,
+    random_seed: f32,
+    shader_pixels: bool,
 }
 
 impl Default for WindowOpenVisual {
@@ -246,6 +281,10 @@ impl Default for WindowOpenVisual {
             scale: 1.0,
             alpha: 1.0,
             destination: None,
+            progress: 1.0,
+            clamped_progress: 1.0,
+            random_seed: 0.0,
+            shader_pixels: false,
         }
     }
 }
@@ -263,6 +302,22 @@ impl WindowOpenVisual {
 
     pub fn alpha(self) -> f32 {
         self.alpha
+    }
+
+    pub fn progress(self) -> f64 {
+        self.progress
+    }
+
+    pub fn clamped_progress(self) -> f64 {
+        self.clamped_progress
+    }
+
+    pub fn random_seed(self) -> f32 {
+        self.random_seed
+    }
+
+    pub fn shader_pixels(self) -> bool {
+        self.shader_pixels
     }
 }
 
@@ -346,6 +401,8 @@ impl WindowAnimations {
             animation_type: config.animation_type,
             launch_origin,
             geometry: None,
+            shader_pixels: config.custom_shader.is_some(),
+            random_seed: animation_seed(),
         });
         true
     }
@@ -472,6 +529,17 @@ impl WindowAnimations {
     }
 }
 
+fn animation_seed() -> f32 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0)
+        .hash(&mut hasher);
+    (hasher.finish() >> 11) as f32 / ((1_u64 << 53) as f32)
+}
+
 pub(crate) fn scale_rect_from_center(
     rect: Rectangle<i32, Physical>,
     bounds: Rectangle<i32, Physical>,
@@ -543,6 +611,8 @@ mod tests {
             animation_type,
             launch_origin: None,
             geometry: None,
+            shader_pixels: false,
+            random_seed: 0.0,
         }
     }
 
@@ -947,6 +1017,36 @@ mod tests {
                 .visual_at(started + Duration::from_millis(300), fullscreen)
                 .transform_rect(fullscreen, fullscreen),
             fullscreen
+        );
+    }
+
+    #[test]
+    fn shader_pixels_keep_in_place_geometry_and_full_opacity() {
+        let bounds = Rectangle::new((100, 50).into(), (800, 600).into());
+        let mut animation = timeline(WindowOpenAnimationType::CenterOut, AnimationCurve::Linear);
+        animation.shader_pixels = true;
+        let middle = animation.visual_at(Duration::from_millis(1150), bounds);
+
+        assert!(middle.shader_pixels());
+        assert_eq!(middle.scale, 1.0);
+        assert_eq!(middle.alpha(), 1.0);
+        assert_eq!(middle.transform_rect(bounds, bounds), bounds);
+        assert_eq!(middle.clamped_progress(), 0.5);
+    }
+
+    #[test]
+    fn shader_pixels_launch_travels_at_native_size() {
+        let bounds = Rectangle::new((100, 50).into(), (800, 600).into());
+        let mut animation = launch_timeline(Point::from((200.0, 350.0)));
+        animation.shader_pixels = true;
+        let start = animation.visual_at(Duration::from_secs(1), bounds);
+        let destination = start.transform_rect(bounds, bounds);
+
+        assert_eq!(destination.size, bounds.size);
+        assert_eq!(start.alpha(), 1.0);
+        assert_eq!(
+            launch::rect_center(destination),
+            Point::from((200.0, 350.0))
         );
     }
 }

@@ -19,10 +19,35 @@ pub(super) fn rect(
     rect_and_velocity(bounds, origin, sample).0
 }
 
+pub(super) fn path_rect(
+    bounds: Rectangle<i32, Physical>,
+    origin: Option<Point<f64, Physical>>,
+    sample: MotionSample,
+) -> VisualRect {
+    path_rect_and_velocity(bounds, origin, sample).0
+}
+
 pub(super) fn rect_and_velocity(
     bounds: Rectangle<i32, Physical>,
     origin: Option<Point<f64, Physical>>,
     sample: MotionSample,
+) -> (VisualRect, VisualRect) {
+    sized_rect_and_velocity(bounds, origin, sample, true)
+}
+
+pub(super) fn path_rect_and_velocity(
+    bounds: Rectangle<i32, Physical>,
+    origin: Option<Point<f64, Physical>>,
+    sample: MotionSample,
+) -> (VisualRect, VisualRect) {
+    sized_rect_and_velocity(bounds, origin, sample, false)
+}
+
+fn sized_rect_and_velocity(
+    bounds: Rectangle<i32, Physical>,
+    origin: Option<Point<f64, Physical>>,
+    sample: MotionSample,
+    apply_scale: bool,
 ) -> (VisualRect, VisualRect) {
     let end = rect_center(bounds);
     let origin = origin.unwrap_or(end);
@@ -50,7 +75,11 @@ pub(super) fn rect_and_velocity(
         path_velocity.x * path_progress_velocity,
         path_velocity.y * path_progress_velocity,
     ));
-    let (scale, scale_derivative) = scale(sample.linear_progress);
+    let (scale, scale_derivative) = if apply_scale {
+        scale(sample.linear_progress)
+    } else {
+        (1.0, 0.0)
+    };
     let width = f64::from(bounds.size.w) * scale;
     let height = f64::from(bounds.size.h) * scale;
     let width_derivative = f64::from(bounds.size.w) * scale_derivative * sample.linear_velocity;

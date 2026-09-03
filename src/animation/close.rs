@@ -23,6 +23,16 @@ impl CloseVisual {
             .map(|sample| super::launch::rect(bounds, origin, sample).round())
             .unwrap_or_else(|| super::scale_rect_from_center(bounds, bounds, self.scale))
     }
+
+    pub(crate) fn shader_geo(
+        self,
+        bounds: Rectangle<i32, Physical>,
+        origin: Option<Point<f64, Physical>>,
+    ) -> Rectangle<i32, Physical> {
+        self.retract_sample
+            .map(|sample| super::launch::path_rect(bounds, origin, sample).round())
+            .unwrap_or(bounds)
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -31,6 +41,7 @@ pub(crate) struct CloseTimeline {
     duration: Duration,
     animation_type: WindowCloseAnimationType,
     start_alpha: f32,
+    shader_pixels: bool,
 }
 
 impl CloseTimeline {
@@ -44,7 +55,12 @@ impl CloseTimeline {
             duration: Duration::from_millis(u64::from(config.duration_ms)),
             animation_type: config.animation_type,
             start_alpha: start_alpha.clamp(0.0, 1.0),
+            shader_pixels: config.custom_shader.is_some(),
         }
+    }
+
+    pub(crate) fn shader_pixels(self) -> bool {
+        self.shader_pixels
     }
 
     pub(crate) fn visual_at(self, now: Duration) -> CloseVisual {
@@ -213,5 +229,41 @@ mod tests {
 
         assert!(timeline.is_finished_at(now));
         assert_eq!(timeline.visual_at(now).scale, 0.0);
+    }
+
+    #[test]
+    fn shader_geo_keeps_in_place_bounds_and_retract_size() {
+        let bounds = Rectangle::new((500, 300).into(), (800, 600).into());
+        let origin = Point::from((100.0, 100.0));
+        let shrink = CloseTimeline::new(
+            WindowCloseAnimation {
+                enabled: true,
+                animation_type: WindowCloseAnimationType::Shrink,
+                duration_ms: 200,
+                custom_shader: Some("close.frag".into()),
+            },
+            Duration::from_secs(1),
+            1.0,
+        );
+        assert!(shrink.shader_pixels());
+        let middle = shrink.visual_at(Duration::from_millis(1100));
+        assert_eq!(middle.destination(bounds, None).size, (400, 300).into());
+        assert_eq!(middle.shader_geo(bounds, None), bounds);
+
+        let retract = CloseTimeline::new(
+            WindowCloseAnimation {
+                enabled: true,
+                animation_type: WindowCloseAnimationType::Retract,
+                duration_ms: 200,
+                custom_shader: Some("close.frag".into()),
+            },
+            Duration::from_secs(1),
+            1.0,
+        );
+        let start = retract.visual_at(Duration::from_secs(1));
+        assert_eq!(start.shader_geo(bounds, Some(origin)).size, bounds.size);
+        let end = retract.visual_at(Duration::from_millis(1200));
+        assert_eq!(end.shader_geo(bounds, Some(origin)).size, bounds.size);
+        assert_ne!(end.destination(bounds, Some(origin)).size, bounds.size);
     }
 }
