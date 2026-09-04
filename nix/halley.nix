@@ -15,7 +15,7 @@ lib,
   libglvnd,
   pixman,
   pipewire,
-  libdisplay-info_0_2, 
+  libdisplay-info_0_3,
   xwayland,
 }: let
   smithayHash = "sha256-TV/GTfSvgfVwIFUGoASU7xm38opIBLjLMf1HeNTW07U=";
@@ -66,7 +66,7 @@ in
       pixman
       dbus # IPC / portal
       pipewire # libspa-sys / portal screencast
-      libdisplay-info_0_2
+      libdisplay-info_0_3
     ];
 
     # Tests require a live Wayland display + system fonts -> cannot run in sandbox.
