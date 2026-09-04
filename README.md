@@ -175,9 +175,24 @@ sessions, while dinit and direct init-agnostic launch paths are also packaged.
 Build the complete workspace:
 
 ```sh
-git clone https://github.com/saltnpepper97/halley
+git clone https://github.com/noervthere/halley
 cd halley
 cargo build --release --workspace
+```
+
+### Nix Flake
+
+Halley includes a complete Nix Flake with NixOS and Home Manager modules. See [INSTALL_NIX.md](INSTALL_NIX.md) for comprehensive setup instructions.
+
+```sh
+# Run nested without installing
+nix run github:noervthere/halley -- --winit
+
+# Build locally
+nix build
+
+# Start a development shell with all dependencies
+nix develop
 ```
 
 The build produces:

@@ -39,7 +39,7 @@ impl Default for KeyboardConfig {
         Self {
             layout: "us".to_string(),
             variant: String::new(),
-            options: String::new(),
+            options: "caps:super".to_string(),
             model: String::new(),
         }
     }

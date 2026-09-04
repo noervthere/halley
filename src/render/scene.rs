@@ -514,15 +514,31 @@ pub fn build(
         &mut cluster_creation,
     )?;
     elements.extend(cluster_creation);
-    elements.extend(layer_surface_scene_elements(
-        renderer,
+    let fullscreen_covers_layers = request.desktop.fullscreen.covers_top_matching(
+        request.desktop.focused,
         output,
-        output_geometry,
-        Layer::Overlay,
-        request.desktop.layer_rules,
-        request.visuals.blur,
-        request.resources.backdrop_blur_renderer,
-    )?);
+        request.frame.target_presentation_time,
+        |surface| {
+            crate::presentation::surface_workspace_is_active(
+                request.desktop.clusters,
+                request.desktop.nodes,
+                surface,
+                &output.name(),
+                request.frame.target_presentation_time,
+            )
+        },
+    );
+    if !fullscreen_covers_layers {
+        elements.extend(layer_surface_scene_elements(
+            renderer,
+            output,
+            output_geometry,
+            Layer::Overlay,
+            request.desktop.layer_rules,
+            request.visuals.blur,
+            request.resources.backdrop_blur_renderer,
+        )?);
+    }
     let mut focus_cycle = focus_cycle_elements(
         renderer,
         output_geometry,
@@ -562,20 +578,7 @@ pub fn build(
     // It sits in front of panels (`Layer::Top`) so menus are not clipped by a
     // status bar, while overlay surfaces and compositor UI remain authoritative.
     let popup_foreground_index = elements.len();
-    if !request.desktop.fullscreen.covers_top_matching(
-        request.desktop.focused,
-        output,
-        request.frame.target_presentation_time,
-        |surface| {
-            crate::presentation::surface_workspace_is_active(
-                request.desktop.clusters,
-                request.desktop.nodes,
-                surface,
-                &output.name(),
-                request.frame.target_presentation_time,
-            )
-        },
-    ) {
+    if !fullscreen_covers_layers {
         elements.extend(layer_surface_scene_elements(
             renderer,
             output,

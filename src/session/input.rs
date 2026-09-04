@@ -2439,13 +2439,20 @@ where
         let overflow_intercepts = overflow_hover
             .as_ref()
             .is_some_and(|hover| hover.intercepts_desktop);
-        let hovered_node = (!node_grab_active && hovered_bloom.is_none() && !overflow_intercepts)
+        let on_background = route.as_ref().is_some_and(|route| {
+            matches!(route.target, crate::input::pointer::PointerTarget::Background)
+        });
+        let hovered_node = (!node_grab_active
+            && hovered_bloom.is_none()
+            && !overflow_intercepts
+            && on_background)
             .then(|| node_at_pointer(session))
             .flatten();
         let hovered_cluster = (!node_grab_active
             && hovered_bloom.is_none()
             && !overflow_intercepts
-            && hovered_node.is_none())
+            && hovered_node.is_none()
+            && on_background)
         .then(|| cluster_at_pointer(session))
         .flatten();
         if let Some((id, output)) = hovered_node.as_ref() {
@@ -3237,6 +3244,9 @@ where
         if !intercepted
             && button == BTN_LEFT
             && state == ButtonState::Pressed
+            && route.as_ref().is_some_and(|route| {
+                matches!(route.target, crate::input::pointer::PointerTarget::Background)
+            })
             && let Some((id, output)) = node_at_pointer(session)
             && let Some(record) = session.nodes.record(id).cloned()
             && let Some(node_position) = session.nodes.field.node(id).map(|node| node.pos)

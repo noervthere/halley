@@ -113,7 +113,7 @@ pub(super) fn route_client<D: SessionDriver>(
         crate::frame_clock::monotonic_now(),
     )
     .is_some_and(|presentation| presentation.progress > 0.0);
-    if !route.is_desktop_popup
+    if matches!(route.target, crate::input::pointer::PointerTarget::Background)
         && !cluster_exclusive
         && session
             .nodes

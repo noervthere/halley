@@ -573,7 +573,23 @@ pub(super) fn live_window_elements(
     } else if let Some(blend) = texture_blend {
         elements.push(SceneElement::WindowResize(blend));
     } else {
+        let is_settled_fullscreen = visual
+            .fullscreen
+            .is_some_and(|p| p.transition_completion >= 1.0)
+            && !chrome_visible
+            && !rounded
+            && alpha >= 1.0
+            && visual.animated_rect.loc.x == 0
+            && visual.animated_rect.loc.y == 0
+            && visual.animated_rect.size == context.output_geometry.size.to_physical(1);
+
         for surface_element in surface_elements {
+            if is_settled_fullscreen
+                && surface_element.geometry(Scale::from(1.0)) == visual.animated_rect
+            {
+                elements.push(SceneElement::Layer(surface_element));
+                continue;
+            }
             let native_geometry = surface_element.geometry(Scale::from(1.0));
             let destination = if visual.maps_from_source() {
                 let destination = crate::animation::map_rect(

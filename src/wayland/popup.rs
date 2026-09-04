@@ -50,6 +50,7 @@ pub fn handle_commit(manager: &mut PopupManager, surface: &WlSurface) {
     }
 }
 
+#[allow(dead_code)]
 pub fn unconstrain_surface(
     wayland: &WaylandState,
     context: UnconstrainContext<'_>,

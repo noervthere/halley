@@ -1505,7 +1505,7 @@ impl FullscreenManager {
                     state.bounds = Some(geometry.size);
                     super::decoration::clear_tiled_hint(state);
                 });
-                toplevel.send_configure();
+                toplevel.send_pending_configure();
             } else {
                 entry.fullscreen_size = geometry.size;
                 external.push((window.clone(), geometry));
@@ -2050,7 +2050,7 @@ fn settle_visual_commit(
 
 fn send_required_configure(toplevel: &ToplevelSurface) -> Option<Serial> {
     if toplevel.is_initial_configure_sent() {
-        return Some(toplevel.send_configure());
+        return toplevel.send_pending_configure();
     }
     None
 }

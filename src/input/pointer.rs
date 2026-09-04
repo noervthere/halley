@@ -272,8 +272,21 @@ pub fn route_to_client(
     let screen_location = Point::<f64, Logical>::from(screen_position);
     let output_local = screen_location - output_geometry.loc.to_f64();
 
-    if let Some((layer, focus)) =
-        layer_under(output, output_geometry.loc, output_local, [Layer::Overlay])
+    let fullscreen_covers_layers = context
+        .fullscreen
+        .covers_top_matching(context.focused, output, context.now, |surface| {
+            crate::presentation::surface_workspace_is_active(
+                context.clusters,
+                context.nodes,
+                surface,
+                &output.name(),
+                context.now,
+            )
+        });
+
+    if !fullscreen_covers_layers
+        && let Some((layer, focus)) =
+            layer_under(output, output_geometry.loc, output_local, [Layer::Overlay])
     {
         return Some(PointerRoute {
             output: output.clone(),
@@ -291,17 +304,7 @@ pub fn route_to_client(
         return Some(route);
     }
 
-    if !context
-        .fullscreen
-        .covers_top_matching(context.focused, output, context.now, |surface| {
-            crate::presentation::surface_workspace_is_active(
-                context.clusters,
-                context.nodes,
-                surface,
-                &output.name(),
-                context.now,
-            )
-        })
+    if !fullscreen_covers_layers
         && let Some((layer, focus)) =
             layer_under(output, output_geometry.loc, output_local, [Layer::Top])
     {
@@ -359,6 +362,12 @@ fn layer_under(
     let map = layer_map_for_output(output);
     for layer_kind in layers {
         for layer in map.layers_on(layer_kind).rev() {
+            if layer_kind == Layer::Background
+                && layer.cached_state().keyboard_interactivity
+                    != smithay::wayland::shell::wlr_layer::KeyboardInteractivity::Exclusive
+            {
+                continue;
+            }
             let Some(geometry) = map.layer_geometry(layer) else {
                 continue;
             };

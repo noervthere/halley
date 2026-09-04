@@ -1122,8 +1122,8 @@ impl<D: SessionDriver> WlrLayerShellHandler for Session<D> {
     }
 
     fn new_popup(&mut self, _parent: WlrLayerSurface, popup: PopupSurface) {
-        wayland::popup::unconstrain_surface(
-            &self.wayland,
+        wayland::popup::track(
+            &mut self.wayland,
             super::popup_unconstrain_context!(self),
             popup,
         );

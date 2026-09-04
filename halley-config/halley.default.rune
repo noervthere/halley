@@ -181,7 +181,7 @@ input:
     # Standard XKB names. Empty variant/options/model use XKB defaults.
     layout "us"
     variant ""
-    options ""
+    options "caps:super"
     model ""
   end
 
