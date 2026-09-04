@@ -81,10 +81,16 @@
       };
       overlays.halley = self.overlays.default;
 
-      nixosModules.default = import ./nix/nixos-module.nix;
+      nixosModules.default = { ... }: {
+        imports = [ ./nix/nixos-module.nix ];
+        nixpkgs.overlays = [ self.overlays.default ];
+      };
       nixosModules.halley = self.nixosModules.default;
 
-      homeManagerModules.default = import ./nix/home-manager-module.nix;
+      homeManagerModules.default = { ... }: {
+        imports = [ ./nix/home-manager-module.nix ];
+        nixpkgs.overlays = [ self.overlays.default ];
+      };
       homeManagerModules.halley = self.homeManagerModules.default;
     };
 }
