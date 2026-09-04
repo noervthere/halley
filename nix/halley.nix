@@ -1,6 +1,6 @@
 # Halley — Rust derivation for the Halley spatial Wayland compositor.
 {
-  lib,
+lib,
   rustPlatform,
   pkg-config,
   makeWrapper,
@@ -15,7 +15,7 @@
   libglvnd,
   pixman,
   pipewire,
-  libdisplay-info,
+  libdisplay-info_0_2, 
   xwayland,
 }: let
   smithayHash = "sha256-TV/GTfSvgfVwIFUGoASU7xm38opIBLjLMf1HeNTW07U=";
@@ -66,7 +66,7 @@ in
       pixman
       dbus # IPC / portal
       pipewire # libspa-sys / portal screencast
-      libdisplay-info # smithay-drm-extras (EDID / DisplayID)
+      libdisplay-info_0_2
     ];
 
     # Tests require a live Wayland display + system fonts -> cannot run in sandbox.
