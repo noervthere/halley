@@ -40,7 +40,7 @@ impl<D: SessionDriver> State<D> {
 
     pub fn raise_window(&mut self, _window: &Window) {}
 
-    pub fn sync_active_window(&self, _window: Option<u32>) {}
+    pub fn sync_active_window(&self, _window: Option<u32>, _has_keyboard_focus: bool) {}
 
     pub fn focus_globally_active_window(&self, _window: Option<u32>) {}
 

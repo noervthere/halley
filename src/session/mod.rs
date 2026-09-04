@@ -1638,9 +1638,12 @@ pub(crate) fn sync_keyboard_focus<D: SessionDriver>(
             .seat
             .get_keyboard()
             .expect("keyboard capability added at seat setup");
+        let has_keyboard_focus = focused.is_some();
         pointer::prepare_keyboard_focus_change(session, None);
         keyboard.set_focus(session, focused, serial);
-        session.xwayland.sync_active_window(None);
+        session
+            .xwayland
+            .sync_active_window(None, has_keyboard_focus);
         return;
     }
     wayland::focus::refresh_selected_layer(&mut session.wayland);
@@ -1693,6 +1696,7 @@ pub(crate) fn sync_keyboard_focus<D: SessionDriver>(
     let globally_active_x11_window = focused
         .as_ref()
         .and_then(crate::xwayland::KeyboardFocusTarget::globally_active_x11_window_id);
+    let has_keyboard_focus = focused.is_some();
     if let Some(focused) = focused.as_ref() {
         focused.acknowledge_attention();
     }
@@ -1703,7 +1707,9 @@ pub(crate) fn sync_keyboard_focus<D: SessionDriver>(
     // compositor's perspective, so no input can reach the new target between
     // these two operations.
     keyboard.set_focus(session, focused, serial);
-    session.xwayland.sync_active_window(active_x11_window);
+    session
+        .xwayland
+        .sync_active_window(active_x11_window, has_keyboard_focus);
     session
         .xwayland
         .focus_globally_active_window(globally_active_x11_window);

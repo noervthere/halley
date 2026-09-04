@@ -7,12 +7,12 @@ use x11rb::errors::ReplyError;
 use x11rb::protocol::ErrorKind;
 use x11rb::protocol::xkb::{self, ConnectionExt as _};
 use x11rb::protocol::xproto::{
-    AtomEnum, AutoRepeatMode, ChangeKeyboardControlAux, ConnectionExt as _, GetGeometryReply,
-    InputFocus, PropMode, Window,
+    AtomEnum, AutoRepeatMode, ChangeKeyboardControlAux, ConnectionExt as _, CreateWindowAux,
+    GetGeometryReply, InputFocus, PropMode, Window, WindowClass,
 };
 use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as _;
-use x11rb::{CURRENT_TIME, NONE};
+use x11rb::{COPY_FROM_PARENT, CURRENT_TIME, NONE};
 
 fn is_destroyed_window(error: &ReplyError) -> bool {
     matches!(error, ReplyError::X11Error(error) if error.error_kind == ErrorKind::Window)
@@ -92,7 +92,8 @@ pub struct X11Control {
     connection: RustConnection,
     atoms: Atoms,
     root: Window,
-    active_window: Cell<Option<Option<Window>>>,
+    focus_sink: Window,
+    active_window: Cell<Option<Window>>,
     desktop_geometry: Cell<Option<PublishedDesktopGeometry>>,
     frame_extents: RefCell<HashMap<Window, (i32, i32, i32, i32)>>,
 }
@@ -109,7 +110,9 @@ impl X11Control {
     pub fn connect(display_number: u32) -> Result<Self, Box<dyn Error>> {
         let display = format!(":{display_number}");
         let (connection, screen_number) = RustConnection::connect(Some(&display))?;
-        let root = connection.setup().roots[screen_number].root;
+        let screen = &connection.setup().roots[screen_number];
+        let root = screen.root;
+        let root_depth = screen.root_depth;
         let atoms = Atoms::new(&connection)?.reply()?;
 
         let owner = connection.get_selection_owner(atoms.WM_S0)?.reply()?.owner;
@@ -117,6 +120,7 @@ impl X11Control {
             return Err("Smithay XWM does not own WM_S0".into());
         }
         let support_window = supporting_wm_window(&connection, root, &atoms)?;
+        let focus_sink = create_focus_sink(&connection, root, root_depth)?;
         let root_geometry = connection.get_geometry(root)?.reply()?;
         publish_ewmh(&connection, root, support_window, root_geometry, &atoms)?;
         connection.flush()?;
@@ -125,6 +129,7 @@ impl X11Control {
             connection,
             atoms,
             root,
+            focus_sink,
             active_window: Cell::new(None),
             desktop_geometry: Cell::new(None),
             frame_extents: RefCell::new(HashMap::new()),
@@ -249,19 +254,38 @@ impl X11Control {
         Ok(())
     }
 
-    pub fn set_active_window(&self, window: Option<Window>) -> Result<(), Box<dyn Error>> {
-        if self.active_window.get() == Some(window) {
-            return Ok(());
+    pub fn set_active_window(
+        &self,
+        window: Option<Window>,
+        has_keyboard_focus: bool,
+    ) -> Result<(), Box<dyn Error>> {
+        let published_window =
+            active_window_property_value(window, has_keyboard_focus, self.focus_sink);
+        if self.active_window.get() != Some(published_window) {
+            self.connection.change_property32(
+                PropMode::REPLACE,
+                self.root,
+                self.atoms._NET_ACTIVE_WINDOW,
+                AtomEnum::WINDOW,
+                &[published_window],
+            )?;
+            self.active_window.set(Some(published_window));
         }
-        self.connection.change_property32(
-            PropMode::REPLACE,
-            self.root,
-            self.atoms._NET_ACTIVE_WINDOW,
-            AtomEnum::WINDOW,
-            &[window.unwrap_or(NONE)],
-        )?;
+
+        // Native Wayland surfaces have no XID to receive core X focus. Leaving
+        // X focus at `None` is observably different from transferring it to a
+        // different X11 application: Wine/Proton clients can continue treating
+        // themselves as the foreground application. Park core focus on the WM's
+        // mapped off-screen support window. Mutter uses the same no-focus-window
+        // pattern and also publishes that XID as `_NET_ACTIVE_WINDOW` while a
+        // native Wayland surface is focused, distinguishing it from a transient
+        // state where no surface has focus.
+        if let Some(focus_sink) = focus_sink_for_active_window(window, self.focus_sink) {
+            self.connection
+                .set_input_focus(InputFocus::NONE, focus_sink, CURRENT_TIME)?
+                .check()?;
+        }
         self.connection.flush()?;
-        self.active_window.set(Some(window));
         Ok(())
     }
 
@@ -412,6 +436,50 @@ fn supporting_wm_window(
         .ok_or_else(|| "Smithay XWM did not publish _NET_SUPPORTING_WM_CHECK".into())
 }
 
+fn create_focus_sink(
+    connection: &RustConnection,
+    root: Window,
+    root_depth: u8,
+) -> Result<Window, Box<dyn Error>> {
+    // Unlike Smithay's pre-existing WM support window, this window is observed
+    // by the XWM. Focusing it therefore produces an ordered FocusOut(game),
+    // FocusIn(sink) pair and lets the XWM's own `_NET_ACTIVE_WINDOW` handler
+    // settle on the sink instead of racing our property update back to `None`.
+    let focus_sink = connection.generate_id()?;
+    connection
+        .create_window(
+            root_depth,
+            focus_sink,
+            root,
+            -1,
+            -1,
+            1,
+            1,
+            0,
+            WindowClass::INPUT_OUTPUT,
+            COPY_FROM_PARENT,
+            &CreateWindowAux::new().override_redirect(1),
+        )?
+        .check()?;
+    connection.map_window(focus_sink)?.check()?;
+    Ok(focus_sink)
+}
+
+fn focus_sink_for_active_window(
+    active_window: Option<Window>,
+    focus_sink: Window,
+) -> Option<Window> {
+    active_window.is_none().then_some(focus_sink)
+}
+
+fn active_window_property_value(
+    active_window: Option<Window>,
+    has_keyboard_focus: bool,
+    focus_sink: Window,
+) -> Window {
+    active_window.unwrap_or(if has_keyboard_focus { focus_sink } else { NONE })
+}
+
 fn publish_ewmh(
     connection: &RustConnection,
     root: Window,
@@ -508,12 +576,25 @@ fn publish_ewmh(
 
 #[cfg(test)]
 mod tests {
-    use super::repeat_interval_ms;
+    use super::{active_window_property_value, focus_sink_for_active_window, repeat_interval_ms};
 
     #[test]
     fn repeat_rate_converts_to_xkb_interval() {
         assert_eq!(repeat_interval_ms(20), 50);
         assert_eq!(repeat_interval_ms(30), 33);
         assert_eq!(repeat_interval_ms(45), 22);
+    }
+
+    #[test]
+    fn native_wayland_focus_uses_the_x11_focus_sink() {
+        assert_eq!(focus_sink_for_active_window(None, 41), Some(41));
+        assert_eq!(focus_sink_for_active_window(Some(73), 41), None);
+    }
+
+    #[test]
+    fn native_wayland_focus_publishes_the_sink_as_active() {
+        assert_eq!(active_window_property_value(None, true, 41), 41);
+        assert_eq!(active_window_property_value(None, false, 41), 0);
+        assert_eq!(active_window_property_value(Some(73), true, 41), 73);
     }
 }
