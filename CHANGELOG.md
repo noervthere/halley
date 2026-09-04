@@ -86,6 +86,14 @@ All notable changes to this project will be documented in this file.
 - Suppress compositor window shadows while a window is drawn through an open
   or close custom shader, so a detached shadow does not sit next to the
   effect.
+- Make Wine and Proton games observe focus loss when a native Wayland window
+  is focused by publishing Halley's shared offscreen X11 focus sink as the
+  active XWayland window, while preserving the unfocused state when no surface
+  owns keyboard focus.
+- Raise every participating window in a `Mod+A` arrangement together, without
+  changing keyboard focus or their internal stacking order, so nearby Field
+  windows outside the arrangement remain underneath instead of covering or
+  intercepting the mosaic.
 
 ## [v0.7.0] - 2026-08-31
 
