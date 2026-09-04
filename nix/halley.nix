@@ -119,12 +119,12 @@ in
       substituteInPlace $out/bin/halley-session \
         --replace-fail '/usr/bin/halley' "$out/bin/halley"
 
-      # Wayland session desktop entry
+     # Wayland session desktop entry
       install -Dm644 packaging/wayland-sessions/halley.desktop \
         $out/share/wayland-sessions/halley.desktop
       substituteInPlace $out/share/wayland-sessions/halley.desktop \
         --replace-fail 'Exec=halley-session' "Exec=$out/bin/halley-session" \
-        --replace-fail 'TryExec=halley-session' "TryExec=$out/bin/halley-session"
+        --replace-quiet 'TryExec=halley-session' "TryExec=$out/bin/halley-session"
 
       # Portal configuration & metadata
       install -Dm644 packaging/xdg-desktop-portal/portals/halley.portal \
