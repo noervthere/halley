@@ -253,6 +253,24 @@ pub(crate) fn arrange_visible<D: SessionDriver>(
         return false;
     }
 
+    // Arrange owns the foreground once, like maximize: a partially visible or
+    // size-constrained Field window that was not selected must not ride over
+    // the mosaic. Preserve the participants' existing relative depth and do
+    // not disturb keyboard focus or activation while moving the group above
+    // every non-participant.
+    let arranged_windows = session
+        .wayland
+        .space
+        .elements()
+        .filter(|window| {
+            candidates
+                .iter()
+                .any(|candidate| &candidate.window == *window)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    crate::window::raise_managed_group(&mut session.wayland, &arranged_windows);
+
     // Publish the exact restore set before issuing any client configure. This
     // makes a rapid second Mod+A a valid reversal even before clients commit
     // their arranged sizes.

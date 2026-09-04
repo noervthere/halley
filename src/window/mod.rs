@@ -86,6 +86,21 @@ pub fn raise_managed(wayland: &mut WaylandState, window: &Window) {
     }
 }
 
+/// Raises a presentation group as one block without changing keyboard focus or
+/// client activation. `windows` must be in bottom-to-top order so their
+/// existing relative depth is preserved while non-members move underneath.
+pub fn raise_managed_group(wayland: &mut WaylandState, windows: &[Window]) {
+    for window in windows {
+        if !accepts_wm_focus(window) {
+            continue;
+        }
+        if let Some(surface) = window.wl_surface().map(|surface| surface.into_owned()) {
+            wayland.managed_windows.raise(surface);
+        }
+        wayland.space.raise_element(window, false);
+    }
+}
+
 pub fn focus_and_raise(wayland: &mut WaylandState, window: &Window) {
     focus(wayland, window, true);
 }
@@ -134,5 +149,16 @@ mod tests {
 
         super::raise_in_order(&mut order, "existing-foreground");
         assert_eq!(order, ["maximize-target", "existing-foreground"]);
+    }
+
+    #[test]
+    fn arrangement_group_moves_above_non_members_without_reordering_itself() {
+        let mut order = vec!["arranged-back", "overlap", "arranged-front"];
+
+        for member in ["arranged-back", "arranged-front"] {
+            super::raise_in_order(&mut order, member);
+        }
+
+        assert_eq!(order, ["overlap", "arranged-back", "arranged-front"]);
     }
 }
