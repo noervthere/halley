@@ -22,7 +22,10 @@ impl KeyboardFocus {
     }
 
     pub fn bypasses_shortcuts(&self) -> bool {
-        matches!(self, Self::ExclusiveLayer(_))
+        // Per wlr-layer-shell spec: "The layer surface requests exclusive keyboard
+        // focus. The compositor may still process compositor keybindings and shortcuts."
+        // Inhibiting shortcuts should only happen via zwp_keyboard_shortcuts_inhibit_v1.
+        false
     }
 }
 
