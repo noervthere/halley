@@ -574,7 +574,10 @@ fn native_target_buffer_ready(
     if !advanced {
         return false;
     }
-    if committed_window_size.map(|size| size.to_physical(1)) == Some(outgoing_window_size) {
+    let effective_window_size = committed_window_size
+        .or(surface_size)
+        .map(|size| size.to_physical(1));
+    if effective_window_size == Some(outgoing_window_size) {
         return true;
     }
     surface_size.is_some() && surface_size != outgoing_surface_size
@@ -720,6 +723,17 @@ mod tests {
             Some((1036, 704).into()),
             Some((996, 664).into()),
             Some((1036, 704).into()),
+        ));
+    }
+
+    #[test]
+    fn native_game_without_geometry_ack_accepts_fullscreen_buffer() {
+        assert!(native_target_buffer_ready(
+            true,
+            (1920, 1080).into(),
+            Some((1920, 1080).into()),
+            None,
+            Some((1920, 1080).into()),
         ));
     }
 

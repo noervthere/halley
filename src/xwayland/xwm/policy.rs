@@ -36,13 +36,9 @@ pub(super) enum ExternalPresentationPolicy {
 
 impl ExternalPresentationPolicy {
     pub(super) fn select(origin: FullscreenRequestOrigin, opening: bool, confined: bool) -> Self {
-        if confined {
+        if confined || origin == FullscreenRequestOrigin::Client {
             Self::Confined
         } else if origin == FullscreenRequestOrigin::Initial {
-            Self::Initial
-        } else if opening && origin == FullscreenRequestOrigin::Client {
-            // The window-open animation already owns the visual motion. The
-            // client geometry itself must settle directly beneath it.
             Self::Initial
         } else if opening {
             Self::Opening
@@ -105,10 +101,10 @@ mod tests {
     }
 
     #[test]
-    fn client_fullscreen_settles_under_the_existing_window_open_animation() {
+    fn client_fullscreen_settles_directly() {
         assert_eq!(
             ExternalPresentationPolicy::select(FullscreenRequestOrigin::Client, true, false),
-            ExternalPresentationPolicy::Initial
+            ExternalPresentationPolicy::Confined
         );
         assert_eq!(
             ExternalPresentationPolicy::select(FullscreenRequestOrigin::Compositor, true, false),
@@ -132,15 +128,14 @@ mod tests {
 
     #[test]
     fn settled_or_locked_fullscreen_animates_when_not_confined() {
-        for origin in [
-            FullscreenRequestOrigin::Client,
-            FullscreenRequestOrigin::Compositor,
-        ] {
-            assert_eq!(
-                ExternalPresentationPolicy::select(origin, false, false),
-                ExternalPresentationPolicy::Animated
-            );
-        }
+        assert_eq!(
+            ExternalPresentationPolicy::select(FullscreenRequestOrigin::Client, false, false),
+            ExternalPresentationPolicy::Confined
+        );
+        assert_eq!(
+            ExternalPresentationPolicy::select(FullscreenRequestOrigin::Compositor, false, false),
+            ExternalPresentationPolicy::Animated
+        );
     }
 
     #[test]

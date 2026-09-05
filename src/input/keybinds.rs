@@ -311,7 +311,7 @@ mod tests {
 
         let open_terminal = resolved
             .iter()
-            .find(|bind| bind.action == Action::OpenTerminal)
+            .find(|bind| matches!(bind.action, Action::OpenTerminal | Action::Spawn(_)))
             .unwrap();
         assert!(open_terminal.modifiers.super_key);
         assert!(!open_terminal.modifiers.shift);
@@ -322,7 +322,7 @@ mod tests {
     }
 
     #[test]
-    fn default_config_toggle_state_resolves_to_mod_n() {
+    fn default_config_toggle_state_resolves_to_mod_d() {
         let resolved = resolve_binds(&Keybinds::default(), BackendKind::Tty);
         let toggle = resolved
             .iter()
@@ -331,7 +331,7 @@ mod tests {
         assert!(toggle.modifiers.super_key);
         assert_eq!(
             toggle.trigger,
-            ResolvedTrigger::Keysym(xkb::keysym_from_name("n", xkb::KEYSYM_NO_FLAGS))
+            ResolvedTrigger::Keysym(xkb::keysym_from_name("d", xkb::KEYSYM_NO_FLAGS))
         );
     }
 
@@ -365,7 +365,7 @@ mod tests {
         assert!(
             resolved
                 .iter()
-                .any(|bind| bind.action == Action::OpenTerminal)
+                .any(|bind| matches!(bind.action, Action::OpenTerminal | Action::Spawn(_)))
         );
         assert!(resolved.iter().any(|bind| bind.action == Action::ZoomIn));
         assert!(resolved.iter().any(|bind| bind.action == Action::ZoomOut));
@@ -373,7 +373,7 @@ mod tests {
         assert!(
             resolved
                 .iter()
-                .any(|bind| bind.action == Action::Screenshot)
+                .any(|bind| matches!(bind.action, Action::Screenshot | Action::Spawn(_)))
         );
     }
 

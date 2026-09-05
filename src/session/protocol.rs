@@ -59,16 +59,15 @@ use smithay::wayland::xdg_activation::{
     XdgActivationHandler, XdgActivationState, XdgActivationToken, XdgActivationTokenData,
 };
 use smithay::{
-    delegate_background_effect, delegate_compositor, delegate_cursor_shape, delegate_data_device,
-    delegate_dmabuf, delegate_drm_syncobj, delegate_ext_data_control,
-    delegate_fractional_scale,
-    delegate_idle_inhibit,
-    delegate_idle_notify,
+    delegate_background_effect, delegate_compositor, delegate_content_type, delegate_cursor_shape,
+    delegate_data_device, delegate_dmabuf, delegate_drm_syncobj, delegate_ext_data_control,
+    delegate_fractional_scale, delegate_idle_inhibit, delegate_idle_notify,
     delegate_keyboard_shortcuts_inhibit, delegate_layer_shell, delegate_output,
     delegate_pointer_constraints, delegate_primary_selection, delegate_relative_pointer,
-    delegate_pointer_gestures, delegate_presentation, delegate_seat, delegate_shm, delegate_viewporter,
-    delegate_virtual_keyboard_manager,
+    delegate_pointer_gestures, delegate_presentation, delegate_seat, delegate_shm,
+    delegate_single_pixel_buffer, delegate_viewporter, delegate_virtual_keyboard_manager,
     delegate_xdg_activation, delegate_xdg_decoration, delegate_xdg_shell,
+    delegate_xdg_toplevel_icon,
 };
 
 use super::state::{Session, SessionDriver};
@@ -1317,6 +1316,8 @@ impl<D: SessionDriver> smithay::wayland::background_effect::ExtBackgroundEffectH
     }
 }
 
+impl<D: SessionDriver> smithay::wayland::xdg_toplevel_icon::XdgToplevelIconHandler for Session<D> {}
+
 delegate_compositor!(@<D: SessionDriver> Session<D>);
 delegate_background_effect!(@<D: SessionDriver> Session<D>);
 delegate_dmabuf!(@<D: SessionDriver> Session<D>);
@@ -1342,6 +1343,9 @@ delegate_keyboard_shortcuts_inhibit!(@<D: SessionDriver> Session<D>);
 delegate_data_device!(@<D: SessionDriver> Session<D>);
 delegate_primary_selection!(@<D: SessionDriver> Session<D>);
 delegate_ext_data_control!(@<D: SessionDriver> Session<D>);
+delegate_single_pixel_buffer!(@<D: SessionDriver> Session<D>);
+delegate_content_type!(@<D: SessionDriver> Session<D>);
+delegate_xdg_toplevel_icon!(@<D: SessionDriver> Session<D>);
 
 #[cfg(test)]
 mod tests {

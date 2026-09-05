@@ -21,15 +21,17 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
+use smithay::desktop::space::SpaceElement;
 use smithay::desktop::{LayerSurface, PopupManager, Space, Window};
 use smithay::output::Output;
 use smithay::reexports::wayland_server::DisplayHandle;
 use smithay::reexports::wayland_server::backend::GlobalId;
 use smithay::reexports::wayland_server::backend::{ClientData, ClientId, DisconnectReason};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::utils::{Logical, Point};
+use smithay::utils::{Logical, Point, Rectangle};
 use smithay::wayland::background_effect::BackgroundEffectState;
 use smithay::wayland::compositor::{CompositorClientState, CompositorState};
+use smithay::wayland::content_type::ContentTypeState;
 use smithay::wayland::cursor_shape::CursorShapeManagerState;
 use smithay::wayland::dmabuf::{DmabufGlobal, DmabufState};
 use smithay::wayland::fractional_scale::FractionalScaleManagerState;
@@ -46,9 +48,11 @@ use smithay::wayland::shell::wlr_layer::WlrLayerShellState;
 use smithay::wayland::shell::xdg::XdgShellState;
 use smithay::wayland::shell::xdg::decoration::XdgDecorationState;
 use smithay::wayland::shm::ShmState;
+use smithay::wayland::single_pixel_buffer::SinglePixelBufferState;
 use smithay::wayland::viewporter::ViewporterState;
 use smithay::wayland::virtual_keyboard::VirtualKeyboardManagerState;
 use smithay::wayland::xdg_activation::XdgActivationState;
+use smithay::wayland::xdg_toplevel_icon::XdgToplevelIconManager;
 
 /// The one output responsible for painting a window. Smithay's `Space`
 /// still owns output geometry and pointer routing; this is only Halley's
@@ -101,6 +105,7 @@ pub fn set_window_output(window: &Window, output: &Output) {
         .inherited
         .write()
         .expect("window output inheritance lock poisoned") = None;
+    SpaceElement::output_enter(window, output, Rectangle::from_size(window.geometry().size));
 }
 
 /// Makes `window` follow a managed owner's output without allowing writes to
@@ -206,6 +211,9 @@ pub struct WaylandState {
     // Retained for the lifetime of the advertised ext-background-effect
     // global. Committed per-surface regions live in Smithay's surface cache.
     _background_effect_state: BackgroundEffectState,
+    _single_pixel_buffer_state: SinglePixelBufferState,
+    _content_type_state: ContentTypeState,
+    _xdg_toplevel_icon_manager: XdgToplevelIconManager,
     // Retained for the lifetime of its advertised global.
     _xdg_decoration_state: XdgDecorationState,
     _viewporter_state: ViewporterState,
@@ -294,6 +302,9 @@ impl WaylandState {
         xdg_activation_state: XdgActivationState,
         layer_shell_state: WlrLayerShellState,
         background_effect_state: BackgroundEffectState,
+        single_pixel_buffer_state: SinglePixelBufferState,
+        content_type_state: ContentTypeState,
+        xdg_toplevel_icon_manager: XdgToplevelIconManager,
         xdg_decoration_state: XdgDecorationState,
         viewporter_state: ViewporterState,
         fractional_scale_manager_state: FractionalScaleManagerState,
@@ -323,6 +334,9 @@ impl WaylandState {
             xdg_activation_state,
             layer_shell_state,
             _background_effect_state: background_effect_state,
+            _single_pixel_buffer_state: single_pixel_buffer_state,
+            _content_type_state: content_type_state,
+            _xdg_toplevel_icon_manager: xdg_toplevel_icon_manager,
             _xdg_decoration_state: xdg_decoration_state,
             _viewporter_state: viewporter_state,
             _fractional_scale_manager_state: fractional_scale_manager_state,
