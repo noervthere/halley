@@ -4,6 +4,7 @@
 #   $XDG_CONFIG_HOME/halley/halley.rune
 # or, when XDG_CONFIG_HOME is unset:
 #   $HOME/.config/halley/halley.rune
+gather "colors.rune"
 #
 # Halley creates this file only when it does not already exist. Startup never
 # rewrites an existing config. Optional compatibility updates are structural
@@ -36,10 +37,10 @@
 # session starts. `on-reload` runs after every valid config reload. Nested
 # Winit development sessions run neither category.
 autostart:
-  # once "waybar"
+   once "noctalia"
   # once "mako"
 
-  # on-reload "notify-send 'Halley configuration reloaded'"
+   on-reload "notify-send 'Halley configuration reloaded'"
 
   # Fresh configs start with six empty numbered workspaces on each of the two
   # sample outputs. Replace DP-1/DP-2 with names from `halleyctl outputs`, and
@@ -114,19 +115,19 @@ end
 view:
   output:
     # DRM connector name exactly as printed by `halleyctl outputs`.
-    name "DP-1"
+    name "HDMI-A-1"
 
     # Uncomment and edit the complete hardware group to select a mode. Width
     # and height must be supplied together; offset, rate, transform, and VRR
     # are only valid when both are present.
-    # width 2560
-    # height 1440
+     width 1920
+     height 1080
     # offset-x 0
     # offset-y 0
 
     # `rate` must exactly match an advertised mode. When omitted, Halley uses
     # the highest advertised refresh for the configured width and height.
-    # rate 179.998
+     rate 200.000
 
     # Clockwise rotation in degrees: 0, 90, 180, or 270.
     # transform 0
@@ -171,7 +172,7 @@ input:
 
   # "click" keeps keyboard focus where you click. "hover" follows the pointer
   # across windows and outputs, but never raises windows merely by hovering.
-  focus-mode "click"
+  focus-mode "hover"
 
   # Whether clicking a window also brings it to the top. When false, the click
   # still focuses and activates the window without changing stacking order.
@@ -179,7 +180,7 @@ input:
 
   keyboard:
     # Standard XKB names. Empty variant/options/model use XKB defaults.
-    layout "us"
+    layout "tr"
     variant ""
     options "caps:super"
     model ""
@@ -258,8 +259,8 @@ input:
     #
     # enabled true
     # natural-scroll false
-    # accel-speed 0.0
-    # accel-profile "adaptive" # "adaptive" or "flat"
+     accel-speed 0.0
+     accel-profile "flat" 
     # scroll-method "none"     # "none", "two-finger", "edge", or
     #                          # "on-button-down"
     # scroll-button 274        # Linux input button code
@@ -311,7 +312,7 @@ cursor:
 
   # Base logical size. Halley selects the closest frame supplied by the theme
   # for each output scale.
-  size 24
+  size 20
 
   # Hide after a physical keyboard press, without changing pointer focus,
   # grabs, or constraints. Pointer motion, buttons, and scrolling reveal it.
@@ -336,15 +337,13 @@ end
 decorations:
   border:
     # Border width in output pixels. It follows camera zoom visually.
-    size 3
+    size 4
 
     # Client-content corner radius in output pixels. The compositor grows the
     # outer border radius concentrically. Set to 0 for square corners.
-    radius 8
+    radius 0
 
     # Focused and unfocused colors accept "#rrggbb" or shorthand "#rgb".
-    colour-focused "#f4f5f7"
-    colour-unfocused "#474d59"
   end
 
   # Resize managed windows by left-dragging their outer edge or corner. The
@@ -364,15 +363,9 @@ decorations:
     show-title true
     # Optional title-only font size; omit to inherit global font.size.
     # text-size 11
-    radius 8
-    height 32
+    radius 0
+    height 12
 
-    colour-focused "#d65d26"
-    colour-unfocused "#474d59"
-    foreground-colour-focused "#101418"
-    foreground-colour-unfocused "#f4f5f7"
-    button-hover-colour "#ffffff"
-    button-pressed-colour "#101418"
   end
 end
 
@@ -394,13 +387,13 @@ end
 # configuration notices, the zoom indicator, and the exit confirmation.
 # Window decorations and node labels keep their own existing configuration.
 overlays:
-  background-colour "auto"
+ # background-colour "auto"
   text-colour "auto"
   error-colour "#fb4934"
   border-colour "#d65d26"
-  radius 8
-  borders true
-  border-size 3
+  radius 0
+  borders false
+  border-size 2
 
   notifications:
     position "top-center"
@@ -424,8 +417,8 @@ overlays:
     # text-colour "auto"
     # background-colour "auto"
     # border-colour "#d65d26"
-    # borders true
-    # radius 8
+     borders true
+     radius 0
   end
 end
 
@@ -456,7 +449,7 @@ effects:
     window:
       enabled true
       blur-radius 8
-      spread 0
+      spread 2
       offset-x 0
       offset-y 5
       colour "#05030530"
@@ -472,7 +465,7 @@ effects:
     end
 
     overlay:
-      enabled true
+      enabled false
       blur-radius 24
       spread 1
       offset-x 0
@@ -572,7 +565,7 @@ field:
   # promoted master); in stacking, it selects the first surviving card. Then
   # fall back to same-output and global MRU order. Set this to false to clear
   # focus instead; the two settings below then have no effect.
-  close-restore-focus true
+  close-restore-focus false
 
   # The selected successor may already be a collapsed node. False keeps it
   # collapsed while making it Halley's logical node focus, so node-aware
@@ -618,7 +611,7 @@ node:
   shape "squircle"
   label-shape "squircle"
   icon-size 0.72
-  opacity 1.0
+  opacity 1
   background-colour "auto"
   border-colour "#474d59"
   border-colour-highlighted "#d65d26"
@@ -643,7 +636,7 @@ end
 clusters:
   # New clusters open in "stacking" (overlapping cards) or "tiling" (one
   # master window beside a vertical stack). Mod+L changes the active cluster.
-  default-layout "stacking"
+  default-layout "tiling"
 
   # Bloom a collapsed cluster, then Mod-drag a normal window until it docks
   # against the fixed core. Hold it there for this long; the core's own border
@@ -870,27 +863,22 @@ keybinds:
   # `quit` opens the compositor-owned confirmation; Enter leaves and Escape
   # returns to the running session.
   "$var.mod+shift+e" "quit"
-  "$var.mod+q" "close-focused"
-  "$var.mod+f" "toggle-fullscreen"
-  "$var.mod+m" "maximize-focused"
-  "$var.mod+n" "toggle-state"
+  "$var.mod+c" "close-focused"
+  "$var.mod+shift+f" "toggle-fullscreen"
+  "$var.mod+f" "maximize-focused"
+  "$var.mod+d" "toggle-state"
   "$var.mod+p" "toggle-focused-pin"
-  "$var.mod+o" "apogee"
+  "$var.mod+tab" "apogee"
   "$var.mod+z" "bearings-show"
   "$var.mod+shift+z" "bearings-toggle"
   "alt+tab" "cycle-focus"
   "alt+shift+tab" "cycle-focus-backward"
   # Focus the most recently used Field window and pan it to the center without
   # changing its geometry or restoring it from a collapsed node.
-  "$var.mod+h" "center-last-focused"
+  "$var.mod+r" "center-last-focused"
 
   # Jump to the adjacent monitor and focus its most recently focused window.
   # This works from both the Field and an open cluster workspace.
-  "$var.mod+shift+left" "monitor-focus left"
-  "$var.mod+shift+right" "monitor-focus right"
-  "$var.mod+shift+up" "monitor-focus up"
-  "$var.mod+shift+down" "monitor-focus down"
-  # Example exact connector target: "monitor-focus DP-1".
 
   # Create a cluster, switch the active cluster's layout, or open a numbered
   # cluster slot on the currently selected monitor. Press an open slot again
@@ -899,7 +887,7 @@ keybinds:
   "$var.mod+l" "cluster-layout-cycle"
   # Float the focused member inside the active cluster. Its layout slot and
   # last floating geometry are retained for the next toggle.
-  "$var.mod+v" "cluster-toggle-float"
+#  "$var.mod+v" "cluster-toggle-float"
   "$var.mod+1" "cluster-slot-1"
   "$var.mod+2" "cluster-slot-2"
   "$var.mod+3" "cluster-slot-3"
@@ -951,11 +939,16 @@ keybinds:
   # `default-terminal` launches the first installed terminal from Halley's built-in
   # priority list. Replace this bind with e.g. `"$var.mod+t" "kitty"` to use
   # one command explicitly.
-  "$var.mod+t" "default-terminal"
+  "$var.mod+t" "kitty"
+"$var.mod+e" "nautilus"
 
-  # Open Fuzzel, the default application launcher.
-  "$var.mod+d" "fuzzel"
-
+  "$var.mod+space" "noctalia msg panel-toggle launcher"
+  "$var.mod+s" "noctalia msg panel-toggle control-center"
+  "$var.mod+comma" "noctalia msg settings-toggle"
+  "$var.mod+v" "noctalia msg panel-toggle clipboard"
+  "$var.mod+l" "noctalia msg screen-lock"
+  "$var.mod+j" "noctalia msg bar-toggle"
+  "$var.mod+w" "noctalia msg panel-toggle wallpaper"
   # Use Halley's bundled search and action launcher instead.
   # "$var.mod+d" "halley-lift"
 
@@ -966,12 +959,10 @@ keybinds:
   "XF86AudioMute" "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle"
 
   # Zoom out, walk back inward, or reset directly to native scale.
-  "$var.mod+minus" "zoom-out"
-  "$var.mod+equal" "zoom-in"
   "$var.mod+shift+0" "zoom-reset"
 
   # Open the Region, Screen, and Window screenshot menu.
-  "Print" "screenshot"
+  "Print" "noctalia msg screenshot-region"
 
   # Compositor pointer grabs are ordinary remappable actions. Remove a line
   # to disable that grab, or put the action on a different button/chord.
@@ -989,8 +980,8 @@ keybinds:
   #
   # "$var.mod+Page_Up" "some-command"
   # "$var.mod+click-forward" "some-command"
-  # "$var.mod+scroll-up" "zoom-in"
-  # "$var.mod+scroll-down" "zoom-out"
+   "$var.mod+scroll-up" "zoom-in"
+   "$var.mod+scroll-down" "zoom-out"
   #
   # Unusual hardware can be addressed by its decimal Linux evdev code:
   # "keycode-99" "some-command"
