@@ -308,11 +308,11 @@ end
 cursor:
   # This configured name is authoritative; Halley does not inherit the theme
   # from its process environment. Theme names are case-sensitive.
-  theme "default"
+  theme "Bibata-Modern-Ice"
 
   # Base logical size. Halley selects the closest frame supplied by the theme
   # for each output scale.
-  size 20
+  size 26
 
   # Hide after a physical keyboard press, without changing pointer focus,
   # grabs, or constraints. Pointer motion, buttons, and scrolling reveal it.
@@ -321,7 +321,7 @@ cursor:
   # Hide only the rendered cursor while navigating Halley with the keyboard.
   # The pointer position and hover/focus routing are not changed. Physical
   # pointer motion, buttons, and scrolling reveal it immediately.
-  hide-on-keyboard-nav true
+  hide-on-keyboard-nav false
 
   # Hide on touch-down so a stale mouse cursor does not sit over touch UI.
   # Physical pointer activity reveals it again.
@@ -502,25 +502,12 @@ end
 # Managed-window rules are shared by native Wayland and XWayland windows.
 # Rules are checked top-to-bottom and only the first complete match applies.
 # Exact strings are case-sensitive; r"..." values are regular expressions.
-rules:
-  # window-rule:
-  #   app-id ["firefox", r"org\.mozilla\..*"]
-  #   title r"Picture.*"
-  #   width 720
-  #   height 520
-  #   opacity 0.90
-  #   blur true
-  #   spawn-placement "cursor"
-  #   cluster-participation "float"
-  # end
   #
   # layer-rule:
   #   namespace ["waybar", r"^fuzzel$"]
   #   layer ["top", "overlay"]
   #   blur true
   # end
-end
-
 # Offscreen node navigation. Bearings are laid out independently per monitor
 # around that monitor's current camera view. Hold Mod+Z for a temporary view;
 # Mod+Shift+Z toggles a persistent view.
