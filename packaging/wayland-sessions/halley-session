@@ -23,8 +23,18 @@ export XDG_CURRENT_DESKTOP=Halley
 export XDG_SESSION_DESKTOP=Halley
 export DESKTOP_SESSION=Halley
 
+if [ -n "${WAYLAND_DISPLAY:-}" ] || { [ -n "${DISPLAY:-}" ] && [ "${XDG_SESSION_TYPE:-}" = "x11" ]; }; then
+    echo "halley-session: a graphical session is already active." >&2
+    echo "To test Halley inside your current session, run 'halley' (without --session)." >&2
+    echo "To start a standalone session, log in via your display manager (SDDM) or from a TTY console." >&2
+    exit 1
+fi
+
 HALLEY_BIN=${HALLEY_BIN:-/usr/bin/halley}
 export HALLEY_BIN
+
+HALLEY_NO_INIT_INTEGRATION=${HALLEY_NO_INIT_INTEGRATION:-1}
+export HALLEY_NO_INIT_INTEGRATION
 
 init_integration_enabled() {
     case "${HALLEY_NO_INIT_INTEGRATION:-}" in

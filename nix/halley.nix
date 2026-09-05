@@ -47,6 +47,8 @@ in
       };
     };
 
+    cargoBuildFlags = [ "--workspace" ];
+
     nativeBuildInputs = [
       pkg-config
       makeWrapper
