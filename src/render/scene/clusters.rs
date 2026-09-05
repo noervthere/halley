@@ -346,6 +346,7 @@ pub(super) fn cluster_elements(
             stack_index: 0,
             order: id.as_u64(),
             elements,
+            covers_output: false,
         });
     }
     Ok(groups)

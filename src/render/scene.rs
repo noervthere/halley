@@ -753,6 +753,7 @@ pub fn build(
                 stack_index: closing.stack_index,
                 order: closing.order,
                 elements,
+                covers_output: false,
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -937,6 +938,7 @@ pub fn build(
                     .cluster_depth
                     .map_or(u64::MAX, |depth| depth as u64),
                 elements: std::mem::take(&mut window_scene.popup_elements),
+                covers_output: false,
             });
         }
     }
@@ -950,10 +952,20 @@ pub fn build(
                 .cluster_depth
                 .map_or(u64::MAX, |depth| depth as u64),
             elements: window_scene.elements,
+            covers_output: window_scene.covers_output,
         });
     }
     sort_stack_groups(&mut stack);
-    elements.extend(stack.into_iter().rev().flat_map(|group| group.elements));
+    let mut covered = false;
+    for group in stack.into_iter().rev() {
+        if covered {
+            continue;
+        }
+        if group.covers_output {
+            covered = true;
+        }
+        elements.extend(group.elements);
+    }
 
     if let Some(exclusive) = cluster_exclusive {
         // Popups owned by the selected X11 member inherit the exclusive flag.
@@ -967,6 +979,7 @@ pub fn build(
                     stack_index: *stack_index,
                     order: scene.cluster_depth.map_or(u64::MAX, |depth| depth as u64),
                     elements: std::mem::take(&mut scene.popup_elements),
+                    covers_output: false,
                 });
             }
         }
@@ -1011,37 +1024,39 @@ pub fn build(
             .flat_map(|group| group.elements),
     );
 
-    elements.extend(layer_surface_scene_elements(
-        renderer,
-        output,
-        output_geometry,
-        Layer::Bottom,
-        request.desktop.layer_rules,
-        request.visuals.blur,
-        request.resources.backdrop_blur_renderer,
-    )?);
-    elements.extend(layer_surface_scene_elements(
-        renderer,
-        output,
-        output_geometry,
-        Layer::Background,
-        request.desktop.layer_rules,
-        request.visuals.blur,
-        request.resources.backdrop_blur_renderer,
-    )?);
-    append_background(
-        renderer,
-        request.resources.background_renderer,
-        BackgroundSceneRequest {
+    if !fullscreen_covers_layers && !covered {
+        elements.extend(layer_surface_scene_elements(
+            renderer,
             output,
             output_geometry,
-            cameras: request.desktop.cameras,
-            config: request.visuals.background,
-            config_dir: request.visuals.background_base,
-            now: request.frame.target_presentation_time,
-        },
-        &mut elements,
-    );
+            Layer::Bottom,
+            request.desktop.layer_rules,
+            request.visuals.blur,
+            request.resources.backdrop_blur_renderer,
+        )?);
+        elements.extend(layer_surface_scene_elements(
+            renderer,
+            output,
+            output_geometry,
+            Layer::Background,
+            request.desktop.layer_rules,
+            request.visuals.blur,
+            request.resources.backdrop_blur_renderer,
+        )?);
+        append_background(
+            renderer,
+            request.resources.background_renderer,
+            BackgroundSceneRequest {
+                output,
+                output_geometry,
+                cameras: request.desktop.cameras,
+                config: request.visuals.background,
+                config_dir: request.visuals.background_base,
+                now: request.frame.target_presentation_time,
+            },
+            &mut elements,
+        );
+    }
 
     let mut overlay_elements = super::overlays::shell::elements(
         renderer,
@@ -1501,17 +1516,20 @@ mod tests {
                     stack_index,
                     order,
                     elements: Vec::new(),
+                    covers_output: false,
                 })
                 .chain([
                     StackGroup {
                         stack_index: collapsed_index,
                         order: 1,
                         elements: Vec::new(),
+                        covers_output: false,
                     },
                     StackGroup {
                         stack_index: collapsed_index,
                         order: 0,
                         elements: Vec::new(),
+                        covers_output: false,
                     },
                 ])
                 .collect::<Vec<_>>();

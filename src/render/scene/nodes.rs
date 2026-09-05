@@ -222,6 +222,7 @@ pub(super) fn node_elements(
             // the same window that was above it before unmapping.
             order: 0,
             elements,
+            covers_output: false,
         });
     }
     Ok(NodeScene { overlay, groups })

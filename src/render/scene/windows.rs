@@ -6,6 +6,7 @@ pub(super) struct StackGroup {
     pub(super) stack_index: usize,
     pub(super) order: u64,
     pub(super) elements: Vec<SceneElement>,
+    pub(super) covers_output: bool,
 }
 
 pub(super) fn sort_stack_groups(groups: &mut [StackGroup]) {
@@ -21,6 +22,7 @@ pub(super) struct LiveWindowScene {
     pub(super) cluster_depth: Option<usize>,
     pub(super) cluster_floating: bool,
     pub(super) cluster_exclusive: bool,
+    pub(super) covers_output: bool,
 }
 
 pub(super) struct LiveWindowRenderers<'a> {
@@ -242,6 +244,7 @@ pub(super) fn live_window_elements(
             cluster_depth: None,
             cluster_floating: false,
             cluster_exclusive: false,
+            covers_output: false,
         });
     };
     let Some(window_surface) = window.wl_surface() else {
@@ -251,6 +254,7 @@ pub(super) fn live_window_elements(
             cluster_depth: None,
             cluster_floating: false,
             cluster_exclusive: false,
+            covers_output: false,
         });
     };
     let join_ready = context
@@ -282,6 +286,7 @@ pub(super) fn live_window_elements(
             cluster_depth: None,
             cluster_floating: false,
             cluster_exclusive: false,
+            covers_output: false,
         });
     };
     if visual.animated_rect.size.w == 0 || visual.animated_rect.size.h == 0 {
@@ -291,6 +296,7 @@ pub(super) fn live_window_elements(
             cluster_depth: visual.cluster_depth,
             cluster_floating: visual.cluster_floating,
             cluster_exclusive: visual.cluster_exclusive,
+            covers_output: false,
         });
     }
 
@@ -392,31 +398,57 @@ pub(super) fn live_window_elements(
             )));
         }
     }
-    let surface_location = crate::render::window_surface_location(location, window.geometry());
+    let is_settled_fullscreen = visual
+        .fullscreen
+        .is_some_and(|p| p.transition_completion >= 1.0)
+        && !chrome_visible
+        && !rounded
+        && alpha >= 1.0;
+    let surface_location = if is_settled_fullscreen {
+        visual.animated_rect.loc
+            - window
+                .geometry()
+                .loc
+                .to_physical_precise_round(Scale::from(1.0))
+    } else {
+        crate::render::window_surface_location(location, window.geometry())
+    };
     let (popup_surfaces, surface_elements) =
         crate::render::window_surface_elements(renderer, window, surface_location, alpha);
     popup_elements.extend(popup_surfaces.into_iter().map(|surface_element| {
-        let native_geometry = surface_element.geometry(Scale::from(1.0));
-        let destination = if visual.maps_from_source() {
-            let destination = crate::animation::map_rect(
-                native_geometry,
-                visual.source_geometry.to_physical(1),
-                visual.presentation_rect,
-            );
-            crate::animation::map_rect(destination, visual.presentation_rect, visual.animated_rect)
+        if is_settled_fullscreen {
+            SceneElement::Layer(surface_element)
         } else {
-            let final_destination = crate::render::camera_rect(
-                native_geometry,
-                visual.camera_center,
-                context.output_geometry.size.to_physical(1),
-                visual.zoom_scale,
-            );
-            crate::animation::map_rect(final_destination, visual.camera_rect, visual.animated_rect)
-        };
-        SceneElement::Rescaled(crate::render::rescale::RescaledElement::new(
-            surface_element,
-            destination,
-        ))
+            let native_geometry = surface_element.geometry(Scale::from(1.0));
+            let destination = if visual.maps_from_source() {
+                let destination = crate::animation::map_rect(
+                    native_geometry,
+                    visual.source_geometry.to_physical(1),
+                    visual.presentation_rect,
+                );
+                crate::animation::map_rect(
+                    destination,
+                    visual.presentation_rect,
+                    visual.animated_rect,
+                )
+            } else {
+                let final_destination = crate::render::camera_rect(
+                    native_geometry,
+                    visual.camera_center,
+                    context.output_geometry.size.to_physical(1),
+                    visual.zoom_scale,
+                );
+                crate::animation::map_rect(
+                    final_destination,
+                    visual.camera_rect,
+                    visual.animated_rect,
+                )
+            };
+            SceneElement::Rescaled(crate::render::rescale::RescaledElement::new(
+                surface_element,
+                destination,
+            ))
+        }
     }));
     if visual.shader_pixels()
         && window_shaders.open_available()
@@ -445,6 +477,7 @@ pub(super) fn live_window_elements(
                     cluster_depth: visual.cluster_depth,
                     cluster_floating: visual.cluster_floating,
                     cluster_exclusive: visual.cluster_exclusive,
+                    covers_output: false,
                 });
             }
             Ok(None) => {}
@@ -573,21 +606,17 @@ pub(super) fn live_window_elements(
     } else if let Some(blend) = texture_blend {
         elements.push(SceneElement::WindowResize(blend));
     } else {
-        let is_settled_fullscreen = visual
-            .fullscreen
-            .is_some_and(|p| p.transition_completion >= 1.0)
-            && !chrome_visible
-            && !rounded
-            && alpha >= 1.0
-            && visual.animated_rect.loc.x == 0
-            && visual.animated_rect.loc.y == 0
-            && visual.animated_rect.size == context.output_geometry.size.to_physical(1);
-
         for surface_element in surface_elements {
             if is_settled_fullscreen
                 && surface_element.geometry(Scale::from(1.0)) == visual.animated_rect
             {
                 elements.push(SceneElement::Layer(surface_element));
+                continue;
+            }
+            if visual.fullscreen.is_some() {
+                let element =
+                    crate::render::rescale::RescaledElement::new(surface_element, visual.animated_rect);
+                elements.push(SceneElement::Rescaled(element));
                 continue;
             }
             let native_geometry = surface_element.geometry(Scale::from(1.0));
@@ -899,12 +928,18 @@ pub(super) fn live_window_elements(
     if crate::xwayland::is_override_redirect(window) {
         popup_elements.append(&mut elements);
     }
+    let settled_fullscreen_covers_output = is_settled_fullscreen
+        && visual.animated_rect.loc.x == 0
+        && visual.animated_rect.loc.y == 0
+        && visual.animated_rect.size == context.output_geometry.size.to_physical(1);
+    let covers_output = settled_fullscreen_covers_output && !elements.is_empty();
     Ok(LiveWindowScene {
         popup_elements,
         elements,
         cluster_depth: visual.cluster_depth,
         cluster_floating: visual.cluster_floating,
         cluster_exclusive: visual.cluster_exclusive,
+        covers_output,
     })
 }
 
