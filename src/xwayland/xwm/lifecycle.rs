@@ -317,17 +317,23 @@ impl<D: SessionDriver> XwmHandler for Session<D> {
                 surface.geometry(),
             ),
         );
-        if surface.is_transient_for().is_some()
+        let honor_position = surface.is_transient_for().is_some()
+            || surface.is_fullscreen()
+            || surface.is_maximized();
+        if honor_position
             && (x.is_some() || y.is_some())
             && let Some(window) = window_for_surface(&self.wayland, &self.nodes, &surface)
-            && let Some(location) = super::presentation::source_element_location_from_root_screen(
+        {
+            if surface.is_fullscreen() || surface.is_maximized() {
+                self.wayland.space.relocate_element(&window, geometry.loc);
+            } else if let Some(location) = super::presentation::source_element_location_from_root_screen(
                 self,
                 &window,
                 geometry.loc,
                 crate::frame_clock::monotonic_now(),
-            )
-        {
-            self.wayland.space.relocate_element(&window, location);
+            ) {
+                self.wayland.space.relocate_element(&window, location);
+            }
         }
         if let Err(err) = surface.configure(geometry) {
             eventline::warn!("xwayland: configure request failed: {err}");

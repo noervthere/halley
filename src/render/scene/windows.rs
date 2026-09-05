@@ -401,6 +401,9 @@ pub(super) fn live_window_elements(
     let is_settled_fullscreen = visual
         .fullscreen
         .is_some_and(|p| p.transition_completion >= 1.0)
+        && visual.animated_rect.loc.x == 0
+        && visual.animated_rect.loc.y == 0
+        && visual.animated_rect.size == context.output_geometry.size.to_physical(1)
         && !chrome_visible
         && !rounded
         && alpha >= 1.0;
@@ -606,17 +609,47 @@ pub(super) fn live_window_elements(
     } else if let Some(blend) = texture_blend {
         elements.push(SceneElement::WindowResize(blend));
     } else {
+        let root_surface_id = Id::from_wayland_resource(window_surface.as_ref());
         for surface_element in surface_elements {
-            if is_settled_fullscreen
-                && surface_element.geometry(Scale::from(1.0)) == visual.animated_rect
-            {
-                elements.push(SceneElement::Layer(surface_element));
-                continue;
-            }
-            if visual.fullscreen.is_some() {
-                let element =
-                    crate::render::rescale::RescaledElement::new(surface_element, visual.animated_rect);
-                elements.push(SceneElement::Rescaled(element));
+            if is_settled_fullscreen {
+                if *surface_element.id() == root_surface_id {
+                    if surface_element.geometry(Scale::from(1.0)) == visual.animated_rect {
+                        elements.push(SceneElement::Layer(surface_element));
+                    } else {
+                        elements.push(SceneElement::Rescaled(
+                            crate::render::rescale::RescaledElement::new(
+                                surface_element,
+                                visual.animated_rect,
+                            ),
+                        ));
+                    }
+                } else {
+                    let sub_geo = surface_element.geometry(Scale::from(1.0));
+                    let root_size = window.geometry().size.to_physical_precise_round(Scale::from(1.0));
+                    if root_size == visual.animated_rect.size || root_size.w <= 0 || root_size.h <= 0 {
+                        elements.push(SceneElement::Layer(surface_element));
+                    } else {
+                        let scale_x = visual.animated_rect.size.w as f64 / root_size.w as f64;
+                        let scale_y = visual.animated_rect.size.h as f64 / root_size.h as f64;
+                        let sub_dest = Rectangle::new(
+                            Point::from((
+                                visual.animated_rect.loc.x + (sub_geo.loc.x as f64 * scale_x).round() as i32,
+                                visual.animated_rect.loc.y + (sub_geo.loc.y as f64 * scale_y).round() as i32,
+                            )),
+                            (
+                                (sub_geo.size.w as f64 * scale_x).round().max(1.0) as i32,
+                                (sub_geo.size.h as f64 * scale_y).round().max(1.0) as i32,
+                            )
+                                .into(),
+                        );
+                        elements.push(SceneElement::Rescaled(
+                            crate::render::rescale::RescaledElement::new(
+                                surface_element,
+                                sub_dest,
+                            ),
+                        ));
+                    }
+                }
                 continue;
             }
             let native_geometry = surface_element.geometry(Scale::from(1.0));

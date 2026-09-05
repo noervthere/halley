@@ -462,19 +462,29 @@ fn send_fallback_frame_callbacks<D: SessionDriver>(session: &mut Session<D>) {
                     callback_now,
                 );
             for window in session.wayland.space.elements() {
-                let window_member = window
-                    .wl_surface()
+                let window_surface = window.wl_surface();
+                let window_member = window_surface
+                    .as_ref()
                     .and_then(|surface| session.nodes.id_for_surface(surface.as_ref()));
-                let compositor_snapshot = window.wl_surface().is_some_and(|surface| {
+                let compositor_snapshot = window_surface.as_ref().is_some_and(|surface| {
                     session
                         .render
                         .fullscreen_textures
                         .awaiting_target(surface.as_ref())
                 });
+                let is_fullscreen_or_maximized = window_surface.as_ref().is_some_and(|surface| {
+                    session
+                        .fullscreen
+                        .presentation(surface.as_ref(), &output, callback_now)
+                        .is_some()
+                        || session.fullscreen.is_fullscreen_or_pending(surface.as_ref())
+                        || session.maximize.contains(surface.as_ref())
+                });
                 let require_visible = crate::wayland::frame_callbacks::requires_render_visibility(
                     window_member,
                     cluster_exclusive_member,
                     compositor_snapshot,
+                    is_fullscreen_or_maximized,
                 );
                 window.send_frame(
                     &output,
@@ -1299,6 +1309,12 @@ pub(crate) fn set_surface_field_maximized<D: SessionDriver>(
     if session.maximize.contains(surface) == maximized {
         return false;
     }
+    if session.nodes.id_for_surface(surface).is_none() {
+        let now_ms = crate::frame_clock::monotonic_now().as_millis() as u64;
+        session
+            .nodes
+            .register_mapped(&session.wayland.space, surface, now_ms);
+    }
     let Some(record) = session
         .nodes
         .id_for_surface(surface)
@@ -1330,7 +1346,21 @@ fn toggle_field_maximize<D: SessionDriver>(
         return false;
     };
     let usable = smithay::desktop::layer_map_for_output(&target_output).non_exclusive_zone();
-    let gap = session.settings.field.gap.ceil() as i32;
+    let is_game = smithay::wayland::compositor::with_states(&record.surface, |states| {
+        states
+            .cached_state
+            .get::<smithay::wayland::content_type::ContentTypeSurfaceCachedState>()
+            .current()
+            .content_type()
+            == &smithay::reexports::wayland_protocols::wp::content_type::v1::server::wp_content_type_v1::Type::Game
+    }) || record.window.x11_surface().is_some_and(|_| {
+        !crate::xwayland::uses_server_decorations(&record.window)
+    });
+    let gap = if is_game {
+        0
+    } else {
+        session.settings.field.gap.ceil() as i32
+    };
     let outer_target = Rectangle::new(
         output_geometry.loc
             + usable.loc
@@ -1341,12 +1371,16 @@ fn toggle_field_maximize<D: SessionDriver>(
         )
             .into(),
     );
-    let target = crate::titlebar::client_rect_for_outer(
-        &record.window,
-        outer_target,
-        &session.settings.decorations,
-        &session.settings.font,
-    );
+    let target = if is_game {
+        outer_target
+    } else {
+        crate::titlebar::client_rect_for_outer(
+            &record.window,
+            outer_target,
+            &session.settings.decorations,
+            &session.settings.font,
+        )
+    };
     let now = crate::frame_clock::monotonic_now();
     let entering = !session.maximize.contains(&record.surface);
     let workspace = presentation_workspace_for_surface(session, &record.surface);

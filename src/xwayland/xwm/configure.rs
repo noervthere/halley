@@ -225,7 +225,10 @@ pub(super) fn requested_geometry(
     height: Option<u32>,
 ) -> Rectangle<i32, Logical> {
     let current = surface.geometry();
-    let location = requested_location(current.loc, x, y, surface.is_transient_for().is_some());
+    let honor_client_position = surface.is_transient_for().is_some()
+        || surface.is_fullscreen()
+        || surface.is_maximized();
+    let location = requested_location(current.loc, x, y, honor_client_position);
     let requested_size = Size::from((
         width.map(saturating_i32).unwrap_or(current.size.w),
         height.map(saturating_i32).unwrap_or(current.size.h),

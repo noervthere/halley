@@ -9,7 +9,7 @@ use smithay::backend::renderer::utils::{CommitCounter, with_renderer_surface_sta
 use smithay::desktop::{PopupManager, layer_map_for_output};
 use smithay::output::Output;
 use smithay::reexports::wayland_server::Resource;
-use smithay::utils::{Logical, Physical, Rectangle, Scale};
+use smithay::utils::{Logical, Physical, Point, Rectangle, Scale};
 use smithay::wayland::seat::WaylandFocus;
 use smithay::wayland::shell::wlr_layer::Layer;
 
@@ -52,8 +52,6 @@ use overview::{
     preview_content_radius, sort_apogee_tiles,
 };
 
-#[cfg(test)]
-use smithay::utils::Point;
 
 render_elements! {
     /// The complete front-to-back scene consumed by both presentation

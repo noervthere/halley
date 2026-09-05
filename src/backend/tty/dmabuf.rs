@@ -10,10 +10,20 @@ use super::TtyDrmOutput;
 use crate::backend::dmabuf::{SurfaceDmabufFeedback, scanout_formats};
 
 pub fn frame_flags() -> FrameFlags {
-    // Enable hardware direct scanout across primary and overlay planes,
-    // allow scanout for any compatible pixel format, and enable the hardware
-    // cursor plane for zero-latency pointer motion without CPU stalls.
-    FrameFlags::DEFAULT | FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT_ANY
+    // Enable hardware direct scanout across the primary plane (when format and
+    // modifiers strictly match) and the hardware cursor plane for zero-latency
+    // pointer motion without CPU stalls.
+    //
+    // Note: We deliberately omit ALLOW_PRIMARY_PLANE_SCANOUT_ANY and
+    // ALLOW_OVERLAY_PLANE_SCANOUT:
+    // - ALLOW_PRIMARY_PLANE_SCANOUT_ANY bypasses format/modifier matching in Smithay.
+    //   On AMD (amdgpu / RADV) and Intel, scanning out a client buffer before
+    //   dmabuf scanout feedback negotiation finishes hands non-display DCC
+    //   (Delta Color Compression) compressed buffers directly to the KMS display
+    //   hardware, causing green / rainbow lines to glitch on screen for a short timeline.
+    // - ALLOW_OVERLAY_PLANE_SCANOUT on AMD DC triggers underflow or modifier
+    //   tiling corruptions when subsurfaces/popups are assigned to hardware overlay planes.
+    FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT | FrameFlags::ALLOW_CURSOR_PLANE_SCANOUT
 }
 
 pub fn frame_flags_for_scene(has_framebuffer_effect: bool) -> FrameFlags {
@@ -21,11 +31,9 @@ pub fn frame_flags_for_scene(has_framebuffer_effect: bool) -> FrameFlags {
     if has_framebuffer_effect {
         // Direct scan-out of a window skips the backdrop blur behind it, so
         // the surface flickers between the client buffer and the composed
-        // frosted scene. Disable primary-plane and overlay scan-out while any
+        // frosted scene. Disable primary-plane scan-out while any
         // framebuffer effect is in the output list.
         flags.remove(FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT);
-        flags.remove(FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT_ANY);
-        flags.remove(FrameFlags::ALLOW_OVERLAY_PLANE_SCANOUT);
     }
     flags
 }
@@ -65,9 +73,9 @@ mod tests {
     fn direct_scanout_policy_uses_hardware_planes() {
         let flags = frame_flags();
         assert!(flags.contains(FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT));
-        assert!(flags.contains(FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT_ANY));
+        assert!(!flags.contains(FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT_ANY));
         assert!(flags.contains(FrameFlags::ALLOW_CURSOR_PLANE_SCANOUT));
-        assert!(flags.contains(FrameFlags::ALLOW_OVERLAY_PLANE_SCANOUT));
+        assert!(!flags.contains(FrameFlags::ALLOW_OVERLAY_PLANE_SCANOUT));
     }
 
     #[test]

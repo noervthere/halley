@@ -877,10 +877,11 @@ fn send_output_frame_callbacks(app: &mut TtyApp, output: &Output) {
             .elements()
             .filter(|window| wayland::window_is_on_output(window, output, primary))
             .for_each(|window| {
-                let window_member = window
-                    .wl_surface()
+                let window_surface = window.wl_surface();
+                let window_member = window_surface
+                    .as_ref()
                     .and_then(|surface| app.nodes.id_for_surface(surface.as_ref()));
-                let compositor_snapshot = window.wl_surface().is_some_and(|surface| {
+                let compositor_snapshot = window_surface.as_ref().is_some_and(|surface| {
                     app.render
                         .fullscreen_textures
                         .awaiting_target(surface.as_ref())
@@ -889,10 +890,18 @@ fn send_output_frame_callbacks(app: &mut TtyApp, output: &Output) {
                             .arrange_textures
                             .awaiting_target(surface.as_ref())
                 });
+                let is_fullscreen_or_maximized = window_surface.as_ref().is_some_and(|surface| {
+                    app.fullscreen
+                        .presentation(surface.as_ref(), output, callback_now)
+                        .is_some()
+                        || app.fullscreen.is_fullscreen_or_pending(surface.as_ref())
+                        || app.maximize.contains(surface.as_ref())
+                });
                 let require_visible = crate::wayland::frame_callbacks::requires_render_visibility(
                     window_member,
                     cluster_exclusive_member,
                     compositor_snapshot,
+                    is_fullscreen_or_maximized,
                 );
                 window.send_frame(
                     output,

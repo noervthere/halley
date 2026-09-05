@@ -42,14 +42,17 @@ pub fn cluster_exclusive_callback_member(
 /// Whether a window's callbacks must be backed by final render-element state.
 ///
 /// Ordinary and hidden cluster members retain visibility throttling. The one
-/// member explicitly promoted into the cluster-exclusive scene is already
-/// known to be visible and must keep receiving output-rate callbacks.
+/// member explicitly promoted into the cluster-exclusive scene, or an active
+/// fullscreen/maximized surface, is already known to be visible and must keep
+/// receiving output-rate callbacks.
 pub fn requires_render_visibility(
     window_member: Option<NodeId>,
     cluster_exclusive_member: Option<NodeId>,
     compositor_snapshot: bool,
+    is_fullscreen_or_maximized: bool,
 ) -> bool {
     !compositor_snapshot
+        && !is_fullscreen_or_maximized
         && cluster_exclusive_member.is_none_or(|exclusive| window_member != Some(exclusive))
 }
 
@@ -117,14 +120,17 @@ mod tests {
             Some(exclusive),
             Some(exclusive),
             false,
+            false,
         ));
         assert!(requires_render_visibility(
             Some(NodeId::new(8)),
             Some(exclusive),
             false,
+            false,
         ));
-        assert!(requires_render_visibility(None, Some(exclusive), false));
-        assert!(requires_render_visibility(Some(exclusive), None, false));
-        assert!(!requires_render_visibility(None, None, true));
+        assert!(requires_render_visibility(None, Some(exclusive), false, false));
+        assert!(requires_render_visibility(Some(exclusive), None, false, false));
+        assert!(!requires_render_visibility(None, None, true, false));
+        assert!(!requires_render_visibility(None, None, false, true));
     }
 }
